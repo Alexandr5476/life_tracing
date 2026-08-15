@@ -1,4 +1,18 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+abstract class PrintVersionNameTask : DefaultTask() {
+    @get:Input
+    abstract val versionName: Property<String>
+
+    @TaskAction
+    fun printVersionName() {
+        println(versionName.get())
+    }
+}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -71,6 +85,14 @@ kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
     }
+}
+
+tasks.register<PrintVersionNameTask>("printVersionName") {
+    versionName.set(
+        checkNotNull(android.defaultConfig.versionName) {
+            "Android defaultConfig versionName is not configured."
+        },
+    )
 }
 
 dependencies {

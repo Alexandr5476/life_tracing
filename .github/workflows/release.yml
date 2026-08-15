@@ -12,8 +12,14 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -22,7 +28,7 @@ jobs:
       - name: Verify tag matches Android version
         shell: bash
         run: |
-          version_name=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts)
+          version_name=$(./gradlew -q :app:printVersionName)
           test "v${version_name}" = "${GITHUB_REF_NAME}"
       - name: Complete verification suite
         run: ./gradlew ktlintCheck detekt lintDebug :domain:test :data:testDebugUnitTest :app:testDebugUnitTest coverageReport coverageVerify :data:pixel2Api35DebugAndroidTest :app:pixel2Api35DebugAndroidTest :app:assembleRelease --stacktrace
