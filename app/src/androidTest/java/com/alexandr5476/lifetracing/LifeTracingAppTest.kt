@@ -12,9 +12,11 @@ class LifeTracingAppTest {
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun placeholder_is_displayed() {
+    fun design_system_preview_is_displayed() {
         composeTestRule.setContent { LifeTracingApp() }
 
-        composeTestRule.onNodeWithText("LifeTracing").assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.design_preview_heading))
+            .assertIsDisplayed()
     }
 }

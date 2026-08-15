@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LifeTracing</string>
+    <string name="design_preview_title">LifeTracing</string>
+    <string name="design_preview_heading">Design foundation</string>
+    <string name="design_preview_body">A compact preview of the shared semantic theme.</string>
+    <string name="design_preview_primary_action">Primary action</string>
+    <string name="design_preview_secondary_action">Secondary action</string>
+    <string name="design_preview_input_label">Input surface</string>
+    <string name="design_preview_input_value">Example value</string>
+    <string name="design_preview_card_title">Surface card</string>
+    <string name="design_preview_card_body">Tonal layers and outlines establish hierarchy.</string>
+    <string name="design_preview_row">Compact row</string>
+    <string name="design_preview_progress">Foundation readiness</string>
+</resources>
