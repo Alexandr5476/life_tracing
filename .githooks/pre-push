@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+if ! ./gradlew ktlintCheck detekt :domain:test :data:testDebugUnitTest :app:testDebugUnitTest; then
+  echo "Pre-push checks failed. Push aborted. CI remains the authoritative gate."
+  exit 1
+fi
