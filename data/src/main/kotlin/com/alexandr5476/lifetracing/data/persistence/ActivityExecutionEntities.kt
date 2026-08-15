@@ -60,29 +60,32 @@ internal data class ActivityExecutionEntity(
         ForeignKey(
             entity = ActivityExecutionEntity::class,
             parentColumns = ["id"],
-            childColumns = ["execution_id"],
+            childColumns = ["activity_execution_id"],
             onDelete = ForeignKey.CASCADE,
         ),
     ],
     indices = [
-        Index(value = ["execution_id", "started_at_ms"], name = "activity_execution_pauses_owner_started"),
+        Index(
+            value = ["activity_execution_id", "started_at_ms"],
+            name = "activity_execution_pauses_owner_started",
+        ),
     ],
 )
 internal data class ActivityExecutionPauseEntity(
     @androidx.room.PrimaryKey val id: String,
-    @ColumnInfo(name = "execution_id") val executionId: String,
+    @ColumnInfo(name = "activity_execution_id") val activityExecutionId: String,
     @ColumnInfo(name = "started_at_ms") val startedAtMs: Long,
     @ColumnInfo(name = "ended_at_ms") val endedAtMs: Long?,
 )
 
 @Entity(
     tableName = "activity_execution_field_values",
-    primaryKeys = ["execution_id", "snapshot_field_id"],
+    primaryKeys = ["activity_execution_id", "snapshot_field_id"],
     foreignKeys = [
         ForeignKey(
             entity = ActivityExecutionEntity::class,
             parentColumns = ["id"],
-            childColumns = ["execution_id"],
+            childColumns = ["activity_execution_id"],
             onDelete = ForeignKey.CASCADE,
         ),
         ForeignKey(
@@ -100,14 +103,14 @@ internal data class ActivityExecutionPauseEntity(
     ],
     indices = [
         Index(value = ["snapshot_field_id"], name = "activity_execution_values_snapshot_field_id"),
-        Index(value = ["number_value_scaled"], name = "activity_execution_values_number"),
+        Index(value = ["number_scaled"], name = "activity_execution_values_number"),
         Index(value = ["category_option_id"], name = "activity_execution_values_category"),
     ],
 )
 internal data class ActivityExecutionFieldValueEntity(
-    @ColumnInfo(name = "execution_id") val executionId: String,
+    @ColumnInfo(name = "activity_execution_id") val activityExecutionId: String,
     @ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
-    @ColumnInfo(name = "number_value_scaled") val numberValueScaled: Long?,
+    @ColumnInfo(name = "number_scaled") val numberScaled: Long?,
     @ColumnInfo(name = "category_option_id") val categoryOptionId: String?,
     @ColumnInfo(name = "text_value") val textValue: String?,
 )

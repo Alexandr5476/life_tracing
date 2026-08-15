@@ -24,11 +24,35 @@ internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
 
-    @Query("SELECT * FROM activity_execution_pauses WHERE execution_id = :executionId ORDER BY started_at_ms, id")
+    @Query(
+        "SELECT * FROM activity_execution_pauses " +
+            "WHERE activity_execution_id = :executionId ORDER BY started_at_ms, id",
+    )
     abstract fun getPauses(executionId: String): List<ActivityExecutionPauseEntity>
 
-    @Query("SELECT * FROM activity_execution_field_values WHERE execution_id = :executionId ORDER BY snapshot_field_id")
+    @Query(
+        "SELECT * FROM activity_execution_field_values " +
+            "WHERE activity_execution_id = :executionId ORDER BY snapshot_field_id",
+    )
     abstract fun getValues(executionId: String): List<ActivityExecutionFieldValueEntity>
+
+    @Query(
+        "SELECT field_type FROM activity_snapshot_fields " +
+            "WHERE snapshot_id = :snapshotId AND id = :snapshotFieldId",
+    )
+    protected abstract fun getSnapshotFieldType(
+        snapshotId: String,
+        snapshotFieldId: String,
+    ): String?
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM activity_snapshot_category_options " +
+            "WHERE snapshot_field_id = :snapshotFieldId AND id = :categoryOptionId)",
+    )
+    protected abstract fun categoryOptionBelongsToField(
+        snapshotFieldId: String,
+        categoryOptionId: String,
+    ): Boolean
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertExecution(execution: ActivityExecutionEntity)
@@ -37,13 +61,13 @@ internal abstract class ActivityExecutionDao {
     abstract fun insertPauses(pauses: List<ActivityExecutionPauseEntity>)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
-    abstract fun insertValues(values: List<ActivityExecutionFieldValueEntity>)
+    protected abstract fun insertValuesUnchecked(values: List<ActivityExecutionFieldValueEntity>)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertPause(pause: ActivityExecutionPauseEntity)
 
     @Upsert
-    abstract fun upsertValue(value: ActivityExecutionFieldValueEntity)
+    protected abstract fun upsertValueUnchecked(value: ActivityExecutionFieldValueEntity)
 
     @Query(
         "UPDATE activity_executions SET status = :status, updated_at_ms = :updatedAtMs " +
@@ -91,9 +115,25 @@ internal abstract class ActivityExecutionDao {
 
     @Transaction
     open fun insertAggregate(aggregate: ActivityExecutionAggregateEntity) {
+        aggregate.values.forEach { value ->
+            require(value.activityExecutionId == aggregate.execution.id) {
+                "Execution value must belong to the inserted execution"
+            }
+        }
         insertExecution(aggregate.execution)
+        aggregate.values.forEach { value -> requireValidValue(aggregate.execution.snapshotId, value) }
         if (aggregate.pauses.isNotEmpty()) insertPauses(aggregate.pauses)
-        if (aggregate.values.isNotEmpty()) insertValues(aggregate.values)
+        if (aggregate.values.isNotEmpty()) insertValuesUnchecked(aggregate.values)
+    }
+
+    @Transaction
+    open fun upsertValue(value: ActivityExecutionFieldValueEntity) {
+        val execution =
+            requireNotNull(getById(value.activityExecutionId)) {
+                "Unknown execution: ${value.activityExecutionId}"
+            }
+        requireValidValue(execution.snapshotId, value)
+        upsertValueUnchecked(value)
     }
 
     @Transaction
@@ -157,5 +197,28 @@ internal abstract class ActivityExecutionDao {
                 pauses,
             )
         check(markCompleted(id, atMs, duration.toMillis(), completionReason?.name) == 1)
+    }
+
+    private fun requireValidValue(
+        snapshotId: String,
+        value: ActivityExecutionFieldValueEntity,
+    ) {
+        val fieldType =
+            requireNotNull(getSnapshotFieldType(snapshotId, value.snapshotFieldId)) {
+                "Execution value field must belong to its execution snapshot"
+            }
+        when {
+            value.numberScaled != null && value.categoryOptionId == null && value.textValue == null ->
+                require(fieldType == "NUMBER") { "Number value requires a NUMBER snapshot field" }
+            value.numberScaled == null && value.categoryOptionId != null && value.textValue == null -> {
+                require(fieldType == "CATEGORY") { "Category value requires a CATEGORY snapshot field" }
+                require(categoryOptionBelongsToField(value.snapshotFieldId, value.categoryOptionId)) {
+                    "Category option must belong to the value snapshot field"
+                }
+            }
+            value.numberScaled == null && value.categoryOptionId == null && value.textValue != null ->
+                require(fieldType == "TEXT") { "Text value requires a TEXT snapshot field" }
+            else -> throw IllegalArgumentException("Execution field value must contain exactly one typed value")
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.domain
 
+import org.junit.jupiter.api.Assertions.assertDoesNotThrow
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -57,7 +58,7 @@ class ActivityExecutionTest {
             factory.createManualTimed(snapshot(), now, now.minusSeconds(1), now, zone)
         }
         assertThrows(IllegalArgumentException::class.java) {
-            factory.createManualImmediate(
+            factory.createManualNoLiveHistory(
                 snapshot(mode = TimeTrackingMode.NO_LIVE_TRACKING),
                 now.plusSeconds(1),
                 now,
@@ -83,18 +84,84 @@ class ActivityExecutionTest {
     }
 
     @Test
-    fun `manual no-live entry has neither start nor duration`() {
-        val execution =
-            factory.createManualImmediate(
-                snapshot(mode = TimeTrackingMode.NO_LIVE_TRACKING),
+    fun `quick and historical no-live completion retain distinct reason and timestamps`() {
+        val noLive = snapshot(mode = TimeTrackingMode.NO_LIVE_TRACKING)
+        val quick = factory.completeNoLiveNow(noLive, now, zone)
+        val historical =
+            factory.createManualNoLiveHistory(
+                noLive,
                 now.minusSeconds(30),
                 now,
                 zone,
             )
 
-        assertNull(execution.startedAt)
-        assertNull(execution.activeDuration)
-        assertEquals(ActivityExecutionStatus.COMPLETED, execution.status)
+        assertNull(quick.startedAt)
+        assertNull(quick.activeDuration)
+        assertNull(quick.completionReason)
+        assertEquals(now, quick.completedAt)
+        assertEquals(now, quick.createdAt)
+        assertEquals(ActivityCompletionReason.MANUAL_HISTORY_ENTRY, historical.completionReason)
+        assertEquals(now.minusSeconds(30), historical.completedAt)
+        assertEquals(now, historical.createdAt)
+    }
+
+    @Test
+    fun `snapshot mode and execution state combinations are enforced`() {
+        val stopwatch = snapshot(TimeTrackingMode.STOPWATCH)
+        val timer = snapshot(TimeTrackingMode.TIMER)
+        val noLive = snapshot(TimeTrackingMode.NO_LIVE_TRACKING)
+        val runningStopwatch = factory.startTimed(stopwatch, now, now, zone)
+        val runningTimer = factory.startTimed(timer, now, now, zone)
+        val completedTimed =
+            factory.createManualTimed(stopwatch, now.minusSeconds(2), now.minusSeconds(1), now, zone)
+        val completedNoLive = factory.completeNoLiveNow(noLive, now, zone)
+        val paused =
+            ActivityExecutionTransitions.pause(
+                runningStopwatch,
+                ActivityExecutionPauseId("mode-pause"),
+                now,
+            )
+
+        assertDoesNotThrow { ActivityExecutionValidator.requireValid(runningStopwatch, stopwatch) }
+        assertDoesNotThrow { ActivityExecutionValidator.requireValid(runningTimer, timer) }
+        assertDoesNotThrow { ActivityExecutionValidator.requireValid(completedTimed, stopwatch) }
+        assertDoesNotThrow { ActivityExecutionValidator.requireValid(completedNoLive, noLive) }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValidator.requireValid(runningStopwatch, noLive)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValidator.requireValid(paused, noLive)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValidator.requireValid(completedNoLive, stopwatch)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValidator.requireValid(completedNoLive, timer)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValidator.requireValid(completedTimed, noLive)
+        }
+    }
+
+    @Test
+    fun `timeline calculation and creation use epoch millisecond precision`() {
+        val start = Instant.parse("2026-08-15T12:00:00.000999999Z")
+        val pauseStart = Instant.parse("2026-08-15T12:00:00.001000001Z")
+        val pauseEnd = Instant.parse("2026-08-15T12:00:00.001999999Z")
+        val completion = Instant.parse("2026-08-15T12:00:00.002000001Z")
+        val duration =
+            ActivityExecutionDurationCalculator.calculate(
+                start,
+                completion,
+                listOf(ActivityExecutionPause(ActivityExecutionPauseId("precision"), pauseStart, pauseEnd)),
+            )
+
+        val manual = factory.createManualTimed(snapshot(), start, completion, completion, zone)
+
+        assertEquals(Duration.ofMillis(2), duration)
+        assertEquals(Instant.ofEpochMilli(start.toEpochMilli()), manual.startedAt)
+        assertEquals(Instant.ofEpochMilli(completion.toEpochMilli()), manual.completedAt)
+        assertEquals(Duration.ofMillis(2), manual.activeDuration)
     }
 
     @Test

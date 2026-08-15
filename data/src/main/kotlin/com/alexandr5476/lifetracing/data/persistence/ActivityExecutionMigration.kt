@@ -97,26 +97,26 @@ internal object ActivityExecutionSchemaV4 {
             """.trimIndent(),
             """
             CREATE TABLE IF NOT EXISTS `activity_execution_pauses` (
-                `id` TEXT NOT NULL, `execution_id` TEXT NOT NULL, `started_at_ms` INTEGER NOT NULL,
+                `id` TEXT NOT NULL, `activity_execution_id` TEXT NOT NULL, `started_at_ms` INTEGER NOT NULL,
                 `ended_at_ms` INTEGER, PRIMARY KEY(`id`),
-                FOREIGN KEY(`execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                FOREIGN KEY(`activity_execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
                 CHECK (`ended_at_ms` IS NULL OR `ended_at_ms` >= `started_at_ms`)
             )
             """.trimIndent(),
             """
             CREATE INDEX IF NOT EXISTS `activity_execution_pauses_owner_started`
-            ON `activity_execution_pauses` (`execution_id`, `started_at_ms`)
+            ON `activity_execution_pauses` (`activity_execution_id`, `started_at_ms`)
             """.trimIndent(),
             """
             CREATE TABLE IF NOT EXISTS `activity_execution_field_values` (
-                `execution_id` TEXT NOT NULL, `snapshot_field_id` TEXT NOT NULL,
-                `number_value_scaled` INTEGER, `category_option_id` TEXT, `text_value` TEXT,
-                PRIMARY KEY(`execution_id`, `snapshot_field_id`),
-                FOREIGN KEY(`execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                `activity_execution_id` TEXT NOT NULL, `snapshot_field_id` TEXT NOT NULL,
+                `number_scaled` INTEGER, `category_option_id` TEXT, `text_value` TEXT,
+                PRIMARY KEY(`activity_execution_id`, `snapshot_field_id`),
+                FOREIGN KEY(`activity_execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
                 FOREIGN KEY(`snapshot_field_id`) REFERENCES `activity_snapshot_fields`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT,
                 FOREIGN KEY(`category_option_id`) REFERENCES `activity_snapshot_category_options`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT,
                 CHECK (
-                    (`number_value_scaled` IS NOT NULL) + (`category_option_id` IS NOT NULL) + (`text_value` IS NOT NULL) = 1
+                    (`number_scaled` IS NOT NULL) + (`category_option_id` IS NOT NULL) + (`text_value` IS NOT NULL) = 1
                 )
             )
             """.trimIndent(),
@@ -126,7 +126,7 @@ internal object ActivityExecutionSchemaV4 {
             """.trimIndent(),
             """
             CREATE INDEX IF NOT EXISTS `activity_execution_values_number`
-            ON `activity_execution_field_values` (`number_value_scaled`)
+            ON `activity_execution_field_values` (`number_scaled`)
             """.trimIndent(),
             """
             CREATE INDEX IF NOT EXISTS `activity_execution_values_category`

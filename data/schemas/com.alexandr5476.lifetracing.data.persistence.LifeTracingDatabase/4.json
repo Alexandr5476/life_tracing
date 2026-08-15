@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 4,
-    "identityHash": "51b51adbe1842848eb32ee686225263c",
+    "identityHash": "66060d73aec9446bb19625099965d2f4",
     "entities": [
       {
         "tableName": "folders",
@@ -1308,7 +1308,7 @@
       },
       {
         "tableName": "activity_execution_pauses",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `execution_id` TEXT NOT NULL, `started_at_ms` INTEGER NOT NULL, `ended_at_ms` INTEGER, PRIMARY KEY(`id`), FOREIGN KEY(`execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `activity_execution_id` TEXT NOT NULL, `started_at_ms` INTEGER NOT NULL, `ended_at_ms` INTEGER, PRIMARY KEY(`id`), FOREIGN KEY(`activity_execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -1317,8 +1317,8 @@
             "notNull": true
           },
           {
-            "fieldPath": "executionId",
-            "columnName": "execution_id",
+            "fieldPath": "activityExecutionId",
+            "columnName": "activity_execution_id",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -1345,11 +1345,11 @@
             "name": "activity_execution_pauses_owner_started",
             "unique": false,
             "columnNames": [
-              "execution_id",
+              "activity_execution_id",
               "started_at_ms"
             ],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `activity_execution_pauses_owner_started` ON `${TABLE_NAME}` (`execution_id`, `started_at_ms`)"
+            "createSql": "CREATE INDEX IF NOT EXISTS `activity_execution_pauses_owner_started` ON `${TABLE_NAME}` (`activity_execution_id`, `started_at_ms`)"
           }
         ],
         "foreignKeys": [
@@ -1358,7 +1358,7 @@
             "onDelete": "CASCADE",
             "onUpdate": "NO ACTION",
             "columns": [
-              "execution_id"
+              "activity_execution_id"
             ],
             "referencedColumns": [
               "id"
@@ -1368,11 +1368,11 @@
       },
       {
         "tableName": "activity_execution_field_values",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`execution_id` TEXT NOT NULL, `snapshot_field_id` TEXT NOT NULL, `number_value_scaled` INTEGER, `category_option_id` TEXT, `text_value` TEXT, PRIMARY KEY(`execution_id`, `snapshot_field_id`), FOREIGN KEY(`execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`snapshot_field_id`) REFERENCES `activity_snapshot_fields`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`category_option_id`) REFERENCES `activity_snapshot_category_options`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`activity_execution_id` TEXT NOT NULL, `snapshot_field_id` TEXT NOT NULL, `number_scaled` INTEGER, `category_option_id` TEXT, `text_value` TEXT, PRIMARY KEY(`activity_execution_id`, `snapshot_field_id`), FOREIGN KEY(`activity_execution_id`) REFERENCES `activity_executions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`snapshot_field_id`) REFERENCES `activity_snapshot_fields`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`category_option_id`) REFERENCES `activity_snapshot_category_options`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
         "fields": [
           {
-            "fieldPath": "executionId",
-            "columnName": "execution_id",
+            "fieldPath": "activityExecutionId",
+            "columnName": "activity_execution_id",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -1383,8 +1383,8 @@
             "notNull": true
           },
           {
-            "fieldPath": "numberValueScaled",
-            "columnName": "number_value_scaled",
+            "fieldPath": "numberScaled",
+            "columnName": "number_scaled",
             "affinity": "INTEGER"
           },
           {
@@ -1401,7 +1401,7 @@
         "primaryKey": {
           "autoGenerate": false,
           "columnNames": [
-            "execution_id",
+            "activity_execution_id",
             "snapshot_field_id"
           ]
         },
@@ -1419,10 +1419,10 @@
             "name": "activity_execution_values_number",
             "unique": false,
             "columnNames": [
-              "number_value_scaled"
+              "number_scaled"
             ],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `activity_execution_values_number` ON `${TABLE_NAME}` (`number_value_scaled`)"
+            "createSql": "CREATE INDEX IF NOT EXISTS `activity_execution_values_number` ON `${TABLE_NAME}` (`number_scaled`)"
           },
           {
             "name": "activity_execution_values_category",
@@ -1440,7 +1440,7 @@
             "onDelete": "CASCADE",
             "onUpdate": "NO ACTION",
             "columns": [
-              "execution_id"
+              "activity_execution_id"
             ],
             "referencedColumns": [
               "id"
@@ -1473,7 +1473,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '51b51adbe1842848eb32ee686225263c')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '66060d73aec9446bb19625099965d2f4')"
     ]
   }
 }

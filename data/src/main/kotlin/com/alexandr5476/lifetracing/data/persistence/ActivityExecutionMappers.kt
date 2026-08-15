@@ -52,7 +52,7 @@ internal fun ActivityExecution.toEntityAggregate(): ActivityExecutionAggregateEn
             pauses.map { pause ->
                 ActivityExecutionPauseEntity(
                     id = pause.id.value,
-                    executionId = id.value,
+                    activityExecutionId = id.value,
                     startedAtMs = pause.startedAt.toEpochMilli(),
                     endedAtMs = pause.endedAt?.toEpochMilli(),
                 )
@@ -101,7 +101,7 @@ private fun ActivityExecutionFieldValue.toEntity(executionId: ActivityExecutionI
 
 private fun ActivityExecutionFieldValueEntity.toDomain(): ActivityExecutionFieldValue =
     when {
-        numberValueScaled != null -> NumberExecutionValue(ActivitySnapshotFieldId(snapshotFieldId), numberValueScaled)
+        numberScaled != null -> NumberExecutionValue(ActivitySnapshotFieldId(snapshotFieldId), numberScaled)
         categoryOptionId != null ->
             CategoryExecutionValue(
                 ActivitySnapshotFieldId(snapshotFieldId),

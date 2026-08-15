@@ -147,7 +147,7 @@ class ActivityExecutionDatabaseTest {
         assertThrows(SQLiteConstraintException::class.java) {
             sql("DELETE FROM statistics_series WHERE id = 'series'")
         }
-        assertThrows(SQLiteConstraintException::class.java) {
+        assertThrows(IllegalArgumentException::class.java) {
             executions.upsertValue(ActivityExecutionFieldValueEntity("execution", "category", null, "missing", null))
         }
 
@@ -158,7 +158,7 @@ class ActivityExecutionDatabaseTest {
 
     @Test
     fun aggregateFailureRollsBackParentAndOccurrenceIsUniqueOnlyWhenPresent() {
-        assertThrows(SQLiteConstraintException::class.java) {
+        assertThrows(IllegalArgumentException::class.java) {
             executions.insertAggregate(
                 ActivityExecutionAggregateEntity(
                     completed("failed"),
@@ -193,6 +193,81 @@ class ActivityExecutionDatabaseTest {
     }
 
     @Test
+    fun valueWritesValidateSnapshotFieldTypeAndCategoryOwnershipAtomically() {
+        insertOwnershipSnapshot(
+            id = "owner-a",
+            fields =
+                listOf(
+                    ownershipField("number-a", "owner-a", "NUMBER", 0),
+                    ownershipField("category-a", "owner-a", "CATEGORY", 1),
+                    ownershipField("category-other-a", "owner-a", "CATEGORY", 2),
+                ),
+            options =
+                listOf(
+                    ActivitySnapshotCategoryOptionEntity("option-a", "category-a", null, 0, "A", null),
+                    ActivitySnapshotCategoryOptionEntity(
+                        "option-other-a",
+                        "category-other-a",
+                        null,
+                        0,
+                        "Other A",
+                        null,
+                    ),
+                ),
+        )
+        insertOwnershipSnapshot(
+            id = "owner-b",
+            fields = listOf(ownershipField("number-b", "owner-b", "NUMBER", 0)),
+        )
+        executions.insertExecution(completed("owner-execution", snapshotId = "owner-a"))
+
+        executions.upsertValue(
+            ActivityExecutionFieldValueEntity("owner-execution", "category-a", null, "option-a", null),
+        )
+        assertEquals("option-a", executions.getValues("owner-execution").single().categoryOptionId)
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.upsertValue(
+                ActivityExecutionFieldValueEntity("owner-execution", "number-b", 1, null, null),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.upsertValue(
+                ActivityExecutionFieldValueEntity("owner-execution", "number-a", null, null, "wrong type"),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.upsertValue(
+                ActivityExecutionFieldValueEntity(
+                    "owner-execution",
+                    "category-a",
+                    null,
+                    "option-other-a",
+                    null,
+                ),
+            )
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(
+                    completed("invalid-owner-aggregate", snapshotId = "owner-a"),
+                    values =
+                        listOf(
+                            ActivityExecutionFieldValueEntity(
+                                "invalid-owner-aggregate",
+                                "number-b",
+                                1,
+                                null,
+                                null,
+                            ),
+                        ),
+                ),
+            )
+        }
+        assertNull(executions.getById("invalid-owner-aggregate"))
+    }
+
+    @Test
     fun pauseResumeCompleteValueUpsertAndSoftDeleteAreAtomicFocusedOperations() {
         executions.insertExecution(running())
 
@@ -207,7 +282,7 @@ class ActivityExecutionDatabaseTest {
 
         executions.upsertValue(ActivityExecutionFieldValueEntity("execution", "number", 1, null, null))
         executions.upsertValue(ActivityExecutionFieldValueEntity("execution", "number", 0, null, null))
-        assertEquals(0L, executions.getValues("execution").single().numberValueScaled)
+        assertEquals(0L, executions.getValues("execution").single().numberScaled)
 
         assertEquals(1, executions.softDelete("execution", 110))
         assertEquals(110L, executions.getById("execution")?.deletedAtMs)
@@ -224,6 +299,20 @@ class ActivityExecutionDatabaseTest {
         assertTrue(schema.hasTypedValueCheck)
         assertTrue(schema.occurrenceIndexIsUnique)
         assertEquals("sequence_occurrence_id is not null", schema.occurrenceIndexPredicate)
+        assertEquals(
+            listOf("id", "activity_execution_id", "started_at_ms", "ended_at_ms"),
+            schema.pauseColumns,
+        )
+        assertEquals(
+            listOf(
+                "activity_execution_id",
+                "snapshot_field_id",
+                "number_scaled",
+                "category_option_id",
+                "text_value",
+            ),
+            schema.valueColumns,
+        )
     }
 
     private fun completed(
@@ -264,6 +353,42 @@ class ActivityExecutionDatabaseTest {
         type: String,
         position: Int,
     ) = ActivitySnapshotFieldEntity(id, "snapshot", null, position, id, null, type, null, null, null, null, null, false)
+
+    private fun insertOwnershipSnapshot(
+        id: String,
+        fields: List<ActivitySnapshotFieldEntity>,
+        options: List<ActivitySnapshotCategoryOptionEntity> = emptyList(),
+    ) {
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                snapshot = ActivitySnapshotEntity(id, id, null, "STOPWATCH", null, null, null, "series", false, 10),
+                settings = ActivitySnapshotSettingsEntity(id),
+                fields = fields,
+                options = options,
+            ),
+        )
+    }
+
+    private fun ownershipField(
+        id: String,
+        snapshotId: String,
+        type: String,
+        position: Int,
+    ) = ActivitySnapshotFieldEntity(
+        id,
+        snapshotId,
+        null,
+        position,
+        id,
+        null,
+        type,
+        null,
+        null,
+        null,
+        null,
+        null,
+        false,
+    )
 
     private fun sql(statement: String) = database.openHelper.writableDatabase.execSQL(statement)
 

@@ -13,3 +13,9 @@ A non-null StatisticsSeries ID is durable statistical identity. It must not dang
 Archived Template Category options are excluded when a new ActivitySnapshot is created. A Template Category default must therefore be null or reference a currently active option of that same Field at semantic commit time.
 
 Archiving the current default option in one semantic commit must also clear the default or select another active option. Snapshot creation rejects invalid Template input and never restores an archived option by copying it.
+
+## ActivityExecution completion reason at the v4 boundary
+
+`activity_executions.completion_reason` permits only `NULL` and `MANUAL_HISTORY_ENTRY`. `NULL` represents ordinary current completion for timed and no-live Activities; `MANUAL_HISTORY_ENTRY` is reserved for explicitly backdated history creation.
+
+Additional technical or Sequence-related completion reasons require a future frozen specification and schema change. They are not persisted speculatively in v4.

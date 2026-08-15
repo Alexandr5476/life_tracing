@@ -10,21 +10,25 @@ object ActivityExecutionDurationCalculator {
         completedAt: Instant,
         pauses: List<ActivityExecutionPause>,
     ): Duration {
-        require(!completedAt.isBefore(startedAt)) { "Completion must not precede start" }
-        val ordered = pauses.sortedBy { it.startedAt }
-        var previousEnd = startedAt
+        val startedAtMs = startedAt.toEpochMilli()
+        val completedAtMs = completedAt.toEpochMilli()
+        require(completedAtMs >= startedAtMs) { "Completion must not precede start" }
+        val ordered = pauses.sortedBy { it.startedAt.toEpochMilli() }
+        var previousEndMs = startedAtMs
         var pausedMillis = 0L
         ordered.forEach { pause ->
             val endedAt = requireNotNull(pause.endedAt) { "Completed execution cannot contain an open pause" }
-            require(!pause.startedAt.isBefore(startedAt) && !endedAt.isAfter(completedAt)) {
+            val pauseStartedAtMs = pause.startedAt.toEpochMilli()
+            val pauseEndedAtMs = endedAt.toEpochMilli()
+            require(pauseStartedAtMs >= startedAtMs && pauseEndedAtMs <= completedAtMs) {
                 "Pause must be inside the execution interval"
             }
-            require(!endedAt.isBefore(pause.startedAt)) { "Pause end must not precede pause start" }
-            require(!pause.startedAt.isBefore(previousEnd)) { "Pauses must not overlap" }
-            pausedMillis = Math.addExact(pausedMillis, Duration.between(pause.startedAt, endedAt).toMillis())
-            previousEnd = endedAt
+            require(pauseEndedAtMs >= pauseStartedAtMs) { "Pause end must not precede pause start" }
+            require(pauseStartedAtMs >= previousEndMs) { "Pauses must not overlap" }
+            pausedMillis = Math.addExact(pausedMillis, pauseEndedAtMs - pauseStartedAtMs)
+            previousEndMs = pauseEndedAtMs
         }
-        val elapsedMillis = Duration.between(startedAt, completedAt).toMillis()
+        val elapsedMillis = completedAtMs - startedAtMs
         require(pausedMillis <= elapsedMillis) { "Paused duration cannot exceed elapsed duration" }
         return Duration.ofMillis(elapsedMillis - pausedMillis)
     }
@@ -39,12 +43,16 @@ object ActivityExecutionValidator {
         require(execution.context == ActivityExecutionContext.STANDALONE) {
             "Sequence execution behavior is not implemented yet"
         }
-        require(execution.updatedAt >= execution.createdAt) { "Updated time must not precede creation" }
+        require(execution.updatedAt.toEpochMilli() >= execution.createdAt.toEpochMilli()) {
+            "Updated time must not precede creation"
+        }
         execution.originalUtcOffsetMinutes?.let { offset ->
             require(offset in -MAX_UTC_OFFSET_MINUTES..MAX_UTC_OFFSET_MINUTES) {
                 "UTC offset must be within the valid ZoneOffset range"
             }
         }
+        requireValidState(execution)
+        requireValidMode(execution, snapshot.timeTrackingMode)
         val primaryInstant = execution.startedAt ?: requireNotNull(execution.completedAt)
         val zonedPrimaryInstant = primaryInstant.atZone(execution.originalZoneId)
         require(execution.primaryLocalDate == zonedPrimaryInstant.toLocalDate()) {
@@ -55,7 +63,6 @@ object ActivityExecutionValidator {
                 "Stored UTC offset must match the original event timezone"
             }
         }
-        requireValidState(execution)
         requireValidValues(execution.values, snapshot)
     }
 
@@ -97,6 +104,36 @@ object ActivityExecutionValidator {
                     ) { "Stored active duration must match elapsed time minus pauses" }
                 }
             }
+        }
+    }
+
+    private fun requireValidMode(
+        execution: ActivityExecution,
+        mode: TimeTrackingMode,
+    ) {
+        when (mode) {
+            TimeTrackingMode.STOPWATCH,
+            TimeTrackingMode.TIMER,
+            -> {
+                require(execution.startedAt != null) { "Timed snapshot execution requires a start" }
+                if (execution.status == ActivityExecutionStatus.COMPLETED) {
+                    require(execution.completedAt != null && execution.activeDuration != null) {
+                        "Completed timed snapshot execution requires completion and active duration"
+                    }
+                } else {
+                    require(execution.completedAt == null && execution.activeDuration == null) {
+                        "Active timed snapshot execution cannot have completion data"
+                    }
+                }
+            }
+            TimeTrackingMode.NO_LIVE_TRACKING ->
+                require(
+                    execution.status == ActivityExecutionStatus.COMPLETED &&
+                        execution.startedAt == null &&
+                        execution.completedAt != null &&
+                        execution.activeDuration == null &&
+                        execution.pauses.isEmpty(),
+                ) { "NO_LIVE_TRACKING requires an immediate completed execution without duration or pauses" }
         }
     }
 
@@ -145,12 +182,14 @@ class ActivityExecutionFactory(
         require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
             "NO_LIVE_TRACKING snapshots cannot start a timed execution"
         }
-        require(!startedAt.isAfter(createdAt)) { "Start must not be in the future" }
-        return base(snapshot, startedAt, createdAt, zoneId)
+        val persistedStart = startedAt.toPersistenceInstant()
+        val persistedCreation = createdAt.toPersistenceInstant()
+        require(persistedStart <= persistedCreation) { "Start must not be in the future" }
+        return base(snapshot, persistedStart, persistedCreation, zoneId)
             .copy(
                 status = ActivityExecutionStatus.RUNNING,
-                startedAt = startedAt,
-                primaryLocalDate = startedAt.atZone(zoneId).toLocalDate(),
+                startedAt = persistedStart,
+                primaryLocalDate = persistedStart.atZone(zoneId).toLocalDate(),
             ).validatedAgainst(snapshot)
     }
 
@@ -164,21 +203,46 @@ class ActivityExecutionFactory(
         require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
             "NO_LIVE_TRACKING snapshots require an immediate manual entry"
         }
-        require(!completedAt.isBefore(startedAt) && !completedAt.isAfter(createdAt)) {
+        val persistedStart = startedAt.toPersistenceInstant()
+        val persistedCompletion = completedAt.toPersistenceInstant()
+        val persistedCreation = createdAt.toPersistenceInstant()
+        require(persistedStart <= persistedCompletion && persistedCompletion <= persistedCreation) {
             "Manual interval must be ordered and not in the future"
         }
-        return base(snapshot, startedAt, createdAt, zoneId)
+        return base(snapshot, persistedStart, persistedCreation, zoneId)
             .copy(
                 status = ActivityExecutionStatus.COMPLETED,
-                startedAt = startedAt,
-                completedAt = completedAt,
-                activeDuration = Duration.between(startedAt, completedAt),
-                primaryLocalDate = startedAt.atZone(zoneId).toLocalDate(),
+                startedAt = persistedStart,
+                completedAt = persistedCompletion,
+                activeDuration =
+                    ActivityExecutionDurationCalculator.calculate(
+                        persistedStart,
+                        persistedCompletion,
+                        emptyList(),
+                    ),
+                primaryLocalDate = persistedStart.atZone(zoneId).toLocalDate(),
                 completionReason = ActivityCompletionReason.MANUAL_HISTORY_ENTRY,
             ).validatedAgainst(snapshot)
     }
 
-    fun createManualImmediate(
+    fun completeNoLiveNow(
+        snapshot: ActivityConfigSnapshot,
+        at: Instant,
+        zoneId: ZoneId,
+    ): ActivityExecution {
+        require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+            "Quick completion requires NO_LIVE_TRACKING"
+        }
+        val persistedAt = at.toPersistenceInstant()
+        return base(snapshot, persistedAt, persistedAt, zoneId)
+            .copy(
+                status = ActivityExecutionStatus.COMPLETED,
+                completedAt = persistedAt,
+                primaryLocalDate = persistedAt.atZone(zoneId).toLocalDate(),
+            ).validatedAgainst(snapshot)
+    }
+
+    fun createManualNoLiveHistory(
         snapshot: ActivityConfigSnapshot,
         completedAt: Instant,
         createdAt: Instant,
@@ -187,12 +251,14 @@ class ActivityExecutionFactory(
         require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
             "Immediate manual entry requires NO_LIVE_TRACKING"
         }
-        require(!completedAt.isAfter(createdAt)) { "Manual completion must not be in the future" }
-        return base(snapshot, completedAt, createdAt, zoneId)
+        val persistedCompletion = completedAt.toPersistenceInstant()
+        val persistedCreation = createdAt.toPersistenceInstant()
+        require(persistedCompletion <= persistedCreation) { "Manual completion must not be in the future" }
+        return base(snapshot, persistedCompletion, persistedCreation, zoneId)
             .copy(
                 status = ActivityExecutionStatus.COMPLETED,
-                completedAt = completedAt,
-                primaryLocalDate = completedAt.atZone(zoneId).toLocalDate(),
+                completedAt = persistedCompletion,
+                primaryLocalDate = persistedCompletion.atZone(zoneId).toLocalDate(),
                 completionReason = ActivityCompletionReason.MANUAL_HISTORY_ENTRY,
             ).validatedAgainst(snapshot)
     }
@@ -204,6 +270,8 @@ class ActivityExecutionFactory(
         zoneId: ZoneId,
     ): ActivityExecution {
         ActivityConfigSnapshotValidator.requireValid(snapshot)
+        val persistedEvent = eventAt.toPersistenceInstant()
+        val persistedCreation = createdAt.toPersistenceInstant()
         return ActivityExecution(
             id = nextExecutionId(),
             snapshotId = snapshot.id,
@@ -214,12 +282,12 @@ class ActivityExecutionFactory(
             completedAt = null,
             activeDuration = null,
             originalZoneId = zoneId,
-            originalUtcOffsetMinutes = eventAt.atZone(zoneId).offset.totalSeconds / SECONDS_PER_MINUTE,
-            primaryLocalDate = eventAt.atZone(zoneId).toLocalDate(),
+            originalUtcOffsetMinutes = persistedEvent.atZone(zoneId).offset.totalSeconds / SECONDS_PER_MINUTE,
+            primaryLocalDate = persistedEvent.atZone(zoneId).toLocalDate(),
             completionReason = null,
             deletedAt = null,
-            createdAt = createdAt,
-            updatedAt = createdAt,
+            createdAt = persistedCreation,
+            updatedAt = persistedCreation,
             values = snapshot.materializedDefaults(),
         )
     }
@@ -231,14 +299,19 @@ object ActivityExecutionTransitions {
         pauseId: ActivityExecutionPauseId,
         at: Instant,
     ): ActivityExecution {
+        val persistedAt = at.toPersistenceInstant()
         require(execution.status == ActivityExecutionStatus.RUNNING) { "Only a running execution can pause" }
-        require(!at.isBefore(requireNotNull(execution.startedAt))) { "Pause cannot precede execution start" }
-        require(!at.isBefore(execution.updatedAt)) { "Pause cannot precede the previous update" }
+        require(persistedAt.toEpochMilli() >= requireNotNull(execution.startedAt).toEpochMilli()) {
+            "Pause cannot precede execution start"
+        }
+        require(persistedAt.toEpochMilli() >= execution.updatedAt.toEpochMilli()) {
+            "Pause cannot precede the previous update"
+        }
         require(execution.pauses.none { it.endedAt == null }) { "Execution already has an open pause" }
         return execution.copy(
             status = ActivityExecutionStatus.PAUSED,
-            updatedAt = at,
-            pauses = execution.pauses + ActivityExecutionPause(pauseId, at, null),
+            updatedAt = persistedAt,
+            pauses = execution.pauses + ActivityExecutionPause(pauseId, persistedAt, null),
         )
     }
 
@@ -246,14 +319,17 @@ object ActivityExecutionTransitions {
         execution: ActivityExecution,
         at: Instant,
     ): ActivityExecution {
+        val persistedAt = at.toPersistenceInstant()
         require(execution.status == ActivityExecutionStatus.PAUSED) { "Only a paused execution can resume" }
         val openPause = execution.pauses.single { it.endedAt == null }
-        require(!at.isBefore(openPause.startedAt)) { "Resume cannot precede pause" }
-        require(!at.isBefore(execution.updatedAt)) { "Resume cannot precede the previous update" }
+        require(persistedAt.toEpochMilli() >= openPause.startedAt.toEpochMilli()) { "Resume cannot precede pause" }
+        require(persistedAt.toEpochMilli() >= execution.updatedAt.toEpochMilli()) {
+            "Resume cannot precede the previous update"
+        }
         return execution.copy(
             status = ActivityExecutionStatus.RUNNING,
-            updatedAt = at,
-            pauses = execution.pauses.map { if (it.id == openPause.id) it.copy(endedAt = at) else it },
+            updatedAt = persistedAt,
+            pauses = execution.pauses.map { if (it.id == openPause.id) it.copy(endedAt = persistedAt) else it },
         )
     }
 
@@ -262,25 +338,30 @@ object ActivityExecutionTransitions {
         at: Instant,
         reason: ActivityCompletionReason? = null,
     ): ActivityExecution {
+        val persistedAt = at.toPersistenceInstant()
         require(execution.status != ActivityExecutionStatus.COMPLETED) { "Execution is already completed" }
         val startedAt = requireNotNull(execution.startedAt)
-        require(!at.isBefore(startedAt)) { "Completion cannot precede start" }
-        require(!at.isBefore(execution.updatedAt)) { "Completion cannot precede the previous update" }
+        require(persistedAt.toEpochMilli() >= startedAt.toEpochMilli()) { "Completion cannot precede start" }
+        require(persistedAt.toEpochMilli() >= execution.updatedAt.toEpochMilli()) {
+            "Completion cannot precede the previous update"
+        }
         val pauses =
             execution.pauses.map { pause ->
                 if (pause.endedAt == null) {
-                    require(!at.isBefore(pause.startedAt)) { "Completion cannot precede pause" }
-                    pause.copy(endedAt = at)
+                    require(persistedAt.toEpochMilli() >= pause.startedAt.toEpochMilli()) {
+                        "Completion cannot precede pause"
+                    }
+                    pause.copy(endedAt = persistedAt)
                 } else {
                     pause
                 }
             }
         return execution.copy(
             status = ActivityExecutionStatus.COMPLETED,
-            completedAt = at,
-            activeDuration = ActivityExecutionDurationCalculator.calculate(startedAt, at, pauses),
+            completedAt = persistedAt,
+            activeDuration = ActivityExecutionDurationCalculator.calculate(startedAt, persistedAt, pauses),
             completionReason = reason,
-            updatedAt = at,
+            updatedAt = persistedAt,
             pauses = pauses,
         )
     }
@@ -300,3 +381,5 @@ private fun ActivityExecution.validatedAgainst(snapshot: ActivityConfigSnapshot)
 
 private const val MAX_UTC_OFFSET_MINUTES = 1_080
 private const val SECONDS_PER_MINUTE = 60
+
+private fun Instant.toPersistenceInstant(): Instant = Instant.ofEpochMilli(toEpochMilli())

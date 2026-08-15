@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.data.persistence
 import com.alexandr5476.lifetracing.domain.ActivityCompletionReason
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
+import com.alexandr5476.lifetracing.domain.ActivityExecutionDurationCalculator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
@@ -62,5 +63,49 @@ class ActivityExecutionMappersTest {
             )
 
         assertEquals(execution, execution.toEntityAggregate().toDomain())
+    }
+
+    @Test
+    fun `mapper round trip uses persisted millisecond precision`() {
+        val start = Instant.parse("2026-08-15T10:00:00.000999999Z")
+        val completion = Instant.parse("2026-08-15T10:00:00.002000001Z")
+        val pauses =
+            listOf(
+                ActivityExecutionPause(
+                    ActivityExecutionPauseId("pause"),
+                    Instant.parse("2026-08-15T10:00:00.001000001Z"),
+                    Instant.parse("2026-08-15T10:00:00.001999999Z"),
+                ),
+            )
+        val execution =
+            ActivityExecution(
+                id = ActivityExecutionId("precision"),
+                snapshotId = ActivitySnapshotId("snapshot"),
+                context = ActivityExecutionContext.STANDALONE,
+                statisticsSeriesId = StatisticsSeriesId("series"),
+                status = ActivityExecutionStatus.COMPLETED,
+                startedAt = start,
+                completedAt = completion,
+                activeDuration = ActivityExecutionDurationCalculator.calculate(start, completion, pauses),
+                originalZoneId = ZoneId.of("UTC"),
+                originalUtcOffsetMinutes = 0,
+                primaryLocalDate = LocalDate.parse("2026-08-15"),
+                completionReason = null,
+                deletedAt = null,
+                createdAt = start,
+                updatedAt = completion,
+                pauses = pauses,
+                values = emptyList(),
+            )
+
+        val entity = execution.toEntityAggregate()
+        val loaded = entity.toDomain()
+
+        assertEquals(2L, entity.execution.activeDurationMs)
+        assertEquals(Duration.ofMillis(2), loaded.activeDuration)
+        assertEquals(Instant.ofEpochMilli(start.toEpochMilli()), loaded.startedAt)
+        assertEquals(Instant.ofEpochMilli(completion.toEpochMilli()), loaded.completedAt)
+        assertEquals(Instant.ofEpochMilli(start.toEpochMilli() + 1), loaded.pauses.single().startedAt)
+        assertEquals(Instant.ofEpochMilli(start.toEpochMilli() + 1), loaded.pauses.single().endedAt)
     }
 }

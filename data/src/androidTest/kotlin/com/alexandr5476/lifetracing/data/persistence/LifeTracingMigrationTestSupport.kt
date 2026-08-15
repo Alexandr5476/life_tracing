@@ -62,7 +62,7 @@ internal fun SupportSQLiteDatabase.readActivityExecutionManualSchema(): Activity
         hasStatusCheck =
             executionSql.contains("status in ('running', 'paused')") && executionSql.contains("status = 'completed'"),
         hasTypedValueCheck =
-            valueSql.contains("number_value_scaled is not null") &&
+            valueSql.contains("number_scaled is not null") &&
                 valueSql.contains("category_option_id is not null") &&
                 valueSql.contains("text_value is not null"),
         occurrenceIndexIsUnique =
