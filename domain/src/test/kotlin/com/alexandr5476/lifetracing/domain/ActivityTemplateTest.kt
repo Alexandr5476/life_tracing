@@ -62,7 +62,65 @@ class ActivityTemplateTest {
                 ActivityTemplateEdit.TAGS,
                 ActivityTemplateEdit.USER_STATE,
                 ActivityTemplateEdit.FIELD_DISPLAY_NAME,
+                ActivityTemplateEdit.CATEGORY_OPTION_DISPLAY_NAME,
             ),
+        )
+    }
+
+    @Test
+    fun `same field identity allows presentation default precision position and archive changes`() {
+        val original = numberField()
+        val compatibleChanges =
+            listOf(
+                original.copy(name = "Renamed"),
+                original.copy(defaultNumberScaled = 99_999),
+                original.copy(displayPrecision = 1),
+                original.copy(position = 4),
+                original.copy(deletedAt = now),
+            )
+
+        compatibleChanges.forEach { updated ->
+            assertDoesNotThrow {
+                ActivityTemplateValidator.requireValidField(updated)
+                ActivityTemplateFieldEvolution.requireSameIdentityCompatible(original, updated)
+            }
+        }
+    }
+
+    @Test
+    fun `same field identity rejects type and unit changes`() {
+        val original = numberField()
+
+        listOf(
+            original.copy(
+                type = CustomFieldType.TEXT,
+                unit = null,
+                displayPrecision = null,
+                defaultNumberScaled = null,
+            ),
+            original.copy(unit = "minutes"),
+        ).forEach { updated ->
+            assertThrows(IllegalArgumentException::class.java) {
+                ActivityTemplateFieldEvolution.requireSameIdentityCompatible(original, updated)
+            }
+        }
+    }
+
+    @Test
+    fun `new field identity is treated as replacement`() {
+        val original = numberField()
+        val replacement = textField().copy(id = ActivityTemplateFieldId("replacement"))
+
+        assertDoesNotThrow {
+            ActivityTemplateFieldEvolution.requireSameIdentityCompatible(original, replacement)
+        }
+    }
+
+    @Test
+    fun `category option label rename does not increment template revision`() {
+        assertEquals(
+            7,
+            ActivityTemplateRevisionPolicy.after(7, ActivityTemplateEdit.CATEGORY_OPTION_DISPLAY_NAME),
         )
     }
 

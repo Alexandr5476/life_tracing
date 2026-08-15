@@ -16,6 +16,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ActivityTemplateMigrationTest {
     private val databaseName = "activity-template-migration"
+    private val historicalDatabaseName = "activity-template-historical-v2"
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
     @get:Rule
@@ -24,11 +25,13 @@ class ActivityTemplateMigrationTest {
     @Before
     fun removeOldDatabase() {
         context.deleteDatabase(databaseName)
+        context.deleteDatabase(historicalDatabaseName)
     }
 
     @After
     fun cleanUp() {
         context.deleteDatabase(databaseName)
+        context.deleteDatabase(historicalDatabaseName)
     }
 
     @Test
@@ -53,13 +56,7 @@ class ActivityTemplateMigrationTest {
                 assertTrue(cursor.moveToFirst())
                 assertEquals("Series", cursor.getString(0))
             }
-            migrated
-                .query(
-                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_activity_template_one_main_field'",
-                ).use { cursor ->
-                    assertTrue(cursor.moveToFirst())
-                    assertTrue(cursor.getString(0).contains("WHERE `is_main_value` = 1 AND `deleted_at_ms` IS NULL"))
-                }
+            assertEquals(EXPECTED_ACTIVITY_TEMPLATE_MANUAL_SCHEMA, migrated.readActivityTemplateManualSchema())
 
             migrated.execSQL(
                 """
@@ -80,5 +77,17 @@ class ActivityTemplateMigrationTest {
                     assertEquals(1, cursor.getInt(1))
                 }
         }
+    }
+
+    @Test
+    fun historicalVersion2SourceIncludesLifeTracingManagedSchema() {
+        LifeTracingMigrationTestDatabaseFactory
+            .createVersion2(helper, historicalDatabaseName)
+            .use { historical ->
+                assertEquals(
+                    EXPECTED_ACTIVITY_TEMPLATE_MANUAL_SCHEMA,
+                    historical.readActivityTemplateManualSchema(),
+                )
+            }
     }
 }

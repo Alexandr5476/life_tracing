@@ -157,6 +157,17 @@ object ActivityTemplateValidator {
     }
 }
 
+object ActivityTemplateFieldEvolution {
+    fun requireSameIdentityCompatible(
+        previous: ActivityTemplateField,
+        updated: ActivityTemplateField,
+    ) {
+        if (previous.id != updated.id) return
+        require(previous.type == updated.type) { "Field type is immutable for the same field identity" }
+        require(previous.unit == updated.unit) { "Field unit is immutable for the same field identity" }
+    }
+}
+
 enum class ActivityTemplateEdit(
     val isSemantic: Boolean,
 ) {
@@ -166,6 +177,7 @@ enum class ActivityTemplateEdit(
     SETTINGS(true),
     FIELD_SCHEMA(true),
     FIELD_DISPLAY_NAME(false),
+    CATEGORY_OPTION_DISPLAY_NAME(false),
     FOLDER(false),
     TAGS(false),
     USER_STATE(false),

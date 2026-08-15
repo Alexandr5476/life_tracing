@@ -201,15 +201,10 @@ class ActivityTemplateDatabaseTest {
         query("SELECT typeof(default_number_scaled) FROM activity_template_fields") { cursor ->
             assertEquals("integer", cursor.getString(0))
         }
-        query(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' " +
-                "AND name = 'idx_activity_template_one_main_field'",
-        ) { cursor ->
-            assertTrue(cursor.getString(0).contains("WHERE `is_main_value` = 1 AND `deleted_at_ms` IS NULL"))
-        }
-        query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_templates'") { cursor ->
-            assertTrue(cursor.getString(0).contains("CHECK"))
-        }
+        assertEquals(
+            EXPECTED_ACTIVITY_TEMPLATE_MANUAL_SCHEMA,
+            database.openHelper.readableDatabase.readActivityTemplateManualSchema(),
+        )
     }
 
     @Test
