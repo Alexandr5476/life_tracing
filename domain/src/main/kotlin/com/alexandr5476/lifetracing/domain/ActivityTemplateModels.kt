@@ -135,8 +135,8 @@ object ActivityTemplateValidator {
                         field.defaultText == null,
                 ) { "CATEGORY field cannot contain Number or Text metadata" }
                 field.defaultCategoryOptionId?.let { defaultId ->
-                    require(field.categoryOptions.any { it.id == defaultId }) {
-                        "Category default must belong to the same field"
+                    require(field.categoryOptions.any { it.id == defaultId && !it.isArchived }) {
+                        "Category default must belong to an active option of the same field"
                     }
                 }
             }
