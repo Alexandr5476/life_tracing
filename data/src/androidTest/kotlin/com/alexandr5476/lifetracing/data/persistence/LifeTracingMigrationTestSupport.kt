@@ -13,6 +13,16 @@ internal object LifeTracingMigrationTestDatabaseFactory {
         helper: MigrationTestHelper,
         name: String,
     ): SupportSQLiteDatabase = helper.createDatabase(name, 2).also(ActivityTemplateSchemaV2::recreate)
+
+    fun createVersion3(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 3).also { database ->
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+        }
 }
 
 internal data class ActivityTemplateManualSchema(
@@ -34,6 +44,78 @@ internal val EXPECTED_ACTIVITY_TEMPLATE_MANUAL_SCHEMA =
         mainValueIndexPredicate = "is_main_value = 1 and deleted_at_ms is null",
     )
 
+internal data class ActivitySnapshotManualSchema(
+    val hasTimerCheck: Boolean,
+    val hasCountdownCheck: Boolean,
+    val hasTimerZeroBehaviorCheck: Boolean,
+    val mainValueIndexIsUnique: Boolean,
+    val mainValueIndexColumns: List<String>,
+    val mainValueIndexPredicate: String,
+    val snapshotColumns: List<String>,
+    val settingsColumns: List<String>,
+    val fieldColumns: List<String>,
+    val optionColumns: List<String>,
+)
+
+internal val EXPECTED_ACTIVITY_SNAPSHOT_MANUAL_SCHEMA =
+    ActivitySnapshotManualSchema(
+        hasTimerCheck = true,
+        hasCountdownCheck = true,
+        hasTimerZeroBehaviorCheck = true,
+        mainValueIndexIsUnique = true,
+        mainValueIndexColumns = listOf("snapshot_id"),
+        mainValueIndexPredicate = "is_main_value = 1",
+        snapshotColumns =
+            listOf(
+                "id",
+                "name",
+                "short_comment",
+                "time_tracking_mode",
+                "timer_target_ms",
+                "source_template_id",
+                "source_revision",
+                "statistics_series_id",
+                "locally_modified",
+                "created_at_ms",
+            ),
+        settingsColumns =
+            listOf(
+                "snapshot_id",
+                "show_seconds",
+                "start_countdown_ms",
+                "timer_zero_behavior",
+                "timer_end_sound",
+                "timer_end_vibration",
+                "keep_screen_awake",
+                "confirm_manual_finish",
+            ),
+        fieldColumns =
+            listOf(
+                "id",
+                "snapshot_id",
+                "source_field_id",
+                "position",
+                "name_at_creation",
+                "local_name_override",
+                "field_type",
+                "unit",
+                "display_precision",
+                "default_number_scaled",
+                "default_category_option_id",
+                "default_text",
+                "is_main_value",
+            ),
+        optionColumns =
+            listOf(
+                "id",
+                "snapshot_field_id",
+                "source_option_id",
+                "position",
+                "label_at_creation",
+                "local_label_override",
+            ),
+    )
+
 internal fun SupportSQLiteDatabase.readActivityTemplateManualSchema(): ActivityTemplateManualSchema {
     val templateSql = schemaSql("table", "activity_templates")
     val settingsSql = schemaSql("table", "activity_template_settings")
@@ -50,9 +132,35 @@ internal fun SupportSQLiteDatabase.readActivityTemplateManualSchema(): ActivityT
         hasCountdownCheck = settingsSql.contains("check (start_countdown_ms >= 0)"),
         hasTimerZeroBehaviorCheck =
             settingsSql.contains("check (timer_zero_behavior in ('finish', 'overtime'))"),
-        mainValueIndexIsUnique = indexIsUnique("idx_activity_template_one_main_field"),
+        mainValueIndexIsUnique = indexIsUnique("activity_template_fields", "idx_activity_template_one_main_field"),
         mainValueIndexColumns = indexColumns("idx_activity_template_one_main_field"),
         mainValueIndexPredicate = indexSql.substringAfter(" where ", missingDelimiterValue = "").trim(),
+    )
+}
+
+internal fun SupportSQLiteDatabase.readActivitySnapshotManualSchema(): ActivitySnapshotManualSchema {
+    val snapshotSql = schemaSql("table", "activity_snapshots")
+    val settingsSql = schemaSql("table", "activity_snapshot_settings")
+    val indexSql = schemaSql("index", "idx_one_activity_main_snapshot_field")
+    return ActivitySnapshotManualSchema(
+        hasTimerCheck =
+            snapshotSql.contains("check (") &&
+                snapshotSql.contains("time_tracking_mode = 'timer'") &&
+                snapshotSql.contains("timer_target_ms is not null") &&
+                snapshotSql.contains("timer_target_ms > 0") &&
+                snapshotSql.contains("time_tracking_mode in ('stopwatch', 'no_live_tracking')") &&
+                snapshotSql.contains("timer_target_ms is null"),
+        hasCountdownCheck = settingsSql.contains("check (start_countdown_ms >= 0)"),
+        hasTimerZeroBehaviorCheck =
+            settingsSql.contains("check (timer_zero_behavior in ('finish', 'overtime'))"),
+        mainValueIndexIsUnique =
+            indexIsUnique("activity_snapshot_fields", "idx_one_activity_main_snapshot_field"),
+        mainValueIndexColumns = indexColumns("idx_one_activity_main_snapshot_field"),
+        mainValueIndexPredicate = indexSql.substringAfter(" where ", missingDelimiterValue = "").trim(),
+        snapshotColumns = tableColumns("activity_snapshots"),
+        settingsColumns = tableColumns("activity_snapshot_settings"),
+        fieldColumns = tableColumns("activity_snapshot_fields"),
+        optionColumns = tableColumns("activity_snapshot_category_options"),
     )
 }
 
@@ -65,14 +173,25 @@ private fun SupportSQLiteDatabase.schemaSql(
         cursor.getString(0).normalizedSql()
     }
 
-private fun SupportSQLiteDatabase.indexIsUnique(name: String): Boolean =
-    query("PRAGMA index_list(`activity_template_fields`)").use { cursor ->
+private fun SupportSQLiteDatabase.indexIsUnique(
+    table: String,
+    name: String,
+): Boolean =
+    query("PRAGMA index_list(`$table`)").use { cursor ->
         val nameColumn = cursor.getColumnIndexOrThrow("name")
         val uniqueColumn = cursor.getColumnIndexOrThrow("unique")
         while (cursor.moveToNext()) {
             if (cursor.getString(nameColumn) == name) return@use cursor.getInt(uniqueColumn) == 1
         }
         false
+    }
+
+private fun SupportSQLiteDatabase.tableColumns(table: String): List<String> =
+    query("PRAGMA table_info(`$table`)").use { cursor ->
+        val columnName = cursor.getColumnIndexOrThrow("name")
+        buildList {
+            while (cursor.moveToNext()) add(cursor.getString(columnName))
+        }
     }
 
 private fun SupportSQLiteDatabase.indexColumns(name: String): List<String> =
