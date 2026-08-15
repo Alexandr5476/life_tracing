@@ -49,7 +49,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
         private val FRESH_SCHEMA_CALLBACK =
             object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
-                    ActivityTemplateSchema.recreate(db)
+                    ActivityTemplateSchemaV2.recreate(db)
                 }
             }
     }

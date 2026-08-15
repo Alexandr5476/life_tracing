@@ -12,7 +12,7 @@ internal object LifeTracingMigrationTestDatabaseFactory {
     fun createVersion2(
         helper: MigrationTestHelper,
         name: String,
-    ): SupportSQLiteDatabase = helper.createDatabase(name, 2).also(ActivityTemplateSchema::recreate)
+    ): SupportSQLiteDatabase = helper.createDatabase(name, 2).also(ActivityTemplateSchemaV2::recreate)
 }
 
 internal data class ActivityTemplateManualSchema(

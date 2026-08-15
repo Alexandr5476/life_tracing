@@ -6,11 +6,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 internal val MIGRATION_1_2 =
     object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
-            ActivityTemplateSchema.create(db)
+            ActivityTemplateSchemaV2.create(db)
         }
     }
 
-internal object ActivityTemplateSchema {
+// Historical manual DDL is immutable. Later persistence changes must add a new version-specific definition.
+internal object ActivityTemplateSchemaV2 {
     fun recreate(db: SupportSQLiteDatabase) {
         listOf(
             "activity_template_tags",
