@@ -21,8 +21,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ActivitySnapshotSettingsEntity::class,
         ActivitySnapshotFieldEntity::class,
         ActivitySnapshotCategoryOptionEntity::class,
+        ActivityExecutionEntity::class,
+        ActivityExecutionPauseEntity::class,
+        ActivityExecutionFieldValueEntity::class,
     ],
-    version = ACTIVITY_SNAPSHOT_SCHEMA_VERSION,
+    version = ACTIVITY_EXECUTION_SCHEMA_VERSION,
     exportSchema = true,
 )
 internal abstract class LifeTracingDatabase : RoomDatabase() {
@@ -36,12 +39,14 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
 
     abstract fun activitySnapshotDao(): ActivitySnapshotDao
 
+    abstract fun activityExecutionDao(): ActivityExecutionDao
+
     companion object {
         fun inMemoryBuilder(context: Context): Builder<LifeTracingDatabase> =
             Room
                 .inMemoryDatabaseBuilder(context, LifeTracingDatabase::class.java)
                 .addCallback(FRESH_SCHEMA_CALLBACK)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
         fun builder(
             context: Context,
@@ -50,14 +55,16 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
             Room
                 .databaseBuilder(context, LifeTracingDatabase::class.java, name)
                 .addCallback(FRESH_SCHEMA_CALLBACK)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
         private val FRESH_SCHEMA_CALLBACK =
             object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
+                    ActivityExecutionSchemaV4.drop(db)
                     ActivitySnapshotSchemaV3.drop(db)
                     ActivityTemplateSchemaV2.recreate(db)
                     ActivitySnapshotSchemaV3.create(db)
+                    ActivityExecutionSchemaV4.createAndSeed(db)
                 }
             }
     }
