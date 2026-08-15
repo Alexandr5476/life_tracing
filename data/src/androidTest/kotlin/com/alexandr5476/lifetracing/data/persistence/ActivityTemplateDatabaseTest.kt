@@ -150,7 +150,7 @@ class ActivityTemplateDatabaseTest {
         database.tagDao().deleteById("tag")
 
         assertNotNull(templates.getById("template"))
-        assertEquals(7, templates.getById("template")?.revision)
+        assertEquals(7L, templates.getById("template")?.revision)
         assertEquals(listOf("survivor"), templates.getTagIds("template"))
         assertEquals(2, templates.getUserState("template")?.pinnedRank)
 
