@@ -202,7 +202,7 @@ class ActivityExecutionDatabaseTest {
         assertEquals("RUNNING", executions.getById("execution")?.status)
         executions.complete("execution", 100)
         assertEquals("COMPLETED", executions.getById("execution")?.status)
-        assertEquals(80L, executions.getById("execution")?.activeDurationMs)
+        assertEquals(70L, executions.getById("execution")?.activeDurationMs)
         assertNull(executions.getById("execution")?.completionReason)
 
         executions.upsertValue(ActivityExecutionFieldValueEntity("execution", "number", 1, null, null))

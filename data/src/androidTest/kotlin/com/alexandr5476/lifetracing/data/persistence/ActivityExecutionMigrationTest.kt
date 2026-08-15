@@ -50,10 +50,10 @@ class ActivityExecutionMigrationTest {
             migrated
                 .query(
                     """
-                    SELECT executions.status, pauses.ended_at_ms, values.category_option_id
+                    SELECT executions.status, pauses.ended_at_ms, field_values.category_option_id
                     FROM activity_executions AS executions
                     JOIN activity_execution_pauses AS pauses ON pauses.execution_id = executions.id
-                    JOIN activity_execution_field_values AS values ON values.execution_id = executions.id
+                    JOIN activity_execution_field_values AS field_values ON field_values.execution_id = executions.id
                     WHERE executions.id = 'execution'
                     """.trimIndent(),
                 ).use { cursor ->
