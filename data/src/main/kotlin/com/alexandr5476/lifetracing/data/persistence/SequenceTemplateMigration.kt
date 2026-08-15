@@ -16,6 +16,7 @@ internal val MIGRATION_4_5 =
 internal object SequenceTemplateSchemaV5 {
     fun drop(db: SupportSQLiteDatabase) {
         listOf(
+            "sequence_step_overrides",
             "sequence_nodes",
             "sequence_template_tags",
             "sequence_template_category_options",
@@ -164,6 +165,23 @@ internal object SequenceTemplateSchemaV5 {
             """
             CREATE INDEX IF NOT EXISTS `sequence_nodes_activity_snapshot_id`
             ON `sequence_nodes` (`activity_snapshot_id`)
+            """.trimIndent(),
+            """
+            CREATE TABLE IF NOT EXISTS `sequence_step_overrides` (
+                `sequence_node_id` TEXT NOT NULL,
+                `start_countdown_ms` INTEGER,
+                `timer_zero_behavior` TEXT,
+                `timer_end_sound` INTEGER,
+                `timer_end_vibration` INTEGER,
+                `keep_screen_awake` INTEGER,
+                PRIMARY KEY(`sequence_node_id`),
+                FOREIGN KEY(`sequence_node_id`) REFERENCES `sequence_nodes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                CHECK (`start_countdown_ms` IS NULL OR `start_countdown_ms` >= 0),
+                CHECK (`timer_zero_behavior` IS NULL OR `timer_zero_behavior` IN ('FINISH', 'OVERTIME')),
+                CHECK (`timer_end_sound` IS NULL OR `timer_end_sound` IN (0, 1)),
+                CHECK (`timer_end_vibration` IS NULL OR `timer_end_vibration` IN (0, 1)),
+                CHECK (`keep_screen_awake` IS NULL OR `keep_screen_awake` IN (0, 1))
+            )
             """.trimIndent(),
         )
 }

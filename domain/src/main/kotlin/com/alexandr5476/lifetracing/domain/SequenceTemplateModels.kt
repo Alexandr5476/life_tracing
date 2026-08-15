@@ -51,6 +51,22 @@ data class SequenceTemplateCategoryOption(
     val isArchived: Boolean = false,
 )
 
+data class SequenceStepOverrides(
+    val startCountdown: Duration? = null,
+    val timerZeroBehavior: TimerZeroBehavior? = null,
+    val timerEndSound: Boolean? = null,
+    val timerEndVibration: Boolean? = null,
+    val keepScreenAwake: Boolean? = null,
+) {
+    val isEmpty: Boolean
+        get() =
+            startCountdown == null &&
+                timerZeroBehavior == null &&
+                timerEndSound == null &&
+                timerEndVibration == null &&
+                keepScreenAwake == null
+}
+
 data class SequenceTemplateField(
     val id: SequenceTemplateFieldId,
     val position: Int,
@@ -77,6 +93,7 @@ data class ActivityStep(
     override val id: SequenceNodeId,
     override val position: Int,
     val activitySnapshotId: ActivitySnapshotId,
+    val overrides: SequenceStepOverrides = SequenceStepOverrides(),
 ) : SequenceNode
 
 data class SequenceRepeatBlock(
@@ -168,6 +185,11 @@ object SequenceTemplateValidator {
             require(repeat.repeatCount > 0) { "Repeat count must be positive" }
             requireOrderedUniquePositions(repeat.children, "Repeat ${repeat.id.value}")
         }
+        allNodes.filterIsInstance<ActivityStep>().forEach { step ->
+            require(step.overrides.startCountdown?.isNegative != true) {
+                "Step start countdown must not be negative"
+            }
+        }
     }
 
     private fun requireOrderedUniquePositions(
@@ -192,6 +214,20 @@ object SequenceTemplateFieldEvolution {
     }
 }
 
+object SequenceTemplateCategoryOptionEvolution {
+    fun requireSameIdentityCompatible(
+        previousOwner: SequenceTemplateFieldId,
+        previous: SequenceTemplateCategoryOption,
+        updatedOwner: SequenceTemplateFieldId,
+        updated: SequenceTemplateCategoryOption,
+    ) {
+        if (previous.id != updated.id) return
+        require(previousOwner == updatedOwner) {
+            "Category option owner Field is immutable for the same option identity"
+        }
+    }
+}
+
 enum class SequenceTemplateEdit(
     val isSemantic: Boolean,
 ) {
@@ -202,6 +238,7 @@ enum class SequenceTemplateEdit(
     FIELD_SCHEMA(true),
     STRUCTURE(true),
     STEP_SNAPSHOT(true),
+    STEP_OVERRIDES(true),
     FIELD_DISPLAY_NAME(false),
     CATEGORY_OPTION_DISPLAY_NAME(false),
     FOLDER(false),
@@ -275,36 +312,51 @@ object SequenceStructureEditor {
         destinationRepeatId: SequenceNodeId?,
         position: Int,
     ): List<SequenceNode> {
-        val matches =
-            nodes.filterIsInstance<ActivityStep>().filter { it.id == stepId } +
-                nodes.filterIsInstance<SequenceRepeatBlock>().flatMap { it.children }.filter { it.id == stepId }
-        val moved =
-            requireNotNull(matches.singleOrNull()) {
-                "Unknown or non-Step node: ${stepId.value}"
-            }.copy(position = position)
+        val topLevelStep = nodes.filterIsInstance<ActivityStep>().singleOrNull { it.id == stepId }
+        val sourceRepeat =
+            nodes.filterIsInstance<SequenceRepeatBlock>().singleOrNull { repeat ->
+                repeat.children.any { it.id == stepId }
+            }
+        require((topLevelStep != null) xor (sourceRepeat != null)) { "Unknown or non-Step node: ${stepId.value}" }
+        val moved = topLevelStep ?: sourceRepeat!!.children.single { it.id == stepId }
+
         var result =
-            nodes.mapNotNull { node ->
-                when (node) {
-                    is ActivityStep -> node.takeUnless { it.id == stepId }
-                    is SequenceRepeatBlock -> node.copy(children = node.children.filterNot { it.id == stepId })
+            if (topLevelStep != null) {
+                nodes.filterNot { it.id == stepId }.reindexNodes()
+            } else {
+                nodes.map { node ->
+                    if (node.id == sourceRepeat!!.id) {
+                        sourceRepeat.copy(children = sourceRepeat.children.filterNot { it.id == stepId }.reindexSteps())
+                    } else {
+                        node
+                    }
                 }
             }
+
         result =
             if (destinationRepeatId == null) {
-                result + moved
+                require(position in 0..result.size) { "Destination position is out of bounds" }
+                result.toMutableList().apply { add(position, moved) }.reindexNodes()
             } else {
                 var found = false
                 result
                     .map { node ->
                         if (node is SequenceRepeatBlock && node.id == destinationRepeatId) {
                             found = true
-                            node.copy(children = node.children + moved)
+                            require(position in 0..node.children.size) { "Destination position is out of bounds" }
+                            node.copy(
+                                children =
+                                    node.children
+                                        .toMutableList()
+                                        .apply { add(position, moved) }
+                                        .reindexSteps(),
+                            )
                         } else {
                             node
                         }
                     }.also { require(found) { "Unknown destination Repeat: ${destinationRepeatId.value}" } }
             }
-        return result.sortedStructure().also(SequenceTemplateValidator::requireValidNodes)
+        return result.also(SequenceTemplateValidator::requireValidNodes)
     }
 
     fun moveTopLevelNode(
@@ -312,32 +364,21 @@ object SequenceStructureEditor {
         nodeId: SequenceNodeId,
         position: Int,
     ): List<SequenceNode> {
-        require(nodes.any { it.id == nodeId }) { "Only top-level nodes can be reordered" }
-        val moved =
-            nodes
-                .map { node ->
-                    if (node.id != nodeId) {
-                        node
-                    } else {
-                        when (node) {
-                            is ActivityStep -> node.copy(position = position)
-                            is SequenceRepeatBlock -> node.copy(position = position)
-                        }
-                    }
-                }.sortedStructure()
-        return moved.also(SequenceTemplateValidator::requireValidNodes)
+        val moved = requireNotNull(nodes.singleOrNull { it.id == nodeId }) { "Only top-level nodes can be reordered" }
+        val remaining = nodes.filterNot { it.id == nodeId }
+        require(position in 0..remaining.size) { "Destination position is out of bounds" }
+        return remaining
+            .toMutableList()
+            .apply { add(position, moved) }
+            .reindexNodes()
+            .also(SequenceTemplateValidator::requireValidNodes)
     }
 
-    private fun List<SequenceNode>.sortedStructure(): List<SequenceNode> =
-        map { node ->
-            if (node is SequenceRepeatBlock) {
-                node.copy(
-                    children = node.children.sortedBy(ActivityStep::position),
-                )
-            } else {
-                node
-            }
-        }.sortedBy(SequenceNode::position)
+    private fun List<SequenceNode>.reindexNodes(): List<SequenceNode> =
+        mapIndexed { position, node -> node.withPosition(position) }
+
+    private fun List<ActivityStep>.reindexSteps(): List<ActivityStep> =
+        mapIndexed { position, step -> step.copy(position = position) }
 
     private fun SequenceNode.withPosition(position: Int): SequenceNode =
         when (this) {
@@ -363,7 +404,59 @@ object ActivityStepSnapshotPolicy {
         require(step.activitySnapshotId == previous.id) { "Previous snapshot must belong to the Step" }
         require(replacement.id != previous.id) { "Snapshot replacement requires a new identity" }
         require(replacement.locallyModified) { "Local Step replacement must be locally modified" }
+        require(replacement.sourceTemplateId == previous.sourceTemplateId) {
+            "Local Step replacement must preserve source Template identity"
+        }
+        require(replacement.sourceRevision == previous.sourceRevision) {
+            "Local Step replacement must preserve source revision"
+        }
+        require(replacement.statisticsSeriesId == previous.statisticsSeriesId) {
+            "Local Step replacement must preserve Statistics Series identity"
+        }
         ActivityConfigSnapshotValidator.requireValid(replacement)
         return step.copy(activitySnapshotId = replacement.id)
+    }
+}
+
+data class EffectiveSequenceStepSettings(
+    val startCountdown: Duration,
+    val timerZeroBehavior: TimerZeroBehavior?,
+    val timerEndSound: Boolean,
+    val timerEndVibration: Boolean,
+    val keepScreenAwake: Boolean,
+)
+
+object EffectiveSequenceStepSettingsResolver {
+    fun resolve(
+        step: ActivityStep,
+        activitySnapshot: ActivityConfigSnapshot,
+        sequenceSettings: SequenceTemplateSettings,
+        isFirstStep: Boolean,
+    ): EffectiveSequenceStepSettings {
+        require(step.activitySnapshotId == activitySnapshot.id) { "ActivitySnapshot must belong to the Step" }
+        require(step.overrides.startCountdown?.isNegative != true) { "Step start countdown must not be negative" }
+        require(
+            activitySnapshot.timeTrackingMode == TimeTrackingMode.TIMER || step.overrides.timerZeroBehavior == null,
+        ) {
+            "Timer zero behavior override requires a TIMER Step"
+        }
+        return EffectiveSequenceStepSettings(
+            startCountdown =
+                step.overrides.startCountdown
+                    ?: if (isFirstStep) {
+                        sequenceSettings.sequenceStartCountdown
+                    } else {
+                        sequenceSettings.beforeEachStepCountdown
+                    },
+            timerZeroBehavior =
+                if (activitySnapshot.timeTrackingMode == TimeTrackingMode.TIMER) {
+                    step.overrides.timerZeroBehavior ?: activitySnapshot.settings.timerZeroBehavior
+                } else {
+                    null
+                },
+            timerEndSound = step.overrides.timerEndSound ?: sequenceSettings.transitionSound,
+            timerEndVibration = step.overrides.timerEndVibration ?: sequenceSettings.transitionVibration,
+            keepScreenAwake = step.overrides.keepScreenAwake ?: sequenceSettings.keepScreenAwake,
+        )
     }
 }

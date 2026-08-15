@@ -56,11 +56,27 @@ class SequenceTemplateMigrationTest {
             assertEquals(2, migrated.rowCount("sequence_template_category_options"))
             assertEquals(1, migrated.rowCount("sequence_template_tags"))
             assertEquals(4, migrated.rowCount("sequence_nodes"))
+            assertEquals(1, migrated.rowCount("sequence_step_overrides"))
             assertThrows(SQLiteConstraintException::class.java) {
                 migrated.execSQL(
                     "UPDATE sequence_template_settings SET sequence_start_countdown_ms = -1 " +
                         "WHERE sequence_template_id = 'sequence'",
                 )
+            }
+            assertThrows(SQLiteConstraintException::class.java) {
+                migrated.execSQL(
+                    "INSERT INTO sequence_step_overrides (sequence_node_id, start_countdown_ms) " +
+                        "VALUES ('child-two', -1)",
+                )
+            }
+            assertThrows(SQLiteConstraintException::class.java) {
+                migrated.execSQL(
+                    "INSERT INTO sequence_step_overrides (sequence_node_id, timer_zero_behavior) " +
+                        "VALUES ('child-two', 'UNKNOWN')",
+                )
+            }
+            assertThrows(SQLiteConstraintException::class.java) {
+                migrated.execSQL("INSERT INTO sequence_step_overrides (sequence_node_id) VALUES ('missing')")
             }
             assertThrows(SQLiteConstraintException::class.java) {
                 migrated.execSQL(
@@ -70,6 +86,30 @@ class SequenceTemplateMigrationTest {
                         "VALUES ('second-main', 'sequence', 2, 'Second', 'NUMBER', 1, 1, 1)",
                 )
             }
+        }
+
+        val migratedRoom = LifeTracingDatabase.builder(context, names[0]).allowMainThreadQueries().build()
+        try {
+            val dao = migratedRoom.sequenceTemplateDao()
+            val current = requireNotNull(dao.getAggregate("sequence"))
+            assertEquals(0L, dao.getStepOverride("child-one")?.startCountdownMs)
+            assertThrows(IllegalArgumentException::class.java) {
+                dao.updateSemanticAggregate(
+                    SequenceTemplateSemanticUpdate(
+                        expectedRevision = 1,
+                        template = current.template.copy(revision = 2),
+                        settings = current.settings,
+                        fields = current.fields,
+                        options = current.options,
+                        nodes = current.nodes,
+                        stepOverrides =
+                            current.stepOverrides +
+                                SequenceStepOverrideEntity("repeat", null, null, true, null, null),
+                    ),
+                )
+            }
+        } finally {
+            migratedRoom.close()
         }
     }
 
@@ -90,6 +130,11 @@ class SequenceTemplateMigrationTest {
         assertTrue(fresh.sequence.hasNoLiveAccountingCheck)
         assertTrue(fresh.sequence.hasCountdownChecks)
         assertTrue(fresh.sequence.hasNodeShapeCheck)
+        assertTrue(fresh.sequence.hasOverrideCountdownCheck)
+        assertTrue(fresh.sequence.hasOverrideTimerZeroBehaviorCheck)
+        assertTrue(fresh.sequence.hasOverrideBooleanChecks)
+        assertEquals(listOf("sequence_node_id"), fresh.sequence.overridePrimaryKeyColumns)
+        assertEquals("CASCADE", fresh.sequence.overrideForeignKeyDeletes["sequence_node_id"])
     }
 
     private fun LifeTracingDatabase.schemaBundle() = openHelper.readableDatabase.schemaBundle()
@@ -170,6 +215,10 @@ class SequenceTemplateMigrationTest {
         execSQL("INSERT INTO sequence_nodes VALUES ('repeat', 'sequence', 'REPEAT', NULL, 1, NULL, 3)")
         execSQL("INSERT INTO sequence_nodes VALUES ('child-one', 'sequence', 'STEP', 'repeat', 0, 'snapshot', NULL)")
         execSQL("INSERT INTO sequence_nodes VALUES ('child-two', 'sequence', 'STEP', 'repeat', 1, 'snapshot', NULL)")
+        execSQL(
+            "INSERT INTO sequence_step_overrides VALUES " +
+                "('child-one', 0, NULL, 0, NULL, 1)",
+        )
     }
 
     private fun SupportSQLiteDatabase.rowCount(

@@ -10,6 +10,7 @@ import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.SequenceNode
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
+import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
@@ -21,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateUserState
 import com.alexandr5476.lifetracing.domain.SequenceTemplateValidator
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TagId
+import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import java.time.Duration
 import java.time.Instant
 
@@ -46,37 +48,23 @@ internal fun SequenceTemplate.toEntityAggregate(): SequenceTemplateAggregateEnti
         options = fields.flatMap { field -> field.categoryOptions.map { it.toEntity(field.id) } },
         tags = tagIds.map { SequenceTemplateTagEntity(id.value, it.value) },
         nodes = nodes.flatMap { it.toEntities(id) },
+        stepOverrides =
+            nodes
+                .flatMap { node ->
+                    when (node) {
+                        is ActivityStep -> listOf(node)
+                        is SequenceRepeatBlock -> node.children
+                    }
+                }.filterNot { it.overrides.isEmpty }
+                .map { it.overrides.toEntity(it.id) },
     )
 }
 
 internal fun SequenceTemplateAggregateEntity.toDomain(): SequenceTemplate {
     val optionsByField = options.groupBy(SequenceTemplateCategoryOptionEntity::sequenceTemplateFieldId)
-    val repeatRows = nodes.filter { it.nodeType == "REPEAT" }
-    val childRows = nodes.filter { it.parentRepeatNodeId != null }.groupBy(SequenceNodeEntity::parentRepeatNodeId)
-    val domainNodes =
-        nodes
-            .filter { it.parentRepeatNodeId == null }
-            .map { row ->
-                when (row.nodeType) {
-                    "STEP" -> row.toStep()
-                    "REPEAT" ->
-                        SequenceRepeatBlock(
-                            id = SequenceNodeId(row.id),
-                            position = row.position,
-                            repeatCount = requireNotNull(row.repeatCount),
-                            children =
-                                childRows[row.id]
-                                    .orEmpty()
-                                    .map(
-                                        SequenceNodeEntity::toStep,
-                                    ).sortedBy(ActivityStep::position),
-                        )
-                    else -> error("Unknown sequence node type code: ${row.nodeType}")
-                }
-            }.sortedBy(SequenceNode::position)
-    require(repeatRows.size == domainNodes.count { it is SequenceRepeatBlock }) {
-        "Every Repeat must be top-level"
-    }
+    requireValidPersistedAggregateShape()
+    val overridesByNode = stepOverrides.associateBy(SequenceStepOverrideEntity::sequenceNodeId)
+    val domainNodes = nodes.toDomainNodes(overridesByNode)
     return SequenceTemplate(
         id = SequenceTemplateId(template.id),
         name = template.name,
@@ -94,6 +82,82 @@ internal fun SequenceTemplateAggregateEntity.toDomain(): SequenceTemplate {
         tagIds = tags.mapTo(linkedSetOf()) { TagId(it.tagId) },
         nodes = domainNodes,
     ).also(SequenceTemplateValidator::requireValid)
+}
+
+private fun SequenceTemplateAggregateEntity.requireValidPersistedAggregateShape() {
+    require(settings.sequenceTemplateId == template.id) { "Settings owner mismatch" }
+    require(userState.sequenceTemplateId == template.id) { "User-state owner mismatch" }
+    require(fields.all { it.sequenceTemplateId == template.id }) { "Field owner mismatch" }
+    require(tags.all { it.sequenceTemplateId == template.id }) { "Tag owner mismatch" }
+    require(nodes.all { it.sequenceTemplateId == template.id }) { "Node owner mismatch" }
+    require(nodes.map { it.id }.distinct().size == nodes.size) { "Sequence node identities must be unique" }
+    val rowsById = nodes.associateBy(SequenceNodeEntity::id)
+    val overridesByNode = stepOverrides.associateBy(SequenceStepOverrideEntity::sequenceNodeId)
+    require(overridesByNode.size == stepOverrides.size) { "Step override owners must be unique" }
+    stepOverrides.forEach { override ->
+        val owner = requireNotNull(rowsById[override.sequenceNodeId]) { "Step override owner must exist" }
+        require(owner.nodeType == "STEP") { "Only a Step can own execution-setting overrides" }
+    }
+    nodes.forEach { row ->
+        when (row.nodeType) {
+            "STEP" -> {
+                require(
+                    row.activitySnapshotId != null && row.repeatCount == null,
+                ) { "Invalid STEP row shape: ${row.id}" }
+                row.parentRepeatNodeId?.let { parentId ->
+                    val parent = requireNotNull(rowsById[parentId]) { "Step parent must resolve inside its aggregate" }
+                    require(parent.sequenceTemplateId == row.sequenceTemplateId && parent.nodeType == "REPEAT") {
+                        "Step parent must be a same-Template Repeat"
+                    }
+                }
+            }
+            "REPEAT" ->
+                require(
+                    row.activitySnapshotId == null &&
+                        row.repeatCount != null &&
+                        row.repeatCount > 0 &&
+                        row.parentRepeatNodeId == null,
+                ) { "Invalid REPEAT row shape: ${row.id}" }
+            else -> error("Unknown sequence node type code: ${row.nodeType}")
+        }
+    }
+}
+
+private fun List<SequenceNodeEntity>.toDomainNodes(
+    overridesByNode: Map<String, SequenceStepOverrideEntity>,
+): List<SequenceNode> {
+    val childRows = filter { it.parentRepeatNodeId != null }.groupBy(SequenceNodeEntity::parentRepeatNodeId)
+    val domainNodes =
+        this
+            .filter { it.parentRepeatNodeId == null }
+            .map { row ->
+                when (row.nodeType) {
+                    "STEP" -> row.toStep(overridesByNode[row.id])
+                    "REPEAT" ->
+                        SequenceRepeatBlock(
+                            id = SequenceNodeId(row.id),
+                            position = row.position,
+                            repeatCount = requireNotNull(row.repeatCount),
+                            children =
+                                childRows[row.id]
+                                    .orEmpty()
+                                    .map { it.toStep(overridesByNode[it.id]) }
+                                    .sortedBy(ActivityStep::position),
+                        )
+                    else -> error("Unknown sequence node type code: ${row.nodeType}")
+                }
+            }.sortedBy(SequenceNode::position)
+    val representedIds =
+        domainNodes.flatMap { node ->
+            when (node) {
+                is ActivityStep -> listOf(node.id.value)
+                is SequenceRepeatBlock -> listOf(node.id.value) + node.children.map { it.id.value }
+            }
+        }
+    require(representedIds.size == size && representedIds.toSet() == mapTo(hashSetOf()) { it.id }) {
+        "Sequence node mapping must represent every persisted row exactly once"
+    }
+    return domainNodes
 }
 
 private fun SequenceTemplateSettings.toEntity(id: SequenceTemplateId) =
@@ -183,10 +247,43 @@ private fun ActivityStep.toEntity(
     parentId: SequenceNodeId?,
 ) = SequenceNodeEntity(id.value, templateId.value, "STEP", parentId?.value, position, activitySnapshotId.value, null)
 
-private fun SequenceNodeEntity.toStep(): ActivityStep {
+private fun SequenceNodeEntity.toStep(override: SequenceStepOverrideEntity?): ActivityStep {
     require(nodeType == "STEP" && repeatCount == null) { "Invalid STEP row shape: $id" }
-    return ActivityStep(SequenceNodeId(id), position, ActivitySnapshotId(requireNotNull(activitySnapshotId)))
+    return ActivityStep(
+        SequenceNodeId(id),
+        position,
+        ActivitySnapshotId(requireNotNull(activitySnapshotId)),
+        override?.toDomain() ?: SequenceStepOverrides(),
+    )
 }
+
+private fun SequenceStepOverrides.toEntity(nodeId: SequenceNodeId) =
+    SequenceStepOverrideEntity(
+        sequenceNodeId = nodeId.value,
+        startCountdownMs = startCountdown?.toMillis(),
+        timerZeroBehavior = timerZeroBehavior?.name,
+        timerEndSound = timerEndSound,
+        timerEndVibration = timerEndVibration,
+        keepScreenAwake = keepScreenAwake,
+    )
+
+private fun SequenceStepOverrideEntity.toDomain() =
+    SequenceStepOverrides(
+        startCountdown = startCountdownMs?.let(Duration::ofMillis),
+        timerZeroBehavior =
+            timerZeroBehavior?.let { code ->
+                when (code) {
+                    "FINISH" -> TimerZeroBehavior.FINISH
+                    "OVERTIME" -> TimerZeroBehavior.OVERTIME
+                    else -> error("Unknown Step timer zero behavior code: $code")
+                }
+            },
+        timerEndSound = timerEndSound,
+        timerEndVibration = timerEndVibration,
+        keepScreenAwake = keepScreenAwake,
+    ).also { overrides ->
+        require(overrides.startCountdown?.isNegative != true) { "Step start countdown must not be negative" }
+    }
 
 private fun NoLiveTimeAccounting.toStorageCode() = name
 

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "39c6259e77add9e75d94b08814e640b8",
+    "identityHash": "4ca5000e481a58db0acb1df91bce484c",
     "entities": [
       {
         "tableName": "folders",
@@ -2124,11 +2124,67 @@
             ]
           }
         ]
+      },
+      {
+        "tableName": "sequence_step_overrides",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sequence_node_id` TEXT NOT NULL, `start_countdown_ms` INTEGER, `timer_zero_behavior` TEXT, `timer_end_sound` INTEGER, `timer_end_vibration` INTEGER, `keep_screen_awake` INTEGER, PRIMARY KEY(`sequence_node_id`), FOREIGN KEY(`sequence_node_id`) REFERENCES `sequence_nodes`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "sequenceNodeId",
+            "columnName": "sequence_node_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startCountdownMs",
+            "columnName": "start_countdown_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "timerZeroBehavior",
+            "columnName": "timer_zero_behavior",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timerEndSound",
+            "columnName": "timer_end_sound",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "timerEndVibration",
+            "columnName": "timer_end_vibration",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "keepScreenAwake",
+            "columnName": "keep_screen_awake",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sequence_node_id"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "sequence_nodes",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sequence_node_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '39c6259e77add9e75d94b08814e640b8')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4ca5000e481a58db0acb1df91bce484c')"
     ]
   }
 }

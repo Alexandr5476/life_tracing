@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityStep
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -135,6 +136,22 @@ class SequenceTemplateDatabaseTest {
                 )
             }
         }
+        sequences.replaceNodeStructure(
+            "sequence",
+            listOf(step("step", "sequence", null, 0, "snapshot"), repeat("repeat", "sequence", 1, 2)),
+            1,
+            2,
+        )
+        listOf(
+            "('step', -1, NULL, NULL, NULL, NULL)",
+            "('step', NULL, 'UNKNOWN', NULL, NULL, NULL)",
+            "('step', NULL, NULL, 2, NULL, NULL)",
+            "('missing', NULL, NULL, NULL, NULL, NULL)",
+        ).forEach { values ->
+            assertThrows(SQLiteConstraintException::class.java) {
+                sql("INSERT INTO sequence_step_overrides VALUES $values")
+            }
+        }
     }
 
     @Test
@@ -182,6 +199,7 @@ class SequenceTemplateDatabaseTest {
 
         val semantic =
             SequenceTemplateSemanticUpdate(
+                expectedRevision = 7,
                 template = initial.template.copy(name = "Changed", revision = 8, updatedAtMs = 3, folderId = "folder"),
                 settings = initial.settings.copy(autoAdvance = false),
                 fields = listOf(renamed.copy(defaultNumberScaled = 12_000)),
@@ -215,6 +233,124 @@ class SequenceTemplateDatabaseTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun wholeSemanticCommitAdvancesOnceRejectsStaleAndRollsBackInvalidState() {
+        insertSnapshot("one")
+        insertSnapshot("two")
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes =
+                    listOf(
+                        step("one", "sequence", null, 0, "one"),
+                        step("two", "sequence", null, 1, "two"),
+                    ),
+            )
+        sequences.insertAggregate(initial)
+        val moved =
+            listOf(
+                step("two", "sequence", null, 0, "two"),
+                step("one", "sequence", null, 1, "one"),
+            )
+        val committed =
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = 7,
+                template = initial.template.copy(name = "Committed", revision = 8, updatedAtMs = 8),
+                settings = initial.settings.copy(autoAdvance = false),
+                fields = initial.fields,
+                options = initial.options,
+                nodes = moved,
+                stepOverrides = listOf(override("one", countdown = 0, sound = false)),
+            )
+
+        sequences.updateSemanticAggregate(committed)
+
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+        assertEquals("Committed", sequences.getById("sequence")?.name)
+        assertFalse(sequences.getSettings("sequence")!!.autoAdvance)
+        assertEquals(listOf("two", "one"), sequences.getNodes("sequence").map { it.id })
+        assertEquals(0L, sequences.getStepOverride("one")?.startCountdownMs)
+        assertEquals(false, sequences.getStepOverride("one")?.timerEndSound)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            sequences.updateSemanticAggregate(committed.copy(template = committed.template.copy(name = "Stale")))
+        }
+        val beforeFailure = sequences.getAggregate("sequence")
+        assertThrows(IllegalArgumentException::class.java) {
+            sequences.updateSemanticAggregate(
+                committed.copy(
+                    expectedRevision = 8,
+                    template = committed.template.copy(name = "Invalid", revision = 9),
+                    stepOverrides = listOf(override("two", countdown = -1)),
+                ),
+            )
+        }
+        assertEquals(beforeFailure, sequences.getAggregate("sequence"))
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+
+        sequences.updateFolder("sequence", "folder")
+        sequences.replaceTags("sequence", listOf(SequenceTemplateTagEntity("sequence", "tag")))
+        sequences.updateUserState(SequenceTemplateUserStateEntity("sequence", 1, 9))
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+    }
+
+    @Test
+    fun overrideOnlySemanticCommitAdvancesRevisionOnce() {
+        insertSnapshot("snapshot")
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes = listOf(step("step", "sequence", null, 0, "snapshot")),
+            )
+        sequences.insertAggregate(initial)
+
+        sequences.updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = 7,
+                template = initial.template.copy(revision = 8, updatedAtMs = 8),
+                settings = initial.settings,
+                nodes = initial.nodes,
+                stepOverrides = listOf(override("step", vibration = false)),
+            ),
+        )
+
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+        assertEquals(false, sequences.getStepOverride("step")?.timerEndVibration)
+    }
+
+    @Test
+    fun categoryOptionIdentityCannotMoveBetweenFields() {
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                fields =
+                    listOf(
+                        field("first", 0, type = "CATEGORY"),
+                        field("second", 1, type = "CATEGORY"),
+                    ),
+                options = listOf(option("option", "first", 0, "Option")),
+            )
+        sequences.insertAggregate(initial)
+        val moved =
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = 7,
+                template = initial.template.copy(revision = 8, updatedAtMs = 8),
+                settings = initial.settings,
+                fields = initial.fields,
+                options = listOf(option("option", "second", 0, "Moved")),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { sequences.updateSemanticAggregate(moved) }
+        assertEquals("first", sequences.getOptions("sequence").single().sequenceTemplateFieldId)
+        assertEquals(7L, sequences.getById("sequence")?.revision)
+
+        sequences.updateSemanticAggregate(
+            moved.copy(options = initial.options + option("new-option", "second", 0, "New")),
+        )
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+        assertEquals(setOf("option", "new-option"), sequences.getOptions("sequence").mapTo(hashSetOf()) { it.id })
     }
 
     @Test
@@ -274,6 +410,177 @@ class SequenceTemplateDatabaseTest {
             6,
         )
         assertNotNull(snapshots.getById("execution-owned"))
+    }
+
+    @Test
+    fun stepOverridesRoundTripAndFollowStepIdentityAcrossMoveReplacementAndDelete() {
+        snapshots.insertAggregate(timerSnapshotAggregate("old", locallyModified = false))
+        sequences.insertAggregate(
+            aggregate(
+                nodes =
+                    listOf(
+                        repeat("repeat", "sequence", 0, 2),
+                        step("step", "sequence", null, 1, "old"),
+                    ),
+                overrides =
+                    listOf(
+                        override(
+                            "step",
+                            countdown = 0,
+                            zeroBehavior = "OVERTIME",
+                            sound = false,
+                            vibration = false,
+                            keepAwake = true,
+                        ),
+                    ),
+            ),
+        )
+
+        assertEquals(1, sequences.getStepOverrides("sequence").size)
+        assertEquals(
+            0L,
+            sequences
+                .getAggregate(
+                    "sequence",
+                )!!
+                .toDomain()
+                .nodes
+                .filterIsInstance<ActivityStep>()
+                .single()
+                .overrides.startCountdown
+                ?.toMillis(),
+        )
+        assertEquals(false, sequences.getStepOverride("step")?.timerEndSound)
+        assertEquals("OVERTIME", sequences.getStepOverride("step")?.timerZeroBehavior)
+
+        sequences.replaceNodeStructure(
+            "sequence",
+            listOf(
+                repeat("repeat", "sequence", 0, 2),
+                step("step", "sequence", "repeat", 0, "old"),
+            ),
+            1,
+            2,
+        )
+        assertNotNull(sequences.getStepOverride("step"))
+
+        sequences.replaceStepSnapshot("step", timerSnapshotAggregate("new", locallyModified = true), 2, 3)
+        assertNotNull(sequences.getStepOverride("step"))
+
+        sequences.removeNode("sequence", "repeat", 3, 4)
+        assertNull(sequences.getStepOverride("step"))
+    }
+
+    @Test
+    fun allInheritedOverridesCanonicalizeToNoRowAndRepeatOwnersAreRejected() {
+        insertSnapshot("snapshot")
+        val initial =
+            aggregate(
+                nodes =
+                    listOf(
+                        step("step", "sequence", null, 0, "snapshot"),
+                        repeat("repeat", "sequence", 1, 2),
+                    ),
+                overrides = listOf(override("step")),
+            )
+        sequences.insertAggregate(initial)
+        assertNull(sequences.getStepOverride("step"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            sequences.updateSemanticAggregate(
+                SequenceTemplateSemanticUpdate(
+                    expectedRevision = 1,
+                    template = initial.template.copy(revision = 2),
+                    settings = initial.settings,
+                    nodes = initial.nodes,
+                    stepOverrides = listOf(override("repeat", sound = true)),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            sequences.updateSemanticAggregate(
+                SequenceTemplateSemanticUpdate(
+                    expectedRevision = 1,
+                    template = initial.template.copy(revision = 2),
+                    settings = initial.settings,
+                    nodes = initial.nodes,
+                    stepOverrides = listOf(override("step", zeroBehavior = "OVERTIME")),
+                ),
+            )
+        }
+        assertEquals(1L, sequences.getById("sequence")?.revision)
+    }
+
+    @Test
+    fun deletingStepCascadesItsOverride() {
+        insertSnapshot("snapshot")
+        sequences.insertAggregate(
+            aggregate(
+                nodes = listOf(step("step", "sequence", null, 0, "snapshot")),
+                overrides = listOf(override("step", sound = false)),
+            ),
+        )
+
+        sequences.removeNode("sequence", "step", 1, 2)
+
+        assertNull(sequences.getStepOverride("step"))
+    }
+
+    @Test
+    fun rawRepeatOverrideMakesAggregateLoadingFailExplicitly() {
+        sequences.insertAggregate(
+            aggregate(nodes = listOf(repeat("repeat", "sequence", 0, 2))),
+        )
+        sql(
+            "INSERT INTO sequence_step_overrides (sequence_node_id, timer_end_sound) " +
+                "VALUES ('repeat', 1)",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) { sequences.getAggregate("sequence") }
+    }
+
+    @Test
+    fun malformedRawStepParentsMakeAggregateLoadingFailInsteadOfDroppingRows() {
+        insertSnapshot("one")
+        insertSnapshot("two")
+        sequences.insertAggregate(
+            aggregate(nodes = listOf(step("parent", "sequence", null, 0, "one"))),
+        )
+        sql("INSERT INTO sequence_nodes VALUES ('child', 'sequence', 'STEP', 'parent', 0, 'two', NULL)")
+
+        assertThrows(IllegalArgumentException::class.java) { sequences.getAggregate("sequence") }
+
+        sequences.insertAggregate(
+            aggregate(template = template("other"), settings = settings("other"), userState = userState("other")),
+        )
+        sql("INSERT INTO sequence_nodes VALUES ('cross', 'other', 'STEP', 'parent', 0, 'two', NULL)")
+        assertThrows(IllegalArgumentException::class.java) { sequences.getAggregate("other") }
+    }
+
+    @Test
+    fun localStepReplacementRejectsSourceAndStatisticsReassociationAtomically() {
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("activity-series", "ACTIVITY", "Activity", 1, null),
+        )
+        database.activityTemplateDao().insertAggregate(activityTemplateAggregate("activity", "activity-series"))
+        val current = linkedSnapshotAggregate("old", "activity", 4, "activity-series", locallyModified = false)
+        snapshots.insertAggregate(current)
+        sequences.insertAggregate(aggregate(nodes = listOf(step("step", "sequence", null, 0, "old"))))
+
+        val invalid =
+            listOf(
+                linkedSnapshotAggregate("new-source", null, null, "activity-series", locallyModified = true),
+                linkedSnapshotAggregate("new-revision", "activity", 5, "activity-series", locallyModified = true),
+                linkedSnapshotAggregate("new-series", "activity", 4, "sequence-series", locallyModified = true),
+            )
+        invalid.forEach { replacement ->
+            assertThrows(IllegalArgumentException::class.java) {
+                sequences.replaceStepSnapshot("step", replacement, 1, 2)
+            }
+            assertNull(snapshots.getById(replacement.snapshot.id))
+            assertEquals("old", sequences.getNodes("sequence").single().activitySnapshotId)
+            assertEquals(1L, sequences.getById("sequence")?.revision)
+        }
     }
 
     @Test
@@ -481,6 +788,22 @@ class SequenceTemplateDatabaseTest {
             schema.nodeSiblingIndexColumns,
         )
         assertEquals(listOf("activity_snapshot_id"), schema.nodeSnapshotIndexColumns)
+        assertEquals(
+            listOf(
+                "sequence_node_id",
+                "start_countdown_ms",
+                "timer_zero_behavior",
+                "timer_end_sound",
+                "timer_end_vibration",
+                "keep_screen_awake",
+            ),
+            schema.overrideColumns,
+        )
+        assertEquals(listOf("sequence_node_id"), schema.overridePrimaryKeyColumns)
+        assertEquals("CASCADE", schema.overrideForeignKeyDeletes["sequence_node_id"])
+        assertTrue(schema.hasOverrideCountdownCheck)
+        assertTrue(schema.hasOverrideTimerZeroBehaviorCheck)
+        assertTrue(schema.hasOverrideBooleanChecks)
     }
 
     private fun aggregate(
@@ -491,7 +814,8 @@ class SequenceTemplateDatabaseTest {
         options: List<SequenceTemplateCategoryOptionEntity> = emptyList(),
         tags: List<SequenceTemplateTagEntity> = emptyList(),
         nodes: List<SequenceNodeEntity> = emptyList(),
-    ) = SequenceTemplateAggregateEntity(template, settings, userState, fields, options, tags, nodes)
+        overrides: List<SequenceStepOverrideEntity> = emptyList(),
+    ) = SequenceTemplateAggregateEntity(template, settings, userState, fields, options, tags, nodes, overrides)
 
     private fun template(
         id: String = "sequence",
@@ -552,6 +876,15 @@ class SequenceTemplateDatabaseTest {
         count: Int,
     ) = SequenceNodeEntity(id, owner, "REPEAT", null, position, null, count)
 
+    private fun override(
+        nodeId: String,
+        countdown: Long? = null,
+        zeroBehavior: String? = null,
+        sound: Boolean? = null,
+        vibration: Boolean? = null,
+        keepAwake: Boolean? = null,
+    ) = SequenceStepOverrideEntity(nodeId, countdown, zeroBehavior, sound, vibration, keepAwake)
+
     private fun insertSnapshot(id: String) = snapshots.insertAggregate(snapshotAggregate(id, locallyModified = false))
 
     private fun snapshotAggregate(
@@ -560,6 +893,70 @@ class SequenceTemplateDatabaseTest {
     ) = ActivitySnapshotAggregateEntity(
         snapshot = ActivitySnapshotEntity(id, id, null, "STOPWATCH", null, null, null, null, locallyModified, 1),
         settings = ActivitySnapshotSettingsEntity(id),
+    )
+
+    private fun linkedSnapshotAggregate(
+        id: String,
+        sourceTemplateId: String?,
+        sourceRevision: Long?,
+        seriesId: String?,
+        locallyModified: Boolean,
+    ) = ActivitySnapshotAggregateEntity(
+        snapshot =
+            ActivitySnapshotEntity(
+                id,
+                id,
+                null,
+                "STOPWATCH",
+                null,
+                sourceTemplateId,
+                sourceRevision,
+                seriesId,
+                locallyModified,
+                1,
+            ),
+        settings = ActivitySnapshotSettingsEntity(id),
+    )
+
+    private fun timerSnapshotAggregate(
+        id: String,
+        locallyModified: Boolean,
+    ) = ActivitySnapshotAggregateEntity(
+        snapshot =
+            ActivitySnapshotEntity(
+                id,
+                id,
+                null,
+                "TIMER",
+                60_000,
+                null,
+                null,
+                null,
+                locallyModified,
+                1,
+            ),
+        settings = ActivitySnapshotSettingsEntity(id),
+    )
+
+    private fun activityTemplateAggregate(
+        id: String,
+        seriesId: String,
+    ) = ActivityTemplateAggregateEntity(
+        template =
+            ActivityTemplateEntity(
+                id,
+                id,
+                null,
+                "STOPWATCH",
+                null,
+                seriesId,
+                4,
+                1,
+                1,
+                null,
+                null,
+            ),
+        settings = ActivityTemplateSettingsEntity(id),
     )
 
     private fun insertRunningExecution(

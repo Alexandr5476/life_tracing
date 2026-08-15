@@ -211,3 +211,25 @@ internal data class SequenceNodeEntity(
     @ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
     @ColumnInfo(name = "repeat_count") val repeatCount: Int?,
 )
+
+@Entity(
+    tableName = "sequence_step_overrides",
+    foreignKeys = [
+        ForeignKey(
+            entity = SequenceNodeEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sequence_node_id"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+)
+internal data class SequenceStepOverrideEntity(
+    @androidx.room.PrimaryKey
+    @ColumnInfo(name = "sequence_node_id")
+    val sequenceNodeId: String,
+    @ColumnInfo(name = "start_countdown_ms") val startCountdownMs: Long?,
+    @ColumnInfo(name = "timer_zero_behavior") val timerZeroBehavior: String?,
+    @ColumnInfo(name = "timer_end_sound") val timerEndSound: Boolean?,
+    @ColumnInfo(name = "timer_end_vibration") val timerEndVibration: Boolean?,
+    @ColumnInfo(name = "keep_screen_awake") val keepScreenAwake: Boolean?,
+)

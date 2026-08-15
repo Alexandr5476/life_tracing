@@ -68,6 +68,12 @@ internal data class SequenceTemplateManualSchema(
     val nodeOwnerIndexColumns: List<String>,
     val nodeSiblingIndexColumns: List<String>,
     val nodeSnapshotIndexColumns: List<String>,
+    val overrideColumns: List<String>,
+    val overridePrimaryKeyColumns: List<String>,
+    val overrideForeignKeyDeletes: Map<String, String>,
+    val hasOverrideCountdownCheck: Boolean,
+    val hasOverrideTimerZeroBehaviorCheck: Boolean,
+    val hasOverrideBooleanChecks: Boolean,
 )
 
 internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceTemplateManualSchema {
@@ -75,6 +81,7 @@ internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceT
     val settingsSql = schemaSql("table", "sequence_template_settings")
     val nodeSql = schemaSql("table", "sequence_nodes")
     val mainIndexSql = schemaSql("index", "idx_one_sequence_template_main_field")
+    val overrideSql = schemaSql("table", "sequence_step_overrides")
     return SequenceTemplateManualSchema(
         hasNoLiveAccountingCheck = templateSql.contains("no_live_time_accounting in ('active', 'pause')"),
         hasCountdownChecks =
@@ -102,6 +109,19 @@ internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceT
         nodeOwnerIndexColumns = indexColumns("sequence_nodes_sequence"),
         nodeSiblingIndexColumns = indexColumns("sequence_nodes_parent_position"),
         nodeSnapshotIndexColumns = indexColumns("sequence_nodes_activity_snapshot_id"),
+        overrideColumns = tableColumns("sequence_step_overrides"),
+        overridePrimaryKeyColumns = tablePrimaryKeyColumns("sequence_step_overrides"),
+        overrideForeignKeyDeletes = foreignKeyDeletes("sequence_step_overrides"),
+        hasOverrideCountdownCheck =
+            overrideSql.contains("start_countdown_ms is null or start_countdown_ms >= 0"),
+        hasOverrideTimerZeroBehaviorCheck =
+            overrideSql.contains(
+                "timer_zero_behavior is null or timer_zero_behavior in ('finish', 'overtime')",
+            ),
+        hasOverrideBooleanChecks =
+            listOf("timer_end_sound", "timer_end_vibration", "keep_screen_awake").all { column ->
+                overrideSql.contains("$column is null or $column in (0, 1)")
+            },
     )
 }
 
@@ -329,6 +349,20 @@ private fun SupportSQLiteDatabase.tableColumnDefaults(table: String): Map<String
             while (cursor.moveToNext()) {
                 put(cursor.getString(columnName), cursor.getString(defaultValue))
             }
+        }
+    }
+
+private fun SupportSQLiteDatabase.tablePrimaryKeyColumns(table: String): List<String> =
+    query("PRAGMA table_info(`$table`)").use { cursor ->
+        val columnName = cursor.getColumnIndexOrThrow("name")
+        val primaryKeyPosition = cursor.getColumnIndexOrThrow("pk")
+        buildList {
+            val columns = mutableListOf<Pair<Int, String>>()
+            while (cursor.moveToNext()) {
+                val position = cursor.getInt(primaryKeyPosition)
+                if (position > 0) columns += position to cursor.getString(columnName)
+            }
+            addAll(columns.sortedBy(Pair<Int, String>::first).map(Pair<Int, String>::second))
         }
     }
 

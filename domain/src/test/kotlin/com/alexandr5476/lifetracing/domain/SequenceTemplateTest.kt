@@ -147,6 +147,35 @@ class SequenceTemplateTest {
     }
 
     @Test
+    fun `same Category option identity cannot move between Fields`() {
+        val option = SequenceTemplateCategoryOption(SequenceTemplateCategoryOptionId("option"), 0, "Old")
+        assertDoesNotThrow {
+            SequenceTemplateCategoryOptionEvolution.requireSameIdentityCompatible(
+                SequenceTemplateFieldId("first"),
+                option,
+                SequenceTemplateFieldId("first"),
+                option.copy(position = 2, label = "Renamed", isArchived = true),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceTemplateCategoryOptionEvolution.requireSameIdentityCompatible(
+                SequenceTemplateFieldId("first"),
+                option,
+                SequenceTemplateFieldId("second"),
+                option,
+            )
+        }
+        assertDoesNotThrow {
+            SequenceTemplateCategoryOptionEvolution.requireSameIdentityCompatible(
+                SequenceTemplateFieldId("first"),
+                option,
+                SequenceTemplateFieldId("second"),
+                option.copy(id = SequenceTemplateCategoryOptionId("new")),
+            )
+        }
+    }
+
+    @Test
     fun `repeat counts and sibling ordering follow container scope`() {
         assertDoesNotThrow {
             SequenceTemplateValidator.requireValidNodes(
@@ -182,7 +211,7 @@ class SequenceTemplateTest {
             )
         val insideLeft = SequenceStructureEditor.moveStep(initial, nodeId("top"), nodeId("left"), 0)
         val insideRight = SequenceStructureEditor.moveStep(insideLeft, nodeId("top"), nodeId("right"), 0)
-        val topAgain = SequenceStructureEditor.moveStep(insideRight, nodeId("top"), null, 3)
+        val topAgain = SequenceStructureEditor.moveStep(insideRight, nodeId("top"), null, 2)
 
         assertEquals(listOf("top"), repeatChildren(insideLeft, "left"))
         assertEquals(listOf("top"), repeatChildren(insideRight, "right"))
@@ -204,6 +233,48 @@ class SequenceTemplateTest {
         assertThrows(IllegalArgumentException::class.java) {
             SequenceStructureEditor.moveStep(initial, nodeId("repeat"), nodeId("repeat"), 0)
         }
+    }
+
+    @Test
+    fun `moves insert and normalize only source and destination containers`() {
+        val unchanged = repeat("unchanged", 2, 2, listOf(step("u", 4)))
+        val initial =
+            listOf<SequenceNode>(
+                step("a", 0),
+                repeat("left", 1, 2, listOf(step("x", 0), step("y", 1))),
+                unchanged,
+            )
+
+        val intoMiddle = SequenceStructureEditor.moveStep(initial, nodeId("a"), nodeId("left"), 1)
+        assertEquals(listOf("x", "a", "y"), repeatChildren(intoMiddle, "left"))
+        assertEquals(listOf(0, 1, 2), repeatBlock(intoMiddle, "left").children.map { it.position })
+        assertEquals(unchanged.children, repeatBlock(intoMiddle, "unchanged").children)
+
+        val topMiddle = SequenceStructureEditor.moveStep(intoMiddle, nodeId("x"), null, 1)
+        assertEquals(listOf("left", "x", "unchanged"), topMiddle.map { it.id.value })
+        val betweenRepeats = SequenceStructureEditor.moveStep(topMiddle, nodeId("a"), nodeId("unchanged"), 0)
+        assertEquals(listOf("a", "u"), repeatChildren(betweenRepeats, "unchanged"))
+
+        val repeatForward = SequenceStructureEditor.moveStep(initial, nodeId("x"), nodeId("left"), 1)
+        val repeatBackward = SequenceStructureEditor.moveStep(repeatForward, nodeId("x"), nodeId("left"), 0)
+        assertEquals(listOf("y", "x"), repeatChildren(repeatForward, "left"))
+        assertEquals(listOf("x", "y"), repeatChildren(repeatBackward, "left"))
+
+        val topForward = SequenceStructureEditor.moveTopLevelNode(initial, nodeId("a"), 2)
+        val topBackward = SequenceStructureEditor.moveTopLevelNode(topForward, nodeId("a"), 0)
+        assertEquals(listOf("left", "unchanged", "a"), topForward.map { it.id.value })
+        assertEquals(listOf("a", "left", "unchanged"), topBackward.map { it.id.value })
+    }
+
+    @Test
+    fun `Step overrides survive movement because they belong to Step identity`() {
+        val override = SequenceStepOverrides(startCountdown = Duration.ZERO, timerEndSound = false)
+        val initial = listOf<SequenceNode>(step("step", 0).copy(overrides = override), repeat("repeat", 1, 2))
+        val moved = SequenceStructureEditor.moveStep(initial, nodeId("step"), nodeId("repeat"), 0)
+        val restored = SequenceStructureEditor.moveStep(moved, nodeId("step"), null, 1)
+
+        assertEquals(override, repeatBlock(moved, "repeat").children.single().overrides)
+        assertEquals(override, restored.filterIsInstance<ActivityStep>().single().overrides)
     }
 
     @Test
@@ -272,6 +343,95 @@ class SequenceTemplateTest {
                 step("step", 0, previous.id),
                 previous,
                 replacement.copy(locallyModified = false),
+            )
+        }
+        listOf(
+            replacement.copy(sourceTemplateId = ActivityTemplateId("other")),
+            replacement.copy(sourceRevision = 2),
+            replacement.copy(statisticsSeriesId = StatisticsSeriesId("other-series")),
+        ).forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) {
+                ActivityStepSnapshotPolicy.replaceLocally(step("step", 0, previous.id), previous, invalid)
+            }
+        }
+    }
+
+    @Test
+    fun `effective Step settings use explicit nullable override intent`() {
+        val sequence = sequenceSettingsForResolution()
+        val activity = timerSnapshot()
+        val inherited =
+            EffectiveSequenceStepSettingsResolver.resolve(
+                step("step", 0, activity.id),
+                activity,
+                sequence,
+                true,
+            )
+        val later =
+            EffectiveSequenceStepSettingsResolver.resolve(
+                step("step", 0, activity.id),
+                activity,
+                sequence,
+                false,
+            )
+        val explicit =
+            EffectiveSequenceStepSettingsResolver.resolve(
+                step("step", 0, activity.id).copy(
+                    overrides =
+                        SequenceStepOverrides(
+                            startCountdown = Duration.ZERO,
+                            timerZeroBehavior = TimerZeroBehavior.OVERTIME,
+                            timerEndSound = true,
+                            timerEndVibration = false,
+                            keepScreenAwake = true,
+                        ),
+                ),
+                activity,
+                sequence,
+                true,
+            )
+        val explicitFalseSound =
+            EffectiveSequenceStepSettingsResolver.resolve(
+                step("step", 0, activity.id).copy(
+                    overrides = SequenceStepOverrides(timerEndSound = false),
+                ),
+                activity,
+                sequence.copy(transitionSound = true),
+                false,
+            )
+
+        assertEquals(Duration.ofSeconds(3), inherited.startCountdown)
+        assertEquals(Duration.ofSeconds(2), later.startCountdown)
+        assertEquals(TimerZeroBehavior.FINISH, inherited.timerZeroBehavior)
+        assertFalse(inherited.timerEndSound)
+        assertEquals(Duration.ZERO, explicit.startCountdown)
+        assertEquals(TimerZeroBehavior.OVERTIME, explicit.timerZeroBehavior)
+        assertTrue(explicit.timerEndSound)
+        assertFalse(explicit.timerEndVibration)
+        assertTrue(explicit.keepScreenAwake)
+        assertFalse(explicitFalseSound.timerEndSound)
+    }
+
+    @Test
+    fun `snapshot propagation flag and Step override intent are independent`() {
+        val explicitOvertime =
+            step("step", 0, ActivitySnapshotId("timer")).copy(
+                overrides = SequenceStepOverrides(timerZeroBehavior = TimerZeroBehavior.OVERTIME),
+            )
+        val unmodifiedTimer = timerSnapshot().copy(locallyModified = false)
+
+        assertEquals(
+            TimerZeroBehavior.OVERTIME,
+            EffectiveSequenceStepSettingsResolver
+                .resolve(explicitOvertime, unmodifiedTimer, SequenceTemplateSettings(), true)
+                .timerZeroBehavior,
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            EffectiveSequenceStepSettingsResolver.resolve(
+                explicitOvertime.copy(activitySnapshotId = ActivitySnapshotId("stopwatch")),
+                snapshot("stopwatch", locallyModified = false),
+                SequenceTemplateSettings(),
+                true,
             )
         }
     }
@@ -365,6 +525,11 @@ class SequenceTemplateTest {
         .children
         .map { it.id.value }
 
+    private fun repeatBlock(
+        nodes: List<SequenceNode>,
+        repeatId: String,
+    ) = nodes.filterIsInstance<SequenceRepeatBlock>().single { it.id == nodeId(repeatId) }
+
     private fun snapshot(
         id: String,
         locallyModified: Boolean,
@@ -380,6 +545,27 @@ class SequenceTemplateTest {
         locallyModified = locallyModified,
         createdAt = now,
     )
+
+    private fun timerSnapshot() =
+        snapshot("timer", locallyModified = true).copy(
+            timeTrackingMode = TimeTrackingMode.TIMER,
+            timerTarget = Duration.ofMinutes(1),
+            settings =
+                ActivityTemplateSettings(
+                    startCountdown = Duration.ofSeconds(9),
+                    timerZeroBehavior = TimerZeroBehavior.FINISH,
+                    timerEndSound = true,
+                ),
+        )
+
+    private fun sequenceSettingsForResolution() =
+        SequenceTemplateSettings(
+            sequenceStartCountdown = Duration.ofSeconds(3),
+            beforeEachStepCountdown = Duration.ofSeconds(2),
+            transitionSound = false,
+            transitionVibration = true,
+            keepScreenAwake = false,
+        )
 
     private fun activityTemplate(revision: Long) =
         ActivityTemplate(

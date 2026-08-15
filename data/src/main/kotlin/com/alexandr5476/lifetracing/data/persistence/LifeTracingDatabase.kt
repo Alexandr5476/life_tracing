@@ -31,6 +31,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SequenceTemplateCategoryOptionEntity::class,
         SequenceTemplateTagEntity::class,
         SequenceNodeEntity::class,
+        SequenceStepOverrideEntity::class,
     ],
     version = SEQUENCE_TEMPLATE_SCHEMA_VERSION,
     exportSchema = true,

@@ -1,11 +1,13 @@
 package com.alexandr5476.lifetracing.data.persistence
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionEvolution
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldEvolution
 import kotlinx.coroutines.flow.Flow
 
@@ -17,13 +19,22 @@ internal data class SequenceTemplateAggregateEntity(
     val options: List<SequenceTemplateCategoryOptionEntity> = emptyList(),
     val tags: List<SequenceTemplateTagEntity> = emptyList(),
     val nodes: List<SequenceNodeEntity> = emptyList(),
+    val stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
 )
 
 internal data class SequenceTemplateSemanticUpdate(
+    val expectedRevision: Long,
     val template: SequenceTemplateEntity,
     val settings: SequenceTemplateSettingsEntity,
     val fields: List<SequenceTemplateFieldEntity> = emptyList(),
     val options: List<SequenceTemplateCategoryOptionEntity> = emptyList(),
+    val nodes: List<SequenceNodeEntity> = emptyList(),
+    val stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
+)
+
+internal data class ActivitySnapshotModeRow(
+    val id: String,
+    @ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
 )
 
 @Dao
@@ -69,6 +80,16 @@ internal abstract class SequenceTemplateDao {
     )
     abstract fun getNodes(templateId: String): List<SequenceNodeEntity>
 
+    @Query("SELECT * FROM sequence_step_overrides WHERE sequence_node_id = :nodeId")
+    abstract fun getStepOverride(nodeId: String): SequenceStepOverrideEntity?
+
+    @Query(
+        "SELECT overrides.* FROM sequence_step_overrides AS overrides " +
+            "INNER JOIN sequence_nodes AS nodes ON nodes.id = overrides.sequence_node_id " +
+            "WHERE nodes.sequence_template_id = :templateId ORDER BY overrides.sequence_node_id",
+    )
+    abstract fun getStepOverrides(templateId: String): List<SequenceStepOverrideEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertTemplateUnchecked(template: SequenceTemplateEntity)
 
@@ -90,8 +111,8 @@ internal abstract class SequenceTemplateDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertNodesUnchecked(nodes: List<SequenceNodeEntity>)
 
-    @Update(onConflict = OnConflictStrategy.ABORT)
-    protected abstract fun updateTemplateUnchecked(template: SequenceTemplateEntity): Int
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertStepOverridesUnchecked(overrides: List<SequenceStepOverrideEntity>)
 
     @Update(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun updateSettingsUnchecked(settings: SequenceTemplateSettingsEntity): Int
@@ -105,11 +126,24 @@ internal abstract class SequenceTemplateDao {
     @Update(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun updateOptionsUnchecked(options: List<SequenceTemplateCategoryOptionEntity>): Int
 
+    @Query(
+        "UPDATE sequence_templates SET name = :name, short_comment = :shortComment, " +
+            "no_live_time_accounting = :noLiveTimeAccounting, revision = :newRevision, " +
+            "updated_at_ms = :updatedAtMs WHERE id = :templateId AND revision = :expectedRevision",
+    )
+    @Suppress("LongParameterList") // Room query parameters intentionally mirror the explicit persisted columns.
+    protected abstract fun updateSemanticTemplateUnchecked(
+        templateId: String,
+        expectedRevision: Long,
+        newRevision: Long,
+        name: String,
+        shortComment: String?,
+        noLiveTimeAccounting: String,
+        updatedAtMs: Long,
+    ): Int
+
     @Query("DELETE FROM sequence_nodes WHERE sequence_template_id = :templateId")
     protected abstract fun deleteNodesUnchecked(templateId: String): Int
-
-    @Query("DELETE FROM sequence_nodes WHERE id = :nodeId")
-    protected abstract fun deleteNodeUnchecked(nodeId: String): Int
 
     @Query("DELETE FROM sequence_template_tags WHERE sequence_template_id = :templateId")
     protected abstract fun deleteTagLinksUnchecked(templateId: String): Int
@@ -135,6 +169,12 @@ internal abstract class SequenceTemplateDao {
 
     @Query("SELECT id FROM activity_snapshots WHERE id IN (:ids)")
     protected abstract fun getExistingSnapshotIds(ids: List<String>): List<String>
+
+    @Query("SELECT id, time_tracking_mode FROM activity_snapshots WHERE id IN (:ids)")
+    protected abstract fun getSnapshotModes(ids: List<String>): List<ActivitySnapshotModeRow>
+
+    @Query("SELECT * FROM activity_snapshots WHERE id = :id")
+    protected abstract fun getActivitySnapshot(id: String): ActivitySnapshotEntity?
 
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_nodes WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
     protected abstract fun hasSequenceNodeReference(snapshotId: String): Boolean
@@ -196,7 +236,11 @@ internal abstract class SequenceTemplateDao {
             options = getOptions(id),
             tags = getTags(id),
             nodes = getNodes(id),
-        )
+            stepOverrides = getStepOverrides(id),
+        ).also { aggregate ->
+            requireValidStepOverrides(aggregate.nodes, aggregate.stepOverrides)
+            aggregate.toDomain()
+        }
     }
 
     @Transaction
@@ -211,22 +255,49 @@ internal abstract class SequenceTemplateDao {
         if (aggregate.nodes.isNotEmpty()) {
             insertNodesUnchecked(aggregate.nodes.sortedBy { it.parentRepeatNodeId != null })
         }
+        val overrides = aggregate.stepOverrides.filterNot { it.isEmpty() }
+        if (overrides.isNotEmpty()) insertStepOverridesUnchecked(overrides)
     }
 
     @Transaction
     open fun updateSemanticAggregate(update: SequenceTemplateSemanticUpdate) {
         val current =
             requireNotNull(getAggregate(update.template.id)) { "Unknown SequenceTemplate: ${update.template.id}" }
-        require(update.template.revision == current.template.revision + 1) {
-            "A semantic aggregate update must increment revision exactly once"
-        }
+        val canonicalOverrides = update.stepOverrides.filterNot { it.isEmpty() }
         val proposed =
             current.copy(
                 template = update.template,
                 settings = update.settings,
                 fields = update.fields,
                 options = update.options,
+                nodes = update.nodes,
+                stepOverrides = canonicalOverrides,
             )
+        requireValidSemanticUpdate(current, proposed, update)
+        updateTemplateWithRevisionCheck(update)
+        check(updateSettingsUnchecked(update.settings) == 1)
+        persistFieldsAndOptions(current, update)
+        replaceStructureAndPrune(current, update.nodes, canonicalOverrides)
+    }
+
+    private fun requireValidSemanticUpdate(
+        current: SequenceTemplateAggregateEntity,
+        proposed: SequenceTemplateAggregateEntity,
+        update: SequenceTemplateSemanticUpdate,
+    ) {
+        require(current.template.revision == update.expectedRevision) {
+            "SequenceTemplate revision changed concurrently"
+        }
+        require(update.template.revision == update.expectedRevision + 1) {
+            "A semantic aggregate update must increment revision exactly once"
+        }
+        require(
+            update.template.id == current.template.id &&
+                update.template.statisticsSeriesId == current.template.statisticsSeriesId &&
+                update.template.createdAtMs == current.template.createdAtMs &&
+                update.template.deletedAtMs == current.template.deletedAtMs &&
+                update.template.folderId == current.template.folderId,
+        ) { "Semantic commit cannot change Sequence identity, ownership, lifecycle, or Library metadata" }
         requireValidAggregate(proposed)
         require(current.fields.map { it.id }.all(update.fields.map { it.id }.toSet()::contains)) {
             "Existing Field identities must be retained and archived instead of removed"
@@ -234,14 +305,61 @@ internal abstract class SequenceTemplateDao {
         require(current.options.map { it.id }.all(update.options.map { it.id }.toSet()::contains)) {
             "Existing Category option identities must be retained and archived instead of removed"
         }
-        val previousDomainFields = current.toDomain().fields.associateBy { it.id }
-        proposed.toDomain().fields.forEach { updated ->
+        requireCompatibleFieldAndOptionEvolution(current, proposed)
+    }
+
+    private fun requireCompatibleFieldAndOptionEvolution(
+        current: SequenceTemplateAggregateEntity,
+        proposed: SequenceTemplateAggregateEntity,
+    ) {
+        val currentDomain = current.toDomain()
+        val proposedDomain = proposed.toDomain()
+        val previousDomainFields = currentDomain.fields.associateBy { it.id }
+        proposedDomain.fields.forEach { updated ->
             previousDomainFields[updated.id]?.let { previous ->
                 SequenceTemplateFieldEvolution.requireSameIdentityCompatible(previous, updated)
             }
         }
-        check(updateTemplateUnchecked(update.template) == 1)
-        check(updateSettingsUnchecked(update.settings) == 1)
+        val previousOptions =
+            currentDomain.fields
+                .flatMap { field ->
+                    field.categoryOptions.map { option ->
+                        option.id to
+                            (field.id to option)
+                    }
+                }.toMap()
+        proposedDomain.fields.forEach { field ->
+            field.categoryOptions.forEach { option ->
+                previousOptions[option.id]?.let { (previousOwner, previous) ->
+                    SequenceTemplateCategoryOptionEvolution.requireSameIdentityCompatible(
+                        previousOwner,
+                        previous,
+                        field.id,
+                        option,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun updateTemplateWithRevisionCheck(update: SequenceTemplateSemanticUpdate) {
+        check(
+            updateSemanticTemplateUnchecked(
+                update.template.id,
+                update.expectedRevision,
+                update.template.revision,
+                update.template.name,
+                update.template.shortComment,
+                update.template.noLiveTimeAccounting,
+                update.template.updatedAtMs,
+            ) == 1,
+        ) { "SequenceTemplate revision changed concurrently" }
+    }
+
+    private fun persistFieldsAndOptions(
+        current: SequenceTemplateAggregateEntity,
+        update: SequenceTemplateSemanticUpdate,
+    ) {
         val existingFields = current.fields.mapTo(hashSetOf()) { it.id }
         val existingOptions = current.options.mapTo(hashSetOf()) { it.id }
         update.fields.partition { it.id in existingFields }.let { (old, new) ->
@@ -252,6 +370,18 @@ internal abstract class SequenceTemplateDao {
             if (old.isNotEmpty()) check(updateOptionsUnchecked(old) == old.size)
             if (new.isNotEmpty()) insertOptionsUnchecked(new)
         }
+    }
+
+    private fun replaceStructureAndPrune(
+        current: SequenceTemplateAggregateEntity,
+        nodes: List<SequenceNodeEntity>,
+        overrides: List<SequenceStepOverrideEntity>,
+    ) {
+        val oldSnapshotIds = current.nodes.mapNotNull(SequenceNodeEntity::activitySnapshotId).distinct()
+        deleteNodesUnchecked(current.template.id)
+        if (nodes.isNotEmpty()) insertNodesUnchecked(nodes.sortedBy { it.parentRepeatNodeId != null })
+        if (overrides.isNotEmpty()) insertStepOverridesUnchecked(overrides)
+        oldSnapshotIds.forEach(::pruneSnapshotIfUnreferenced)
     }
 
     @Transaction
@@ -276,16 +406,19 @@ internal abstract class SequenceTemplateDao {
         expectedRevision: Long,
         updatedAtMs: Long,
     ) {
-        requireNotNull(getById(templateId)) { "Unknown SequenceTemplate: $templateId" }
-        require(nodes.all { it.sequenceTemplateId == templateId }) { "Nodes must belong to the SequenceTemplate" }
-        requireValidNodes(nodes)
-        val oldSnapshotIds = getNodes(templateId).mapNotNull(SequenceNodeEntity::activitySnapshotId).distinct()
-        deleteNodesUnchecked(templateId)
-        if (nodes.isNotEmpty()) insertNodesUnchecked(nodes.sortedBy { it.parentRepeatNodeId != null })
-        check(incrementRevisionUnchecked(templateId, expectedRevision, updatedAtMs) == 1) {
-            "SequenceTemplate revision changed concurrently"
-        }
-        oldSnapshotIds.forEach(::pruneSnapshotIfUnreferenced)
+        val current = requireNotNull(getAggregate(templateId)) { "Unknown SequenceTemplate: $templateId" }
+        val retainedNodeIds = nodes.mapTo(hashSetOf()) { it.id }
+        updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = expectedRevision,
+                template = current.template.copy(revision = expectedRevision + 1, updatedAtMs = updatedAtMs),
+                settings = current.settings,
+                fields = current.fields,
+                options = current.options,
+                nodes = nodes,
+                stepOverrides = current.stepOverrides.filter { it.sequenceNodeId in retainedNodeIds },
+            ),
+        )
     }
 
     @Transaction
@@ -295,18 +428,14 @@ internal abstract class SequenceTemplateDao {
         expectedRevision: Long,
         updatedAtMs: Long,
     ) {
-        val current = getNodes(templateId)
-        require(current.any { it.id == nodeId }) { "Unknown Sequence node: $nodeId" }
-        val removedSnapshotIds =
-            current
-                .filter { it.id == nodeId || it.parentRepeatNodeId == nodeId }
-                .mapNotNull(SequenceNodeEntity::activitySnapshotId)
-                .distinct()
-        check(deleteNodeUnchecked(nodeId) == 1)
-        check(incrementRevisionUnchecked(templateId, expectedRevision, updatedAtMs) == 1) {
-            "SequenceTemplate revision changed concurrently"
-        }
-        removedSnapshotIds.forEach(::pruneSnapshotIfUnreferenced)
+        val current = requireNotNull(getAggregate(templateId)) { "Unknown SequenceTemplate: $templateId" }
+        require(current.nodes.any { it.id == nodeId }) { "Unknown Sequence node: $nodeId" }
+        replaceNodeStructure(
+            templateId,
+            current.nodes.filterNot { it.id == nodeId || it.parentRepeatNodeId == nodeId },
+            expectedRevision,
+            updatedAtMs,
+        )
     }
 
     @Transaction
@@ -319,8 +448,24 @@ internal abstract class SequenceTemplateDao {
         val node = requireNotNull(findNode(nodeId)) { "Unknown Sequence node: $nodeId" }
         require(node.nodeType == "STEP") { "Only a Step can replace its ActivitySnapshot" }
         val oldSnapshotId = requireNotNull(node.activitySnapshotId)
+        val oldSnapshot =
+            requireNotNull(getActivitySnapshot(oldSnapshotId)) { "Step snapshot is missing: $oldSnapshotId" }
         require(replacement.snapshot.id != oldSnapshotId) { "Snapshot replacement requires a new identity" }
         require(replacement.snapshot.locallyModified) { "Local Step replacement must be locally modified" }
+        require(replacement.snapshot.sourceTemplateId == oldSnapshot.sourceTemplateId) {
+            "Local Step replacement must preserve source Template identity"
+        }
+        require(replacement.snapshot.sourceRevision == oldSnapshot.sourceRevision) {
+            "Local Step replacement must preserve source revision"
+        }
+        require(replacement.snapshot.statisticsSeriesId == oldSnapshot.statisticsSeriesId) {
+            "Local Step replacement must preserve Statistics Series identity"
+        }
+        if (getStepOverride(nodeId)?.timerZeroBehavior != null) {
+            require(replacement.snapshot.timeTrackingMode == "TIMER") {
+                "Timer zero behavior override requires a TIMER Step"
+            }
+        }
         requireValidSnapshotAggregate(replacement)
         insertActivitySnapshotUnchecked(replacement.snapshot)
         insertActivitySnapshotSettingsUnchecked(replacement.settings)
@@ -346,6 +491,7 @@ internal abstract class SequenceTemplateDao {
         val fieldIds = aggregate.fields.mapTo(hashSetOf()) { it.id }
         require(aggregate.options.all { it.sequenceTemplateFieldId in fieldIds }) { "Category option owner mismatch" }
         requireValidNodes(aggregate.nodes)
+        requireValidStepOverrides(aggregate.nodes, aggregate.stepOverrides)
         aggregate.toDomain()
     }
 
@@ -385,6 +531,31 @@ internal abstract class SequenceTemplateDao {
         }
     }
 
+    private fun requireValidStepOverrides(
+        nodes: List<SequenceNodeEntity>,
+        overrides: List<SequenceStepOverrideEntity>,
+    ) {
+        val nodesById = nodes.associateBy(SequenceNodeEntity::id)
+        val modesBySnapshot =
+            getSnapshotModes(nodes.mapNotNull(SequenceNodeEntity::activitySnapshotId).distinct())
+                .associateBy(ActivitySnapshotModeRow::id)
+        overrides.forEach { override ->
+            val node = requireNotNull(nodesById[override.sequenceNodeId]) { "Step override owner must exist" }
+            require(node.nodeType == "STEP") { "Only a Step can own execution-setting overrides" }
+            require(override.startCountdownMs == null || override.startCountdownMs >= 0) {
+                "Step start countdown must not be negative"
+            }
+            if (override.timerZeroBehavior != null) {
+                require(override.timerZeroBehavior == "FINISH" || override.timerZeroBehavior == "OVERTIME") {
+                    "Unknown Step timer zero behavior code: ${override.timerZeroBehavior}"
+                }
+                require(modesBySnapshot[node.activitySnapshotId]?.timeTrackingMode == "TIMER") {
+                    "Timer zero behavior override requires a TIMER Step"
+                }
+            }
+        }
+    }
+
     private fun requireValidSnapshotAggregate(aggregate: ActivitySnapshotAggregateEntity) {
         require(aggregate.settings.snapshotId == aggregate.snapshot.id) { "Snapshot settings owner mismatch" }
         require(aggregate.fields.all { it.snapshotId == aggregate.snapshot.id }) { "Snapshot Field owner mismatch" }
@@ -398,4 +569,11 @@ internal abstract class SequenceTemplateDao {
             check(deleteActivitySnapshotUnchecked(snapshotId) == 1)
         }
     }
+
+    private fun SequenceStepOverrideEntity.isEmpty(): Boolean =
+        startCountdownMs == null &&
+            timerZeroBehavior == null &&
+            timerEndSound == null &&
+            timerEndVibration == null &&
+            keepScreenAwake == null
 }
