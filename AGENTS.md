@@ -8,6 +8,8 @@
 - For a bug fix: (1) add a failing regression test, (2) fix production code, (3) run that test and the relevant suite. Do not weaken or delete tests to pass CI.
 - Do not use reflection solely to test private code. Extract important private logic into a focused internal/domain component with a testable API instead.
 - UI work must read `docs/design/README.md`; screenshots are references, reusable components take precedence, and user-visible strings use resources.
+- UI motion uses `LifeTracingMotion`; do not rely on default spring/bouncy animation without an explicitly justified interaction need.
+- Custom rounded interactive surfaces must clip press indication to the same shape as their visual surface.
 - Never commit secrets, credentials, signing keys, local SDK paths, or `AGENTS.override.md`.
 - A task is complete only when all relevant checks pass.
 

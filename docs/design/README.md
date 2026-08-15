@@ -107,11 +107,28 @@ Layouts should tolerate realistic Russian/English text-length differences instea
 
 ## Scaling
 
-- LifeTracing UI must respect Android system font and display scaling.
-- Layouts must not assume fixed text height.
-- A future appearance setting may add separate app-level interface and text scale.
-- System accessibility font scaling must not be overridden.
-- Screenshots represent only the 100% baseline.
+Future Settings implementation will provide app-level scaling preferences:
+
+| Preference | Minimum | Maximum | Step | Default |
+| --- | ---: | ---: | ---: | ---: |
+| Interface size | 90% | 120% | 5% | 100% |
+| Text size | 90% | 130% | 5% | 100% |
+
+These preferences are additive to Android system display and font scaling; app-level text scale must never neutralize or replace system accessibility font scaling. Layouts must reflow without assuming a fixed text height. Design-reference screenshots represent only the 100% / 100% baseline. Implementation is deferred until the Settings feature.
+
+## Motion
+
+LifeTracing motion is minimal, fast, functional, and restrained: no decorative bouncing, gratuitous delays, or slow cinematic transitions. State changes must never wait on decorative animation.
+
+- Micro interaction: 100 ms.
+- Normal UI transition: 160 ms.
+- Structural expand/collapse: 220 ms; this is normally the upper bound for ordinary UI motion.
+
+Future ordinary transitions should use the `LifeTracingMotion` duration tokens with explicit finite specs (normally tween-based), rather than accidental library default springs. Springs, bounce, and overshoot are not default behavior; introduce a spring only when a specific interaction genuinely benefits from physical motion. Do not disable Android/Compose motion-duration scaling, so standard Compose animation mechanisms can respect users who effectively disable animations.
+
+## Interaction feedback
+
+Keep Material press feedback and ripples enabled. Rounded interactive surfaces must use the same effective shape for their visual surface and interaction clipping. For custom click targets, prefer a shaped Material `Surface`, or clip to the intended shape before adding indication/clickable behavior; never place an unclipped rectangular indication layer over a rounded container.
 
 ## Evolution
 
