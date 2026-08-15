@@ -165,7 +165,7 @@ class ActivityExecutionTest {
     }
 
     @Test
-    fun `pause resume and complete subtract every pause once`() {
+    fun `live stopwatch and timer completion leaves reason null and subtracts pauses`() {
         val started = factory.startTimed(snapshot(), now.minusSeconds(100), now.minusSeconds(100), zone)
         val pausedOnce =
             ActivityExecutionTransitions.pause(
@@ -182,10 +182,21 @@ class ActivityExecutionTest {
             )
 
         val completed = ActivityExecutionTransitions.complete(pausedTwice, now)
+        val completedTimer =
+            ActivityExecutionTransitions.complete(
+                factory.startTimed(
+                    snapshot(TimeTrackingMode.TIMER),
+                    now.minusSeconds(10),
+                    now.minusSeconds(10),
+                    zone,
+                ),
+                now,
+            )
 
         assertEquals(Duration.ofSeconds(50), completed.activeDuration)
         assertEquals(ActivityExecutionStatus.COMPLETED, completed.status)
         assertNull(completed.completionReason)
+        assertNull(completedTimer.completionReason)
         assertEquals(now, completed.pauses.last().endedAt)
     }
 

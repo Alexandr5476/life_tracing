@@ -336,7 +336,6 @@ object ActivityExecutionTransitions {
     fun complete(
         execution: ActivityExecution,
         at: Instant,
-        reason: ActivityCompletionReason? = null,
     ): ActivityExecution {
         val persistedAt = at.toPersistenceInstant()
         require(execution.status != ActivityExecutionStatus.COMPLETED) { "Execution is already completed" }
@@ -360,7 +359,7 @@ object ActivityExecutionTransitions {
             status = ActivityExecutionStatus.COMPLETED,
             completedAt = persistedAt,
             activeDuration = ActivityExecutionDurationCalculator.calculate(startedAt, persistedAt, pauses),
-            completionReason = reason,
+            completionReason = null,
             updatedAt = persistedAt,
             pauses = pauses,
         )

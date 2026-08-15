@@ -6,7 +6,6 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
-import com.alexandr5476.lifetracing.domain.ActivityCompletionReason
 import com.alexandr5476.lifetracing.domain.ActivityExecutionDurationCalculator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
@@ -91,14 +90,13 @@ internal abstract class ActivityExecutionDao {
 
     @Query(
         "UPDATE activity_executions SET status = 'COMPLETED', completed_at_ms = :completedAtMs, " +
-            "active_duration_ms = :activeDurationMs, completion_reason = :completionReason, " +
+            "active_duration_ms = :activeDurationMs, completion_reason = NULL, " +
             "updated_at_ms = :completedAtMs WHERE id = :id AND status IN ('RUNNING', 'PAUSED')",
     )
     protected abstract fun markCompletedUnchecked(
         id: String,
         completedAtMs: Long,
         activeDurationMs: Long,
-        completionReason: String?,
     ): Int
 
     @Query("UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs WHERE id = :id")
@@ -181,7 +179,6 @@ internal abstract class ActivityExecutionDao {
     open fun complete(
         id: String,
         atMs: Long,
-        completionReason: ActivityCompletionReason? = null,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
         requireTimedSnapshot(execution.snapshotId)
@@ -205,7 +202,7 @@ internal abstract class ActivityExecutionDao {
                 Instant.ofEpochMilli(atMs),
                 pauses,
             )
-        check(markCompletedUnchecked(id, atMs, duration.toMillis(), completionReason?.name) == 1)
+        check(markCompletedUnchecked(id, atMs, duration.toMillis()) == 1)
     }
 
     private fun requireValidAggregate(aggregate: ActivityExecutionAggregateEntity) {
