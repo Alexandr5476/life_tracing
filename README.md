@@ -24,6 +24,10 @@ Read the relevant document in [`docs/spec`](docs/spec) before implementing a fea
 
 The app uses `minSdk 26`: Android 8.0 is a practical modern baseline and includes the `java.time` APIs needed by later time-oriented domain work. Android targets Java 17 bytecode for runtime compatibility while builds use a JDK 21 toolchain.
 
+## UI foundation
+
+The Compose foundation supports system, light, and dark appearance modes plus English and Russian resources. Visual references and their precedence rules are in [`docs/design/README.md`](docs/design/README.md).
+
 ## Build and verify
 
 ```powershell

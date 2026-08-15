@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LifeTracing</string>
+    <string name="design_preview_title">LifeTracing</string>
+    <string name="design_preview_heading">Основа дизайна</string>
+    <string name="design_preview_body">Компактный обзор общей семантической темы.</string>
+    <string name="design_preview_primary_action">Основное действие</string>
+    <string name="design_preview_secondary_action">Вторичное действие</string>
+    <string name="design_preview_input_label">Поле ввода</string>
+    <string name="design_preview_input_value">Пример значения</string>
+    <string name="design_preview_card_title">Карточка поверхности</string>
+    <string name="design_preview_card_body">Тональные слои и контуры формируют иерархию.</string>
+    <string name="design_preview_row">Компактная строка</string>
+    <string name="design_preview_progress">Готовность основы</string>
+</resources>
