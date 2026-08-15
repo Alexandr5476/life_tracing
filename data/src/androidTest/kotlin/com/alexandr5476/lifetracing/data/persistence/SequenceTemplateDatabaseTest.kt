@@ -297,6 +297,248 @@ class SequenceTemplateDatabaseTest {
     }
 
     @Test
+    fun semanticCommitRejectsArbitraryExistingStepSnapshotRepoint() {
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("activity-series", "ACTIVITY", "Activity", 1, null),
+        )
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("other-series", "ACTIVITY", "Other", 1, null),
+        )
+        database.activityTemplateDao().insertAggregate(activityTemplateAggregate("activity", "activity-series"))
+        database.activityTemplateDao().insertAggregate(activityTemplateAggregate("other", "activity-series"))
+        snapshots.insertAggregate(linkedSnapshotAggregate("old", "activity", 4, "activity-series", false))
+        val unrelated =
+            listOf(
+                linkedSnapshotAggregate("other-source", "other", 4, "activity-series", false),
+                linkedSnapshotAggregate("other-revision", "activity", 5, "activity-series", false),
+                linkedSnapshotAggregate("other-series-snapshot", "activity", 4, "other-series", false),
+            )
+        unrelated.forEach(snapshots::insertAggregate)
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes = listOf(step("step", "sequence", null, 0, "old")),
+            )
+        sequences.insertAggregate(initial)
+
+        unrelated.forEach { target ->
+            assertThrows(IllegalArgumentException::class.java) {
+                sequences.updateSemanticAggregate(
+                    SequenceTemplateSemanticUpdate(
+                        expectedRevision = 7,
+                        template = initial.template.copy(revision = 8, updatedAtMs = 8),
+                        settings = initial.settings,
+                        nodes = listOf(step("step", "sequence", null, 0, target.snapshot.id)),
+                    ),
+                )
+            }
+            assertEquals("old", sequences.getNodes("sequence").single().activitySnapshotId)
+            assertEquals(7L, sequences.getById("sequence")?.revision)
+            assertNotNull(snapshots.getById("old"))
+            assertEquals(target, snapshots.getAggregate(target.snapshot.id))
+        }
+    }
+
+    @Test
+    fun semanticCommitAtomicallySavesAllChangesAndOneLocalStepReplacement() {
+        insertSnapshot("old")
+        insertSnapshot("stationary")
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes =
+                    listOf(
+                        step("edited", "sequence", null, 0, "old"),
+                        step("stationary", "sequence", null, 1, "stationary"),
+                    ),
+            )
+        sequences.insertAggregate(initial)
+        val replacement =
+            snapshotAggregate("replacement", locallyModified = true).copy(
+                settings = ActivitySnapshotSettingsEntity("replacement", showSeconds = false),
+                fields =
+                    listOf(
+                        ActivitySnapshotFieldEntity(
+                            "replacement-field",
+                            "replacement",
+                            null,
+                            0,
+                            "Count",
+                            "Local count",
+                            "NUMBER",
+                            "reps",
+                            0,
+                            5_000,
+                            null,
+                            null,
+                            true,
+                        ),
+                    ),
+            )
+
+        sequences.updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = 7,
+                template = initial.template.copy(name = "Changed", revision = 8, updatedAtMs = 8),
+                settings = initial.settings.copy(autoAdvance = false),
+                nodes =
+                    listOf(
+                        step("stationary", "sequence", null, 0, "stationary"),
+                        step("edited", "sequence", null, 1, "replacement"),
+                    ),
+                stepOverrides = listOf(override("edited", countdown = 0, sound = false)),
+                stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement("edited", replacement)),
+            ),
+        )
+
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+        assertEquals("Changed", sequences.getById("sequence")?.name)
+        assertFalse(sequences.getSettings("sequence")!!.autoAdvance)
+        assertEquals(listOf("stationary", "edited"), sequences.getNodes("sequence").map { it.id })
+        assertEquals("replacement", sequences.getNodes("sequence").last().activitySnapshotId)
+        assertEquals(0L, sequences.getStepOverride("edited")?.startCountdownMs)
+        assertEquals(false, sequences.getStepOverride("edited")?.timerEndSound)
+        assertEquals(replacement, snapshots.getAggregate("replacement"))
+        assertTrue(snapshots.getById("replacement")!!.locallyModified)
+        assertNull(snapshots.getById("old"))
+    }
+
+    @Test
+    fun semanticReplacementPreservesExecutionAndOtherStepOwnedOldSnapshots() {
+        listOf("execution-old", "shared-old").forEach(::insertSnapshot)
+        sequences.insertAggregate(
+            aggregate(
+                template = template("execution-sequence"),
+                settings = settings("execution-sequence"),
+                userState = userState("execution-sequence"),
+                nodes = listOf(step("execution-step", "execution-sequence", null, 0, "execution-old")),
+            ),
+        )
+        insertRunningExecution("execution", "execution-old")
+        val executionCurrent = sequences.getAggregate("execution-sequence")!!
+        val executionReplacement = snapshotAggregate("execution-new", true)
+        sequences.updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                1,
+                executionCurrent.template.copy(revision = 2, updatedAtMs = 2),
+                executionCurrent.settings,
+                nodes = listOf(step("execution-step", "execution-sequence", null, 0, "execution-new")),
+                stepSnapshotReplacements =
+                    listOf(SequenceStepSnapshotReplacement("execution-step", executionReplacement)),
+            ),
+        )
+        assertNotNull(snapshots.getById("execution-old"))
+
+        sequences.insertAggregate(
+            aggregate(
+                template = template("shared-sequence"),
+                settings = settings("shared-sequence"),
+                userState = userState("shared-sequence"),
+                nodes =
+                    listOf(
+                        step("edited-shared", "shared-sequence", null, 0, "shared-old"),
+                        step("other-owner", "shared-sequence", null, 1, "shared-old"),
+                    ),
+            ),
+        )
+        val sharedCurrent = sequences.getAggregate("shared-sequence")!!
+        val sharedReplacement = snapshotAggregate("shared-new", true)
+        sequences.updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                1,
+                sharedCurrent.template.copy(revision = 2, updatedAtMs = 2),
+                sharedCurrent.settings,
+                nodes =
+                    listOf(
+                        step("edited-shared", "shared-sequence", null, 0, "shared-new"),
+                        step("other-owner", "shared-sequence", null, 1, "shared-old"),
+                    ),
+                stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement("edited-shared", sharedReplacement)),
+            ),
+        )
+        assertNotNull(snapshots.getById("shared-old"))
+    }
+
+    @Test
+    fun invalidSemanticLocalReplacementsRollBackEveryProposedChange() {
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("activity-series", "ACTIVITY", "Activity", 1, null),
+        )
+        database.activityTemplateDao().insertAggregate(activityTemplateAggregate("activity", "activity-series"))
+        database.activityTemplateDao().insertAggregate(activityTemplateAggregate("other", "activity-series"))
+        snapshots.insertAggregate(linkedSnapshotAggregate("old", "activity", 4, "activity-series", false))
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes = listOf(step("step", "sequence", null, 0, "old")),
+            )
+        sequences.insertAggregate(initial)
+        val invalid =
+            listOf(
+                linkedSnapshotAggregate("new-source", "other", 4, "activity-series", true),
+                linkedSnapshotAggregate("new-revision", "activity", 5, "activity-series", true),
+                linkedSnapshotAggregate("new-series", "activity", 4, "sequence-series", true),
+                linkedSnapshotAggregate("not-local", "activity", 4, "activity-series", false),
+            )
+
+        invalid.forEach { replacement ->
+            assertThrows(IllegalArgumentException::class.java) {
+                sequences.updateSemanticAggregate(
+                    SequenceTemplateSemanticUpdate(
+                        expectedRevision = 7,
+                        template = initial.template.copy(name = "Must roll back", revision = 8, updatedAtMs = 8),
+                        settings = initial.settings.copy(autoAdvance = false),
+                        nodes = listOf(step("step", "sequence", null, 0, replacement.snapshot.id)),
+                        stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement("step", replacement)),
+                    ),
+                )
+            }
+            assertNull(snapshots.getById(replacement.snapshot.id))
+            assertEquals("old", sequences.getNodes("sequence").single().activitySnapshotId)
+            assertEquals(initial.template, sequences.getById("sequence"))
+            assertEquals(initial.settings, sequences.getSettings("sequence"))
+            assertNotNull(snapshots.getById("old"))
+        }
+    }
+
+    @Test
+    fun staleSemanticCommitDoesNotLeavePreparedReplacementOrphan() {
+        insertSnapshot("old")
+        val initial =
+            aggregate(
+                template = template(revision = 7),
+                nodes = listOf(step("step", "sequence", null, 0, "old")),
+            )
+        sequences.insertAggregate(initial)
+        sequences.updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                7,
+                initial.template.copy(name = "Winner", revision = 8, updatedAtMs = 8),
+                initial.settings,
+                nodes = initial.nodes,
+            ),
+        )
+        val replacement = snapshotAggregate("stale-new", true)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            sequences.updateSemanticAggregate(
+                SequenceTemplateSemanticUpdate(
+                    7,
+                    initial.template.copy(name = "Stale", revision = 8, updatedAtMs = 9),
+                    initial.settings,
+                    nodes = listOf(step("step", "sequence", null, 0, "stale-new")),
+                    stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement("step", replacement)),
+                ),
+            )
+        }
+        assertNull(snapshots.getById("stale-new"))
+        assertEquals("Winner", sequences.getById("sequence")?.name)
+        assertEquals(8L, sequences.getById("sequence")?.revision)
+        assertEquals("old", sequences.getNodes("sequence").single().activitySnapshotId)
+        assertNotNull(snapshots.getById("old"))
+    }
+
+    @Test
     fun overrideOnlySemanticCommitAdvancesRevisionOnce() {
         insertSnapshot("snapshot")
         val initial =

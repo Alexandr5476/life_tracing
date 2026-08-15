@@ -30,6 +30,12 @@ internal data class SequenceTemplateSemanticUpdate(
     val options: List<SequenceTemplateCategoryOptionEntity> = emptyList(),
     val nodes: List<SequenceNodeEntity> = emptyList(),
     val stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
+    val stepSnapshotReplacements: List<SequenceStepSnapshotReplacement> = emptyList(),
+)
+
+internal data class SequenceStepSnapshotReplacement(
+    val sequenceNodeId: String,
+    val replacement: ActivitySnapshotAggregateEntity,
 )
 
 internal data class ActivitySnapshotModeRow(
@@ -148,25 +154,6 @@ internal abstract class SequenceTemplateDao {
     @Query("DELETE FROM sequence_template_tags WHERE sequence_template_id = :templateId")
     protected abstract fun deleteTagLinksUnchecked(templateId: String): Int
 
-    @Query(
-        "UPDATE sequence_nodes SET activity_snapshot_id = :snapshotId " +
-            "WHERE id = :nodeId AND node_type = 'STEP'",
-    )
-    protected abstract fun updateStepSnapshotUnchecked(
-        nodeId: String,
-        snapshotId: String,
-    ): Int
-
-    @Query(
-        "UPDATE sequence_templates SET revision = revision + 1, updated_at_ms = :updatedAtMs " +
-            "WHERE id = :templateId AND revision = :expectedRevision",
-    )
-    protected abstract fun incrementRevisionUnchecked(
-        templateId: String,
-        expectedRevision: Long,
-        updatedAtMs: Long,
-    ): Int
-
     @Query("SELECT id FROM activity_snapshots WHERE id IN (:ids)")
     protected abstract fun getExistingSnapshotIds(ids: List<String>): List<String>
 
@@ -273,16 +260,18 @@ internal abstract class SequenceTemplateDao {
                 nodes = update.nodes,
                 stepOverrides = canonicalOverrides,
             )
-        requireValidSemanticUpdate(current, proposed, update)
+        requireValidSemanticUpdateHeader(current, update)
+        requireValidStepSnapshotReplacements(current, proposed.nodes, update.stepSnapshotReplacements)
+        update.stepSnapshotReplacements.forEach { insertSnapshotAggregate(it.replacement) }
+        requireValidSemanticUpdateBody(current, proposed)
         updateTemplateWithRevisionCheck(update)
         check(updateSettingsUnchecked(update.settings) == 1)
         persistFieldsAndOptions(current, update)
         replaceStructureAndPrune(current, update.nodes, canonicalOverrides)
     }
 
-    private fun requireValidSemanticUpdate(
+    private fun requireValidSemanticUpdateHeader(
         current: SequenceTemplateAggregateEntity,
-        proposed: SequenceTemplateAggregateEntity,
         update: SequenceTemplateSemanticUpdate,
     ) {
         require(current.template.revision == update.expectedRevision) {
@@ -298,14 +287,92 @@ internal abstract class SequenceTemplateDao {
                 update.template.deletedAtMs == current.template.deletedAtMs &&
                 update.template.folderId == current.template.folderId,
         ) { "Semantic commit cannot change Sequence identity, ownership, lifecycle, or Library metadata" }
+    }
+
+    private fun requireValidSemanticUpdateBody(
+        current: SequenceTemplateAggregateEntity,
+        proposed: SequenceTemplateAggregateEntity,
+    ) {
         requireValidAggregate(proposed)
-        require(current.fields.map { it.id }.all(update.fields.map { it.id }.toSet()::contains)) {
+        require(current.fields.map { it.id }.all(proposed.fields.map { it.id }.toSet()::contains)) {
             "Existing Field identities must be retained and archived instead of removed"
         }
-        require(current.options.map { it.id }.all(update.options.map { it.id }.toSet()::contains)) {
+        require(current.options.map { it.id }.all(proposed.options.map { it.id }.toSet()::contains)) {
             "Existing Category option identities must be retained and archived instead of removed"
         }
         requireCompatibleFieldAndOptionEvolution(current, proposed)
+    }
+
+    private fun requireValidStepSnapshotReplacements(
+        current: SequenceTemplateAggregateEntity,
+        proposedNodes: List<SequenceNodeEntity>,
+        replacements: List<SequenceStepSnapshotReplacement>,
+    ) {
+        require(replacements.map { it.sequenceNodeId }.distinct().size == replacements.size) {
+            "At most one snapshot replacement is allowed per Step"
+        }
+        require(replacements.map { it.replacement.snapshot.id }.distinct().size == replacements.size) {
+            "Each staged replacement must have a unique snapshot identity"
+        }
+        val currentById = current.nodes.associateBy(SequenceNodeEntity::id)
+        val proposedById = proposedNodes.associateBy(SequenceNodeEntity::id)
+        val replacementsByNode = replacements.associateBy(SequenceStepSnapshotReplacement::sequenceNodeId)
+        replacements.forEach { descriptor ->
+            val previousNode =
+                requireNotNull(currentById[descriptor.sequenceNodeId]) {
+                    "Snapshot replacement owner must be an existing Step"
+                }
+            require(previousNode.nodeType == "STEP") { "Snapshot replacement owner must be an existing Step" }
+            val proposedNode =
+                requireNotNull(proposedById[descriptor.sequenceNodeId]) {
+                    "Snapshot replacement cannot target a removed Step"
+                }
+            require(proposedNode.nodeType == "STEP") { "Snapshot replacement cannot target a Repeat" }
+            val oldSnapshotId = requireNotNull(previousNode.activitySnapshotId)
+            val replacement = descriptor.replacement
+            require(replacement.snapshot.id != oldSnapshotId) { "Snapshot replacement requires a new identity" }
+            require(proposedNode.activitySnapshotId == replacement.snapshot.id) {
+                "Proposed Step must reference its staged replacement"
+            }
+            requireValidLocalSnapshotReplacement(oldSnapshotId, replacement)
+        }
+        current.nodes.filter { it.nodeType == "STEP" }.forEach { previousNode ->
+            val proposedNode = proposedById[previousNode.id]
+            if (
+                proposedNode?.nodeType == "STEP" &&
+                proposedNode.activitySnapshotId != previousNode.activitySnapshotId
+            ) {
+                require(previousNode.id in replacementsByNode) {
+                    "An existing Step snapshot may change only through an explicit local replacement"
+                }
+            }
+        }
+    }
+
+    private fun requireValidLocalSnapshotReplacement(
+        oldSnapshotId: String,
+        replacement: ActivitySnapshotAggregateEntity,
+    ) {
+        val previous =
+            requireNotNull(getActivitySnapshot(oldSnapshotId)) { "Step snapshot is missing: $oldSnapshotId" }
+        requireValidSnapshotAggregate(replacement)
+        require(replacement.snapshot.locallyModified) { "Local Step replacement must be locally modified" }
+        require(replacement.snapshot.sourceTemplateId == previous.sourceTemplateId) {
+            "Local Step replacement must preserve source Template identity"
+        }
+        require(replacement.snapshot.sourceRevision == previous.sourceRevision) {
+            "Local Step replacement must preserve source revision"
+        }
+        require(replacement.snapshot.statisticsSeriesId == previous.statisticsSeriesId) {
+            "Local Step replacement must preserve Statistics Series identity"
+        }
+    }
+
+    private fun insertSnapshotAggregate(aggregate: ActivitySnapshotAggregateEntity) {
+        insertActivitySnapshotUnchecked(aggregate.snapshot)
+        insertActivitySnapshotSettingsUnchecked(aggregate.settings)
+        if (aggregate.fields.isNotEmpty()) insertActivitySnapshotFieldsUnchecked(aggregate.fields)
+        if (aggregate.options.isNotEmpty()) insertActivitySnapshotOptionsUnchecked(aggregate.options)
     }
 
     private fun requireCompatibleFieldAndOptionEvolution(
@@ -447,35 +514,29 @@ internal abstract class SequenceTemplateDao {
     ) {
         val node = requireNotNull(findNode(nodeId)) { "Unknown Sequence node: $nodeId" }
         require(node.nodeType == "STEP") { "Only a Step can replace its ActivitySnapshot" }
-        val oldSnapshotId = requireNotNull(node.activitySnapshotId)
-        val oldSnapshot =
-            requireNotNull(getActivitySnapshot(oldSnapshotId)) { "Step snapshot is missing: $oldSnapshotId" }
-        require(replacement.snapshot.id != oldSnapshotId) { "Snapshot replacement requires a new identity" }
-        require(replacement.snapshot.locallyModified) { "Local Step replacement must be locally modified" }
-        require(replacement.snapshot.sourceTemplateId == oldSnapshot.sourceTemplateId) {
-            "Local Step replacement must preserve source Template identity"
-        }
-        require(replacement.snapshot.sourceRevision == oldSnapshot.sourceRevision) {
-            "Local Step replacement must preserve source revision"
-        }
-        require(replacement.snapshot.statisticsSeriesId == oldSnapshot.statisticsSeriesId) {
-            "Local Step replacement must preserve Statistics Series identity"
-        }
-        if (getStepOverride(nodeId)?.timerZeroBehavior != null) {
-            require(replacement.snapshot.timeTrackingMode == "TIMER") {
-                "Timer zero behavior override requires a TIMER Step"
+        val current =
+            requireNotNull(getAggregate(node.sequenceTemplateId)) {
+                "Unknown SequenceTemplate: ${node.sequenceTemplateId}"
             }
-        }
-        requireValidSnapshotAggregate(replacement)
-        insertActivitySnapshotUnchecked(replacement.snapshot)
-        insertActivitySnapshotSettingsUnchecked(replacement.settings)
-        if (replacement.fields.isNotEmpty()) insertActivitySnapshotFieldsUnchecked(replacement.fields)
-        if (replacement.options.isNotEmpty()) insertActivitySnapshotOptionsUnchecked(replacement.options)
-        check(updateStepSnapshotUnchecked(nodeId, replacement.snapshot.id) == 1)
-        check(incrementRevisionUnchecked(node.sequenceTemplateId, expectedRevision, updatedAtMs) == 1) {
-            "SequenceTemplate revision changed concurrently"
-        }
-        pruneSnapshotIfUnreferenced(oldSnapshotId)
+        updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = expectedRevision,
+                template = current.template.copy(revision = expectedRevision + 1, updatedAtMs = updatedAtMs),
+                settings = current.settings,
+                fields = current.fields,
+                options = current.options,
+                nodes =
+                    current.nodes.map { currentNode ->
+                        if (currentNode.id == nodeId) {
+                            currentNode.copy(activitySnapshotId = replacement.snapshot.id)
+                        } else {
+                            currentNode
+                        }
+                    },
+                stepOverrides = current.stepOverrides,
+                stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement(nodeId, replacement)),
+            ),
+        )
     }
 
     @Query("SELECT * FROM sequence_nodes WHERE id = :id")
