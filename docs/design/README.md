@@ -79,7 +79,7 @@ If a reference suggests a genuinely useful new variant, introduce it deliberatel
 
 ## Specific reference notes
 
-`activity-editor-full.png` and `activity-editor-collapsable.png` are two exploratory views of the same conceptual Activity editor.
+`activity-editor-full.png` and `activity-editor-collapsible.png` are two exploratory views of the same conceptual Activity editor.
 
 They should be used to understand:
 
@@ -104,6 +104,14 @@ LifeTracing initially supports:
 User-facing production strings must use Android string resources and must not be hardcoded in Compose code.
 
 Layouts should tolerate realistic Russian/English text-length differences instead of being tuned only for screenshot text.
+
+## Scaling
+
+- LifeTracing UI must respect Android system font and display scaling.
+- Layouts must not assume fixed text height.
+- A future appearance setting may add separate app-level interface and text scale.
+- System accessibility font scaling must not be overridden.
+- Screenshots represent only the 100% baseline.
 
 ## Evolution
 

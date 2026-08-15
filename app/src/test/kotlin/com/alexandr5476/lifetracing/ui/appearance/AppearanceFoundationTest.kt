@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.ui.appearance
 
+import androidx.compose.ui.graphics.Color
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import com.alexandr5476.lifetracing.ui.theme.toAccentPalette
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -36,6 +37,17 @@ class AppearanceFoundationTest {
                 .toAccentPalette()
                 .light
                 .primary,
+        )
+    }
+
+    @Test
+    fun default_light_accent_uses_the_design_surface_tint() {
+        assertEquals(
+            Color(0xFF1A648C),
+            AccentPaletteId.DEFAULT
+                .toAccentPalette()
+                .light
+                .surfaceTint,
         )
     }
 

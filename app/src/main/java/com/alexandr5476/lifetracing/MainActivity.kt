@@ -13,14 +13,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +28,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
+import com.alexandr5476.lifetracing.ui.components.LifeTracingLinearProgressIndicator
+import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
+import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
+import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import com.alexandr5476.lifetracing.ui.theme.spacing
 
@@ -87,19 +87,19 @@ private fun DesignFoundationPreview() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            Button(
+            LifeTracingPrimaryButton(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {},
             ) {
                 Text(stringResource(R.string.design_preview_primary_action))
             }
-            OutlinedButton(
+            LifeTracingSecondaryButton(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {},
             ) {
                 Text(stringResource(R.string.design_preview_secondary_action))
             }
-            OutlinedTextField(
+            LifeTracingOutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
                 value = stringResource(R.string.design_preview_input_value),
                 onValueChange = {},
@@ -146,7 +146,7 @@ private fun DesignFoundationCard() {
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
-            LinearProgressIndicator(
+            LifeTracingLinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth(),
                 progress = { 0.65f },
             )

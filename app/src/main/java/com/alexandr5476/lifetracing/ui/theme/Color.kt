@@ -25,6 +25,7 @@ data class AccentPalette(
 @Immutable
 data class AccentColors(
     val primary: Color,
+    val surfaceTint: Color,
     val onPrimary: Color,
     val primaryContainer: Color,
     val onPrimaryContainer: Color,
@@ -47,6 +48,7 @@ private val defaultAccentPalette =
         light =
             AccentColors(
                 primary = Color(0xFF00567C),
+                surfaceTint = Color(0xFF1A648C),
                 onPrimary = Color(0xFFFFFFFF),
                 primaryContainer = Color(0xFF2A6F97),
                 onPrimaryContainer = Color(0xFFD7ECFF),
@@ -59,6 +61,7 @@ private val defaultAccentPalette =
         dark =
             AccentColors(
                 primary = Color(0xFF8FCEFA),
+                surfaceTint = Color(0xFF8FCEFA),
                 onPrimary = Color(0xFF00344D),
                 primaryContainer = Color(0xFF004C6E),
                 onPrimaryContainer = Color(0xFFC8E6FF),
@@ -76,6 +79,7 @@ private val slateAccentPalette =
         light =
             AccentColors(
                 primary = Color(0xFF315F7C),
+                surfaceTint = Color(0xFF315F7C),
                 onPrimary = Color(0xFFFFFFFF),
                 primaryContainer = Color(0xFFCFE5F7),
                 onPrimaryContainer = Color(0xFF163A52),
@@ -88,6 +92,7 @@ private val slateAccentPalette =
         dark =
             AccentColors(
                 primary = Color(0xFF9DCBEB),
+                surfaceTint = Color(0xFF9DCBEB),
                 onPrimary = Color(0xFF00344C),
                 primaryContainer = Color(0xFF254B63),
                 onPrimaryContainer = Color(0xFFCFE5F7),
