@@ -54,17 +54,20 @@ internal abstract class ActivityExecutionDao {
         categoryOptionId: String,
     ): Boolean
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    abstract fun insertExecution(execution: ActivityExecutionEntity)
+    @Query("SELECT time_tracking_mode FROM activity_snapshots WHERE id = :snapshotId")
+    protected abstract fun getSnapshotTimeTrackingMode(snapshotId: String): String?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
-    abstract fun insertPauses(pauses: List<ActivityExecutionPauseEntity>)
+    protected abstract fun insertExecutionUnchecked(execution: ActivityExecutionEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertPausesUnchecked(pauses: List<ActivityExecutionPauseEntity>)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertValuesUnchecked(values: List<ActivityExecutionFieldValueEntity>)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
-    abstract fun insertPause(pause: ActivityExecutionPauseEntity)
+    protected abstract fun insertPauseUnchecked(pause: ActivityExecutionPauseEntity)
 
     @Upsert
     protected abstract fun upsertValueUnchecked(value: ActivityExecutionFieldValueEntity)
@@ -73,7 +76,7 @@ internal abstract class ActivityExecutionDao {
         "UPDATE activity_executions SET status = :status, updated_at_ms = :updatedAtMs " +
             "WHERE id = :id AND status = :expectedStatus",
     )
-    abstract fun updateStatus(
+    protected abstract fun updateStatusUnchecked(
         id: String,
         expectedStatus: String,
         status: String,
@@ -81,7 +84,7 @@ internal abstract class ActivityExecutionDao {
     ): Int
 
     @Query("UPDATE activity_execution_pauses SET ended_at_ms = :endedAtMs WHERE id = :id AND ended_at_ms IS NULL")
-    abstract fun closePause(
+    protected abstract fun closePauseUnchecked(
         id: String,
         endedAtMs: Long,
     ): Int
@@ -91,7 +94,7 @@ internal abstract class ActivityExecutionDao {
             "active_duration_ms = :activeDurationMs, completion_reason = :completionReason, " +
             "updated_at_ms = :completedAtMs WHERE id = :id AND status IN ('RUNNING', 'PAUSED')",
     )
-    abstract fun markCompleted(
+    protected abstract fun markCompletedUnchecked(
         id: String,
         completedAtMs: Long,
         activeDurationMs: Long,
@@ -115,14 +118,15 @@ internal abstract class ActivityExecutionDao {
 
     @Transaction
     open fun insertAggregate(aggregate: ActivityExecutionAggregateEntity) {
+        insertExecutionUnchecked(aggregate.execution)
+        requireValidAggregate(aggregate)
         aggregate.values.forEach { value ->
             require(value.activityExecutionId == aggregate.execution.id) {
                 "Execution value must belong to the inserted execution"
             }
         }
-        insertExecution(aggregate.execution)
         aggregate.values.forEach { value -> requireValidValue(aggregate.execution.snapshotId, value) }
-        if (aggregate.pauses.isNotEmpty()) insertPauses(aggregate.pauses)
+        if (aggregate.pauses.isNotEmpty()) insertPausesUnchecked(aggregate.pauses)
         if (aggregate.values.isNotEmpty()) insertValuesUnchecked(aggregate.values)
     }
 
@@ -149,11 +153,12 @@ internal abstract class ActivityExecutionDao {
         atMs: Long,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireTimedSnapshot(execution.snapshotId)
         require(execution.status == "RUNNING" && execution.startedAtMs != null) { "Only a running execution can pause" }
         require(atMs >= execution.startedAtMs && atMs >= execution.updatedAtMs) { "Pause time is out of order" }
         require(getPauses(id).none { it.endedAtMs == null }) { "Execution already has an open pause" }
-        insertPause(ActivityExecutionPauseEntity(pauseId, id, atMs, null))
-        check(updateStatus(id, "RUNNING", "PAUSED", atMs) == 1)
+        insertPauseUnchecked(ActivityExecutionPauseEntity(pauseId, id, atMs, null))
+        check(updateStatusUnchecked(id, "RUNNING", "PAUSED", atMs) == 1)
     }
 
     @Transaction
@@ -162,13 +167,14 @@ internal abstract class ActivityExecutionDao {
         atMs: Long,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireTimedSnapshot(execution.snapshotId)
         require(execution.status == "PAUSED" && atMs >= execution.updatedAtMs) {
             "Only a paused execution can resume in order"
         }
         val pause = getPauses(id).single { it.endedAtMs == null }
         require(atMs >= pause.startedAtMs) { "Resume cannot precede pause" }
-        check(closePause(pause.id, atMs) == 1)
-        check(updateStatus(id, "PAUSED", "RUNNING", atMs) == 1)
+        check(closePauseUnchecked(pause.id, atMs) == 1)
+        check(updateStatusUnchecked(id, "PAUSED", "RUNNING", atMs) == 1)
     }
 
     @Transaction
@@ -178,10 +184,13 @@ internal abstract class ActivityExecutionDao {
         completionReason: ActivityCompletionReason? = null,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireTimedSnapshot(execution.snapshotId)
         val startedAtMs = requireNotNull(execution.startedAtMs) { "Timed completion requires a start" }
         require(execution.status == "RUNNING" || execution.status == "PAUSED") { "Execution is not active" }
         require(atMs >= execution.updatedAtMs && atMs >= startedAtMs) { "Completion time is out of order" }
-        getPauses(id).singleOrNull { it.endedAtMs == null }?.let { pause -> check(closePause(pause.id, atMs) == 1) }
+        getPauses(id).singleOrNull { it.endedAtMs == null }?.let { pause ->
+            check(closePauseUnchecked(pause.id, atMs) == 1)
+        }
         val pauses =
             getPauses(id).map { pause ->
                 ActivityExecutionPause(
@@ -196,7 +205,81 @@ internal abstract class ActivityExecutionDao {
                 Instant.ofEpochMilli(atMs),
                 pauses,
             )
-        check(markCompleted(id, atMs, duration.toMillis(), completionReason?.name) == 1)
+        check(markCompletedUnchecked(id, atMs, duration.toMillis(), completionReason?.name) == 1)
+    }
+
+    private fun requireValidAggregate(aggregate: ActivityExecutionAggregateEntity) {
+        val execution = aggregate.execution
+        aggregate.pauses.forEach { pause ->
+            require(pause.activityExecutionId == execution.id) {
+                "Execution pause must belong to the inserted execution"
+            }
+        }
+        val mode =
+            requireNotNull(getSnapshotTimeTrackingMode(execution.snapshotId)) {
+                "Unknown snapshot: ${execution.snapshotId}"
+            }
+        when (mode) {
+            "STOPWATCH", "TIMER" -> requireValidTimedAggregate(execution, aggregate.pauses)
+            "NO_LIVE_TRACKING" ->
+                require(
+                    execution.status == "COMPLETED" &&
+                        execution.startedAtMs == null &&
+                        execution.completedAtMs != null &&
+                        execution.activeDurationMs == null &&
+                        aggregate.pauses.isEmpty(),
+                ) { "NO_LIVE_TRACKING requires an immediate completed execution without duration or pauses" }
+            else -> throw IllegalArgumentException("Unknown snapshot time tracking mode: $mode")
+        }
+    }
+
+    private fun requireValidTimedAggregate(
+        execution: ActivityExecutionEntity,
+        pauses: List<ActivityExecutionPauseEntity>,
+    ) {
+        val startedAtMs = requireNotNull(execution.startedAtMs) { "Timed execution requires a start" }
+        val openPauses = pauses.count { it.endedAtMs == null }
+        when (execution.status) {
+            "RUNNING" ->
+                require(execution.completedAtMs == null && execution.activeDurationMs == null && openPauses == 0) {
+                    "Running timed execution cannot have completion data or an open pause"
+                }
+            "PAUSED" ->
+                require(execution.completedAtMs == null && execution.activeDurationMs == null && openPauses == 1) {
+                    "Paused timed execution requires exactly one open pause and no completion data"
+                }
+            "COMPLETED" ->
+                require(execution.completedAtMs != null && execution.activeDurationMs != null && openPauses == 0) {
+                    "Completed timed execution requires completion, duration, and no open pause"
+                }
+            else -> throw IllegalArgumentException("Unknown execution status: ${execution.status}")
+        }
+        val timelineEndMs = execution.completedAtMs ?: execution.updatedAtMs
+        val duration =
+            ActivityExecutionDurationCalculator
+                .calculate(
+                    Instant.ofEpochMilli(startedAtMs),
+                    Instant.ofEpochMilli(timelineEndMs),
+                    pauses.map { pause ->
+                        ActivityExecutionPause(
+                            ActivityExecutionPauseId(pause.id),
+                            Instant.ofEpochMilli(pause.startedAtMs),
+                            Instant.ofEpochMilli(pause.endedAtMs ?: timelineEndMs),
+                        )
+                    },
+                ).toMillis()
+        if (execution.status == "COMPLETED") {
+            require(execution.activeDurationMs == duration) {
+                "Stored active duration must match elapsed time minus pauses"
+            }
+        }
+    }
+
+    private fun requireTimedSnapshot(snapshotId: String) {
+        val mode = getSnapshotTimeTrackingMode(snapshotId)
+        require(mode == "STOPWATCH" || mode == "TIMER") {
+            "Live transitions require a timed snapshot"
+        }
     }
 
     private fun requireValidValue(

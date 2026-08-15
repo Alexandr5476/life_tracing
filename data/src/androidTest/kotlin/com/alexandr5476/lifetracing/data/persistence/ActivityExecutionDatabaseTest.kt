@@ -79,7 +79,7 @@ class ActivityExecutionDatabaseTest {
     fun aggregateRoundTripsWithOrderedPausesAndTypedValues() {
         val aggregate =
             ActivityExecutionAggregateEntity(
-                execution = completed(),
+                execution = completed().copy(activeDurationMs = 70),
                 pauses =
                     listOf(
                         ActivityExecutionPauseEntity("later", "execution", 40, 50),
@@ -110,12 +110,12 @@ class ActivityExecutionDatabaseTest {
             completed("bad-child", context = "SEQUENCE_CHILD", sequenceExecutionId = "sequence"),
             completed("bad-reason", reason = "INVENTED"),
         ).forEach { invalid ->
-            assertThrows(SQLiteConstraintException::class.java) { executions.insertExecution(invalid) }
+            assertThrows(SQLiteConstraintException::class.java) { insertRawExecution(invalid) }
         }
 
-        executions.insertExecution(completed())
+        executions.insertAggregate(ActivityExecutionAggregateEntity(completed()))
         assertThrows(SQLiteConstraintException::class.java) {
-            executions.insertPause(ActivityExecutionPauseEntity("pause", "execution", 50, 40))
+            sql("INSERT INTO activity_execution_pauses VALUES ('pause', 'execution', 50, 40)")
         }
         assertThrows(SQLiteConstraintException::class.java) {
             sql("INSERT INTO activity_execution_field_values VALUES ('execution', 'number', NULL, NULL, NULL)")
@@ -128,14 +128,14 @@ class ActivityExecutionDatabaseTest {
     @Test
     fun foreignKeysRestrictHistoricalOwnersAndCascadeExecutionChildren() {
         assertThrows(SQLiteConstraintException::class.java) {
-            executions.insertExecution(completed("missing-snapshot", snapshotId = "missing"))
+            insertRawExecution(completed("missing-snapshot", snapshotId = "missing"))
         }
         assertThrows(SQLiteConstraintException::class.java) {
-            executions.insertExecution(completed("missing-series", seriesId = "missing"))
+            insertRawExecution(completed("missing-series", seriesId = "missing"))
         }
         executions.insertAggregate(
             ActivityExecutionAggregateEntity(
-                completed(),
+                completed().copy(activeDurationMs = 80),
                 pauses = listOf(ActivityExecutionPauseEntity("pause", "execution", 20, 30)),
                 values = listOf(ActivityExecutionFieldValueEntity("execution", "category", null, "option", null)),
             ),
@@ -168,7 +168,7 @@ class ActivityExecutionDatabaseTest {
         }
         assertNull(executions.getById("failed"))
 
-        executions.insertExecution(
+        insertRawExecution(
             completed(
                 "child-1",
                 context = "SEQUENCE_CHILD",
@@ -178,7 +178,7 @@ class ActivityExecutionDatabaseTest {
             ),
         )
         assertThrows(SQLiteConstraintException::class.java) {
-            executions.insertExecution(
+            insertRawExecution(
                 completed(
                     "child-2",
                     context = "SEQUENCE_CHILD",
@@ -188,8 +188,8 @@ class ActivityExecutionDatabaseTest {
                 ),
             )
         }
-        executions.insertExecution(completed("standalone-1"))
-        executions.insertExecution(completed("standalone-2"))
+        insertRawExecution(completed("standalone-1"))
+        insertRawExecution(completed("standalone-2"))
     }
 
     @Test
@@ -219,7 +219,9 @@ class ActivityExecutionDatabaseTest {
             id = "owner-b",
             fields = listOf(ownershipField("number-b", "owner-b", "NUMBER", 0)),
         )
-        executions.insertExecution(completed("owner-execution", snapshotId = "owner-a"))
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(completed("owner-execution", snapshotId = "owner-a")),
+        )
 
         executions.upsertValue(
             ActivityExecutionFieldValueEntity("owner-execution", "category-a", null, "option-a", null),
@@ -268,8 +270,138 @@ class ActivityExecutionDatabaseTest {
     }
 
     @Test
+    fun aggregateInsertionEnforcesReferencedSnapshotMode() {
+        insertSnapshot("mode-stopwatch", "STOPWATCH")
+        insertSnapshot("mode-no-live", "NO_LIVE_TRACKING")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(running("running-no-live", "mode-no-live")),
+            )
+        }
+        assertNull(executions.getById("running-no-live"))
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(noLiveCompleted("immediate-stopwatch", "mode-stopwatch")),
+            )
+        }
+        assertNull(executions.getById("immediate-stopwatch"))
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(
+                    noLiveCompleted("paused-no-live", "mode-no-live"),
+                    pauses = listOf(ActivityExecutionPauseEntity("no-live-pause", "paused-no-live", 20, 30)),
+                ),
+            )
+        }
+        assertNull(executions.getById("paused-no-live"))
+
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(running("valid-running", "mode-stopwatch")),
+        )
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(noLiveCompleted("valid-no-live", "mode-no-live")),
+        )
+        assertEquals("RUNNING", executions.getById("valid-running")?.status)
+        assertEquals("COMPLETED", executions.getById("valid-no-live")?.status)
+    }
+
+    @Test
+    fun malformedPauseOwnershipRollsBackWithoutTouchingExistingExecution() {
+        insertSnapshot("pause-owner-snapshot", "STOPWATCH")
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(running("execution-b", "pause-owner-snapshot")),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(
+                    completed("execution-a", snapshotId = "pause-owner-snapshot").copy(activeDurationMs = 80),
+                    pauses = listOf(ActivityExecutionPauseEntity("foreign-pause", "execution-b", 20, 30)),
+                ),
+            )
+        }
+        assertNull(executions.getById("execution-a"))
+        assertTrue(executions.getPauses("execution-b").isEmpty())
+    }
+
+    @Test
+    fun aggregateInsertionRejectsMalformedPauseTimelines() {
+        insertSnapshot("timeline-snapshot", "STOPWATCH")
+        val invalidAggregates =
+            listOf(
+                ActivityExecutionAggregateEntity(
+                    running("running-open", "timeline-snapshot"),
+                    pauses = listOf(ActivityExecutionPauseEntity("running-open-pause", "running-open", 20, null)),
+                ),
+                ActivityExecutionAggregateEntity(
+                    running("paused-empty", "timeline-snapshot").copy(status = "PAUSED", updatedAtMs = 20),
+                ),
+                ActivityExecutionAggregateEntity(
+                    running("paused-twice", "timeline-snapshot").copy(status = "PAUSED", updatedAtMs = 30),
+                    pauses =
+                        listOf(
+                            ActivityExecutionPauseEntity("open-1", "paused-twice", 20, null),
+                            ActivityExecutionPauseEntity("open-2", "paused-twice", 30, null),
+                        ),
+                ),
+                ActivityExecutionAggregateEntity(
+                    completed("completed-open", snapshotId = "timeline-snapshot"),
+                    pauses = listOf(ActivityExecutionPauseEntity("completed-open-pause", "completed-open", 20, null)),
+                ),
+                ActivityExecutionAggregateEntity(
+                    completed("wrong-duration", snapshotId = "timeline-snapshot").copy(activeDurationMs = 89),
+                ),
+                completedWithPauses(
+                    "before-start",
+                    ActivityExecutionPauseEntity("before-start-pause", "before-start", 5, 20),
+                ),
+                completedWithPauses("reversed", ActivityExecutionPauseEntity("reversed-pause", "reversed", 30, 20)),
+                completedWithPauses(
+                    "after-completion",
+                    ActivityExecutionPauseEntity("late", "after-completion", 90, 110),
+                ),
+                completedWithPauses(
+                    "overlap",
+                    ActivityExecutionPauseEntity("overlap-1", "overlap", 20, 50),
+                    ActivityExecutionPauseEntity("overlap-2", "overlap", 40, 60),
+                ),
+            )
+
+        invalidAggregates.forEach { aggregate ->
+            assertThrows(IllegalArgumentException::class.java) { executions.insertAggregate(aggregate) }
+            assertNull(executions.getById(aggregate.execution.id))
+        }
+    }
+
+    @Test
+    fun liveTransitionsRejectCorruptRunningNoLiveRow() {
+        insertSnapshot("corrupt-no-live", "NO_LIVE_TRACKING")
+        sql(
+            """
+            INSERT INTO activity_executions (
+                id, snapshot_id, context_type, statistics_series_id, status, started_at_ms,
+                original_zone_id, original_utc_offset_minutes, primary_local_date, created_at_ms, updated_at_ms
+            ) VALUES (
+                'corrupt-running', 'corrupt-no-live', 'STANDALONE', 'series', 'RUNNING', 10,
+                'UTC', 0, '2026-08-15', 10, 10
+            )
+            """.trimIndent(),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.pause("corrupt-running", "corrupt-pause", 20)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.complete("corrupt-running", 20)
+        }
+        assertEquals("RUNNING", executions.getById("corrupt-running")?.status)
+        assertTrue(executions.getPauses("corrupt-running").isEmpty())
+    }
+
+    @Test
     fun pauseResumeCompleteValueUpsertAndSoftDeleteAreAtomicFocusedOperations() {
-        executions.insertExecution(running())
+        executions.insertAggregate(ActivityExecutionAggregateEntity(running()))
 
         executions.pause("execution", "pause", 20)
         assertEquals("PAUSED", executions.getById("execution")?.status)
@@ -345,8 +477,27 @@ class ActivityExecutionDatabaseTest {
         100,
     )
 
-    private fun running() =
-        completed(status = "RUNNING").copy(completedAtMs = null, activeDurationMs = null, updatedAtMs = 10)
+    private fun running(
+        id: String = "execution",
+        snapshotId: String = "snapshot",
+    ) = completed(id = id, status = "RUNNING", snapshotId = snapshotId)
+        .copy(completedAtMs = null, activeDurationMs = null, updatedAtMs = 10)
+
+    private fun noLiveCompleted(
+        id: String,
+        snapshotId: String,
+    ) = completed(id = id, snapshotId = snapshotId).copy(startedAtMs = null, activeDurationMs = null)
+
+    private fun completedWithPauses(
+        id: String,
+        vararg pauses: ActivityExecutionPauseEntity,
+    ): ActivityExecutionAggregateEntity {
+        val pausedMillis = pauses.sumOf { requireNotNull(it.endedAtMs) - it.startedAtMs }
+        return ActivityExecutionAggregateEntity(
+            completed(id, snapshotId = "timeline-snapshot").copy(activeDurationMs = 90 - pausedMillis),
+            pauses = pauses.toList(),
+        )
+    }
 
     private fun field(
         id: String,
@@ -365,6 +516,18 @@ class ActivityExecutionDatabaseTest {
                 settings = ActivitySnapshotSettingsEntity(id),
                 fields = fields,
                 options = options,
+            ),
+        )
+    }
+
+    private fun insertSnapshot(
+        id: String,
+        mode: String,
+    ) {
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                snapshot = ActivitySnapshotEntity(id, id, null, mode, null, null, null, "series", false, 10),
+                settings = ActivitySnapshotSettingsEntity(id),
             ),
         )
     }
@@ -391,6 +554,32 @@ class ActivityExecutionDatabaseTest {
     )
 
     private fun sql(statement: String) = database.openHelper.writableDatabase.execSQL(statement)
+
+    private fun insertRawExecution(execution: ActivityExecutionEntity) {
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_executions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            arrayOf<Any?>(
+                execution.id,
+                execution.snapshotId,
+                execution.contextType,
+                execution.sequenceExecutionId,
+                execution.sequenceOccurrenceId,
+                execution.planEntryId,
+                execution.statisticsSeriesId,
+                execution.status,
+                execution.startedAtMs,
+                execution.completedAtMs,
+                execution.activeDurationMs,
+                execution.originalZoneId,
+                execution.originalUtcOffsetMinutes,
+                execution.primaryLocalDate,
+                execution.completionReason,
+                execution.deletedAtMs,
+                execution.createdAtMs,
+                execution.updatedAtMs,
+            ),
+        )
+    }
 
     private fun count(
         table: String,
