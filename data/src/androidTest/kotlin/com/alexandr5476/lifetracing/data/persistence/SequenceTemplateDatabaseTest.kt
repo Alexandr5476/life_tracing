@@ -161,7 +161,7 @@ class SequenceTemplateDatabaseTest {
             }
         }
         assertTrue(sequences.getNodes("b").isEmpty())
-        assertEquals(1, sequences.getById("b")?.revision)
+        assertEquals(1L, sequences.getById("b")?.revision)
     }
 
     @Test
@@ -177,7 +177,7 @@ class SequenceTemplateDatabaseTest {
         sequences.updateFolder("sequence", "folder")
         sequences.replaceTags("sequence", listOf(SequenceTemplateTagEntity("sequence", "tag")))
         sequences.updateUserState(SequenceTemplateUserStateEntity("sequence", 2, 20))
-        assertEquals(7, sequences.getById("sequence")?.revision)
+        assertEquals(7L, sequences.getById("sequence")?.revision)
         assertEquals("Renamed", sequences.getAllFields("sequence").single().name)
 
         val semantic =
@@ -187,7 +187,7 @@ class SequenceTemplateDatabaseTest {
                 fields = listOf(renamed.copy(defaultNumberScaled = 12_000)),
             )
         sequences.updateSemanticAggregate(semantic)
-        assertEquals(8, sequences.getById("sequence")?.revision)
+        assertEquals(8L, sequences.getById("sequence")?.revision)
         assertFalse(sequences.getSettings("sequence")!!.autoAdvance)
 
         assertThrows(IllegalArgumentException::class.java) {
@@ -244,7 +244,7 @@ class SequenceTemplateDatabaseTest {
         sequences.replaceStepSnapshot("step", snapshotAggregate("replacement", locallyModified = true), 1, 2)
         assertNull(snapshots.getById("orphan"))
         assertEquals("replacement", sequences.getNodes("sequence").single().activitySnapshotId)
-        assertEquals(2, sequences.getById("sequence")?.revision)
+        assertEquals(2L, sequences.getById("sequence")?.revision)
 
         insertSnapshot("shared")
         sequences.replaceNodeStructure(
@@ -297,7 +297,7 @@ class SequenceTemplateDatabaseTest {
         assertTrue(sequences.getNodes("sequence").isEmpty())
         assertNull(snapshots.getById("orphan-child"))
         assertNotNull(snapshots.getById("owned-child"))
-        assertEquals(2, sequences.getById("sequence")?.revision)
+        assertEquals(2L, sequences.getById("sequence")?.revision)
     }
 
     @Test
@@ -372,7 +372,7 @@ class SequenceTemplateDatabaseTest {
         database.activityTemplateDao().archive("activity", 10)
 
         assertEquals("Original", snapshots.getById("linked")?.name)
-        assertEquals(4, snapshots.getById("linked")?.sourceRevision)
+        assertEquals(4L, snapshots.getById("linked")?.sourceRevision)
         assertEquals("linked", sequences.getNodes("sequence").single().activitySnapshotId)
         sql("DELETE FROM activity_templates WHERE id = 'activity'")
         assertNull(snapshots.getById("linked")?.sourceTemplateId)
@@ -389,7 +389,7 @@ class SequenceTemplateDatabaseTest {
         )
         database.tagDao().deleteById("tag")
         assertTrue(sequences.getTags("sequence").isEmpty())
-        assertEquals(7, sequences.getById("sequence")?.revision)
+        assertEquals(7L, sequences.getById("sequence")?.revision)
 
         val schema = database.openHelper.readableDatabase.readSequenceTemplateManualSchema()
         assertTrue(schema.hasNoLiveAccountingCheck)
