@@ -35,6 +35,94 @@ internal object LifeTracingMigrationTestDatabaseFactory {
             ActivitySnapshotSchemaV3.create(database)
             ActivityExecutionSchemaV4.createAndSeed(database)
         }
+
+    fun createVersion5(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 5).also { database ->
+            SequenceTemplateSchemaV5.drop(database)
+            ActivityExecutionSchemaV4.drop(database)
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+            ActivityExecutionSchemaV4.createAndSeed(database)
+            SequenceTemplateSchemaV5.create(database)
+        }
+}
+
+internal data class SequenceTemplateManualSchema(
+    val hasNoLiveAccountingCheck: Boolean,
+    val hasCountdownChecks: Boolean,
+    val hasNodeShapeCheck: Boolean,
+    val nodeForeignKeyDeletes: Map<String, String>,
+    val mainValueIndexIsUnique: Boolean,
+    val mainValueIndexColumns: List<String>,
+    val mainValueIndexPredicate: String,
+    val templateColumns: List<String>,
+    val settingsColumns: List<String>,
+    val settingsColumnDefaults: Map<String, String?>,
+    val fieldColumns: List<String>,
+    val optionColumns: List<String>,
+    val nodeColumns: List<String>,
+    val nodeOwnerIndexColumns: List<String>,
+    val nodeSiblingIndexColumns: List<String>,
+    val nodeSnapshotIndexColumns: List<String>,
+    val overrideColumns: List<String>,
+    val overridePrimaryKeyColumns: List<String>,
+    val overrideForeignKeyDeletes: Map<String, String>,
+    val hasOverrideCountdownCheck: Boolean,
+    val hasOverrideTimerZeroBehaviorCheck: Boolean,
+    val hasOverrideBooleanChecks: Boolean,
+)
+
+internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceTemplateManualSchema {
+    val templateSql = schemaSql("table", "sequence_templates")
+    val settingsSql = schemaSql("table", "sequence_template_settings")
+    val nodeSql = schemaSql("table", "sequence_nodes")
+    val mainIndexSql = schemaSql("index", "idx_one_sequence_template_main_field")
+    val overrideSql = schemaSql("table", "sequence_step_overrides")
+    return SequenceTemplateManualSchema(
+        hasNoLiveAccountingCheck = templateSql.contains("no_live_time_accounting in ('active', 'pause')"),
+        hasCountdownChecks =
+            settingsSql.contains("check (sequence_start_countdown_ms >= 0)") &&
+                settingsSql.contains("check (before_each_step_countdown_ms >= 0)"),
+        hasNodeShapeCheck =
+            nodeSql.contains("node_type = 'step'") &&
+                nodeSql.contains("activity_snapshot_id is not null") &&
+                nodeSql.contains("node_type = 'repeat'") &&
+                nodeSql.contains("repeat_count > 0") &&
+                nodeSql.contains("parent_repeat_node_id is null"),
+        nodeForeignKeyDeletes = foreignKeyDeletes("sequence_nodes"),
+        mainValueIndexIsUnique = indexIsUnique("sequence_template_fields", "idx_one_sequence_template_main_field"),
+        mainValueIndexColumns = indexColumns("idx_one_sequence_template_main_field"),
+        mainValueIndexPredicate = mainIndexSql.substringAfter(" where ", "").trim(),
+        templateColumns = tableColumns("sequence_templates"),
+        settingsColumns = tableColumns("sequence_template_settings"),
+        settingsColumnDefaults =
+            tableColumnDefaults(
+                "sequence_template_settings",
+            ).filterKeys(SEQUENCE_SETTING_COLUMNS::contains),
+        fieldColumns = tableColumns("sequence_template_fields"),
+        optionColumns = tableColumns("sequence_template_category_options"),
+        nodeColumns = tableColumns("sequence_nodes"),
+        nodeOwnerIndexColumns = indexColumns("sequence_nodes_sequence"),
+        nodeSiblingIndexColumns = indexColumns("sequence_nodes_parent_position"),
+        nodeSnapshotIndexColumns = indexColumns("sequence_nodes_activity_snapshot_id"),
+        overrideColumns = tableColumns("sequence_step_overrides"),
+        overridePrimaryKeyColumns = tablePrimaryKeyColumns("sequence_step_overrides"),
+        overrideForeignKeyDeletes = foreignKeyDeletes("sequence_step_overrides"),
+        hasOverrideCountdownCheck =
+            overrideSql.contains("start_countdown_ms is null or start_countdown_ms >= 0"),
+        hasOverrideTimerZeroBehaviorCheck =
+            overrideSql.contains(
+                "timer_zero_behavior is null or timer_zero_behavior in ('finish', 'overtime')",
+            ),
+        hasOverrideBooleanChecks =
+            listOf("timer_end_sound", "timer_end_vibration", "keep_screen_awake").all { column ->
+                overrideSql.contains("$column is null or $column in (0, 1)")
+            },
+    )
 }
 
 internal data class ActivityExecutionManualSchema(
@@ -264,11 +352,34 @@ private fun SupportSQLiteDatabase.tableColumnDefaults(table: String): Map<String
         }
     }
 
+private fun SupportSQLiteDatabase.tablePrimaryKeyColumns(table: String): List<String> =
+    query("PRAGMA table_info(`$table`)").use { cursor ->
+        val columnName = cursor.getColumnIndexOrThrow("name")
+        val primaryKeyPosition = cursor.getColumnIndexOrThrow("pk")
+        buildList {
+            val columns = mutableListOf<Pair<Int, String>>()
+            while (cursor.moveToNext()) {
+                val position = cursor.getInt(primaryKeyPosition)
+                if (position > 0) columns += position to cursor.getString(columnName)
+            }
+            addAll(columns.sortedBy(Pair<Int, String>::first).map(Pair<Int, String>::second))
+        }
+    }
+
 private fun SupportSQLiteDatabase.indexColumns(name: String): List<String> =
     query("PRAGMA index_info(`$name`)").use { cursor ->
         val columnName = cursor.getColumnIndexOrThrow("name")
         buildList {
             while (cursor.moveToNext()) add(cursor.getString(columnName))
+        }
+    }
+
+private fun SupportSQLiteDatabase.foreignKeyDeletes(table: String): Map<String, String> =
+    query("PRAGMA foreign_key_list(`$table`)").use { cursor ->
+        val fromColumn = cursor.getColumnIndexOrThrow("from")
+        val onDeleteColumn = cursor.getColumnIndexOrThrow("on_delete")
+        buildMap {
+            while (cursor.moveToNext()) put(cursor.getString(fromColumn), cursor.getString(onDeleteColumn))
         }
     }
 
@@ -287,4 +398,16 @@ private val SNAPSHOT_SETTING_COLUMNS =
         "timer_end_vibration",
         "keep_screen_awake",
         "confirm_manual_finish",
+    )
+
+private val SEQUENCE_SETTING_COLUMNS =
+    setOf(
+        "auto_advance",
+        "sequence_start_countdown_ms",
+        "before_each_step_countdown_ms",
+        "transition_sound",
+        "transition_vibration",
+        "keep_screen_awake",
+        "confirm_jump",
+        "confirm_early_end",
     )
