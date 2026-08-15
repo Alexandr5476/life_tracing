@@ -75,6 +75,7 @@ class SequenceTemplateMigrationTest {
                         "VALUES ('child-two', 'UNKNOWN')",
                 )
             }
+            migrated.execSQL("PRAGMA foreign_keys = ON")
             assertThrows(SQLiteConstraintException::class.java) {
                 migrated.execSQL("INSERT INTO sequence_step_overrides (sequence_node_id) VALUES ('missing')")
             }
