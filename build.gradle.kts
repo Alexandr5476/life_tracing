@@ -42,7 +42,7 @@ fun CommonExtension<*, *, *, *, *, *>.configureManagedDevice() {
         managedDevices {
             allDevices {
                 create<ManagedVirtualDevice>("pixel2Api35") {
-                    device = "Pixel2"
+                    device = "Pixel 2"
                     apiLevel = 35
                     systemImageSource = "aosp"
                 }
