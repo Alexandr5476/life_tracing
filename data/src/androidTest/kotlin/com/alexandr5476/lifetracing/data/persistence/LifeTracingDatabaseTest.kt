@@ -2,7 +2,6 @@ package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.Folder
@@ -34,8 +33,8 @@ class LifeTracingDatabaseTest {
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         database =
-            Room
-                .inMemoryDatabaseBuilder(context, LifeTracingDatabase::class.java)
+            LifeTracingDatabase
+                .inMemoryBuilder(context)
                 .allowMainThreadQueries()
                 .build()
         folders = database.folderDao()
