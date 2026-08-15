@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "4043962e098b4e17d4522f98d7998946",
+    "identityHash": "74f573aec6529763842c5e8cb9398e44",
     "entities": [
       {
         "tableName": "folders",
@@ -786,7 +786,7 @@
       },
       {
         "tableName": "activity_snapshot_settings",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshot_id` TEXT NOT NULL, `show_seconds` INTEGER NOT NULL DEFAULT 1, `start_countdown_ms` INTEGER NOT NULL DEFAULT 0, `timer_zero_behavior` TEXT NOT NULL DEFAULT 'FINISH', `timer_end_sound` INTEGER NOT NULL DEFAULT 1, `timer_end_vibration` INTEGER NOT NULL DEFAULT 1, `keep_screen_awake` INTEGER NOT NULL DEFAULT 0, `confirm_manual_finish` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`snapshot_id`), FOREIGN KEY(`snapshot_id`) REFERENCES `activity_snapshots`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshot_id` TEXT NOT NULL, `show_seconds` INTEGER NOT NULL, `start_countdown_ms` INTEGER NOT NULL, `timer_zero_behavior` TEXT NOT NULL, `timer_end_sound` INTEGER NOT NULL, `timer_end_vibration` INTEGER NOT NULL, `keep_screen_awake` INTEGER NOT NULL, `confirm_manual_finish` INTEGER NOT NULL, PRIMARY KEY(`snapshot_id`), FOREIGN KEY(`snapshot_id`) REFERENCES `activity_snapshots`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "snapshotId",
@@ -798,50 +798,43 @@
             "fieldPath": "showSeconds",
             "columnName": "show_seconds",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "1"
+            "notNull": true
           },
           {
             "fieldPath": "startCountdownMs",
             "columnName": "start_countdown_ms",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "0"
+            "notNull": true
           },
           {
             "fieldPath": "timerZeroBehavior",
             "columnName": "timer_zero_behavior",
             "affinity": "TEXT",
-            "notNull": true,
-            "defaultValue": "'FINISH'"
+            "notNull": true
           },
           {
             "fieldPath": "timerEndSound",
             "columnName": "timer_end_sound",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "1"
+            "notNull": true
           },
           {
             "fieldPath": "timerEndVibration",
             "columnName": "timer_end_vibration",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "1"
+            "notNull": true
           },
           {
             "fieldPath": "keepScreenAwake",
             "columnName": "keep_screen_awake",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "0"
+            "notNull": true
           },
           {
             "fieldPath": "confirmManualFinish",
             "columnName": "confirm_manual_finish",
             "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "0"
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -1096,7 +1089,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4043962e098b4e17d4522f98d7998946')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '74f573aec6529763842c5e8cb9398e44')"
     ]
   }
 }

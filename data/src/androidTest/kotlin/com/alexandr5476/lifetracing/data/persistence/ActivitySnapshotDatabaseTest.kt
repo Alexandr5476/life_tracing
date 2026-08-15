@@ -86,6 +86,9 @@ class ActivitySnapshotDatabaseTest {
 
         snapshots.insertSnapshot(snapshot("bad-settings"))
         assertThrows(SQLiteConstraintException::class.java) {
+            sql("INSERT INTO activity_snapshot_settings(snapshot_id) VALUES ('bad-settings')")
+        }
+        assertThrows(SQLiteConstraintException::class.java) {
             snapshots.insertSettings(ActivitySnapshotSettingsEntity("bad-settings", startCountdownMs = -1))
         }
         assertThrows(SQLiteConstraintException::class.java) {
@@ -93,6 +96,8 @@ class ActivitySnapshotDatabaseTest {
                 ActivitySnapshotSettingsEntity("bad-settings", timerZeroBehavior = "UNKNOWN"),
             )
         }
+        snapshots.insertSettings(ActivitySnapshotSettingsEntity("bad-settings"))
+        assertNotNull(snapshots.getSettings("bad-settings"))
     }
 
     @Test

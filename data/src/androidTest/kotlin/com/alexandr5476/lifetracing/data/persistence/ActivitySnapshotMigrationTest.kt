@@ -85,8 +85,12 @@ class ActivitySnapshotMigrationTest {
                 """.trimIndent(),
             )
             migrated.execSQL(
-                "INSERT INTO activity_snapshot_settings (snapshot_id, timer_zero_behavior) " +
-                    "VALUES ('snapshot', 'OVERTIME')",
+                """
+                INSERT INTO activity_snapshot_settings (
+                    snapshot_id, show_seconds, start_countdown_ms, timer_zero_behavior,
+                    timer_end_sound, timer_end_vibration, keep_screen_awake, confirm_manual_finish
+                ) VALUES ('snapshot', 1, 0, 'OVERTIME', 1, 1, 0, 0)
+                """.trimIndent(),
             )
             migrated.execSQL(
                 """

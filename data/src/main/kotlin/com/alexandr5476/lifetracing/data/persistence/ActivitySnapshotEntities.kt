@@ -54,14 +54,14 @@ internal data class ActivitySnapshotSettingsEntity(
     @androidx.room.PrimaryKey
     @ColumnInfo(name = "snapshot_id")
     val snapshotId: String,
-    @ColumnInfo(name = "show_seconds", defaultValue = "1") val showSeconds: Boolean = true,
-    @ColumnInfo(name = "start_countdown_ms", defaultValue = "0") val startCountdownMs: Long = 0,
-    @ColumnInfo(name = "timer_zero_behavior", defaultValue = "'FINISH'")
+    @ColumnInfo(name = "show_seconds") val showSeconds: Boolean = true,
+    @ColumnInfo(name = "start_countdown_ms") val startCountdownMs: Long = 0,
+    @ColumnInfo(name = "timer_zero_behavior")
     val timerZeroBehavior: String = "FINISH",
-    @ColumnInfo(name = "timer_end_sound", defaultValue = "1") val timerEndSound: Boolean = true,
-    @ColumnInfo(name = "timer_end_vibration", defaultValue = "1") val timerEndVibration: Boolean = true,
-    @ColumnInfo(name = "keep_screen_awake", defaultValue = "0") val keepScreenAwake: Boolean = false,
-    @ColumnInfo(name = "confirm_manual_finish", defaultValue = "0")
+    @ColumnInfo(name = "timer_end_sound") val timerEndSound: Boolean = true,
+    @ColumnInfo(name = "timer_end_vibration") val timerEndVibration: Boolean = true,
+    @ColumnInfo(name = "keep_screen_awake") val keepScreenAwake: Boolean = false,
+    @ColumnInfo(name = "confirm_manual_finish")
     val confirmManualFinish: Boolean = false,
 )
 

@@ -53,6 +53,7 @@ internal data class ActivitySnapshotManualSchema(
     val mainValueIndexPredicate: String,
     val snapshotColumns: List<String>,
     val settingsColumns: List<String>,
+    val settingsColumnDefaults: Map<String, String?>,
     val fieldColumns: List<String>,
     val optionColumns: List<String>,
 )
@@ -89,6 +90,16 @@ internal val EXPECTED_ACTIVITY_SNAPSHOT_MANUAL_SCHEMA =
                 "keep_screen_awake",
                 "confirm_manual_finish",
             ),
+        settingsColumnDefaults =
+            listOf(
+                "show_seconds",
+                "start_countdown_ms",
+                "timer_zero_behavior",
+                "timer_end_sound",
+                "timer_end_vibration",
+                "keep_screen_awake",
+                "confirm_manual_finish",
+            ).associateWith { null },
         fieldColumns =
             listOf(
                 "id",
@@ -159,6 +170,8 @@ internal fun SupportSQLiteDatabase.readActivitySnapshotManualSchema(): ActivityS
         mainValueIndexPredicate = indexSql.substringAfter(" where ", missingDelimiterValue = "").trim(),
         snapshotColumns = tableColumns("activity_snapshots"),
         settingsColumns = tableColumns("activity_snapshot_settings"),
+        settingsColumnDefaults =
+            tableColumnDefaults("activity_snapshot_settings").filterKeys(SNAPSHOT_SETTING_COLUMNS::contains),
         fieldColumns = tableColumns("activity_snapshot_fields"),
         optionColumns = tableColumns("activity_snapshot_category_options"),
     )
@@ -194,6 +207,17 @@ private fun SupportSQLiteDatabase.tableColumns(table: String): List<String> =
         }
     }
 
+private fun SupportSQLiteDatabase.tableColumnDefaults(table: String): Map<String, String?> =
+    query("PRAGMA table_info(`$table`)").use { cursor ->
+        val columnName = cursor.getColumnIndexOrThrow("name")
+        val defaultValue = cursor.getColumnIndexOrThrow("dflt_value")
+        buildMap {
+            while (cursor.moveToNext()) {
+                put(cursor.getString(columnName), cursor.getString(defaultValue))
+            }
+        }
+    }
+
 private fun SupportSQLiteDatabase.indexColumns(name: String): List<String> =
     query("PRAGMA index_info(`$name`)").use { cursor ->
         val columnName = cursor.getColumnIndexOrThrow("name")
@@ -207,3 +231,14 @@ private fun String.normalizedSql(): String =
         .replace("`", "")
         .replace(Regex("\\s+"), " ")
         .trim()
+
+private val SNAPSHOT_SETTING_COLUMNS =
+    setOf(
+        "show_seconds",
+        "start_countdown_ms",
+        "timer_zero_behavior",
+        "timer_end_sound",
+        "timer_end_vibration",
+        "keep_screen_awake",
+        "confirm_manual_finish",
+    )
