@@ -23,6 +23,52 @@ internal object LifeTracingMigrationTestDatabaseFactory {
             ActivityTemplateSchemaV2.recreate(database)
             ActivitySnapshotSchemaV3.create(database)
         }
+
+    fun createVersion4(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 4).also { database ->
+            ActivityExecutionSchemaV4.drop(database)
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+            ActivityExecutionSchemaV4.createAndSeed(database)
+        }
+}
+
+internal data class ActivityExecutionManualSchema(
+    val executionColumns: List<String>,
+    val pauseColumns: List<String>,
+    val valueColumns: List<String>,
+    val hasContextCheck: Boolean,
+    val hasStatusCheck: Boolean,
+    val hasTypedValueCheck: Boolean,
+    val occurrenceIndexIsUnique: Boolean,
+    val occurrenceIndexPredicate: String,
+)
+
+internal fun SupportSQLiteDatabase.readActivityExecutionManualSchema(): ActivityExecutionManualSchema {
+    val executionSql = schemaSql("table", "activity_executions")
+    val valueSql = schemaSql("table", "activity_execution_field_values")
+    val occurrenceIndexSql = schemaSql("index", "idx_one_child_execution_per_occurrence")
+    return ActivityExecutionManualSchema(
+        executionColumns = tableColumns("activity_executions"),
+        pauseColumns = tableColumns("activity_execution_pauses"),
+        valueColumns = tableColumns("activity_execution_field_values"),
+        hasContextCheck =
+            executionSql.contains("context_type = 'standalone'") &&
+                executionSql.contains("context_type = 'sequence_child'"),
+        hasStatusCheck =
+            executionSql.contains("status in ('running', 'paused')") && executionSql.contains("status = 'completed'"),
+        hasTypedValueCheck =
+            valueSql.contains("number_value_scaled is not null") &&
+                valueSql.contains("category_option_id is not null") &&
+                valueSql.contains("text_value is not null"),
+        occurrenceIndexIsUnique =
+            indexIsUnique("activity_executions", "idx_one_child_execution_per_occurrence"),
+        occurrenceIndexPredicate = occurrenceIndexSql.substringAfter(" where ", "").trim(),
+    )
 }
 
 internal data class ActivityTemplateManualSchema(
