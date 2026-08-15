@@ -56,4 +56,4 @@ GitHub Actions runs fast build, JVM tests, ktlint, detekt, Android lint, enforce
 
 `coverageVerify` delegates to Kover's native `:domain:koverVerify` task and currently enforces at least 80% domain line coverage. Future domain rules can add package, class, or branch bounds without applying a whole-project threshold to Android/Compose glue.
 
-Version tags matching `v*.*.*` run the release foundation. Signing and publishing remain intentionally gated on GitHub Secrets until a real keystore is provisioned; no credentials are in this repository.
+Version tags matching `v*.*.*` run the release foundation. GitHub distribution will use a signed release APK, but signing credentials are intentionally not provisioned yet: without signing secrets the workflow must not publish an installable GitHub Release. Android App Bundle and Google Play publishing are deferred until Play distribution is an actual project requirement. Signing-key provisioning will be handled separately before the first public installable release; no credentials are in this repository.
