@@ -35,6 +35,74 @@ internal object LifeTracingMigrationTestDatabaseFactory {
             ActivitySnapshotSchemaV3.create(database)
             ActivityExecutionSchemaV4.createAndSeed(database)
         }
+
+    fun createVersion5(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 5).also { database ->
+            SequenceTemplateSchemaV5.drop(database)
+            ActivityExecutionSchemaV4.drop(database)
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+            ActivityExecutionSchemaV4.createAndSeed(database)
+            SequenceTemplateSchemaV5.create(database)
+        }
+}
+
+internal data class SequenceTemplateManualSchema(
+    val hasNoLiveAccountingCheck: Boolean,
+    val hasCountdownChecks: Boolean,
+    val hasNodeShapeCheck: Boolean,
+    val nodeForeignKeyDeletes: Map<String, String>,
+    val mainValueIndexIsUnique: Boolean,
+    val mainValueIndexColumns: List<String>,
+    val mainValueIndexPredicate: String,
+    val templateColumns: List<String>,
+    val settingsColumns: List<String>,
+    val settingsColumnDefaults: Map<String, String?>,
+    val fieldColumns: List<String>,
+    val optionColumns: List<String>,
+    val nodeColumns: List<String>,
+    val nodeOwnerIndexColumns: List<String>,
+    val nodeSiblingIndexColumns: List<String>,
+    val nodeSnapshotIndexColumns: List<String>,
+)
+
+internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceTemplateManualSchema {
+    val templateSql = schemaSql("table", "sequence_templates")
+    val settingsSql = schemaSql("table", "sequence_template_settings")
+    val nodeSql = schemaSql("table", "sequence_nodes")
+    val mainIndexSql = schemaSql("index", "idx_one_sequence_template_main_field")
+    return SequenceTemplateManualSchema(
+        hasNoLiveAccountingCheck = templateSql.contains("no_live_time_accounting in ('active', 'pause')"),
+        hasCountdownChecks =
+            settingsSql.contains("check (sequence_start_countdown_ms >= 0)") &&
+                settingsSql.contains("check (before_each_step_countdown_ms >= 0)"),
+        hasNodeShapeCheck =
+            nodeSql.contains("node_type = 'step'") &&
+                nodeSql.contains("activity_snapshot_id is not null") &&
+                nodeSql.contains("node_type = 'repeat'") &&
+                nodeSql.contains("repeat_count > 0") &&
+                nodeSql.contains("parent_repeat_node_id is null"),
+        nodeForeignKeyDeletes = foreignKeyDeletes("sequence_nodes"),
+        mainValueIndexIsUnique = indexIsUnique("sequence_template_fields", "idx_one_sequence_template_main_field"),
+        mainValueIndexColumns = indexColumns("idx_one_sequence_template_main_field"),
+        mainValueIndexPredicate = mainIndexSql.substringAfter(" where ", "").trim(),
+        templateColumns = tableColumns("sequence_templates"),
+        settingsColumns = tableColumns("sequence_template_settings"),
+        settingsColumnDefaults =
+            tableColumnDefaults(
+                "sequence_template_settings",
+            ).filterKeys(SEQUENCE_SETTING_COLUMNS::contains),
+        fieldColumns = tableColumns("sequence_template_fields"),
+        optionColumns = tableColumns("sequence_template_category_options"),
+        nodeColumns = tableColumns("sequence_nodes"),
+        nodeOwnerIndexColumns = indexColumns("sequence_nodes_sequence"),
+        nodeSiblingIndexColumns = indexColumns("sequence_nodes_parent_position"),
+        nodeSnapshotIndexColumns = indexColumns("sequence_nodes_activity_snapshot_id"),
+    )
 }
 
 internal data class ActivityExecutionManualSchema(
@@ -272,6 +340,15 @@ private fun SupportSQLiteDatabase.indexColumns(name: String): List<String> =
         }
     }
 
+private fun SupportSQLiteDatabase.foreignKeyDeletes(table: String): Map<String, String> =
+    query("PRAGMA foreign_key_list(`$table`)").use { cursor ->
+        val fromColumn = cursor.getColumnIndexOrThrow("from")
+        val onDeleteColumn = cursor.getColumnIndexOrThrow("on_delete")
+        buildMap {
+            while (cursor.moveToNext()) put(cursor.getString(fromColumn), cursor.getString(onDeleteColumn))
+        }
+    }
+
 private fun String.normalizedSql(): String =
     lowercase(Locale.ROOT)
         .replace("`", "")
@@ -287,4 +364,16 @@ private val SNAPSHOT_SETTING_COLUMNS =
         "timer_end_vibration",
         "keep_screen_awake",
         "confirm_manual_finish",
+    )
+
+private val SEQUENCE_SETTING_COLUMNS =
+    setOf(
+        "auto_advance",
+        "sequence_start_countdown_ms",
+        "before_each_step_countdown_ms",
+        "transition_sound",
+        "transition_vibration",
+        "keep_screen_awake",
+        "confirm_jump",
+        "confirm_early_end",
     )
