@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -15,16 +15,29 @@ jobs:
     name: Build, test, and static analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445eeecc264f74e19b79f3a507b4971e3611f9 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew ktlintCheck detekt lintDebug :domain:test :data:testDebugUnitTest :app:testDebugUnitTest coverageReport coverageVerify :app:assembleDebug --stacktrace
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kover-coverage-reports
+          path: |
+            domain/build/reports/kover/html/**
+            domain/build/reports/kover/report.xml
+            data/build/reports/kover/html/**
+            data/build/reports/kover/report.xml
+            app/build/reports/kover/html/**
+            app/build/reports/kover/report.xml
+          if-no-files-found: ignore
       - name: Upload reports on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verification-reports
           path: |
@@ -33,7 +46,7 @@ jobs:
           if-no-files-found: ignore
       - name: Upload debug APK
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lifetracing-debug-apk
           path: app/build/outputs/apk/debug/*.apk
@@ -44,17 +57,19 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445eeecc264f74e19b79f3a507b4971e3611f9 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :app:pixel2Api35DebugAndroidTest --stacktrace
+      - run: ./gradlew :data:pixel2Api35DebugAndroidTest :app:pixel2Api35DebugAndroidTest --stacktrace
       - name: Upload instrumentation reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: instrumentation-reports
-          path: app/build/reports/**
+          path: |
+            data/build/reports/**
+            app/build/reports/**
           if-no-files-found: ignore

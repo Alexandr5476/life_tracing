@@ -37,7 +37,7 @@ The app uses `minSdk 26`: Android 8.0 is a practical modern baseline and include
 Compose instrumentation infrastructure uses a Gradle Managed Device:
 
 ```powershell
-.\gradlew.bat :app:pixel2Api35DebugAndroidTest
+.\gradlew.bat :data:pixel2Api35DebugAndroidTest :app:pixel2Api35DebugAndroidTest
 ```
 
 Activate the optional fast pre-push check once per clone:
@@ -48,6 +48,8 @@ git config core.hooksPath .githooks
 
 ## CI and releases
 
-GitHub Actions runs fast build, JVM tests, ktlint, detekt, Android lint, coverage reports, and a debug APK for pull requests to `main` and pushes to `main`. Instrumented tests have a maintainable managed-device job available through workflow dispatch, so they can be promoted to a required check when execution time is acceptable.
+GitHub Actions runs fast build, JVM tests, ktlint, detekt, Android lint, enforced domain coverage verification, coverage artifacts, and a debug APK for pull requests to `main` and all branch pushes. Instrumented tests have a maintainable managed-device job available through workflow dispatch for both `:data` and `:app`, so they can be promoted to required checks when execution time is acceptable.
+
+`coverageVerify` delegates to Kover's native `:domain:koverVerify` task and currently enforces at least 80% domain line coverage. Future domain rules can add package, class, or branch bounds without applying a whole-project threshold to Android/Compose glue.
 
 Version tags matching `v*.*.*` run the release foundation. Signing and publishing remain intentionally gated on GitHub Secrets until a real keystore is provisioned; no credentials are in this repository.

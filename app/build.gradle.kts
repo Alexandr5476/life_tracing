@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.ManagedVirtualDevice
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -41,7 +40,7 @@ android {
     if (listOf(signingPath, signingStorePassword, signingKeyAlias, signingKeyPassword).all { !it.isNullOrBlank() }) {
         signingConfigs {
             create("releaseFromEnvironment") {
-                storeFile = file(signingPath)
+                storeFile = file(requireNotNull(signingPath))
                 storePassword = signingStorePassword
                 keyAlias = signingKeyAlias
                 keyPassword = signingKeyPassword
@@ -59,18 +58,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    testOptions {
-        managedDevices {
-            devices {
-                create<ManagedVirtualDevice>("pixel2Api35") {
-                    device = "Pixel2"
-                    apiLevel = 35
-                    systemImageSource = "aosp"
-                }
-            }
-        }
     }
 }
 

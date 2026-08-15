@@ -1,3 +1,4 @@
+import kotlinx.kover.gradle.plugin.dsl.CoverageUnit
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -21,4 +22,14 @@ kotlin {
 
 dependencies {
     testImplementation(libs.junit.jupiter)
+}
+
+kover {
+    reports {
+        verify {
+            rule("domain line coverage") {
+                minBound(80, coverageUnits = CoverageUnit.LINE)
+            }
+        }
+    }
 }

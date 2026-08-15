@@ -9,10 +9,12 @@ permissions:
 
 jobs:
   verify-and-build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445eeecc264f74e19b79f3a507b4971e3611f9 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
@@ -25,7 +27,7 @@ jobs:
       - name: Complete verification suite
         run: ./gradlew ktlintCheck detekt lintDebug :domain:test :data:testDebugUnitTest :app:testDebugUnitTest coverageReport coverageVerify :app:pixel2Api35DebugAndroidTest :app:assembleRelease --stacktrace
       - name: Upload unsigned release APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-release-apk
           path: app/build/outputs/apk/release/*.apk
@@ -33,20 +35,42 @@ jobs:
 
   sign-and-publish:
     needs: verify-and-build
-    if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445eeecc264f74e19b79f3a507b4971e3611f9 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Materialize signing keystore
+      - name: Check signing configuration
+        id: signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          required=(ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD)
+          for name in "${required[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "Signing secrets are not configured; no GitHub Release will be published." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "available=true" >> "$GITHUB_OUTPUT"
+      - name: Materialize signing keystore
+        if: steps.signing.outputs.available == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
       - name: Build signed release APK
+        if: steps.signing.outputs.available == 'true'
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -54,6 +78,16 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --stacktrace
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/build/outputs/apk/release/*.apk
+        if: steps.signing.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          test -f "$signed_apk"
+          test ! -f "app/build/outputs/apk/release/app-release-unsigned.apk"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$signed_apk#LifeTracing $GITHUB_REF_NAME" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$signed_apk#LifeTracing $GITHUB_REF_NAME" --generate-notes
+          fi

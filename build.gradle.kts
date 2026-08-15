@@ -1,3 +1,7 @@
+import com.android.build.api.dsl.ApplicationExtension
+import com.android.build.api.dsl.CommonExtension
+import com.android.build.api.dsl.LibraryExtension
+import com.android.build.api.dsl.ManagedVirtualDevice
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -33,14 +37,48 @@ subprojects {
     }
 }
 
+fun CommonExtension<*, *, *, *, *, *>.configureManagedDevice() {
+    testOptions {
+        managedDevices {
+            allDevices {
+                create<ManagedVirtualDevice>("pixel2Api35") {
+                    device = "Pixel2"
+                    apiLevel = 35
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
+}
+
+subprojects {
+    pluginManager.withPlugin("com.android.application") {
+        extensions.configure<ApplicationExtension> {
+            configureManagedDevice()
+        }
+    }
+    pluginManager.withPlugin("com.android.library") {
+        extensions.configure<LibraryExtension> {
+            configureManagedDevice()
+        }
+    }
+}
+
 tasks.register("coverageReport") {
     group = "verification"
     description = "Generates human-readable Kover coverage reports for every module."
-    dependsOn(":domain:koverHtmlReport", ":domain:koverXmlReport", ":data:koverHtmlReport", ":app:koverHtmlReport")
+    dependsOn(
+        ":domain:koverHtmlReport",
+        ":domain:koverXmlReport",
+        ":data:koverHtmlReport",
+        ":data:koverXmlReport",
+        ":app:koverHtmlReport",
+        ":app:koverXmlReport",
+    )
 }
 
 tasks.register("coverageVerify") {
     group = "verification"
-    description = "Runs the coverage-report pipeline; module thresholds can be added to Kover later."
-    dependsOn("coverageReport")
+    description = "Runs Kover's enforced domain coverage verification."
+    dependsOn(":domain:koverVerify")
 }

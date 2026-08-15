@@ -18,6 +18,6 @@ Canonical commands (PowerShell):
 .\gradlew.bat ktlintCheck detekt lintDebug
 .\gradlew.bat coverageReport coverageVerify
 .\gradlew.bat :app:assembleDebug
-.\gradlew.bat :app:pixel2Api35DebugAndroidTest  # Managed-device instrumentation suite
+.\gradlew.bat :data:pixel2Api35DebugAndroidTest :app:pixel2Api35DebugAndroidTest  # Managed-device instrumentation suites
 git config core.hooksPath .githooks
 ```
