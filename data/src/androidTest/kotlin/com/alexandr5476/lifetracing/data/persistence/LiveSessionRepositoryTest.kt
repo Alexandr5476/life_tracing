@@ -74,7 +74,7 @@ class LiveSessionRepositoryTest {
 
         val completed = repositoryExecution(execution.id.value)
         assertEquals(ActivityExecutionStatus.COMPLETED, completed.status)
-        assertEquals(20_000, completed.activeDuration?.toMillis())
+        assertEquals(20_000L, completed.activeDuration?.toMillis())
         assertNull(database.activeSessionDao().get())
     }
 
@@ -199,8 +199,8 @@ class LiveSessionRepositoryTest {
         val finished = repository.completeCurrentSequenceStep(running.currentOccurrenceId!!, instant(30))
         assertEquals(SequenceExecutionStatus.COMPLETED, finished.execution.status)
         assertNull(repository.getActiveSession())
-        assertEquals(10_000, finished.execution.activeDuration?.toMillis())
-        assertEquals(20_000, finished.execution.pauseDuration?.toMillis())
+        assertEquals(10_000L, finished.execution.activeDuration?.toMillis())
+        assertEquals(20_000L, finished.execution.pauseDuration?.toMillis())
     }
 
     @Test
