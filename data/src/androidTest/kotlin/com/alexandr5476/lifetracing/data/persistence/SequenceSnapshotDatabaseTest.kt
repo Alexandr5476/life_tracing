@@ -189,7 +189,7 @@ class SequenceSnapshotDatabaseTest {
                     listOf(SequenceSnapshotStepOverrideEntity("linked-step", 0, "OVERTIME", false, false, false)),
             )
         snapshots.insertAggregate(linked)
-        sql("UPDATE sequence_templates SET archived_at_ms = 2 WHERE id = 'source'")
+        sql("UPDATE sequence_templates SET deleted_at_ms = 2 WHERE id = 'source'")
         assertEquals("source", snapshots.getAggregate("linked")?.snapshot?.sourceTemplateId)
         assertThrows(SQLiteConstraintException::class.java) {
             sql("DELETE FROM statistics_series WHERE id = 'sequence-series'")
