@@ -86,6 +86,12 @@ internal abstract class SequenceSnapshotDao {
     @Query("SELECT EXISTS(SELECT 1 FROM activity_executions WHERE snapshot_id = :snapshotId LIMIT 1)")
     protected abstract fun hasExecutionReference(snapshotId: String): Boolean
 
+    @Query("SELECT EXISTS(SELECT 1 FROM sequence_occurrences WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
+    protected abstract fun hasOccurrenceReference(snapshotId: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE snapshot_id = :snapshotId LIMIT 1)")
+    abstract fun hasSequenceExecutionReference(snapshotId: String): Boolean
+
     @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
 
@@ -122,12 +128,17 @@ internal abstract class SequenceSnapshotDao {
 
     @Transaction
     open fun hardDeleteAndPruneOwnedActivitySnapshots(snapshotId: String) {
+        require(!hasSequenceExecutionReference(snapshotId)) {
+            "Sequence snapshot is retained by a SequenceExecution"
+        }
         val children = stepActivitySnapshotIds(snapshotId)
         if (deleteSnapshotUnchecked(snapshotId) == 0) return
         children.forEach { child ->
-            if (!hasMutableStepReference(child) && !hasFrozenStepReference(child) && !hasExecutionReference(child)) {
-                check(deleteActivitySnapshotUnchecked(child) == 1)
-            }
+            if (hasMutableStepReference(child)) return@forEach
+            if (hasFrozenStepReference(child)) return@forEach
+            if (hasExecutionReference(child)) return@forEach
+            if (hasOccurrenceReference(child)) return@forEach
+            check(deleteActivitySnapshotUnchecked(child) == 1)
         }
     }
 

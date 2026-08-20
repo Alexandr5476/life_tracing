@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivityStep
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -1280,7 +1281,7 @@ class SequenceTemplateDatabaseTest {
                     null,
                     null,
                     null,
-                    null,
+                    ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
                     "RUNNING",
                     10,
                     null,

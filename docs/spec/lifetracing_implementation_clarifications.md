@@ -35,3 +35,22 @@ When immutable SequenceSnapshot persistence is introduced, it must preserve the 
 `sequence_snapshots.statistics_series_id`, when non-null, references `statistics_series.id` with `ON DELETE RESTRICT`. This preserves the Sequence's durable statistical identity after its source Template is hard-purged.
 
 `sequence_snapshot_nodes.activity_snapshot_id` references `activity_snapshots.id` with `ON DELETE RESTRICT`; the referenced immutable Activity snapshot is reused rather than copied. Frozen explicit Step override intent is stored in `sequence_snapshot_step_overrides`.
+
+## Sequence occurrence completion reason
+
+`sequence_occurrences.completion_reason` permits `NULL`, `NATURAL_TIMER_END`, `MANUAL_FINISH`, `ADVANCED_TO_NEXT`, `JUMP`, and `SEQUENCE_ENDED_EARLY`.
+
+- `NATURAL_TIMER_END` means the Timer reached its valid finishing boundary.
+- `MANUAL_FINISH` means the user explicitly completed the current Step normally.
+- `ADVANCED_TO_NEXT` means an already-started current Step was finalized by advancing to the next Step.
+- `JUMP` means an already-started current Step was finalized by jumping to another occurrence.
+- `SEQUENCE_ENDED_EARLY` means an already-started current Step was finalized while its parent Sequence ended early.
+- `NULL` means the reason is not applicable, unavailable, not yet known, or not specific enough for historical/technical data.
+
+An untouched skipped occurrence has `status = SKIPPED` and `completion_reason = NULL` because it was never started. These Sequence-specific technical reasons are not persisted in `activity_executions.completion_reason`; a normal Sequence-child ActivityExecution keeps that value `NULL` under the existing v4 contract.
+
+Future occurrence reasons require a domain code, a later migration of the SQL `CHECK`, and mapper/tests. The persisted `TEXT` identity does not need redesign.
+
+## Repeat iteration persistence
+
+`sequence_occurrences.repeat_iteration` is 1-based. Repeat ×N persists iterations `1..N`, never `0..N-1`; Repeat ×3 therefore stores iterations 1, 2, and 3.

@@ -71,6 +71,8 @@ data class ActivityExecution(
     val deletedAt: Instant?,
     val createdAt: Instant,
     val updatedAt: Instant,
+    val sequenceExecutionId: SequenceExecutionId? = null,
+    val sequenceOccurrenceId: SequenceOccurrenceId? = null,
     val pauses: List<ActivityExecutionPause> = emptyList(),
     val values: List<ActivityExecutionFieldValue> = emptyList(),
 )

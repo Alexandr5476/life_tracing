@@ -40,6 +40,81 @@ class ActivityExecutionTest {
     }
 
     @Test
+    fun `Sequence children retain parent links and one-off child has no Statistics Series`() {
+        val sequenceId = SequenceExecutionId("sequence")
+        val occurrenceId = SequenceOccurrenceId("occurrence")
+        val reusable =
+            factory.startSequenceChildTimed(snapshot(), sequenceId, occurrenceId, now, now, zone)
+        val oneOffNoLive =
+            factory.completeSequenceChildNoLive(
+                snapshot(mode = TimeTrackingMode.NO_LIVE_TRACKING, seriesId = null),
+                sequenceId,
+                occurrenceId,
+                now,
+                zone,
+            )
+
+        assertEquals(ActivityExecutionContext.SEQUENCE_CHILD, reusable.context)
+        assertEquals(sequenceId, reusable.sequenceExecutionId)
+        assertEquals(occurrenceId, reusable.sequenceOccurrenceId)
+        assertEquals(StatisticsSeriesId("series"), reusable.statisticsSeriesId)
+        assertNull(reusable.completionReason)
+        assertEquals(ActivityExecutionStatus.COMPLETED, oneOffNoLive.status)
+        assertNull(oneOffNoLive.startedAt)
+        assertNull(oneOffNoLive.activeDuration)
+        assertNull(oneOffNoLive.statisticsSeriesId)
+        assertNull(oneOffNoLive.completionReason)
+    }
+
+    @Test
+    fun `Statistics Series identity follows snapshot and execution context`() {
+        val reusableSnapshot = snapshot()
+        val oneOffSnapshot = snapshot(seriesId = null)
+        val reusableStandalone = factory.startTimed(reusableSnapshot, now, now, zone)
+        val oneOffStandalone = factory.startTimed(oneOffSnapshot, now, now, zone)
+        val reusableChild =
+            factory.startSequenceChildTimed(
+                reusableSnapshot,
+                SequenceExecutionId("sequence"),
+                SequenceOccurrenceId("reusable"),
+                now,
+                now,
+                zone,
+            )
+        val oneOffChild =
+            factory.startSequenceChildTimed(
+                oneOffSnapshot,
+                SequenceExecutionId("sequence"),
+                SequenceOccurrenceId("one-off"),
+                now,
+                now,
+                zone,
+            )
+
+        listOf(
+            reusableStandalone to reusableSnapshot,
+            oneOffStandalone to oneOffSnapshot,
+            reusableChild to reusableSnapshot,
+            oneOffChild to oneOffSnapshot,
+        ).forEach { (execution, source) ->
+            assertDoesNotThrow { ActivityExecutionValidator.requireValid(execution, source) }
+        }
+        listOf(
+            reusableStandalone.copy(statisticsSeriesId = null) to reusableSnapshot,
+            reusableStandalone.copy(statisticsSeriesId = StatisticsSeriesId("wrong")) to reusableSnapshot,
+            oneOffStandalone.copy(statisticsSeriesId = null) to oneOffSnapshot,
+            reusableChild.copy(statisticsSeriesId = null) to reusableSnapshot,
+            reusableChild.copy(statisticsSeriesId = StatisticsSeriesId("wrong")) to reusableSnapshot,
+            oneOffChild.copy(statisticsSeriesId = ActivityExecutionStatistics.ONE_OFF_BUCKET_ID) to oneOffSnapshot,
+            oneOffChild.copy(statisticsSeriesId = StatisticsSeriesId("wrong")) to oneOffSnapshot,
+        ).forEach { (execution, source) ->
+            assertThrows(IllegalArgumentException::class.java) {
+                ActivityExecutionValidator.requireValid(execution, source)
+            }
+        }
+    }
+
+    @Test
     fun `primary date and offset follow the original zone at the event instant`() {
         val event = Instant.parse("2026-01-01T23:30:00Z")
 
