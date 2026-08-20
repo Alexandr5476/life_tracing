@@ -117,7 +117,7 @@ internal abstract class SequenceSnapshotDao {
             getOptions(id),
             getNodes(id),
             getStepOverrides(id),
-        ).also { it.toDomain() }
+        ).also(::requireValidAggregate)
     }
 
     @Transaction
@@ -177,7 +177,7 @@ internal abstract class SequenceSnapshotDao {
         aggregate.stepOverrides.forEach { override ->
             val owner = requireNotNull(nodes[override.sequenceSnapshotNodeId]) { "Step override owner must exist" }
             require(owner.nodeType == "STEP") { "Only a Step can own execution-setting overrides" }
-            require(!override.isEmpty()) { "All-null step overrides must not be persisted" }
+            if (override.isEmpty()) return@forEach
             require(override.startCountdownMs == null || override.startCountdownMs >= 0) {
                 "Step start countdown must not be negative"
             }

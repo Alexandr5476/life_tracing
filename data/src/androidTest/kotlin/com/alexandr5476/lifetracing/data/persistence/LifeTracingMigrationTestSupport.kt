@@ -141,6 +141,94 @@ internal fun SupportSQLiteDatabase.readSequenceTemplateManualSchema(): SequenceT
     )
 }
 
+internal data class SequenceSnapshotManualSchema(
+    val snapshotColumns: List<String>,
+    val snapshotForeignKeyDeletes: Map<String, String>,
+    val snapshotSourceIndexColumns: List<String>,
+    val snapshotSeriesIndexColumns: List<String>,
+    val settingsColumns: List<String>,
+    val settingsColumnDefaults: Map<String, String?>,
+    val hasSettingsCountdownChecks: Boolean,
+    val hasNoLiveAccountingCheck: Boolean,
+    val fieldColumns: List<String>,
+    val fieldForeignKeyDeletes: Map<String, String>,
+    val fieldOwnerIndexColumns: List<String>,
+    val fieldSourceIndexColumns: List<String>,
+    val optionColumns: List<String>,
+    val optionForeignKeyDeletes: Map<String, String>,
+    val optionOwnerIndexColumns: List<String>,
+    val optionSourceIndexColumns: List<String>,
+    val mainValueIndexIsUnique: Boolean,
+    val mainValueIndexColumns: List<String>,
+    val mainValueIndexPredicate: String,
+    val nodeColumns: List<String>,
+    val nodeForeignKeyDeletes: Map<String, String>,
+    val hasNodeShapeCheck: Boolean,
+    val nodeOwnerIndexColumns: List<String>,
+    val nodeParentIndexColumns: List<String>,
+    val nodeActivitySnapshotIndexColumns: List<String>,
+    val overrideColumns: List<String>,
+    val overridePrimaryKeyColumns: List<String>,
+    val overrideForeignKeyDeletes: Map<String, String>,
+    val hasOverrideCountdownCheck: Boolean,
+    val hasOverrideTimerZeroBehaviorCheck: Boolean,
+    val hasOverrideBooleanChecks: Boolean,
+)
+
+internal fun SupportSQLiteDatabase.readSequenceSnapshotManualSchema(): SequenceSnapshotManualSchema {
+    val settingsSql = schemaSql("table", "sequence_snapshot_settings")
+    val mainIndexSql = schemaSql("index", "idx_one_sequence_main_snapshot_field")
+    val nodeSql = schemaSql("table", "sequence_snapshot_nodes")
+    val overrideSql = schemaSql("table", "sequence_snapshot_step_overrides")
+    return SequenceSnapshotManualSchema(
+        snapshotColumns = tableColumns("sequence_snapshots"),
+        snapshotForeignKeyDeletes = foreignKeyDeletes("sequence_snapshots"),
+        snapshotSourceIndexColumns = indexColumns("sequence_snapshots_source_template_id"),
+        snapshotSeriesIndexColumns = indexColumns("sequence_snapshots_statistics_series_id"),
+        settingsColumns = tableColumns("sequence_snapshot_settings"),
+        settingsColumnDefaults = tableColumnDefaults("sequence_snapshot_settings"),
+        hasSettingsCountdownChecks =
+            settingsSql.contains("check (sequence_start_countdown_ms >= 0)") &&
+                settingsSql.contains("check (before_each_step_countdown_ms >= 0)"),
+        hasNoLiveAccountingCheck =
+            settingsSql.contains("no_live_time_accounting in ('active', 'pause')"),
+        fieldColumns = tableColumns("sequence_snapshot_fields"),
+        fieldForeignKeyDeletes = foreignKeyDeletes("sequence_snapshot_fields"),
+        fieldOwnerIndexColumns = indexColumns("sequence_snapshot_fields_owner_position"),
+        fieldSourceIndexColumns = indexColumns("sequence_snapshot_fields_source_field_id"),
+        optionColumns = tableColumns("sequence_snapshot_category_options"),
+        optionForeignKeyDeletes = foreignKeyDeletes("sequence_snapshot_category_options"),
+        optionOwnerIndexColumns = indexColumns("sequence_snapshot_options_owner_position"),
+        optionSourceIndexColumns = indexColumns("sequence_snapshot_options_source_option_id"),
+        mainValueIndexIsUnique =
+            indexIsUnique("sequence_snapshot_fields", "idx_one_sequence_main_snapshot_field"),
+        mainValueIndexColumns = indexColumns("idx_one_sequence_main_snapshot_field"),
+        mainValueIndexPredicate = mainIndexSql.substringAfter(" where ", "").trim(),
+        nodeColumns = tableColumns("sequence_snapshot_nodes"),
+        nodeForeignKeyDeletes = foreignKeyDeletes("sequence_snapshot_nodes"),
+        hasNodeShapeCheck =
+            nodeSql.contains("node_type = 'step'") &&
+                nodeSql.contains("activity_snapshot_id is not null") &&
+                nodeSql.contains("node_type = 'repeat'") &&
+                nodeSql.contains("repeat_count > 0") &&
+                nodeSql.contains("parent_repeat_node_id is null"),
+        nodeOwnerIndexColumns = indexColumns("sequence_snapshot_nodes_parent_position"),
+        nodeParentIndexColumns = indexColumns("sequence_snapshot_nodes_parent_repeat_node_id"),
+        nodeActivitySnapshotIndexColumns = indexColumns("sequence_snapshot_nodes_activity_snapshot_id"),
+        overrideColumns = tableColumns("sequence_snapshot_step_overrides"),
+        overridePrimaryKeyColumns = tablePrimaryKeyColumns("sequence_snapshot_step_overrides"),
+        overrideForeignKeyDeletes = foreignKeyDeletes("sequence_snapshot_step_overrides"),
+        hasOverrideCountdownCheck =
+            overrideSql.contains("start_countdown_ms is null or start_countdown_ms >= 0"),
+        hasOverrideTimerZeroBehaviorCheck =
+            overrideSql.contains("timer_zero_behavior is null or timer_zero_behavior in ('finish', 'overtime')"),
+        hasOverrideBooleanChecks =
+            listOf("timer_end_sound", "timer_end_vibration", "keep_screen_awake").all { column ->
+                overrideSql.contains("$column is null or $column in (0, 1)")
+            },
+    )
+}
+
 internal data class ActivityExecutionManualSchema(
     val executionColumns: List<String>,
     val pauseColumns: List<String>,

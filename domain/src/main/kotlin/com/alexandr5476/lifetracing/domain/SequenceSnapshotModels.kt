@@ -94,10 +94,7 @@ data class SequenceConfigSnapshot(
 )
 
 object SequenceConfigSnapshotValidator {
-    fun requireValid(
-        snapshot: SequenceConfigSnapshot,
-        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot> = emptyMap(),
-    ) {
+    fun requireValid(snapshot: SequenceConfigSnapshot) {
         if (snapshot.sourceTemplateId != null) {
             require(snapshot.sourceRevision != null && snapshot.sourceRevision >= 1) {
                 "Source-linked snapshot revision must be at least 1"
@@ -119,8 +116,39 @@ object SequenceConfigSnapshotValidator {
             "Sequence snapshot field identities must be unique"
         }
         snapshot.fields.forEach(::requireValidField)
+        require(
+            snapshot.fields
+                .flatMap(SequenceSnapshotField::categoryOptions)
+                .map(SequenceSnapshotCategoryOption::id)
+                .distinct()
+                .size == snapshot.fields.sumOf { it.categoryOptions.size },
+        ) {
+            "Sequence snapshot option identities must be globally unique"
+        }
         require(snapshot.fields.count { it.isMainValue } <= 1) { "Sequence snapshot may have at most one Main Value" }
-        requireValidNodes(snapshot.nodes, activitySnapshots)
+        requireValidNodes(snapshot.nodes)
+    }
+
+    fun requireValid(
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshotModes: Map<ActivitySnapshotId, TimeTrackingMode>,
+    ) {
+        requireValid(snapshot)
+        snapshot.nodes
+            .flatMap { node ->
+                when (node) {
+                    is SequenceSnapshotActivityStep -> listOf(node)
+                    is SequenceSnapshotRepeatBlock -> node.children
+                }
+            }.forEach { step ->
+                val mode =
+                    requireNotNull(activitySnapshotModes[step.activitySnapshotId]) {
+                        "ActivitySnapshot metadata is missing for Step ${step.id.value}"
+                    }
+                require(step.overrides.timerZeroBehavior == null || mode == TimeTrackingMode.TIMER) {
+                    "Timer zero behavior override requires a TIMER Step"
+                }
+            }
     }
 
     fun requireValidField(field: SequenceSnapshotField) {
@@ -166,10 +194,7 @@ object SequenceConfigSnapshotValidator {
         ) { "Main Value must be a NUMBER snapshot field" }
     }
 
-    private fun requireValidNodes(
-        nodes: List<SequenceSnapshotNode>,
-        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
-    ) {
+    private fun requireValidNodes(nodes: List<SequenceSnapshotNode>) {
         val all =
             nodes + nodes.filterIsInstance<SequenceSnapshotRepeatBlock>().flatMap(SequenceSnapshotRepeatBlock::children)
         require(all.map(SequenceSnapshotNode::id).distinct().size == all.size) {
@@ -182,11 +207,6 @@ object SequenceConfigSnapshotValidator {
         }
         all.filterIsInstance<SequenceSnapshotActivityStep>().forEach { step ->
             require(step.overrides.startCountdown?.isNegative != true) { "Step start countdown must not be negative" }
-            if (step.overrides.timerZeroBehavior != null && activitySnapshots.isNotEmpty()) {
-                require(activitySnapshots[step.activitySnapshotId]?.timeTrackingMode == TimeTrackingMode.TIMER) {
-                    "Timer zero behavior override requires a TIMER Step"
-                }
-            }
         }
     }
 
@@ -208,6 +228,7 @@ class SequenceSnapshotFactory(
 ) {
     fun fromTemplate(
         template: SequenceTemplate,
+        activitySnapshotModes: Map<ActivitySnapshotId, TimeTrackingMode>,
         createdAt: Instant,
     ): SequenceConfigSnapshot {
         SequenceTemplateValidator.requireValid(template)
@@ -288,7 +309,9 @@ class SequenceSnapshotFactory(
             ),
             fields,
             nodes,
-        ).also(SequenceConfigSnapshotValidator::requireValid)
+        ).also { snapshot ->
+            SequenceConfigSnapshotValidator.requireValid(snapshot, activitySnapshotModes)
+        }
     }
 }
 

@@ -55,7 +55,7 @@ class SequenceSnapshotTest {
                     ),
             )
 
-        val snapshot = factory().fromTemplate(template, now)
+        val snapshot = factory().fromTemplate(template, modes("a", "b"), now)
         val copied = snapshot.fields.single()
         val top = snapshot.nodes[0] as SequenceSnapshotActivityStep
         val repeat = snapshot.nodes[1] as SequenceSnapshotRepeatBlock
@@ -71,8 +71,11 @@ class SequenceSnapshotTest {
         assertNotEquals("top", top.id.value)
         assertEquals(Duration.ZERO, top.overrides.startCountdown)
         assertEquals(false, top.overrides.timerEndSound)
+        assertEquals(ActivitySnapshotId("a"), top.activitySnapshotId)
+        assertEquals(listOf(0, 1), snapshot.nodes.map { it.position })
         assertEquals(3, repeat.repeatCount)
         assertNotEquals("repeat", repeat.id.value)
+        assertEquals(ActivitySnapshotId("b"), repeat.children.single().activitySnapshotId)
         assertEquals(
             false,
             repeat.children
@@ -84,7 +87,7 @@ class SequenceSnapshotTest {
     @Test
     fun `snapshot remains frozen and validates structural boundaries`() {
         val template = template(nodes = listOf(ActivityStep(SequenceNodeId("step"), 0, ActivitySnapshotId("activity"))))
-        val snapshot = factory().fromTemplate(template, now)
+        val snapshot = factory().fromTemplate(template, modes("activity"), now)
         val step = snapshot.nodes.single() as SequenceSnapshotActivityStep
         val activity =
             ActivityConfigSnapshot(
@@ -115,6 +118,173 @@ class SequenceSnapshotTest {
         assertNull(snapshot.fields.singleOrNull())
     }
 
+    @Test
+    fun `factory rejects timer override when child metadata is unavailable`() {
+        val template =
+            template(
+                nodes =
+                    listOf(
+                        ActivityStep(
+                            SequenceNodeId("step"),
+                            0,
+                            ActivitySnapshotId("activity"),
+                            SequenceStepOverrides(timerZeroBehavior = TimerZeroBehavior.OVERTIME),
+                        ),
+                    ),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            factory().fromTemplate(template, emptyMap(), now)
+        }
+    }
+
+    @Test
+    fun `factory accepts TIMER override and rejects it for non TIMER modes`() {
+        val template =
+            template(
+                nodes =
+                    listOf(
+                        ActivityStep(
+                            SequenceNodeId("step"),
+                            0,
+                            ActivitySnapshotId("activity"),
+                            SequenceStepOverrides(timerZeroBehavior = TimerZeroBehavior.OVERTIME),
+                        ),
+                    ),
+            )
+
+        factory().fromTemplate(template, modes("activity"), now)
+        listOf(TimeTrackingMode.STOPWATCH, TimeTrackingMode.NO_LIVE_TRACKING).forEach { mode ->
+            assertThrows(IllegalArgumentException::class.java) {
+                factory().fromTemplate(template, mapOf(ActivitySnapshotId("activity") to mode), now)
+            }
+        }
+    }
+
+    @Test
+    fun `snapshot option identities must be globally unique across fields`() {
+        val shared = SequenceSnapshotCategoryOptionId("same")
+        val fields =
+            listOf("first", "second").mapIndexed { position, id ->
+                SequenceSnapshotField(
+                    id = SequenceSnapshotFieldId(id),
+                    sourceFieldId = null,
+                    position = position,
+                    nameAtCreation = id,
+                    type = CustomFieldType.CATEGORY,
+                    categoryOptions =
+                        listOf(
+                            SequenceSnapshotCategoryOption(shared, null, 0, "Option"),
+                        ),
+                )
+            }
+        val snapshot = factory().fromTemplate(template(), emptyMap(), now).copy(fields = fields)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceConfigSnapshotValidator.requireValid(snapshot)
+        }
+    }
+
+    @Test
+    fun `factory rejects duplicate generated field node and global option identities`() {
+        val fields = listOf(numberField("first").copy(position = 0), numberField("second").copy(position = 1))
+        val nodes =
+            listOf(
+                ActivityStep(SequenceNodeId("first"), 0, ActivitySnapshotId("a")),
+                ActivityStep(SequenceNodeId("second"), 1, ActivitySnapshotId("b")),
+            )
+        val categories =
+            listOf("first", "second").mapIndexed { position, id ->
+                val option = SequenceTemplateCategoryOption(SequenceTemplateCategoryOptionId("$id-option"), 0, id)
+                SequenceTemplateField(
+                    SequenceTemplateFieldId(id),
+                    position,
+                    id,
+                    CustomFieldType.CATEGORY,
+                    createdAt = now,
+                    updatedAt = now,
+                    categoryOptions = listOf(option),
+                )
+            }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            duplicateFactory(fieldId = "same-field").fromTemplate(template(fields = fields), emptyMap(), now)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            duplicateFactory(nodeId = "same-node").fromTemplate(template(nodes = nodes), modes("a", "b"), now)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            duplicateFactory(optionId = "same-option").fromTemplate(template(fields = categories), emptyMap(), now)
+        }
+    }
+
+    @Test
+    fun `display resolution follows local source creation precedence`() {
+        val option = SequenceSnapshotCategoryOption(SequenceSnapshotCategoryOptionId("option"), null, 0, "Created")
+        val field =
+            SequenceSnapshotField(
+                SequenceSnapshotFieldId("field"),
+                null,
+                0,
+                "Created",
+                type = CustomFieldType.CATEGORY,
+                categoryOptions = listOf(option),
+            )
+
+        assertEquals("Source", SequenceSnapshotDisplayResolver.fieldName(field, "Source"))
+        assertEquals("Created", SequenceSnapshotDisplayResolver.fieldName(field, null))
+        assertEquals(
+            "Local",
+            SequenceSnapshotDisplayResolver.fieldName(field.copy(localNameOverride = "Local"), "Source"),
+        )
+        assertEquals("Source", SequenceSnapshotDisplayResolver.optionLabel(option, "Source"))
+        assertEquals("Created", SequenceSnapshotDisplayResolver.optionLabel(option, null))
+        assertEquals(
+            "Local",
+            SequenceSnapshotDisplayResolver.optionLabel(option.copy(localLabelOverride = "Local"), "Source"),
+        )
+    }
+
+    @Test
+    fun `effective settings use frozen sequence and explicit overrides after source changes`() {
+        val step =
+            ActivityStep(
+                SequenceNodeId("step"),
+                0,
+                ActivitySnapshotId("activity"),
+                SequenceStepOverrides(
+                    startCountdown = Duration.ZERO,
+                    timerZeroBehavior = TimerZeroBehavior.OVERTIME,
+                    timerEndSound = false,
+                    timerEndVibration = false,
+                    keepScreenAwake = false,
+                ),
+            )
+        val source = template(nodes = listOf(step))
+        val snapshot = factory().fromTemplate(source, modes("activity"), now)
+        val frozenStep = snapshot.nodes.single() as SequenceSnapshotActivityStep
+        val activity = timerActivitySnapshot("activity")
+        val changedSource =
+            source.copy(
+                settings =
+                    source.settings.copy(
+                        sequenceStartCountdown = Duration.ofMinutes(1),
+                        transitionSound = true,
+                        transitionVibration = true,
+                        keepScreenAwake = true,
+                    ),
+            )
+
+        val effective = EffectiveSequenceStepSettingsResolver.resolve(frozenStep, activity, snapshot.settings, true)
+
+        assertEquals(Duration.ZERO, effective.startCountdown)
+        assertEquals(TimerZeroBehavior.OVERTIME, effective.timerZeroBehavior)
+        assertFalse(effective.timerEndSound)
+        assertFalse(effective.timerEndVibration)
+        assertFalse(effective.keepScreenAwake)
+        assertNotEquals(changedSource.settings, snapshot.settings)
+    }
+
     private fun factory(): SequenceSnapshotFactory {
         var id = 0
         return SequenceSnapshotFactory(
@@ -124,6 +294,36 @@ class SequenceSnapshotTest {
             nextNodeId = { SequenceSnapshotNodeId("node-${++id}") },
         )
     }
+
+    private fun duplicateFactory(
+        fieldId: String? = null,
+        optionId: String? = null,
+        nodeId: String? = null,
+    ): SequenceSnapshotFactory {
+        var id = 0
+        return SequenceSnapshotFactory(
+            nextSnapshotId = { SequenceSnapshotId("snapshot") },
+            nextFieldId = { SequenceSnapshotFieldId(fieldId ?: "field-${++id}") },
+            nextOptionId = { SequenceSnapshotCategoryOptionId(optionId ?: "option-${++id}") },
+            nextNodeId = { SequenceSnapshotNodeId(nodeId ?: "node-${++id}") },
+        )
+    }
+
+    private fun modes(vararg ids: String) = ids.associate { ActivitySnapshotId(it) to TimeTrackingMode.TIMER }
+
+    private fun timerActivitySnapshot(id: String) =
+        ActivityConfigSnapshot(
+            ActivitySnapshotId(id),
+            "Activity",
+            null,
+            TimeTrackingMode.TIMER,
+            Duration.ofSeconds(30),
+            null,
+            null,
+            null,
+            false,
+            now,
+        )
 
     private fun template(
         fields: List<SequenceTemplateField> = emptyList(),

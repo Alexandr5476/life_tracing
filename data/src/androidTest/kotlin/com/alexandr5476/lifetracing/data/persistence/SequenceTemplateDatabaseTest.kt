@@ -460,6 +460,52 @@ class SequenceTemplateDatabaseTest {
     }
 
     @Test
+    fun localReplacementReusesAndPreservesActivitySnapshotOwnedByFrozenSequence() {
+        insertSnapshot("shared")
+        sequences.insertAggregate(
+            aggregate(nodes = listOf(step("step", "sequence", null, 0, "shared"))),
+        )
+        val frozen = database.sequenceSnapshotDao()
+        frozen.insertAggregate(sequenceSnapshotAggregate("frozen", "shared"))
+        assertEquals(1, activitySnapshotCount("shared"))
+
+        sequences.replaceStepSnapshot("step", snapshotAggregate("replacement", locallyModified = true), 1, 2)
+
+        assertEquals("replacement", sequences.getNodes("sequence").single().activitySnapshotId)
+        assertEquals("shared", frozen.getNodes("frozen").single().activitySnapshotId)
+        assertEquals(1, activitySnapshotCount("shared"))
+
+        frozen.hardDeleteAndPruneOwnedActivitySnapshots("frozen")
+        assertNull(snapshots.getById("shared"))
+    }
+
+    @Test
+    fun frozenHardDeletePrunesOnlyAfterAllFrozenMutableAndExecutionOwnersAreGone() {
+        listOf("multi", "mutable", "execution").forEach(::insertSnapshot)
+        val frozen = database.sequenceSnapshotDao()
+        frozen.insertAggregate(sequenceSnapshotAggregate("first", "multi"))
+        frozen.insertAggregate(sequenceSnapshotAggregate("second", "multi"))
+        frozen.insertAggregate(sequenceSnapshotAggregate("mutable-owner", "mutable"))
+        frozen.insertAggregate(sequenceSnapshotAggregate("execution-owner", "execution"))
+        sequences.insertAggregate(
+            aggregate(
+                nodes = listOf(step("mutable-step", "sequence", null, 0, "mutable")),
+            ),
+        )
+        insertRunningExecution("execution-row", "execution")
+
+        frozen.hardDeleteAndPruneOwnedActivitySnapshots("first")
+        assertNotNull(snapshots.getById("multi"))
+        frozen.hardDeleteAndPruneOwnedActivitySnapshots("second")
+        assertNull(snapshots.getById("multi"))
+
+        frozen.hardDeleteAndPruneOwnedActivitySnapshots("mutable-owner")
+        assertNotNull(snapshots.getById("mutable"))
+        frozen.hardDeleteAndPruneOwnedActivitySnapshots("execution-owner")
+        assertNotNull(snapshots.getById("execution"))
+    }
+
+    @Test
     fun invalidSemanticLocalReplacementsRollBackEveryProposedChange() {
         database.statisticsSeriesDao().insert(
             StatisticsSeriesEntity("activity-series", "ACTIVITY", "Activity", 1, null),
@@ -1179,6 +1225,26 @@ class SequenceTemplateDatabaseTest {
             ),
         settings = ActivitySnapshotSettingsEntity(id),
     )
+
+    private fun sequenceSnapshotAggregate(
+        id: String,
+        activitySnapshotId: String,
+    ) = SequenceSnapshotAggregateEntity(
+        SequenceSnapshotEntity(id, id, null, null, null, null, 1),
+        SequenceSnapshotSettingsEntity(id, true, 0, 0, true, true, false, true, true, "ACTIVE"),
+        nodes =
+            listOf(
+                SequenceSnapshotNodeEntity("$id-step", id, "STEP", null, 0, activitySnapshotId, null),
+            ),
+    )
+
+    private fun activitySnapshotCount(id: String): Int =
+        database.openHelper.readableDatabase
+            .query("SELECT COUNT(*) FROM activity_snapshots WHERE id = ?", arrayOf(id))
+            .use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
 
     private fun activityTemplateAggregate(
         id: String,
