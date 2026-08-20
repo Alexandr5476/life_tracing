@@ -139,6 +139,49 @@ class SequenceExecutionDatabaseTest {
     }
 
     @Test
+    fun composedSnapshotCorruptionIsRejectedOnExecutionReadAndInsertWithoutPartialRows() {
+        executions.insertAggregate(SequenceExecutionAggregateEntity(runningRoot()))
+        assertNotNull(executions.getAggregate("execution"))
+
+        sql(
+            "INSERT INTO sequence_snapshot_step_overrides " +
+                "(sequence_snapshot_node_id, timer_zero_behavior) VALUES ('top-step', 'OVERTIME')",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            database.sequenceSnapshotDao().getAggregate("sequence-snapshot")
+        }
+        assertThrows(IllegalArgumentException::class.java) { executions.getAggregate("execution") }
+
+        val rejected =
+            SequenceExecutionAggregateEntity(
+                runningRoot("rejected"),
+                occurrences = listOf(occurrence("rejected-occurrence", 0).copy(sequenceExecutionId = "rejected")),
+            )
+        assertThrows(IllegalArgumentException::class.java) { executions.insertAggregate(rejected) }
+        assertNull(executions.getById("rejected"))
+        assertTrue(executions.getOccurrences("rejected").isEmpty())
+    }
+
+    @Test
+    fun timerSnapshotWithOvertimeOverrideRemainsValidForSnapshotAndExecutionBoundaries() {
+        insertActivitySnapshot("timer", "TIMER", null)
+        insertSequenceSnapshot(
+            "timer-sequence-snapshot",
+            stepId = "timer-step",
+            activityId = "timer",
+            stepOverrides =
+                listOf(SequenceSnapshotStepOverrideEntity("timer-step", null, "OVERTIME", null, null, null)),
+        )
+        assertNotNull(database.sequenceSnapshotDao().getAggregate("timer-sequence-snapshot"))
+
+        val execution = runningRoot("timer-execution").copy(snapshotId = "timer-sequence-snapshot")
+        executions.insertAggregate(SequenceExecutionAggregateEntity(execution))
+
+        assertNotNull(executions.getAggregate("timer-execution"))
+    }
+
+    @Test
     fun occurrencePartialIndexRowChecksOrderingAndForeignKeysAreReal() {
         executions.insertAggregate(SequenceExecutionAggregateEntity(runningRoot()))
         insertRawOccurrence("not-started-1", 0, "NOT_STARTED")
@@ -496,7 +539,18 @@ class SequenceExecutionDatabaseTest {
     ) {
         database.activitySnapshotDao().insertAggregate(
             ActivitySnapshotAggregateEntity(
-                ActivitySnapshotEntity(id, id, null, mode, null, null, null, seriesId, false, 0),
+                ActivitySnapshotEntity(
+                    id,
+                    id,
+                    null,
+                    mode,
+                    if (mode == "TIMER") 60_000 else null,
+                    null,
+                    null,
+                    seriesId,
+                    false,
+                    0,
+                ),
                 ActivitySnapshotSettingsEntity(id),
                 fields =
                     if (withFields) {
@@ -558,6 +612,7 @@ class SequenceExecutionDatabaseTest {
         id: String,
         stepId: String = "top-step",
         activityId: String = "activity",
+        stepOverrides: List<SequenceSnapshotStepOverrideEntity> = emptyList(),
     ) {
         val isPrimary = id == "sequence-snapshot"
         val repeatId = if (isPrimary) "repeat" else "$id-repeat"
@@ -632,6 +687,7 @@ class SequenceExecutionDatabaseTest {
                         SequenceSnapshotNodeEntity(repeatId, id, "REPEAT", null, 1, null, 2),
                         SequenceSnapshotNodeEntity(repeatChildId, id, "STEP", repeatId, 0, activityId, null),
                     ),
+                stepOverrides = stepOverrides,
             ),
         )
     }

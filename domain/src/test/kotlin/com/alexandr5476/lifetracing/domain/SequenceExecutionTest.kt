@@ -270,6 +270,15 @@ class SequenceExecutionTest {
     }
 
     @Test
+    fun executionValidatorRejectsStructurallyInvalidSnapshot() {
+        val snapshot = snapshot(nodes = listOf(step("first", 0), step("second", 0)))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceExecutionValidator.requireValid(running(snapshot), snapshot)
+        }
+    }
+
+    @Test
     fun validatorRequiresCurrentPointerAndOccurrenceStateConsistency() {
         val snapshot = snapshot(nodes = listOf(step("step", 0)))
         val current = occurrence("occ", "step", RuntimeOccurrenceStatus.CURRENT, entered = 1)

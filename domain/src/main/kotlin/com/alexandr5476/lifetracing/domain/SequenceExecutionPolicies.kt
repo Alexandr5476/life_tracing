@@ -123,6 +123,7 @@ object SequenceExecutionValidator {
         execution: SequenceExecution,
         snapshot: SequenceConfigSnapshot,
     ) {
+        SequenceConfigSnapshotValidator.requireValid(snapshot)
         require(execution.snapshotId == snapshot.id) { "Execution must reference the supplied Sequence snapshot" }
         require(execution.statisticsSeriesId == snapshot.statisticsSeriesId) {
             "Execution must preserve the Sequence snapshot Statistics Series"

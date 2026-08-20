@@ -7,7 +7,10 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshotValidator
 import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 
 internal data class SequenceExecutionAggregateEntity(
     val execution: SequenceExecutionEntity,
@@ -58,6 +61,9 @@ internal abstract class SequenceExecutionDao {
         "SELECT overrides.* FROM sequence_snapshot_step_overrides AS overrides INNER JOIN sequence_snapshot_nodes AS nodes ON nodes.id = overrides.sequence_snapshot_node_id WHERE nodes.sequence_snapshot_id = :id ORDER BY overrides.sequence_snapshot_node_id",
     )
     protected abstract fun getSnapshotOverrides(id: String): List<SequenceSnapshotStepOverrideEntity>
+
+    @Query("SELECT id, time_tracking_mode FROM activity_snapshots WHERE id IN (:ids)")
+    protected abstract fun activitySnapshotModes(ids: List<String>): List<ActivitySnapshotModeRow>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertExecutionUnchecked(execution: SequenceExecutionEntity)
@@ -118,7 +124,7 @@ internal abstract class SequenceExecutionDao {
         require(aggregate.intervals.all { it.sequenceExecutionId == id }) { "Interval owner mismatch" }
         require(aggregate.values.all { it.sequenceExecutionId == id }) { "Sequence value owner mismatch" }
         val snapshotId = aggregate.execution.snapshotId
-        val snapshot =
+        val snapshotAggregate =
             SequenceSnapshotAggregateEntity(
                 requireNotNull(getSnapshot(snapshotId)) { "Unknown Sequence snapshot: $snapshotId" },
                 requireNotNull(
@@ -128,7 +134,15 @@ internal abstract class SequenceExecutionDao {
                 getSnapshotOptions(snapshotId),
                 getSnapshotNodes(snapshotId),
                 getSnapshotOverrides(snapshotId),
-            ).toDomain()
+            )
+        val snapshot = snapshotAggregate.toDomain()
+        val activitySnapshotIds =
+            snapshotAggregate.nodes.mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId).distinct()
+        val activitySnapshotModes =
+            activitySnapshotModes(activitySnapshotIds).associate { row ->
+                ActivitySnapshotId(row.id) to TimeTrackingMode.valueOf(row.timeTrackingMode)
+            }
+        SequenceConfigSnapshotValidator.requireValid(snapshot, activitySnapshotModes)
         SequenceExecutionValidator.requireValid(aggregate.toDomain(), snapshot)
     }
 }
