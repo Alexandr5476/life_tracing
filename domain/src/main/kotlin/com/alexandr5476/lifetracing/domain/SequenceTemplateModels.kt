@@ -432,31 +432,73 @@ object EffectiveSequenceStepSettingsResolver {
         activitySnapshot: ActivityConfigSnapshot,
         sequenceSettings: SequenceTemplateSettings,
         isFirstStep: Boolean,
+    ): EffectiveSequenceStepSettings =
+        resolveOverrides(
+            step.activitySnapshotId,
+            step.overrides,
+            activitySnapshot,
+            sequenceSettings.sequenceStartCountdown,
+            sequenceSettings.beforeEachStepCountdown,
+            sequenceSettings.transitionSound,
+            sequenceSettings.transitionVibration,
+            sequenceSettings.keepScreenAwake,
+            isFirstStep,
+        )
+
+    fun resolve(
+        step: SequenceSnapshotActivityStep,
+        activitySnapshot: ActivityConfigSnapshot,
+        sequenceSettings: SequenceSnapshotSettings,
+        isFirstStep: Boolean,
+    ): EffectiveSequenceStepSettings =
+        resolveOverrides(
+            step.activitySnapshotId,
+            step.overrides,
+            activitySnapshot,
+            sequenceSettings.sequenceStartCountdown,
+            sequenceSettings.beforeEachStepCountdown,
+            sequenceSettings.transitionSound,
+            sequenceSettings.transitionVibration,
+            sequenceSettings.keepScreenAwake,
+            isFirstStep,
+        )
+
+    @Suppress("LongParameterList") // These are the inherited setting values, kept unbundled to avoid a new abstraction.
+    private fun resolveOverrides(
+        activitySnapshotId: ActivitySnapshotId,
+        overrides: SequenceStepOverrides,
+        activitySnapshot: ActivityConfigSnapshot,
+        sequenceStartCountdown: Duration,
+        beforeEachStepCountdown: Duration,
+        transitionSound: Boolean,
+        transitionVibration: Boolean,
+        keepScreenAwake: Boolean,
+        isFirstStep: Boolean,
     ): EffectiveSequenceStepSettings {
-        require(step.activitySnapshotId == activitySnapshot.id) { "ActivitySnapshot must belong to the Step" }
-        require(step.overrides.startCountdown?.isNegative != true) { "Step start countdown must not be negative" }
+        require(activitySnapshotId == activitySnapshot.id) { "ActivitySnapshot must belong to the Step" }
+        require(overrides.startCountdown?.isNegative != true) { "Step start countdown must not be negative" }
         require(
-            activitySnapshot.timeTrackingMode == TimeTrackingMode.TIMER || step.overrides.timerZeroBehavior == null,
+            activitySnapshot.timeTrackingMode == TimeTrackingMode.TIMER || overrides.timerZeroBehavior == null,
         ) {
             "Timer zero behavior override requires a TIMER Step"
         }
         return EffectiveSequenceStepSettings(
             startCountdown =
-                step.overrides.startCountdown
+                overrides.startCountdown
                     ?: if (isFirstStep) {
-                        sequenceSettings.sequenceStartCountdown
+                        sequenceStartCountdown
                     } else {
-                        sequenceSettings.beforeEachStepCountdown
+                        beforeEachStepCountdown
                     },
             timerZeroBehavior =
                 if (activitySnapshot.timeTrackingMode == TimeTrackingMode.TIMER) {
-                    step.overrides.timerZeroBehavior ?: activitySnapshot.settings.timerZeroBehavior
+                    overrides.timerZeroBehavior ?: activitySnapshot.settings.timerZeroBehavior
                 } else {
                     null
                 },
-            timerEndSound = step.overrides.timerEndSound ?: sequenceSettings.transitionSound,
-            timerEndVibration = step.overrides.timerEndVibration ?: sequenceSettings.transitionVibration,
-            keepScreenAwake = step.overrides.keepScreenAwake ?: sequenceSettings.keepScreenAwake,
+            timerEndSound = overrides.timerEndSound ?: transitionSound,
+            timerEndVibration = overrides.timerEndVibration ?: transitionVibration,
+            keepScreenAwake = overrides.keepScreenAwake ?: keepScreenAwake,
         )
     }
 }
