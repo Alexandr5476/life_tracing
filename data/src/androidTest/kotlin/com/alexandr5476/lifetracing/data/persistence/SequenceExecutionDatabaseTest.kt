@@ -291,6 +291,12 @@ class SequenceExecutionDatabaseTest {
                             activitySnapshotId = "no-live",
                             isRuntimeAdded = true,
                         ),
+                        occurrence("wrong-parent-occurrence", 3, "COMPLETED", 0, 10, "MANUAL_FINISH"),
+                        occurrence("wrong-snapshot-occurrence", 4, "COMPLETED", 0, 10, "MANUAL_FINISH").copy(
+                            sourceSequenceSnapshotNodeId = null,
+                            activitySnapshotId = "one-off",
+                            isRuntimeAdded = true,
+                        ),
                     ),
             ),
         )
@@ -305,8 +311,14 @@ class SequenceExecutionDatabaseTest {
 
         executions.insertAggregate(SequenceExecutionAggregateEntity(runningRoot("other")))
         listOf(
-            childActivity("wrong-parent", "other", "child-occurrence", "activity", "activity-series"),
-            childActivity("wrong-occurrence", "execution", "one-off-occurrence", "activity", "activity-series"),
+            childActivity("wrong-parent", "other", "wrong-parent-occurrence", "activity", "activity-series"),
+            childActivity(
+                "wrong-occurrence",
+                "execution",
+                "wrong-snapshot-occurrence",
+                "activity",
+                "activity-series",
+            ),
         ).forEach { invalid ->
             assertThrows(IllegalArgumentException::class.java) {
                 database.activityExecutionDao().insertAggregate(ActivityExecutionAggregateEntity(invalid))
