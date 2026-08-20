@@ -15,6 +15,7 @@
 - UI motion uses `LifeTracingMotion`; do not rely on default spring/bouncy animation without an explicitly justified interaction need.
 - Custom rounded interactive surfaces must clip press indication to the same shape as their visual surface.
 - Never commit secrets, credentials, signing keys, local SDK paths, or `AGENTS.override.md`.
+- Live runtime commands spanning `active_session` and Execution state commit atomically at one database transaction boundary; `active_session` is the v1 pointer/policy guard, while execution, occurrence, and interval rows remain source of truth.
 - A task is complete only when all relevant checks pass.
 
 Canonical commands (PowerShell):

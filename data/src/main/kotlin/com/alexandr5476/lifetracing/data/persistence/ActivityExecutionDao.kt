@@ -1,3 +1,8 @@
+@file:Suppress(
+    "LongMethod",
+    "LongParameterList",
+) // Explicit owner identity is safer than bundling generated runtime-row updates.
+
 package com.alexandr5476.lifetracing.data.persistence
 
 import androidx.room.Dao
@@ -34,6 +39,9 @@ internal data class ActivitySnapshotExecutionMetadataRow(
 internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
+
+    @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
+    protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?
 
     @Query(
         "SELECT * FROM activity_execution_pauses " +
@@ -85,6 +93,36 @@ internal abstract class ActivityExecutionDao {
 
     @Upsert
     protected abstract fun upsertValueUnchecked(value: ActivityExecutionFieldValueEntity)
+
+    @Query(
+        "UPDATE activity_executions SET status = :status, completed_at_ms = :completedAtMs, " +
+            "active_duration_ms = :activeDurationMs, completion_reason = :completionReason, " +
+            "deleted_at_ms = :deletedAtMs, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND context_type = 'SEQUENCE_CHILD' AND sequence_execution_id = :sequenceExecutionId " +
+            "AND sequence_occurrence_id = :sequenceOccurrenceId AND snapshot_id = :snapshotId",
+    )
+    protected abstract fun updateSequenceChildUnchecked(
+        id: String,
+        sequenceExecutionId: String,
+        sequenceOccurrenceId: String,
+        snapshotId: String,
+        status: String,
+        completedAtMs: Long?,
+        activeDurationMs: Long?,
+        completionReason: String?,
+        deletedAtMs: Long?,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE activity_execution_pauses SET ended_at_ms = :endedAtMs " +
+            "WHERE id = :id AND activity_execution_id = :executionId AND ended_at_ms IS NULL",
+    )
+    protected abstract fun closeOwnedPauseUnchecked(
+        id: String,
+        executionId: String,
+        endedAtMs: Long,
+    ): Int
 
     @Query(
         "UPDATE activity_executions SET status = :status, updated_at_ms = :updatedAtMs " +
@@ -151,6 +189,85 @@ internal abstract class ActivityExecutionDao {
     open fun getAggregate(id: String): ActivityExecutionAggregateEntity? {
         val execution = getById(id) ?: return null
         return ActivityExecutionAggregateEntity(execution, getPauses(id), getValues(id)).also(::requireValidAggregate)
+    }
+
+    @Transaction
+    open fun getAggregateByOccurrence(occurrenceId: String): ActivityExecutionAggregateEntity? =
+        getByOccurrence(occurrenceId)?.let { execution ->
+            ActivityExecutionAggregateEntity(
+                execution,
+                getPauses(execution.id),
+                getValues(execution.id),
+            ).also(::requireValidAggregate)
+        }
+
+    @Transaction
+    open fun persistSequenceChildDelta(
+        before: ActivityExecutionAggregateEntity,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        require(after.execution.contextType == "SEQUENCE_CHILD") {
+            "Coordinated child persistence only accepts SEQUENCE_CHILD"
+        }
+        requireValidAggregate(after)
+        require(before.execution.stableIdentity() == after.execution.stableIdentity()) {
+            "Sequence child identity cannot change"
+        }
+        val beforePauses = before.pauses.associateBy(ActivityExecutionPauseEntity::id)
+        after.pauses.forEach { pause ->
+            val previous = beforePauses[pause.id]
+            if (previous == null) {
+                insertPauseUnchecked(pause)
+            } else {
+                require(
+                    previous.activityExecutionId == pause.activityExecutionId &&
+                        previous.startedAtMs == pause.startedAtMs,
+                ) { "Sequence child pause identity cannot change" }
+                if (previous != pause) {
+                    require(previous.endedAtMs == null && pause.endedAtMs != null) {
+                        "Existing Sequence child pauses may only be closed"
+                    }
+                    check(
+                        closeOwnedPauseUnchecked(
+                            pause.id,
+                            pause.activityExecutionId,
+                            requireNotNull(pause.endedAtMs),
+                        ) ==
+                            1,
+                    )
+                }
+            }
+        }
+        require(
+            after.pauses
+                .map(ActivityExecutionPauseEntity::id)
+                .toSet()
+                .containsAll(beforePauses.keys),
+        ) {
+            "Sequence child transitions cannot remove pauses"
+        }
+        val beforeValues = before.values.associateBy(ActivityExecutionFieldValueEntity::snapshotFieldId)
+        require(beforeValues.keys == after.values.map(ActivityExecutionFieldValueEntity::snapshotFieldId).toSet()) {
+            "Sequence child transitions cannot add or remove values"
+        }
+        after.values.filter { beforeValues[it.snapshotFieldId] != it }.forEach(::upsertValueUnchecked)
+        if (before.execution != after.execution) {
+            val execution = after.execution
+            check(
+                updateSequenceChildUnchecked(
+                    execution.id,
+                    requireNotNull(execution.sequenceExecutionId),
+                    requireNotNull(execution.sequenceOccurrenceId),
+                    execution.snapshotId,
+                    execution.status,
+                    execution.completedAtMs,
+                    execution.activeDurationMs,
+                    execution.completionReason,
+                    execution.deletedAtMs,
+                    execution.updatedAtMs,
+                ) == 1,
+            )
+        }
     }
 
     @Transaction
@@ -397,3 +514,19 @@ internal abstract class ActivityExecutionDao {
         }
     }
 }
+
+private fun ActivityExecutionEntity.stableIdentity(): List<Any?> =
+    listOf(
+        id,
+        snapshotId,
+        contextType,
+        sequenceExecutionId,
+        sequenceOccurrenceId,
+        planEntryId,
+        statisticsSeriesId,
+        startedAtMs,
+        originalZoneId,
+        originalUtcOffsetMinutes,
+        primaryLocalDate,
+        createdAtMs,
+    )

@@ -54,3 +54,27 @@ Future occurrence reasons require a domain code, a later migration of the SQL `C
 ## Repeat iteration persistence
 
 `sequence_occurrences.repeat_iteration` is 1-based. Repeat ×N persists iterations `1..N`, never `0..N-1`; Repeat ×3 therefore stores iterations 1, 2, and 3.
+
+## Live-runtime countdown boundary
+
+Activity/Sequence pre-start countdown is a preflight state outside durable Execution runtime in v1.
+
+- A Sequence's effective first-Step countdown is its explicit Step override, otherwise `sequenceStartCountdown`.
+- That countdown occurs before `SequenceExecution.startedAt`; the SequenceExecution and `active_session` row are created only at the actual Sequence start boundary.
+- A standalone Activity's `startCountdown` likewise occurs before its RUNNING ActivityExecution is created.
+- Process death during preflight cancels the countdown because no Execution or `active_session` exists yet.
+
+This does not apply to inter-Step countdowns. A transition countdown inside a running Sequence is persisted and recoverable. V1 does not add a `COUNTDOWN` active-session state or a not-yet-started live Execution.
+
+## Live Sequence interval classification
+
+V1 classifies live Sequence intervals as follows:
+
+- timed current Step: `ACTIVE_STEP`;
+- No-live current Step with `noLiveTimeAccounting = ACTIVE`: `ACTIVE_STEP`;
+- No-live current Step with `noLiveTimeAccounting = PAUSE`: `STEP_PAUSE`;
+- explicit Sequence pause: `EXPLICIT_PAUSE`;
+- Auto-advance OFF without a current Step: `IMPLICIT_IDLE`;
+- inter-Step countdown: `TRANSITION_COUNTDOWN`.
+
+Every runtime-created `TRANSITION_COUNTDOWN` interval points through `occurrence_id` to the next occurrence whose start is being counted down. Pause/resume/recovery derives the countdown target and consumed duration from these intervals; no separate pointer or `remaining_ms` cache is stored. `STEP_PAUSE` currently means No-live-as-pause only; the deferred advanced pause-behavior setting is not inferred.
