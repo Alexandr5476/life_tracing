@@ -32,8 +32,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SequenceTemplateTagEntity::class,
         SequenceNodeEntity::class,
         SequenceStepOverrideEntity::class,
+        SequenceSnapshotEntity::class,
+        SequenceSnapshotSettingsEntity::class,
+        SequenceSnapshotFieldEntity::class,
+        SequenceSnapshotCategoryOptionEntity::class,
+        SequenceSnapshotNodeEntity::class,
+        SequenceSnapshotStepOverrideEntity::class,
     ],
-    version = SEQUENCE_TEMPLATE_SCHEMA_VERSION,
+    version = SEQUENCE_SNAPSHOT_SCHEMA_VERSION,
     exportSchema = true,
 )
 internal abstract class LifeTracingDatabase : RoomDatabase() {
@@ -51,12 +57,14 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
 
     abstract fun sequenceTemplateDao(): SequenceTemplateDao
 
+    abstract fun sequenceSnapshotDao(): SequenceSnapshotDao
+
     companion object {
         fun inMemoryBuilder(context: Context): Builder<LifeTracingDatabase> =
             Room
                 .inMemoryDatabaseBuilder(context, LifeTracingDatabase::class.java)
                 .addCallback(FRESH_SCHEMA_CALLBACK)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
         fun builder(
             context: Context,
@@ -65,11 +73,12 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
             Room
                 .databaseBuilder(context, LifeTracingDatabase::class.java, name)
                 .addCallback(FRESH_SCHEMA_CALLBACK)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
         private val FRESH_SCHEMA_CALLBACK =
             object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
+                    SequenceSnapshotSchemaV6.drop(db)
                     SequenceTemplateSchemaV5.drop(db)
                     ActivityExecutionSchemaV4.drop(db)
                     ActivitySnapshotSchemaV3.drop(db)
@@ -77,6 +86,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     ActivitySnapshotSchemaV3.create(db)
                     ActivityExecutionSchemaV4.createAndSeed(db)
                     SequenceTemplateSchemaV5.create(db)
+                    SequenceSnapshotSchemaV6.create(db)
                 }
             }
     }

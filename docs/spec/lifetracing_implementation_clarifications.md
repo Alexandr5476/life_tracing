@@ -29,3 +29,9 @@ Version 1 therefore stores a narrow, typed per-Step execution-settings override 
 Step overrides are mutable SequenceTemplate semantic configuration. A committed override change increments the SequenceTemplate revision once together with any other semantic changes in the same Save, Apply, or Done operation.
 
 When immutable SequenceSnapshot persistence is introduced, it must preserve the same Step override intent in snapshot-owned form, separately from the child ActivitySnapshot. It must not infer or flatten override intent from `locallyModified`.
+
+## SequenceSnapshot foreign keys and frozen overrides
+
+`sequence_snapshots.statistics_series_id`, when non-null, references `statistics_series.id` with `ON DELETE RESTRICT`. This preserves the Sequence's durable statistical identity after its source Template is hard-purged.
+
+`sequence_snapshot_nodes.activity_snapshot_id` references `activity_snapshots.id` with `ON DELETE RESTRICT`; the referenced immutable Activity snapshot is reused rather than copied. Frozen explicit Step override intent is stored in `sequence_snapshot_step_overrides`.
