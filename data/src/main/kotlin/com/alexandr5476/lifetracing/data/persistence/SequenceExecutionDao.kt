@@ -7,6 +7,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Upsert
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshotValidator
 import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
@@ -77,6 +78,18 @@ internal abstract class SequenceExecutionDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertValuesUnchecked(values: List<SequenceExecutionFieldValueEntity>)
 
+    @Upsert
+    protected abstract fun upsertExecutionUnchecked(execution: SequenceExecutionEntity)
+
+    @Upsert
+    protected abstract fun upsertOccurrenceUnchecked(occurrence: SequenceOccurrenceEntity)
+
+    @Upsert
+    protected abstract fun upsertIntervalUnchecked(interval: SequenceIntervalEntity)
+
+    @Upsert
+    protected abstract fun upsertValueUnchecked(value: SequenceExecutionFieldValueEntity)
+
     @Query(
         "UPDATE sequence_executions SET current_occurrence_id = :occurrenceId WHERE id = :executionId AND current_occurrence_id IS NULL",
     )
@@ -116,6 +129,15 @@ internal abstract class SequenceExecutionDao {
             getIntervals(id),
             getValues(id),
         ).also(::requireValidAggregate)
+    }
+
+    @Transaction
+    open fun upsertRuntimeAggregate(aggregate: SequenceExecutionAggregateEntity) {
+        requireValidAggregate(aggregate)
+        aggregate.occurrences.sortedBy { it.runtimePosition }.forEach(::upsertOccurrenceUnchecked)
+        aggregate.intervals.forEach(::upsertIntervalUnchecked)
+        aggregate.values.forEach(::upsertValueUnchecked)
+        upsertExecutionUnchecked(aggregate.execution)
     }
 
     private fun requireValidAggregate(aggregate: SequenceExecutionAggregateEntity) {

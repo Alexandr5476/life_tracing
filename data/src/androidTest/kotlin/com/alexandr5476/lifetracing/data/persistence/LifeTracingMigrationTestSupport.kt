@@ -82,6 +82,25 @@ internal object LifeTracingMigrationTestDatabaseFactory {
             SequenceSnapshotSchemaV6.create(database)
             SequenceExecutionSchemaV7.create(database)
         }
+
+    fun createVersion8(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 8).also { database ->
+            ActiveSessionSchemaV8.drop(database)
+            SequenceExecutionSchemaV7.drop(database)
+            SequenceSnapshotSchemaV6.drop(database)
+            SequenceTemplateSchemaV5.drop(database)
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+            ActivityExecutionSchemaV4.createAndSeed(database)
+            SequenceTemplateSchemaV5.create(database)
+            SequenceSnapshotSchemaV6.create(database)
+            SequenceExecutionSchemaV7.create(database)
+            ActiveSessionSchemaV8.create(database)
+        }
 }
 
 internal data class SequenceExecutionManualSchema(

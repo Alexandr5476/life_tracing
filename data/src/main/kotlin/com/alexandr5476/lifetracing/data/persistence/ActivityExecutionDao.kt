@@ -35,6 +35,9 @@ internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
 
+    @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
+    protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?
+
     @Query(
         "SELECT * FROM activity_execution_pauses " +
             "WHERE activity_execution_id = :executionId ORDER BY started_at_ms, id",
@@ -85,6 +88,12 @@ internal abstract class ActivityExecutionDao {
 
     @Upsert
     protected abstract fun upsertValueUnchecked(value: ActivityExecutionFieldValueEntity)
+
+    @Upsert
+    protected abstract fun upsertExecutionUnchecked(execution: ActivityExecutionEntity)
+
+    @Upsert
+    protected abstract fun upsertPauseUnchecked(pause: ActivityExecutionPauseEntity)
 
     @Query(
         "UPDATE activity_executions SET status = :status, updated_at_ms = :updatedAtMs " +
@@ -151,6 +160,27 @@ internal abstract class ActivityExecutionDao {
     open fun getAggregate(id: String): ActivityExecutionAggregateEntity? {
         val execution = getById(id) ?: return null
         return ActivityExecutionAggregateEntity(execution, getPauses(id), getValues(id)).also(::requireValidAggregate)
+    }
+
+    @Transaction
+    open fun getAggregateByOccurrence(occurrenceId: String): ActivityExecutionAggregateEntity? =
+        getByOccurrence(occurrenceId)?.let { execution ->
+            ActivityExecutionAggregateEntity(
+                execution,
+                getPauses(execution.id),
+                getValues(execution.id),
+            ).also(::requireValidAggregate)
+        }
+
+    @Transaction
+    open fun upsertSequenceChildAggregate(aggregate: ActivityExecutionAggregateEntity) {
+        require(aggregate.execution.contextType == "SEQUENCE_CHILD") {
+            "Coordinated child persistence only accepts SEQUENCE_CHILD"
+        }
+        requireValidAggregate(aggregate)
+        upsertExecutionUnchecked(aggregate.execution)
+        aggregate.pauses.forEach(::upsertPauseUnchecked)
+        aggregate.values.forEach(::upsertValueUnchecked)
     }
 
     @Transaction
