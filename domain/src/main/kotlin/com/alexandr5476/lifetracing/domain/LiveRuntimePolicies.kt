@@ -1,8 +1,10 @@
 @file:Suppress(
     "LongParameterList",
     "LoopWithTooManyJumpStatements",
+    "LongMethod",
     "ReturnCount",
     "TooManyFunctions",
+    "CyclomaticComplexMethod",
 ) // The explicit state machine keeps every durable transition visible in one bounded engine.
 
 package com.alexandr5476.lifetracing.domain
@@ -68,57 +70,7 @@ class SequenceRuntimeEngine(
         snapshot: SequenceConfigSnapshot,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
         now: Instant,
-    ): SequenceRuntimeState {
-        val persistedNow = persisted(now)
-        var state = initial
-        var iterations = 0
-        val limit = Math.addExact(Math.multiplyExact(state.execution.occurrences.size, EVENTS_PER_OCCURRENCE_BOUND), 1)
-        while (state.execution.status == SequenceExecutionStatus.RUNNING) {
-            val before = progressSignature(state)
-            val current = current(state.execution)
-            state =
-                if (current != null) {
-                    val activity = activitySnapshots.requireSnapshot(current.activitySnapshotId)
-                    val child = state.currentChild
-                    if (activity.timeTrackingMode != TimeTrackingMode.TIMER || child == null) break
-                    val deadline =
-                        TimerDeadlineCalculator.deadline(
-                            child,
-                            requireNotNull(activity.timerTarget),
-                            effectiveSettings(current, snapshot, activity).timerZeroBehavior!!,
-                        ) ?: break
-                    if (deadline > persistedNow) break
-                    completeCurrent(
-                        state,
-                        current.id,
-                        deadline,
-                        OccurrenceCompletionReason.NATURAL_TIMER_END,
-                        snapshot,
-                        activitySnapshots,
-                    )
-                } else {
-                    val open = openInterval(state.execution)
-                    if (open?.kind != SequenceIntervalKind.TRANSITION_COUNTDOWN) break
-                    val targetId =
-                        requireNotNull(open.occurrenceId) { "Transition countdown requires its target occurrence" }
-                    val target = occurrence(state.execution, targetId)
-                    val required =
-                        effectiveSettings(
-                            target,
-                            snapshot,
-                            activitySnapshots.requireSnapshot(target.activitySnapshotId),
-                        ).startCountdown
-                    val spentBefore = closedCountdownMillis(state.execution, targetId)
-                    val remaining = maxOf(0L, Math.subtractExact(required.toMillis(), spentBefore))
-                    val deadline = Instant.ofEpochMilli(Math.addExact(open.startedAt.toEpochMilli(), remaining))
-                    if (deadline > persistedNow) break
-                    startOccurrence(closeOpen(state, deadline), target, deadline, snapshot, activitySnapshots)
-                }
-            check(progressSignature(state) != before) { "Reconciliation must make semantic progress" }
-            check(++iterations <= limit) { "Reconciliation exceeded the active Sequence event bound" }
-        }
-        return state
-    }
+    ): SequenceRuntimeState = ReconciliationWorkingSet(initial, snapshot, activitySnapshots).reconcile(persisted(now))
 
     fun completeCurrent(
         initial: SequenceRuntimeState,
@@ -227,35 +179,44 @@ class SequenceRuntimeEngine(
                 children = state.children + listOfNotNull(child?.let { current.id to it }),
             )
         }
-        val targetId =
-            state.execution.intervals
-                .asReversed()
-                .firstOrNull { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }
-                ?.occurrenceId
-                ?: error("Paused transition countdown lost its target occurrence")
-        val target = occurrence(state.execution, targetId)
+        val target =
+            requireNotNull(nextRemainingOccurrence(state.execution)) {
+                "Paused transition countdown lost its target occurrence"
+            }
+        val targetId = target.id
+        val pause = requireNotNull(openInterval(initial.execution))
+        val targetSegments =
+            initial.execution.intervals.filter {
+                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
+                    it.occurrenceId == targetId &&
+                    it.endedAt != null
+            }
+        val latest =
+            requireNotNull(targetSegments.maxByOrNull { requireNotNull(it.endedAt) }) {
+                "Paused transition countdown has no progress for its target"
+            }
+        require(latest.endedAt == pause.startedAt) { "Paused transition countdown target is not temporally adjacent" }
         state =
             state.copy(execution = state.execution.copy(status = SequenceExecutionStatus.RUNNING, updatedAt = resumeAt))
         val activity = activitySnapshots.requireSnapshot(target.activitySnapshotId)
         val required = effectiveSettings(target, snapshot, activity).startCountdown.toMillis()
-        return if (closedCountdownMillis(state.execution, targetId) >= required) {
-            startOccurrence(state, target, resumeAt, snapshot, activitySnapshots)
-        } else {
-            state.copy(
-                execution =
-                    state.execution.copy(
-                        intervals =
-                            state.execution.intervals +
-                                SequenceInterval(
-                                    nextIntervalId(),
-                                    SequenceIntervalKind.TRANSITION_COUNTDOWN,
-                                    resumeAt,
-                                    null,
-                                    targetId,
-                                ),
-                    ),
-            )
+        require(closedCountdownMillis(state.execution, targetId) < required) {
+            "Paused transition countdown is already exhausted"
         }
+        return state.copy(
+            execution =
+                state.execution.copy(
+                    intervals =
+                        state.execution.intervals +
+                            SequenceInterval(
+                                nextIntervalId(),
+                                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                                resumeAt,
+                                null,
+                                targetId,
+                            ),
+                ),
+        )
     }
 
     private fun completeCurrent(
@@ -462,14 +423,240 @@ class SequenceRuntimeEngine(
                 )
             }
 
-    private fun progressSignature(state: SequenceRuntimeState): List<Any?> =
-        listOf(
-            state.execution.status,
-            state.execution.currentOccurrenceId,
-            state.execution.occurrences.count { it.status == RuntimeOccurrenceStatus.COMPLETED },
-            state.execution.intervals.size,
-            state.execution.intervals.count { it.endedAt != null },
-        )
+    private inner class ReconciliationWorkingSet(
+        initial: SequenceRuntimeState,
+        private val snapshot: SequenceConfigSnapshot,
+        private val activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ) {
+        private val original = initial.execution
+        private val occurrences = original.occurrences.toMutableList()
+        private val occurrenceIndex = occurrences.indices.associateBy { occurrences[it].id }
+        private val runtimeOrder = occurrences.indices.sortedBy { occurrences[it].runtimePosition }
+        private val steps =
+            snapshot.nodes
+                .flatMap {
+                    when (it) {
+                        is SequenceSnapshotActivityStep -> listOf(it)
+                        is SequenceSnapshotRepeatBlock -> it.children
+                    }
+                }.associateBy(SequenceSnapshotActivityStep::id)
+        private val intervals = original.intervals.toMutableList()
+        private val children = initial.children.toMutableMap()
+        private val consumedCountdownMs = mutableMapOf<SequenceOccurrenceId, Long>()
+        private var openIntervalIndex = intervals.indices.singleOrNull { intervals[it].endedAt == null }
+        private var currentIndex = original.currentOccurrenceId?.let(occurrenceIndex::getValue)
+        private var remainingCursor = 0
+        private var status = original.status
+        private var endedAt = original.endedAt
+        private var activeDuration = original.activeDuration
+        private var pauseDuration = original.pauseDuration
+        private var wallDuration = original.wallDuration
+        private var updatedAt = original.updatedAt
+
+        init {
+            intervals.forEach { interval ->
+                if (interval.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && interval.endedAt != null) {
+                    val target = requireNotNull(interval.occurrenceId)
+                    consumedCountdownMs[target] =
+                        Math.addExact(
+                            consumedCountdownMs[target] ?: 0L,
+                            Duration.between(interval.startedAt, interval.endedAt).toMillis(),
+                        )
+                }
+            }
+        }
+
+        fun reconcile(now: Instant): SequenceRuntimeState {
+            var events = 0
+            val limit = Math.addExact(Math.multiplyExact(occurrences.size, EVENTS_PER_OCCURRENCE_BOUND), 1)
+            while (status == SequenceExecutionStatus.RUNNING) {
+                val current = currentIndex
+                if (current != null) {
+                    val occurrence = occurrences[current]
+                    val activity = activities.requireSnapshot(occurrence.activitySnapshotId)
+                    val child = children[occurrence.id]
+                    if (activity.timeTrackingMode != TimeTrackingMode.TIMER || child == null) break
+                    val deadline =
+                        TimerDeadlineCalculator.deadline(
+                            child,
+                            requireNotNull(activity.timerTarget),
+                            settings(current).timerZeroBehavior!!,
+                        ) ?: break
+                    if (deadline > now) break
+                    completeCurrent(current, deadline)
+                } else {
+                    val openIndex = openIntervalIndex ?: break
+                    val open = intervals[openIndex]
+                    if (open.kind != SequenceIntervalKind.TRANSITION_COUNTDOWN) break
+                    val targetId = requireNotNull(open.occurrenceId)
+                    val target = occurrenceIndex.getValue(targetId)
+                    require(target == nextRemainingIndex()) { "Transition countdown must target the runtime frontier" }
+                    val remaining =
+                        Math.subtractExact(
+                            settings(target).startCountdown.toMillis(),
+                            consumedCountdownMs[targetId] ?: 0L,
+                        )
+                    require(remaining > 0) { "Transition countdown is already exhausted" }
+                    val deadline = Instant.ofEpochMilli(Math.addExact(open.startedAt.toEpochMilli(), remaining))
+                    if (deadline > now) break
+                    closeOpen(deadline)
+                    startOccurrence(target, deadline)
+                }
+                check(++events <= limit) { "Reconciliation exceeded the active Sequence event bound" }
+            }
+            return freeze()
+        }
+
+        private fun completeCurrent(
+            index: Int,
+            at: Instant,
+        ) {
+            val occurrence = occurrences[index]
+            val activity = activities.requireSnapshot(occurrence.activitySnapshotId)
+            children[occurrence.id] =
+                when (activity.timeTrackingMode) {
+                    TimeTrackingMode.NO_LIVE_TRACKING ->
+                        activityExecutionFactory.completeSequenceChildNoLive(
+                            activity,
+                            original.id,
+                            occurrence.id,
+                            at,
+                            original.originalZoneId,
+                        )
+                    TimeTrackingMode.STOPWATCH,
+                    TimeTrackingMode.TIMER,
+                    -> ActivityExecutionTransitions.complete(requireNotNull(children[occurrence.id]), at)
+                }
+            closeOpen(at)
+            occurrences[index] =
+                occurrence.copy(
+                    status = RuntimeOccurrenceStatus.COMPLETED,
+                    completedAt = at,
+                    completionReason = OccurrenceCompletionReason.NATURAL_TIMER_END,
+                )
+            currentIndex = null
+            updatedAt = at
+            val next = nextRemainingIndex()
+            if (next == null) {
+                finish(at)
+            } else if (!snapshot.settings.autoAdvance) {
+                addInterval(SequenceIntervalKind.IMPLICIT_IDLE, at, null)
+            } else {
+                beginTransition(next, at)
+            }
+        }
+
+        private fun beginTransition(
+            index: Int,
+            at: Instant,
+        ) {
+            if (settings(index).startCountdown.isZero) {
+                startOccurrence(index, at)
+            } else {
+                updatedAt = at
+                addInterval(SequenceIntervalKind.TRANSITION_COUNTDOWN, at, occurrences[index].id)
+            }
+        }
+
+        private fun startOccurrence(
+            index: Int,
+            at: Instant,
+        ) {
+            require(index == nextRemainingIndex()) { "Normal progression cannot skip the runtime frontier" }
+            val occurrence = occurrences[index]
+            val activity = activities.requireSnapshot(occurrence.activitySnapshotId)
+            if (activity.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+                children[occurrence.id] =
+                    activityExecutionFactory.startSequenceChildTimed(
+                        activity,
+                        original.id,
+                        occurrence.id,
+                        at,
+                        at,
+                        original.originalZoneId,
+                    )
+            }
+            occurrences[index] = occurrence.copy(status = RuntimeOccurrenceStatus.CURRENT, enteredAt = at)
+            currentIndex = index
+            updatedAt = at
+            addInterval(stepIntervalKind(activity, snapshot.settings.noLiveTimeAccounting), at, occurrence.id)
+        }
+
+        private fun closeOpen(at: Instant) {
+            val index = requireNotNull(openIntervalIndex) { "Active Sequence lost its open interval" }
+            val open = intervals[index]
+            require(at >= open.startedAt) { "Transition timestamp cannot precede the open interval" }
+            intervals[index] = open.copy(endedAt = at)
+            if (open.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN) {
+                val target = requireNotNull(open.occurrenceId)
+                consumedCountdownMs[target] =
+                    Math.addExact(
+                        consumedCountdownMs[target] ?: 0L,
+                        Duration.between(open.startedAt, at).toMillis(),
+                    )
+            }
+            openIntervalIndex = null
+        }
+
+        private fun addInterval(
+            kind: SequenceIntervalKind,
+            at: Instant,
+            occurrenceId: SequenceOccurrenceId?,
+        ) {
+            check(openIntervalIndex == null)
+            intervals += SequenceInterval(nextIntervalId(), kind, at, null, occurrenceId)
+            openIntervalIndex = intervals.lastIndex
+        }
+
+        private fun nextRemainingIndex(): Int? {
+            while (remainingCursor < runtimeOrder.size &&
+                occurrences[runtimeOrder[remainingCursor]].status != RuntimeOccurrenceStatus.NOT_STARTED
+            ) {
+                remainingCursor++
+            }
+            return runtimeOrder.getOrNull(remainingCursor)
+        }
+
+        private fun settings(index: Int): EffectiveSequenceStepSettings {
+            val occurrence = occurrences[index]
+            val stepId =
+                requireNotNull(occurrence.sourceSequenceSnapshotNodeId) {
+                    "Runtime-added Steps are out of scope"
+                }
+            return EffectiveSequenceStepSettingsResolver.resolve(
+                steps.getValue(stepId),
+                activities.requireSnapshot(occurrence.activitySnapshotId),
+                snapshot.settings,
+                false,
+            )
+        }
+
+        private fun finish(at: Instant) {
+            val durations = SequenceTimelineCalculator.calculate(original.startedAt, at, intervals)
+            status = SequenceExecutionStatus.COMPLETED
+            endedAt = at
+            activeDuration = durations.active
+            pauseDuration = durations.pause
+            wallDuration = durations.wall
+            updatedAt = at
+        }
+
+        private fun freeze(): SequenceRuntimeState =
+            SequenceRuntimeState(
+                original.copy(
+                    status = status,
+                    endedAt = endedAt,
+                    activeDuration = activeDuration,
+                    pauseDuration = pauseDuration,
+                    wallDuration = wallDuration,
+                    currentOccurrenceId = currentIndex?.let { occurrences[it].id },
+                    updatedAt = updatedAt,
+                    occurrences = occurrences,
+                    intervals = intervals,
+                ),
+                children,
+            )
+    }
 }
 
 fun stepIntervalKind(
@@ -496,14 +683,15 @@ private fun occurrence(
 ): RuntimeOccurrence = execution.occurrences.single { it.id == id }
 
 private fun firstRemaining(execution: SequenceExecution): RuntimeOccurrence =
-    requireNotNull(
-        execution.occurrences
-            .filter {
-                it.status == RuntimeOccurrenceStatus.NOT_STARTED
-            }.minByOrNull { it.runtimePosition },
-    ) {
+    requireNotNull(nextRemainingOccurrence(execution)) {
         "Sequence has no remaining occurrence"
     }
+
+fun nextRemainingOccurrence(execution: SequenceExecution): RuntimeOccurrence? =
+    execution.occurrences
+        .asSequence()
+        .filter { it.status == RuntimeOccurrenceStatus.NOT_STARTED }
+        .minByOrNull(RuntimeOccurrence::runtimePosition)
 
 private fun Map<ActivitySnapshotId, ActivityConfigSnapshot>.requireSnapshot(
     id: ActivitySnapshotId,

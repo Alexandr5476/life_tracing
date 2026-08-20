@@ -1,4 +1,8 @@
-@file:Suppress("MaxLineLength") // Bounded ownership queries are clearer inline.
+@file:Suppress(
+    "LongMethod",
+    "LongParameterList",
+    "MaxLineLength",
+) // Explicit owner-scoped SQL and its atomic delta stay visible at the persistence boundary.
 
 package com.alexandr5476.lifetracing.data.persistence
 
@@ -79,16 +83,48 @@ internal abstract class SequenceExecutionDao {
     protected abstract fun insertValuesUnchecked(values: List<SequenceExecutionFieldValueEntity>)
 
     @Upsert
-    protected abstract fun upsertExecutionUnchecked(execution: SequenceExecutionEntity)
-
-    @Upsert
-    protected abstract fun upsertOccurrenceUnchecked(occurrence: SequenceOccurrenceEntity)
-
-    @Upsert
-    protected abstract fun upsertIntervalUnchecked(interval: SequenceIntervalEntity)
-
-    @Upsert
     protected abstract fun upsertValueUnchecked(value: SequenceExecutionFieldValueEntity)
+
+    @Query(
+        "UPDATE sequence_executions SET status = :status, ended_at_ms = :endedAtMs, " +
+            "active_duration_ms = :activeDurationMs, pause_duration_ms = :pauseDurationMs, " +
+            "wall_duration_ms = :wallDurationMs, current_occurrence_id = :currentOccurrenceId, " +
+            "updated_at_ms = :updatedAtMs WHERE id = :id",
+    )
+    protected abstract fun updateRuntimeRootUnchecked(
+        id: String,
+        status: String,
+        endedAtMs: Long?,
+        activeDurationMs: Long?,
+        pauseDurationMs: Long?,
+        wallDurationMs: Long?,
+        currentOccurrenceId: String?,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE sequence_occurrences SET status = :status, entered_at_ms = :enteredAtMs, " +
+            "completed_at_ms = :completedAtMs, completion_reason = :completionReason " +
+            "WHERE id = :id AND sequence_execution_id = :executionId",
+    )
+    protected abstract fun updateRuntimeOccurrenceUnchecked(
+        id: String,
+        executionId: String,
+        status: String,
+        enteredAtMs: Long?,
+        completedAtMs: Long?,
+        completionReason: String?,
+    ): Int
+
+    @Query(
+        "UPDATE sequence_intervals SET ended_at_ms = :endedAtMs " +
+            "WHERE id = :id AND sequence_execution_id = :executionId AND ended_at_ms IS NULL",
+    )
+    protected abstract fun closeRuntimeIntervalUnchecked(
+        id: String,
+        executionId: String,
+        endedAtMs: Long,
+    ): Int
 
     @Query(
         "UPDATE sequence_executions SET current_occurrence_id = :occurrenceId WHERE id = :executionId AND current_occurrence_id IS NULL",
@@ -132,12 +168,83 @@ internal abstract class SequenceExecutionDao {
     }
 
     @Transaction
-    open fun upsertRuntimeAggregate(aggregate: SequenceExecutionAggregateEntity) {
-        requireValidAggregate(aggregate)
-        aggregate.occurrences.sortedBy { it.runtimePosition }.forEach(::upsertOccurrenceUnchecked)
-        aggregate.intervals.forEach(::upsertIntervalUnchecked)
-        aggregate.values.forEach(::upsertValueUnchecked)
-        upsertExecutionUnchecked(aggregate.execution)
+    open fun persistRuntimeDelta(
+        before: SequenceExecutionAggregateEntity,
+        after: SequenceExecutionAggregateEntity,
+    ) {
+        requireValidAggregate(after)
+        require(before.execution.stableIdentity() == after.execution.stableIdentity()) {
+            "Runtime root identity cannot change"
+        }
+        val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        require(beforeOccurrences.keys == after.occurrences.map(SequenceOccurrenceEntity::id).toSet()) {
+            "Runtime transitions cannot add or remove occurrences"
+        }
+        after.occurrences.sortedBy(SequenceOccurrenceEntity::runtimePosition).forEach { occurrence ->
+            val previous = beforeOccurrences.getValue(occurrence.id)
+            require(previous.identity() == occurrence.identity()) { "Runtime occurrence identity cannot change" }
+            if (previous != occurrence) {
+                check(
+                    updateRuntimeOccurrenceUnchecked(
+                        occurrence.id,
+                        occurrence.sequenceExecutionId,
+                        occurrence.status,
+                        occurrence.enteredAtMs,
+                        occurrence.completedAtMs,
+                        occurrence.completionReason,
+                    ) == 1,
+                )
+            }
+        }
+        val beforeIntervals = before.intervals.associateBy(SequenceIntervalEntity::id)
+        after.intervals.forEach { interval ->
+            val previous = beforeIntervals[interval.id]
+            if (previous == null) {
+                insertIntervalsUnchecked(listOf(interval))
+            } else {
+                require(previous.identity() == interval.identity()) { "Runtime interval identity cannot change" }
+                if (previous != interval) {
+                    require(previous.endedAtMs == null && interval.endedAtMs != null) {
+                        "Existing runtime intervals may only be closed"
+                    }
+                    check(
+                        closeRuntimeIntervalUnchecked(
+                            interval.id,
+                            interval.sequenceExecutionId,
+                            requireNotNull(interval.endedAtMs),
+                        ) == 1,
+                    )
+                }
+            }
+        }
+        require(
+            after.intervals
+                .map(SequenceIntervalEntity::id)
+                .toSet()
+                .containsAll(beforeIntervals.keys),
+        ) {
+            "Runtime transitions cannot remove intervals"
+        }
+        val beforeValues = before.values.associateBy(SequenceExecutionFieldValueEntity::snapshotFieldId)
+        require(beforeValues.keys == after.values.map(SequenceExecutionFieldValueEntity::snapshotFieldId).toSet()) {
+            "Runtime transitions cannot add or remove Sequence values"
+        }
+        after.values.filter { beforeValues[it.snapshotFieldId] != it }.forEach(::upsertValueUnchecked)
+        if (before.execution != after.execution) {
+            val execution = after.execution
+            check(
+                updateRuntimeRootUnchecked(
+                    execution.id,
+                    execution.status,
+                    execution.endedAtMs,
+                    execution.activeDurationMs,
+                    execution.pauseDurationMs,
+                    execution.wallDurationMs,
+                    execution.currentOccurrenceId,
+                    execution.updatedAtMs,
+                ) == 1,
+            )
+        }
     }
 
     private fun requireValidAggregate(aggregate: SequenceExecutionAggregateEntity) {
@@ -168,3 +275,32 @@ internal abstract class SequenceExecutionDao {
         SequenceExecutionValidator.requireValid(aggregate.toDomain(), snapshot)
     }
 }
+
+private fun SequenceExecutionEntity.stableIdentity(): List<Any?> =
+    listOf(
+        id,
+        snapshotId,
+        planEntryId,
+        statisticsSeriesId,
+        startedAtMs,
+        originalZoneId,
+        originalUtcOffsetMinutes,
+        primaryLocalDate,
+        createdAtMs,
+    )
+
+private fun SequenceOccurrenceEntity.identity(): List<Any?> =
+    listOf(
+        id,
+        sequenceExecutionId,
+        sourceSequenceSnapshotNodeId,
+        activitySnapshotId,
+        runtimePosition,
+        repeatSourceSnapshotNodeId,
+        repeatIteration,
+        isRuntimeAdded,
+        isDeletedFromHistory,
+    )
+
+private fun SequenceIntervalEntity.identity(): List<Any?> =
+    listOf(id, sequenceExecutionId, kind, startedAtMs, occurrenceId)

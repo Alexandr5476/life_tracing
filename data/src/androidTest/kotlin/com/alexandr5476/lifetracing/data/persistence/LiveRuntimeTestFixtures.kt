@@ -72,6 +72,7 @@ internal class LiveRuntimeTestFixtures(
         id: String = "activity-execution",
         snapshotId: String = "stopwatch",
         status: String = "RUNNING",
+        pauseId: String = "pause",
     ) {
         database.activityExecutionDao().insertAggregate(
             ActivityExecutionAggregateEntity(
@@ -97,7 +98,7 @@ internal class LiveRuntimeTestFixtures(
                 ),
                 pauses =
                     if (status == "PAUSED") {
-                        listOf(ActivityExecutionPauseEntity("pause", id, 0, null))
+                        listOf(ActivityExecutionPauseEntity(pauseId, id, 0, null))
                     } else {
                         emptyList()
                     },

@@ -19,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionFactory
@@ -30,9 +31,12 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceRuntimeEngine
 import com.alexandr5476.lifetracing.domain.SequenceRuntimeState
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
+import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.Callable
@@ -158,7 +162,7 @@ internal class LiveSessionRepository(
                 val loaded = loadSequenceRuntime()
                 val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
                 if (reconciled.execution.currentOccurrenceId != expectedOccurrenceId) {
-                    persistSequenceRuntime(reconciled)
+                    persistSequenceRuntime(loaded, reconciled)
                     return@transaction null
                 }
                 val updated =
@@ -169,7 +173,7 @@ internal class LiveSessionRepository(
                         loaded.snapshot,
                         loaded.activities,
                     )
-                persistSequenceRuntime(updated)
+                persistSequenceRuntime(loaded, updated)
                 updated
             }
         return requireNotNull(result) { "Stale current-occurrence command" }
@@ -180,30 +184,43 @@ internal class LiveSessionRepository(
             requireSequenceSession(ActiveSessionState.WAITING_NEXT)
             val loaded = loadSequenceRuntime()
             val updated = sequenceEngine.startNext(loaded.state, at, loaded.snapshot, loaded.activities)
-            persistSequenceRuntime(updated)
+            persistSequenceRuntime(loaded, updated)
             updated
         }
 
-    fun pauseActiveSequence(at: Instant): SequenceRuntimeState =
-        transaction {
-            requireSequenceSession()
-            val loaded = loadSequenceRuntime()
-            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
-            if (reconciled.execution.status == SequenceExecutionStatus.COMPLETED) {
-                persistSequenceRuntime(reconciled)
-                return@transaction reconciled
+    fun pauseActiveSequence(at: Instant): SequenceRuntimeState {
+        val result =
+            transaction {
+                requireSequenceSession()
+                val loaded = loadSequenceRuntime()
+                val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
+                if (reconciled.execution.status == SequenceExecutionStatus.COMPLETED) {
+                    persistSequenceRuntime(loaded, reconciled)
+                    return@transaction PauseSequenceResult(reconciled, true)
+                }
+                if (reconciled.execution.currentOccurrenceId == null &&
+                    reconciled.execution.intervals
+                        .singleOrNull { it.endedAt == null }
+                        ?.kind ==
+                    SequenceIntervalKind.IMPLICIT_IDLE
+                ) {
+                    persistSequenceRuntime(loaded, reconciled)
+                    return@transaction PauseSequenceResult(reconciled, false)
+                }
+                val paused = sequenceEngine.pause(reconciled, at, loaded.snapshot, loaded.activities)
+                persistSequenceRuntime(loaded, paused)
+                PauseSequenceResult(paused, true)
             }
-            val paused = sequenceEngine.pause(reconciled, at, loaded.snapshot, loaded.activities)
-            persistSequenceRuntime(paused)
-            paused
-        }
+        require(result.applied) { "WAITING_NEXT is already an idle state" }
+        return result.state
+    }
 
     fun resumeActiveSequence(at: Instant): SequenceRuntimeState =
         transaction {
             requireSequenceSession(ActiveSessionState.PAUSED)
             val loaded = loadSequenceRuntime()
             val resumed = sequenceEngine.resume(loaded.state, at, loaded.snapshot, loaded.activities)
-            persistSequenceRuntime(resumed)
+            persistSequenceRuntime(loaded, resumed)
             resumed
         }
 
@@ -228,22 +245,73 @@ internal class LiveSessionRepository(
 
     private fun reconcileSequenceLocked(now: Instant) {
         val loaded = loadSequenceRuntime()
-        persistSequenceRuntime(sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, now))
+        persistSequenceRuntime(loaded, sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, now))
     }
 
-    private fun persistSequenceRuntime(state: SequenceRuntimeState) {
-        database.sequenceExecutionDao().upsertRuntimeAggregate(state.execution.toEntityAggregate())
-        state.children.values.forEach { child ->
-            if (database.activityExecutionDao().getById(child.id.value) == null) {
-                database.activityExecutionDao().insertAggregate(child.toEntityAggregate())
+    private fun persistSequenceRuntime(
+        loaded: LoadedSequenceRuntime,
+        after: SequenceRuntimeState,
+    ) {
+        val before = loaded.state
+        val snapshot = loaded.snapshot
+        val activities = loaded.activities
+        require(after.children.keys.containsAll(before.children.keys)) {
+            "Runtime transitions cannot remove known child executions"
+        }
+        SequenceExecutionValidator.requireValid(after.execution, snapshot)
+        if (after.execution.status == SequenceExecutionStatus.RUNNING ||
+            after.execution.status == SequenceExecutionStatus.PAUSED
+        ) {
+            validateSequenceRuntimeShape(sequenceSession(after.execution).state, after.execution, snapshot, activities)
+        }
+        after.children.forEach { (occurrenceId, child) ->
+            val occurrence = after.execution.occurrences.single { it.id == occurrenceId }
+            ActivityExecutionValidator.requireValid(child, activities.getValue(occurrence.activitySnapshotId))
+            require(
+                child.context == ActivityExecutionContext.SEQUENCE_CHILD &&
+                    child.sequenceExecutionId == after.execution.id &&
+                    child.sequenceOccurrenceId == occurrenceId,
+            ) { "Sequence child ownership disagrees with the intended runtime state" }
+        }
+        val current = after.execution.currentOccurrenceId?.let(after.children::get)
+        val currentOccurrence =
+            after.execution.currentOccurrenceId?.let { id -> after.execution.occurrences.single { it.id == id } }
+        if (currentOccurrence != null) {
+            if (activities.getValue(currentOccurrence.activitySnapshotId).timeTrackingMode ==
+                TimeTrackingMode.NO_LIVE_TRACKING
+            ) {
+                require(current == null) { "Current No-live Step cannot have a child execution" }
             } else {
-                database.activityExecutionDao().upsertSequenceChildAggregate(child.toEntityAggregate())
+                requireNotNull(current) { "Current timed Step requires its child execution" }
+                require(
+                    current.status ==
+                        if (after.execution.status == SequenceExecutionStatus.PAUSED) {
+                            ActivityExecutionStatus.PAUSED
+                        } else {
+                            ActivityExecutionStatus.RUNNING
+                        },
+                ) { "Current child state disagrees with the intended Sequence state" }
             }
         }
-        if (state.execution.status == SequenceExecutionStatus.COMPLETED) {
+        database.sequenceExecutionDao().persistRuntimeDelta(
+            before.execution.toEntityAggregate(),
+            after.execution.toEntityAggregate(),
+        )
+        after.children.forEach { (occurrenceId, child) ->
+            val previous = before.children[occurrenceId]
+            if (previous == null) {
+                database.activityExecutionDao().insertAggregate(child.toEntityAggregate())
+            } else {
+                database.activityExecutionDao().persistSequenceChildDelta(
+                    previous.toEntityAggregate(),
+                    child.toEntityAggregate(),
+                )
+            }
+        }
+        if (after.execution.status == SequenceExecutionStatus.COMPLETED) {
             check(database.activeSessionDao().clear() == 1)
-        } else {
-            val session = sequenceSession(state.execution)
+        } else if (before.execution != after.execution) {
+            val session = sequenceSession(after.execution)
             check(database.activeSessionDao().updateState(session.state.name, session.updatedAt.toEpochMilli()) == 1)
         }
     }
@@ -304,8 +372,7 @@ internal class LiveSessionRepository(
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
         val activities = loadActivitySnapshots(snapshot)
         SequenceExecutionValidator.requireValid(execution, snapshot)
-        val open = execution.intervals.filter { it.endedAt == null }
-        require(open.size == 1) { "Active Sequence requires exactly one open classification interval" }
+        validateSequenceRuntimeShape(session.state, execution, snapshot, activities)
         val current =
             execution.currentOccurrenceId?.let { currentId ->
                 execution.occurrences.single {
@@ -313,26 +380,59 @@ internal class LiveSessionRepository(
                         currentId
                 }
             }
-        when (session.state) {
+        if (current != null) {
+            validateCurrentChild(
+                execution.id,
+                current.id,
+                activities.getValue(current.activitySnapshotId),
+                session.state == ActiveSessionState.PAUSED,
+            )
+        }
+    }
+
+    private fun validateSequenceRuntimeShape(
+        state: ActiveSessionState,
+        execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
+        snapshot: SequenceConfigSnapshot,
+        activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ) {
+        val open = execution.intervals.filter { it.endedAt == null }
+        require(open.size == 1) { "Active Sequence requires exactly one open classification interval" }
+        val interval = open.single()
+        require(
+            execution.intervals.filter { it.endedAt != null }.all { requireNotNull(it.endedAt) <= interval.startedAt },
+        ) {
+            "The open runtime interval must follow every closed segment"
+        }
+        val current = execution.currentOccurrenceId?.let { id -> execution.occurrences.single { it.id == id } }
+        val frontier = nextRemainingOccurrence(execution)
+        if (current != null) {
+            require(frontier == null || frontier.runtimePosition > current.runtimePosition) {
+                "Current Step cannot skip an earlier remaining occurrence"
+            }
+        }
+        when (state) {
             ActiveSessionState.WAITING_NEXT ->
                 require(
                     execution.status == SequenceExecutionStatus.RUNNING &&
                         current == null &&
                         execution.occurrences.none { it.status == RuntimeOccurrenceStatus.CURRENT } &&
-                        open.single().kind == SequenceIntervalKind.IMPLICIT_IDLE,
-                ) { "WAITING_NEXT requires one open implicit-idle interval and no current Step" }
+                        interval.kind == SequenceIntervalKind.IMPLICIT_IDLE &&
+                        interval.occurrenceId == null &&
+                        frontier != null,
+                ) { "WAITING_NEXT requires a global implicit idle and a remaining frontier" }
             ActiveSessionState.RUNNING -> {
                 require(execution.status == SequenceExecutionStatus.RUNNING) { "Running session requires running root" }
                 if (current == null) {
-                    val interval = open.single()
                     require(
-                        interval.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && interval.occurrenceId != null,
+                        interval.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
+                            interval.occurrenceId == frontier?.id,
+                    ) { "Transition countdown must target the next remaining occurrence" }
+                    require(
+                        countdownConsumedMs(execution, requireNotNull(frontier).id) <
+                            requiredCountdownMs(frontier, snapshot, activities),
                     ) {
-                        "Running Sequence without current Step requires a targeted transition countdown"
-                    }
-                    val target = execution.occurrences.singleOrNull { it.id == interval.occurrenceId }
-                    require(target?.status == RuntimeOccurrenceStatus.NOT_STARTED) {
-                        "Transition countdown target must be a remaining occurrence in this execution"
+                        "Transition countdown requires positive remaining time"
                     }
                 } else {
                     val expected =
@@ -340,39 +440,75 @@ internal class LiveSessionRepository(
                             activities.getValue(current.activitySnapshotId),
                             snapshot.settings.noLiveTimeAccounting,
                         )
-                    require(open.single().kind == expected && open.single().occurrenceId == current.id) {
+                    require(interval.kind == expected && interval.occurrenceId == current.id) {
                         "Running current Step requires its one open Step-classification interval"
                     }
-                    validateCurrentChild(
-                        execution.id,
-                        current.id,
-                        activities.getValue(current.activitySnapshotId),
-                        false,
-                    )
                 }
             }
             ActiveSessionState.PAUSED -> {
                 require(
                     execution.status == SequenceExecutionStatus.PAUSED &&
-                        open.single().kind == SequenceIntervalKind.EXPLICIT_PAUSE,
-                ) {
-                    "Paused Sequence requires one open explicit-pause interval"
-                }
-                current?.let {
-                    validateCurrentChild(execution.id, it.id, activities.getValue(it.activitySnapshotId), true)
-                }
+                        interval.kind == SequenceIntervalKind.EXPLICIT_PAUSE &&
+                        interval.occurrenceId == null,
+                ) { "Paused Sequence requires one global explicit-pause interval" }
                 if (current == null) {
-                    require(
-                        execution.intervals.any {
+                    val target = requireNotNull(frontier) { "Paused countdown requires a remaining frontier" }
+                    val segments =
+                        execution.intervals.filter {
                             it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                                it.endedAt != null &&
-                                it.occurrenceId != null
-                        },
-                    ) { "Paused Sequence without current Step must preserve transition-countdown progress" }
+                                it.occurrenceId == target.id &&
+                                it.endedAt != null
+                        }
+                    val latest =
+                        requireNotNull(segments.maxByOrNull { requireNotNull(it.endedAt) }) {
+                            "Paused countdown requires progress for its frontier target"
+                        }
+                    require(latest.endedAt == interval.startedAt) {
+                        "Paused countdown progress must end exactly when the explicit pause starts"
+                    }
+                    require(
+                        countdownConsumedMs(execution, target.id) < requiredCountdownMs(target, snapshot, activities),
+                    ) {
+                        "Paused countdown must retain positive remaining time"
+                    }
                 }
             }
         }
     }
+
+    private fun requiredCountdownMs(
+        occurrence: com.alexandr5476.lifetracing.domain.RuntimeOccurrence,
+        snapshot: SequenceConfigSnapshot,
+        activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): Long {
+        val source = requireNotNull(occurrence.sourceSequenceSnapshotNodeId)
+        val step =
+            snapshot.nodes
+                .flatMap {
+                    when (it) {
+                        is SequenceSnapshotActivityStep -> listOf(it)
+                        is SequenceSnapshotRepeatBlock -> it.children
+                    }
+                }.single { it.id == source }
+        return EffectiveSequenceStepSettingsResolver
+            .resolve(step, activities.getValue(occurrence.activitySnapshotId), snapshot.settings, false)
+            .startCountdown
+            .toMillis()
+    }
+
+    private fun countdownConsumedMs(
+        execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
+        target: SequenceOccurrenceId,
+    ): Long =
+        execution.intervals
+            .asSequence()
+            .filter {
+                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.occurrenceId == target && it.endedAt != null
+            }.sumOf {
+                java.time.Duration
+                    .between(it.startedAt, requireNotNull(it.endedAt))
+                    .toMillis()
+            }
 
     private fun validateCurrentChild(
         sequenceId: SequenceExecutionId,
@@ -478,6 +614,11 @@ internal class LiveSessionRepository(
         val state: SequenceRuntimeState,
         val snapshot: SequenceConfigSnapshot,
         val activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    )
+
+    private data class PauseSequenceResult(
+        val state: SequenceRuntimeState,
+        val applied: Boolean,
     )
 }
 

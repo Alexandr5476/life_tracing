@@ -274,6 +274,34 @@ class LiveRuntimePoliciesTest {
     }
 
     @Test
+    fun largeZeroCountdownTimerCatchUpCompletesInOneDeterministicPass() {
+        val count = 750
+        val timer = activity("timer", TimeTrackingMode.TIMER, 1)
+        val activities = mapOf(timer.id to timer)
+        val snapshot = sequence(List(count) { timer.id }, autoAdvance = true)
+        val runtime = engine()
+
+        val finished =
+            runtime.reconcile(
+                runtime.start(snapshot, activities, instant(0), instant(0), ZoneOffset.UTC),
+                snapshot,
+                activities,
+                instant(count.toLong()),
+            )
+
+        assertEquals(SequenceExecutionStatus.COMPLETED, finished.execution.status)
+        finished.execution.occurrences.forEachIndexed { index, occurrence ->
+            assertEquals(instant(index.toLong()), occurrence.enteredAt)
+            assertEquals(instant(index + 1L), occurrence.completedAt)
+            assertEquals(OccurrenceCompletionReason.NATURAL_TIMER_END, occurrence.completionReason)
+        }
+        assertEquals(instant(count.toLong()), finished.execution.endedAt)
+        assertEquals(Duration.ofSeconds(count.toLong()), finished.execution.activeDuration)
+        assertEquals(Duration.ZERO, finished.execution.pauseDuration)
+        assertEquals(Duration.ofSeconds(count.toLong()), finished.execution.wallDuration)
+    }
+
+    @Test
     fun zeroWallSequenceIsRepresentableAndDeadlineArithmeticIsChecked() {
         val noLive = activity("no-live-zero", TimeTrackingMode.NO_LIVE_TRACKING)
         val activities = mapOf(noLive.id to noLive)

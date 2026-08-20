@@ -352,6 +352,165 @@ class LiveSessionRepositoryTest {
         }
     }
 
+    @Test
+    fun intervalIdCollisionRollsBackWithoutReparentingHistory() {
+        val intervalIds = ArrayDeque(listOf("collision-interval", "b-initial", "collision-interval"))
+        repository = repository(database, intervalIds = { SequenceIntervalId(intervalIds.removeFirst()) })
+        val historical =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-one-timer"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(historical.execution.currentOccurrenceId!!, instant(10))
+        val historicalInterval = database.sequenceExecutionDao().getIntervals(historical.execution.id.value).single()
+        val active =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                instant(20),
+                instant(20),
+                ZoneOffset.UTC,
+            )
+        val before = repositorySequence(active.execution.id.value)
+        val sessionBefore = database.activeSessionDao().get()
+
+        assertThrows(RuntimeException::class.java) {
+            repository.completeCurrentSequenceStep(active.execution.currentOccurrenceId!!, instant(25))
+        }
+
+        assertEquals(
+            historicalInterval,
+            database.sequenceExecutionDao().getIntervals(historical.execution.id.value).single(),
+        )
+        assertEquals(before, repositorySequence(active.execution.id.value))
+        assertEquals(sessionBefore, database.activeSessionDao().get())
+    }
+
+    @Test
+    fun childExecutionIdCollisionRollsBackWithoutConvertingStandaloneHistory() {
+        LiveRuntimeTestFixtures(database).standaloneExecution(id = "collision-child")
+        val childIds = ArrayDeque(listOf("initial-child", "collision-child"))
+        repository = repository(database, childIds = { ActivityExecutionId(childIds.removeFirst()) })
+        val unrelated = database.activityExecutionDao().getAggregate("collision-child")
+        val active =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-timer-direct"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val before = repositorySequence(active.execution.id.value)
+        val sessionBefore = database.activeSessionDao().get()
+
+        assertThrows(RuntimeException::class.java) {
+            repository.completeCurrentSequenceStep(active.execution.currentOccurrenceId!!, instant(10))
+        }
+
+        assertEquals(unrelated, database.activityExecutionDao().getAggregate("collision-child"))
+        assertEquals(before, repositorySequence(active.execution.id.value))
+        assertEquals(sessionBefore, database.activeSessionDao().get())
+    }
+
+    @Test
+    fun childPauseIdCollisionRollsBackWithoutReparentingForeignPause() {
+        LiveRuntimeTestFixtures(database).standaloneExecution(
+            id = "foreign-paused",
+            status = "PAUSED",
+            pauseId = "collision-pause",
+        )
+        repository = repository(database, pauseIds = { ActivityExecutionPauseId("collision-pause") })
+        val foreign = database.activityExecutionDao().getAggregate("foreign-paused")
+        val active =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val before = repositorySequence(active.execution.id.value)
+        val childBefore =
+            database.activityExecutionDao().getAggregateByOccurrence(
+                active.execution.currentOccurrenceId!!.value,
+            )
+        val sessionBefore = database.activeSessionDao().get()
+
+        assertThrows(RuntimeException::class.java) { repository.pauseActiveSequence(instant(10)) }
+
+        assertEquals(foreign, database.activityExecutionDao().getAggregate("foreign-paused"))
+        assertEquals(before, repositorySequence(active.execution.id.value))
+        assertEquals(
+            childBefore,
+            database.activityExecutionDao().getAggregateByOccurrence(active.execution.currentOccurrenceId!!.value),
+        )
+        assertEquals(sessionBefore, database.activeSessionDao().get())
+    }
+
+    @Test
+    fun pauseAfterDueTimerCommitsWaitingNextThenReportsRejection() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { repository.pauseActiveSequence(instant(70)) }
+
+        val persisted = repositorySequence(started.execution.id.value)
+        assertEquals(instant(60), persisted.occurrences[0].completedAt)
+        assertEquals(RuntimeOccurrenceStatus.COMPLETED, persisted.occurrences[0].status)
+        assertEquals(SequenceExecutionStatus.RUNNING, persisted.status)
+        assertNull(persisted.currentOccurrenceId)
+        assertEquals(SequenceIntervalKind.IMPLICIT_IDLE, persisted.intervals.single { it.endedAt == null }.kind)
+        assertEquals(instant(60), persisted.intervals.single { it.endedAt == null }.startedAt)
+        assertEquals("WAITING_NEXT", repository.getActiveSession()?.state?.name)
+        assertEquals(0, persisted.intervals.count { it.kind == SequenceIntervalKind.EXPLICIT_PAUSE })
+        assertEquals(0, database.activityExecutionDao().getPauses("activity-1").count { it.endedAtMs == null })
+
+        repository.reconcileActiveSession(instant(70))
+        assertEquals(persisted, repositorySequence(started.execution.id.value))
+    }
+
+    @Test
+    fun oneStepDeltaUpdatesOnlyTheRowsThatChanged() {
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("CREATE TABLE mutation_audit (table_name TEXT NOT NULL)")
+        sql.execSQL(
+            "CREATE TRIGGER audit_occurrence_update AFTER UPDATE ON sequence_occurrences " +
+                "BEGIN INSERT INTO mutation_audit VALUES ('occurrence'); END",
+        )
+        sql.execSQL(
+            "CREATE TRIGGER audit_interval_update AFTER UPDATE ON sequence_intervals " +
+                "BEGIN INSERT INTO mutation_audit VALUES ('interval'); END",
+        )
+        sql.execSQL(
+            "CREATE TRIGGER audit_sequence_update AFTER UPDATE ON sequence_executions " +
+                "BEGIN INSERT INTO mutation_audit VALUES ('sequence'); END",
+        )
+        sql.execSQL(
+            "CREATE TRIGGER audit_child_update AFTER UPDATE ON activity_executions " +
+                "BEGIN INSERT INTO mutation_audit VALUES ('child'); END",
+        )
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        sql.execSQL("DELETE FROM mutation_audit")
+
+        repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(5))
+
+        assertEquals(1, auditCount("occurrence"))
+        assertEquals(1, auditCount("interval"))
+        assertEquals(1, auditCount("sequence"))
+        assertEquals(1, auditCount("child"))
+        assertNotNull(repository.getActiveSession())
+    }
+
     private fun inMemoryDatabase() =
         LifeTracingDatabase
             .inMemoryBuilder(ApplicationProvider.getApplicationContext())
@@ -414,6 +573,9 @@ class LiveSessionRepositoryTest {
     private fun repository(
         database: LifeTracingDatabase,
         offset: Int = 0,
+        childIds: (() -> ActivityExecutionId)? = null,
+        pauseIds: (() -> ActivityExecutionPauseId)? = null,
+        intervalIds: (() -> SequenceIntervalId)? = null,
     ): LiveSessionRepository {
         var activity = offset
         var pause = offset
@@ -422,11 +584,11 @@ class LiveSessionRepositoryTest {
         var interval = offset
         return LiveSessionRepository(
             database,
-            { ActivityExecutionId("activity-${++activity}") },
-            { ActivityExecutionPauseId("pause-${++pause}") },
+            childIds ?: { ActivityExecutionId("activity-${++activity}") },
+            pauseIds ?: { ActivityExecutionPauseId("pause-${++pause}") },
             { SequenceExecutionId("sequence-${++sequence}") },
             { SequenceOccurrenceId("occurrence-${++occurrence}") },
-            { SequenceIntervalId("interval-${++interval}") },
+            intervalIds ?: { SequenceIntervalId("interval-${++interval}") },
         )
     }
 
@@ -435,6 +597,14 @@ class LiveSessionRepositoryTest {
 
     private fun repositorySequence(id: String) =
         requireNotNull(database.sequenceExecutionDao().getAggregate(id)).toDomain()
+
+    private fun auditCount(table: String): Int =
+        database.openHelper.readableDatabase
+            .query("SELECT COUNT(*) FROM mutation_audit WHERE table_name = ?", arrayOf(table))
+            .use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
 
     private fun instant(seconds: Long): Instant = Instant.ofEpochSecond(seconds)
 }
