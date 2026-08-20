@@ -40,6 +40,33 @@ class ActivityExecutionTest {
     }
 
     @Test
+    fun `Sequence children retain parent links and one-off child has no Statistics Series`() {
+        val sequenceId = SequenceExecutionId("sequence")
+        val occurrenceId = SequenceOccurrenceId("occurrence")
+        val reusable =
+            factory.startSequenceChildTimed(snapshot(), sequenceId, occurrenceId, now, now, zone)
+        val oneOffNoLive =
+            factory.completeSequenceChildNoLive(
+                snapshot(mode = TimeTrackingMode.NO_LIVE_TRACKING, seriesId = null),
+                sequenceId,
+                occurrenceId,
+                now,
+                zone,
+            )
+
+        assertEquals(ActivityExecutionContext.SEQUENCE_CHILD, reusable.context)
+        assertEquals(sequenceId, reusable.sequenceExecutionId)
+        assertEquals(occurrenceId, reusable.sequenceOccurrenceId)
+        assertEquals(StatisticsSeriesId("series"), reusable.statisticsSeriesId)
+        assertNull(reusable.completionReason)
+        assertEquals(ActivityExecutionStatus.COMPLETED, oneOffNoLive.status)
+        assertNull(oneOffNoLive.startedAt)
+        assertNull(oneOffNoLive.activeDuration)
+        assertNull(oneOffNoLive.statisticsSeriesId)
+        assertNull(oneOffNoLive.completionReason)
+    }
+
+    @Test
     fun `primary date and offset follow the original zone at the event instant`() {
         val event = Instant.parse("2026-01-01T23:30:00Z")
 

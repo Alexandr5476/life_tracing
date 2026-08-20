@@ -65,6 +65,127 @@ internal object LifeTracingMigrationTestDatabaseFactory {
             SequenceTemplateSchemaV5.create(database)
             SequenceSnapshotSchemaV6.create(database)
         }
+
+    fun createVersion7(
+        helper: MigrationTestHelper,
+        name: String,
+    ): SupportSQLiteDatabase =
+        helper.createDatabase(name, 7).also { database ->
+            SequenceExecutionSchemaV7.drop(database)
+            SequenceSnapshotSchemaV6.drop(database)
+            SequenceTemplateSchemaV5.drop(database)
+            ActivitySnapshotSchemaV3.drop(database)
+            ActivityTemplateSchemaV2.recreate(database)
+            ActivitySnapshotSchemaV3.create(database)
+            ActivityExecutionSchemaV4.createAndSeed(database)
+            SequenceTemplateSchemaV5.create(database)
+            SequenceSnapshotSchemaV6.create(database)
+            SequenceExecutionSchemaV7.create(database)
+        }
+}
+
+internal data class SequenceExecutionManualSchema(
+    val rootColumns: List<String>,
+    val rootForeignKeys: Map<String, String>,
+    val hasRootStatusCacheCheck: Boolean,
+    val hasRootTemporalCheck: Boolean,
+    val rootIndexes: Map<String, List<String>>,
+    val occurrenceColumns: List<String>,
+    val occurrenceForeignKeys: Map<String, String>,
+    val hasOccurrenceStatusCheck: Boolean,
+    val hasOccurrenceReasonCheck: Boolean,
+    val hasOccurrenceBooleanChecks: Boolean,
+    val currentIndexUnique: Boolean,
+    val currentIndexPredicate: String,
+    val occurrencePositionIndexUnique: Boolean,
+    val occurrenceIndexes: Map<String, List<String>>,
+    val intervalColumns: List<String>,
+    val intervalForeignKeys: Map<String, String>,
+    val hasIntervalKindCheck: Boolean,
+    val hasIntervalTemporalCheck: Boolean,
+    val intervalIndexes: Map<String, List<String>>,
+    val valueColumns: List<String>,
+    val valueForeignKeys: Map<String, String>,
+    val hasTypedValueCheck: Boolean,
+    val valueIndexes: Map<String, List<String>>,
+    val activityExecutionForeignKeys: Map<String, String>,
+    val childIndexUnique: Boolean,
+    val childIndexPredicate: String,
+)
+
+internal fun SupportSQLiteDatabase.readSequenceExecutionManualSchema(): SequenceExecutionManualSchema {
+    val rootSql = schemaSql("table", "sequence_executions")
+    val occurrenceSql = schemaSql("table", "sequence_occurrences")
+    val intervalSql = schemaSql("table", "sequence_intervals")
+    val valueSql = schemaSql("table", "sequence_execution_field_values")
+    return SequenceExecutionManualSchema(
+        rootColumns = tableColumns("sequence_executions"),
+        rootForeignKeys = foreignKeyTargetsAndDeletes("sequence_executions"),
+        hasRootStatusCacheCheck =
+            rootSql.contains("status in ('running', 'paused')") &&
+                rootSql.contains("status in ('completed', 'ended_early')") &&
+                rootSql.contains("current_occurrence_id is null"),
+        hasRootTemporalCheck = rootSql.contains("ended_at_ms is null or ended_at_ms >= started_at_ms"),
+        rootIndexes =
+            listOf(
+                "sequence_executions_series_ended",
+                "sequence_executions_plan_entry_id",
+                "sequence_executions_primary_local_date",
+                "sequence_executions_snapshot_id",
+                "sequence_executions_current_occurrence_id",
+            ).associateWith(::indexColumns),
+        occurrenceColumns = tableColumns("sequence_occurrences"),
+        occurrenceForeignKeys = foreignKeyTargetsAndDeletes("sequence_occurrences"),
+        hasOccurrenceStatusCheck =
+            listOf("not_started", "current", "completed", "skipped", "deleted_execution").all { code ->
+                occurrenceSql.contains("status = '$code'")
+            },
+        hasOccurrenceReasonCheck =
+            listOf("natural_timer_end", "manual_finish", "advanced_to_next", "jump", "sequence_ended_early")
+                .all(occurrenceSql::contains),
+        hasOccurrenceBooleanChecks =
+            occurrenceSql.contains("is_runtime_added in (0, 1)") &&
+                occurrenceSql.contains("is_deleted_from_history in (0, 1)"),
+        currentIndexUnique = indexIsUnique("sequence_occurrences", "idx_one_current_occurrence"),
+        currentIndexPredicate = schemaSql("index", "idx_one_current_occurrence").substringAfter(" where ", "").trim(),
+        occurrencePositionIndexUnique =
+            indexIsUnique("sequence_occurrences", "sequence_occurrences_execution_position"),
+        occurrenceIndexes =
+            listOf(
+                "sequence_occurrences_execution_position",
+                "sequence_occurrences_execution_status",
+                "sequence_occurrences_activity_snapshot_id",
+                "sequence_occurrences_source_node_id",
+            ).associateWith(::indexColumns),
+        intervalColumns = tableColumns("sequence_intervals"),
+        intervalForeignKeys = foreignKeyTargetsAndDeletes("sequence_intervals"),
+        hasIntervalKindCheck =
+            listOf("active_step", "step_pause", "explicit_pause", "implicit_idle", "transition_countdown")
+                .all(intervalSql::contains),
+        hasIntervalTemporalCheck = intervalSql.contains("ended_at_ms is null or ended_at_ms >= started_at_ms"),
+        intervalIndexes =
+            listOf(
+                "sequence_intervals_execution_started",
+                "sequence_intervals_execution_kind_started",
+                "sequence_intervals_occurrence_id",
+            ).associateWith(::indexColumns),
+        valueColumns = tableColumns("sequence_execution_field_values"),
+        valueForeignKeys = foreignKeyTargetsAndDeletes("sequence_execution_field_values"),
+        hasTypedValueCheck =
+            valueSql.contains("number_scaled is not null") &&
+                valueSql.contains("category_option_id is not null") &&
+                valueSql.contains("text_value is not null"),
+        valueIndexes =
+            listOf(
+                "sequence_execution_values_snapshot_field_id",
+                "sequence_execution_values_number",
+                "sequence_execution_values_category",
+            ).associateWith(::indexColumns),
+        activityExecutionForeignKeys = foreignKeyTargetsAndDeletes("activity_executions"),
+        childIndexUnique = indexIsUnique("activity_executions", "idx_one_child_execution_per_occurrence"),
+        childIndexPredicate =
+            schemaSql("index", "idx_one_child_execution_per_occurrence").substringAfter(" where ", "").trim(),
+    )
 }
 
 internal data class SequenceTemplateManualSchema(
@@ -484,6 +605,21 @@ private fun SupportSQLiteDatabase.foreignKeyDeletes(table: String): Map<String, 
         val onDeleteColumn = cursor.getColumnIndexOrThrow("on_delete")
         buildMap {
             while (cursor.moveToNext()) put(cursor.getString(fromColumn), cursor.getString(onDeleteColumn))
+        }
+    }
+
+private fun SupportSQLiteDatabase.foreignKeyTargetsAndDeletes(table: String): Map<String, String> =
+    query("PRAGMA foreign_key_list(`$table`)").use { cursor ->
+        val fromColumn = cursor.getColumnIndexOrThrow("from")
+        val targetTable = cursor.getColumnIndexOrThrow("table")
+        val onDeleteColumn = cursor.getColumnIndexOrThrow("on_delete")
+        buildMap {
+            while (cursor.moveToNext()) {
+                put(
+                    cursor.getString(fromColumn),
+                    "${cursor.getString(targetTable)}:${cursor.getString(onDeleteColumn)}",
+                )
+            }
         }
     }
 

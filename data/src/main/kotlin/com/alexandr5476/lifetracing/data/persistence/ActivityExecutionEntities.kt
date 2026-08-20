@@ -20,6 +20,18 @@ import androidx.room.Index
             childColumns = ["statistics_series_id"],
             onDelete = ForeignKey.RESTRICT,
         ),
+        ForeignKey(
+            entity = SequenceExecutionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sequence_execution_id"],
+            onDelete = ForeignKey.RESTRICT,
+        ),
+        ForeignKey(
+            entity = SequenceOccurrenceEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sequence_occurrence_id"],
+            onDelete = ForeignKey.RESTRICT,
+        ),
     ],
     indices = [
         Index(value = ["snapshot_id"], name = "activity_executions_snapshot_id"),

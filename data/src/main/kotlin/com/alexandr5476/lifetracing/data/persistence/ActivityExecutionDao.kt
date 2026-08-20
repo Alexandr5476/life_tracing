@@ -17,6 +17,11 @@ internal data class ActivityExecutionAggregateEntity(
     val values: List<ActivityExecutionFieldValueEntity> = emptyList(),
 )
 
+internal data class SequenceOccurrenceLinkRow(
+    @androidx.room.ColumnInfo(name = "sequence_execution_id") val sequenceExecutionId: String,
+    @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // Atomic aggregate state transitions belong together.
 internal abstract class ActivityExecutionDao {
@@ -55,6 +60,9 @@ internal abstract class ActivityExecutionDao {
 
     @Query("SELECT time_tracking_mode FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun getSnapshotTimeTrackingMode(snapshotId: String): String?
+
+    @Query("SELECT sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
+    protected abstract fun getSequenceOccurrenceLink(id: String): SequenceOccurrenceLinkRow?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertExecutionUnchecked(execution: ActivityExecutionEntity)
@@ -118,12 +126,6 @@ internal abstract class ActivityExecutionDao {
     open fun insertAggregate(aggregate: ActivityExecutionAggregateEntity) {
         insertExecutionUnchecked(aggregate.execution)
         requireValidAggregate(aggregate)
-        aggregate.values.forEach { value ->
-            require(value.activityExecutionId == aggregate.execution.id) {
-                "Execution value must belong to the inserted execution"
-            }
-        }
-        aggregate.values.forEach { value -> requireValidValue(aggregate.execution.snapshotId, value) }
         if (aggregate.pauses.isNotEmpty()) insertPausesUnchecked(aggregate.pauses)
         if (aggregate.values.isNotEmpty()) insertValuesUnchecked(aggregate.values)
     }
@@ -141,7 +143,7 @@ internal abstract class ActivityExecutionDao {
     @Transaction
     open fun getAggregate(id: String): ActivityExecutionAggregateEntity? {
         val execution = getById(id) ?: return null
-        return ActivityExecutionAggregateEntity(execution, getPauses(id), getValues(id))
+        return ActivityExecutionAggregateEntity(execution, getPauses(id), getValues(id)).also(::requireValidAggregate)
     }
 
     @Transaction
@@ -207,11 +209,31 @@ internal abstract class ActivityExecutionDao {
 
     private fun requireValidAggregate(aggregate: ActivityExecutionAggregateEntity) {
         val execution = aggregate.execution
-        aggregate.pauses.forEach { pause ->
-            require(pause.activityExecutionId == execution.id) {
-                "Execution pause must belong to the inserted execution"
+        when (execution.contextType) {
+            "STANDALONE" ->
+                require(execution.sequenceExecutionId == null && execution.sequenceOccurrenceId == null) {
+                    "Standalone execution cannot reference Sequence ownership"
+                }
+            "SEQUENCE_CHILD" -> {
+                val sequenceExecutionId =
+                    requireNotNull(execution.sequenceExecutionId) { "Sequence child requires its parent execution" }
+                val occurrenceId =
+                    requireNotNull(execution.sequenceOccurrenceId) { "Sequence child requires its occurrence" }
+                require(execution.completionReason == null) {
+                    "Normal Sequence child completion reason belongs to the occurrence"
+                }
+                val occurrence =
+                    requireNotNull(
+                        getSequenceOccurrenceLink(occurrenceId),
+                    ) { "Unknown Sequence occurrence: $occurrenceId" }
+                require(
+                    occurrence.sequenceExecutionId == sequenceExecutionId &&
+                        occurrence.activitySnapshotId == execution.snapshotId,
+                ) { "Sequence child must match its occurrence parent and Activity snapshot" }
             }
+            else -> throw IllegalArgumentException("Unknown execution context: ${execution.contextType}")
         }
+        requireValidOwnedRows(aggregate)
         val mode =
             requireNotNull(getSnapshotTimeTrackingMode(execution.snapshotId)) {
                 "Unknown snapshot: ${execution.snapshotId}"
@@ -227,6 +249,20 @@ internal abstract class ActivityExecutionDao {
                         aggregate.pauses.isEmpty(),
                 ) { "NO_LIVE_TRACKING requires an immediate completed execution without duration or pauses" }
             else -> throw IllegalArgumentException("Unknown snapshot time tracking mode: $mode")
+        }
+    }
+
+    private fun requireValidOwnedRows(aggregate: ActivityExecutionAggregateEntity) {
+        aggregate.pauses.forEach { pause ->
+            require(pause.activityExecutionId == aggregate.execution.id) {
+                "Execution pause must belong to the inserted execution"
+            }
+        }
+        aggregate.values.forEach { value ->
+            require(value.activityExecutionId == aggregate.execution.id) {
+                "Execution value must belong to the inserted execution"
+            }
+            requireValidValue(aggregate.execution.snapshotId, value)
         }
     }
 

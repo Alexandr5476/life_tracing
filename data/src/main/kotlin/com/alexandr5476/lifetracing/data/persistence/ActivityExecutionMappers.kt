@@ -14,6 +14,8 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import java.time.Duration
@@ -23,17 +25,14 @@ import java.time.ZoneId
 
 internal fun ActivityExecution.toEntityAggregate(): ActivityExecutionAggregateEntity {
     ActivityExecutionValidator.requireValidState(this)
-    require(context == ActivityExecutionContext.STANDALONE) {
-        "Sequence ownership is staged in schema v4 but is not a domain behavior yet"
-    }
     return ActivityExecutionAggregateEntity(
         execution =
             ActivityExecutionEntity(
                 id = id.value,
                 snapshotId = snapshotId.value,
                 contextType = context.name,
-                sequenceExecutionId = null,
-                sequenceOccurrenceId = null,
+                sequenceExecutionId = sequenceExecutionId?.value,
+                sequenceOccurrenceId = sequenceOccurrenceId?.value,
                 planEntryId = null,
                 statisticsSeriesId = statisticsSeriesId?.value,
                 status = status.name,
@@ -78,6 +77,8 @@ internal fun ActivityExecutionAggregateEntity.toDomain(): ActivityExecution =
         deletedAt = execution.deletedAtMs?.let(Instant::ofEpochMilli),
         createdAt = Instant.ofEpochMilli(execution.createdAtMs),
         updatedAt = Instant.ofEpochMilli(execution.updatedAtMs),
+        sequenceExecutionId = execution.sequenceExecutionId?.let(::SequenceExecutionId),
+        sequenceOccurrenceId = execution.sequenceOccurrenceId?.let(::SequenceOccurrenceId),
         pauses =
             pauses.map { pause ->
                 ActivityExecutionPause(

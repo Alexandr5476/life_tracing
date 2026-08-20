@@ -40,8 +40,17 @@ object ActivityExecutionValidator {
         snapshot: ActivityConfigSnapshot,
     ) {
         require(execution.snapshotId == snapshot.id) { "Execution must reference the supplied snapshot" }
-        require(execution.context == ActivityExecutionContext.STANDALONE) {
-            "Sequence execution behavior is not implemented yet"
+        when (execution.context) {
+            ActivityExecutionContext.STANDALONE ->
+                require(execution.sequenceExecutionId == null && execution.sequenceOccurrenceId == null) {
+                    "Standalone execution cannot reference Sequence ownership"
+                }
+            ActivityExecutionContext.SEQUENCE_CHILD ->
+                require(
+                    execution.sequenceExecutionId != null &&
+                        execution.sequenceOccurrenceId != null &&
+                        execution.completionReason == null,
+                ) { "Sequence child requires both parent links and no Activity completion reason" }
         }
         require(execution.updatedAt.toEpochMilli() >= execution.createdAt.toEpochMilli()) {
             "Updated time must not precede creation"
@@ -242,6 +251,62 @@ class ActivityExecutionFactory(
             ).validatedAgainst(snapshot)
     }
 
+    @Suppress("LongParameterList") // Child creation needs both parent links plus the normal execution timestamps.
+    fun startSequenceChildTimed(
+        snapshot: ActivityConfigSnapshot,
+        sequenceExecutionId: SequenceExecutionId,
+        occurrenceId: SequenceOccurrenceId,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+    ): ActivityExecution {
+        require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+            "NO_LIVE_TRACKING child cannot start a timed execution"
+        }
+        val persistedStart = startedAt.toPersistenceInstant()
+        val persistedCreation = createdAt.toPersistenceInstant()
+        require(persistedStart <= persistedCreation) { "Start must not be in the future" }
+        return base(
+            snapshot,
+            persistedStart,
+            persistedCreation,
+            zoneId,
+            ActivityExecutionContext.SEQUENCE_CHILD,
+            sequenceExecutionId,
+            occurrenceId,
+        ).copy(
+            status = ActivityExecutionStatus.RUNNING,
+            startedAt = persistedStart,
+            primaryLocalDate = persistedStart.atZone(zoneId).toLocalDate(),
+        ).validatedAgainst(snapshot)
+    }
+
+    fun completeSequenceChildNoLive(
+        snapshot: ActivityConfigSnapshot,
+        sequenceExecutionId: SequenceExecutionId,
+        occurrenceId: SequenceOccurrenceId,
+        at: Instant,
+        zoneId: ZoneId,
+    ): ActivityExecution {
+        require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+            "Immediate child completion requires NO_LIVE_TRACKING"
+        }
+        val persistedAt = at.toPersistenceInstant()
+        return base(
+            snapshot,
+            persistedAt,
+            persistedAt,
+            zoneId,
+            ActivityExecutionContext.SEQUENCE_CHILD,
+            sequenceExecutionId,
+            occurrenceId,
+        ).copy(
+            status = ActivityExecutionStatus.COMPLETED,
+            completedAt = persistedAt,
+            primaryLocalDate = persistedAt.atZone(zoneId).toLocalDate(),
+        ).validatedAgainst(snapshot)
+    }
+
     fun createManualNoLiveHistory(
         snapshot: ActivityConfigSnapshot,
         completedAt: Instant,
@@ -263,11 +328,15 @@ class ActivityExecutionFactory(
             ).validatedAgainst(snapshot)
     }
 
+    @Suppress("LongParameterList") // Keeping the two optional parent links explicit avoids a second construction model.
     private fun base(
         snapshot: ActivityConfigSnapshot,
         eventAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        context: ActivityExecutionContext = ActivityExecutionContext.STANDALONE,
+        sequenceExecutionId: SequenceExecutionId? = null,
+        sequenceOccurrenceId: SequenceOccurrenceId? = null,
     ): ActivityExecution {
         ActivityConfigSnapshotValidator.requireValid(snapshot)
         val persistedEvent = eventAt.toPersistenceInstant()
@@ -275,8 +344,13 @@ class ActivityExecutionFactory(
         return ActivityExecution(
             id = nextExecutionId(),
             snapshotId = snapshot.id,
-            context = ActivityExecutionContext.STANDALONE,
-            statisticsSeriesId = snapshot.statisticsSeriesId ?: ActivityExecutionStatistics.ONE_OFF_BUCKET_ID,
+            context = context,
+            statisticsSeriesId =
+                if (context == ActivityExecutionContext.SEQUENCE_CHILD) {
+                    snapshot.statisticsSeriesId
+                } else {
+                    snapshot.statisticsSeriesId ?: ActivityExecutionStatistics.ONE_OFF_BUCKET_ID
+                },
             status = ActivityExecutionStatus.RUNNING,
             startedAt = null,
             completedAt = null,
@@ -288,6 +362,8 @@ class ActivityExecutionFactory(
             deletedAt = null,
             createdAt = persistedCreation,
             updatedAt = persistedCreation,
+            sequenceExecutionId = sequenceExecutionId,
+            sequenceOccurrenceId = sequenceOccurrenceId,
             values = snapshot.materializedDefaults(),
         )
     }
