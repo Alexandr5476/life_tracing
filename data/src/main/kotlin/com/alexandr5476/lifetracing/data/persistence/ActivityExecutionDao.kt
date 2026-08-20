@@ -9,6 +9,7 @@ import androidx.room.Upsert
 import com.alexandr5476.lifetracing.domain.ActivityExecutionDurationCalculator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import java.time.Instant
 
 internal data class ActivityExecutionAggregateEntity(
@@ -20,6 +21,12 @@ internal data class ActivityExecutionAggregateEntity(
 internal data class SequenceOccurrenceLinkRow(
     @androidx.room.ColumnInfo(name = "sequence_execution_id") val sequenceExecutionId: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String,
+)
+
+internal data class ActivitySnapshotExecutionMetadataRow(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
+    @androidx.room.ColumnInfo(name = "statistics_series_id") val statisticsSeriesId: String?,
 )
 
 @Dao
@@ -58,8 +65,8 @@ internal abstract class ActivityExecutionDao {
         categoryOptionId: String,
     ): Boolean
 
-    @Query("SELECT time_tracking_mode FROM activity_snapshots WHERE id = :snapshotId")
-    protected abstract fun getSnapshotTimeTrackingMode(snapshotId: String): String?
+    @Query("SELECT id, time_tracking_mode, statistics_series_id FROM activity_snapshots WHERE id = :snapshotId")
+    protected abstract fun getSnapshotExecutionMetadata(snapshotId: String): ActivitySnapshotExecutionMetadataRow?
 
     @Query("SELECT sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
     protected abstract fun getSequenceOccurrenceLink(id: String): SequenceOccurrenceLinkRow?
@@ -108,19 +115,19 @@ internal abstract class ActivityExecutionDao {
     ): Int
 
     @Query("UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs WHERE id = :id")
-    abstract fun softDelete(
+    protected abstract fun softDeleteUnchecked(
         id: String,
         deletedAtMs: Long,
     ): Int
 
     @Query("UPDATE activity_executions SET deleted_at_ms = NULL, updated_at_ms = :restoredAtMs WHERE id = :id")
-    abstract fun restore(
+    protected abstract fun restoreUnchecked(
         id: String,
         restoredAtMs: Long,
     ): Int
 
     @Query("DELETE FROM activity_executions WHERE id = :id")
-    abstract fun hardDelete(id: String): Int
+    protected abstract fun hardDeleteUnchecked(id: String): Int
 
     @Transaction
     open fun insertAggregate(aggregate: ActivityExecutionAggregateEntity) {
@@ -147,12 +154,37 @@ internal abstract class ActivityExecutionDao {
     }
 
     @Transaction
+    open fun softDelete(
+        id: String,
+        deletedAtMs: Long,
+    ): Int {
+        requireStandaloneMutation(id) ?: return 0
+        return softDeleteUnchecked(id, deletedAtMs)
+    }
+
+    @Transaction
+    open fun restore(
+        id: String,
+        restoredAtMs: Long,
+    ): Int {
+        requireStandaloneMutation(id) ?: return 0
+        return restoreUnchecked(id, restoredAtMs)
+    }
+
+    @Transaction
+    open fun hardDelete(id: String): Int {
+        requireStandaloneMutation(id) ?: return 0
+        return hardDeleteUnchecked(id)
+    }
+
+    @Transaction
     open fun pause(
         id: String,
         pauseId: String,
         atMs: Long,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireStandaloneMutation(execution)
         requireTimedSnapshot(execution.snapshotId)
         require(execution.status == "RUNNING" && execution.startedAtMs != null) { "Only a running execution can pause" }
         require(atMs >= execution.startedAtMs && atMs >= execution.updatedAtMs) { "Pause time is out of order" }
@@ -167,6 +199,7 @@ internal abstract class ActivityExecutionDao {
         atMs: Long,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireStandaloneMutation(execution)
         requireTimedSnapshot(execution.snapshotId)
         require(execution.status == "PAUSED" && atMs >= execution.updatedAtMs) {
             "Only a paused execution can resume in order"
@@ -183,6 +216,7 @@ internal abstract class ActivityExecutionDao {
         atMs: Long,
     ) {
         val execution = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        requireStandaloneMutation(execution)
         requireTimedSnapshot(execution.snapshotId)
         val startedAtMs = requireNotNull(execution.startedAtMs) { "Timed completion requires a start" }
         require(execution.status == "RUNNING" || execution.status == "PAUSED") { "Execution is not active" }
@@ -234,11 +268,12 @@ internal abstract class ActivityExecutionDao {
             else -> throw IllegalArgumentException("Unknown execution context: ${execution.contextType}")
         }
         requireValidOwnedRows(aggregate)
-        val mode =
-            requireNotNull(getSnapshotTimeTrackingMode(execution.snapshotId)) {
+        val snapshot =
+            requireNotNull(getSnapshotExecutionMetadata(execution.snapshotId)) {
                 "Unknown snapshot: ${execution.snapshotId}"
             }
-        when (mode) {
+        requireValidStatisticsSeries(execution, snapshot)
+        when (snapshot.timeTrackingMode) {
             "STOPWATCH", "TIMER" -> requireValidTimedAggregate(execution, aggregate.pauses)
             "NO_LIVE_TRACKING" ->
                 require(
@@ -248,7 +283,22 @@ internal abstract class ActivityExecutionDao {
                         execution.activeDurationMs == null &&
                         aggregate.pauses.isEmpty(),
                 ) { "NO_LIVE_TRACKING requires an immediate completed execution without duration or pauses" }
-            else -> throw IllegalArgumentException("Unknown snapshot time tracking mode: $mode")
+            else -> throw IllegalArgumentException("Unknown snapshot time tracking mode: ${snapshot.timeTrackingMode}")
+        }
+    }
+
+    private fun requireValidStatisticsSeries(
+        execution: ActivityExecutionEntity,
+        snapshot: ActivitySnapshotExecutionMetadataRow,
+    ) {
+        val expectedStatisticsSeriesId =
+            if (execution.contextType == "SEQUENCE_CHILD") {
+                snapshot.statisticsSeriesId
+            } else {
+                snapshot.statisticsSeriesId ?: ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value
+            }
+        require(execution.statisticsSeriesId == expectedStatisticsSeriesId) {
+            "Execution StatisticsSeries must match its snapshot and context"
         }
     }
 
@@ -309,9 +359,18 @@ internal abstract class ActivityExecutionDao {
     }
 
     private fun requireTimedSnapshot(snapshotId: String) {
-        val mode = getSnapshotTimeTrackingMode(snapshotId)
+        val mode = getSnapshotExecutionMetadata(snapshotId)?.timeTrackingMode
         require(mode == "STOPWATCH" || mode == "TIMER") {
             "Live transitions require a timed snapshot"
+        }
+    }
+
+    private fun requireStandaloneMutation(id: String): ActivityExecutionEntity? =
+        getById(id)?.also(::requireStandaloneMutation)
+
+    private fun requireStandaloneMutation(execution: ActivityExecutionEntity) {
+        require(execution.contextType == "STANDALONE") {
+            "Sequence child mutations require a coordinated Sequence transaction"
         }
     }
 

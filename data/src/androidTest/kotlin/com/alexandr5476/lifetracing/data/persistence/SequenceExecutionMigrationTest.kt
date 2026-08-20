@@ -6,6 +6,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -36,6 +37,7 @@ class SequenceExecutionMigrationTest {
         }
 
         helper.runMigrationsAndValidate(names[0], 7, true, MIGRATION_6_7).use { migrated ->
+            migrated.execSQL("PRAGMA foreign_keys = ON")
             REPRESENTATIVE_ROWS.forEach { (table, where) ->
                 assertEquals("v6 row lost from $table", 1, migrated.rowCount(table, where))
             }
@@ -50,23 +52,40 @@ class SequenceExecutionMigrationTest {
                         "WHERE activity_execution_id = 'activity-execution'",
                 ),
             )
-            migrated.insertV7Aggregate()
-            migrated
-                .query(
-                    "SELECT roots.active_duration_ms, occurrences.repeat_iteration, intervals.kind, " +
-                        "values.number_scaled " +
-                        "FROM sequence_executions AS roots " +
-                        "JOIN sequence_occurrences AS occurrences ON occurrences.sequence_execution_id = roots.id " +
-                        "JOIN sequence_intervals AS intervals ON intervals.sequence_execution_id = roots.id " +
-                        "JOIN sequence_execution_field_values AS values ON values.sequence_execution_id = roots.id " +
-                        "WHERE roots.id = 'sequence-execution'",
-                ).use { cursor ->
-                    assertTrue(cursor.moveToFirst())
-                    assertEquals(60L, cursor.getLong(0))
-                    assertEquals(1, cursor.getInt(1))
-                    assertEquals("ACTIVE_STEP", cursor.getString(2))
-                    assertEquals(0L, cursor.getLong(3))
-                }
+            assertEquals(
+                "STANDALONE",
+                migrated.stringValue("SELECT context_type FROM activity_executions WHERE id = 'activity-execution'"),
+            )
+            assertEquals(
+                "activity-series",
+                migrated.stringValue(
+                    "SELECT statistics_series_id FROM activity_executions WHERE id = 'activity-execution'",
+                ),
+            )
+            assertEquals(
+                1,
+                migrated.rowCount(
+                    "activity_executions",
+                    "id = 'activity-execution' AND sequence_execution_id IS NULL AND sequence_occurrence_id IS NULL",
+                ),
+            )
+        }
+
+        val database = LifeTracingDatabase.builder(context, names[0]).allowMainThreadQueries().build()
+        try {
+            val dao = database.sequenceExecutionDao()
+            dao.insertAggregate(validV7Aggregate())
+
+            val loaded = requireNotNull(dao.getAggregate("sequence-execution"))
+            val domain = loaded.toDomain()
+            assertEquals(listOf("occurrence", "repeat-occurrence"), loaded.occurrences.map { it.id })
+            assertEquals(1, domain.occurrences.last().repeatIteration)
+            assertEquals("sequence-snapshot-repeat", loaded.occurrences.last().repeatSourceSnapshotNodeId)
+            assertEquals(listOf("ACTIVE_STEP", "ACTIVE_STEP"), loaded.intervals.map { it.kind })
+            assertTrue(domain.values.single() is CategorySequenceExecutionValue)
+            assertEquals("sequence-snapshot-option", loaded.values.single().categoryOptionId)
+        } finally {
+            database.close()
         }
     }
 
@@ -105,6 +124,7 @@ class SequenceExecutionMigrationTest {
     }
 
     private fun SupportSQLiteDatabase.insertRepresentativeV6Rows() {
+        execSQL("PRAGMA foreign_keys = ON")
         execSQL("INSERT INTO folders VALUES ('folder', 'Folder', NULL, 0, 0)")
         execSQL("INSERT INTO tags VALUES ('tag', 'Tag', 0, 0)")
         execSQL("INSERT INTO statistics_series VALUES ('activity-series', 'ACTIVITY', 'Activity', 0, NULL)")
@@ -115,7 +135,7 @@ class SequenceExecutionMigrationTest {
         execSQL("INSERT INTO activity_template_settings (activity_template_id) VALUES ('activity-template')")
         execSQL("INSERT INTO activity_template_user_state VALUES ('activity-template', 1, 0)")
         execSQL(
-            "INSERT INTO activity_template_fields VALUES ('activity-field', 'activity-template', 0, 'Category', 'CATEGORY', NULL, NULL, NULL, 'activity-option', NULL, 0, 0, 0, NULL)",
+            "INSERT INTO activity_template_fields VALUES ('activity-field', 'activity-template', 0, 'Category', 'CATEGORY', NULL, NULL, NULL, 'activity-option-source', NULL, 0, 0, 0, NULL)",
         )
         execSQL(
             "INSERT INTO activity_template_category_options VALUES ('activity-option-source', 'activity-field', 0, 'Option', 0)",
@@ -124,7 +144,7 @@ class SequenceExecutionMigrationTest {
         execSQL(
             "INSERT INTO activity_snapshots VALUES ('activity-snapshot', 'Activity', NULL, 'STOPWATCH', NULL, 'activity-template', 1, 'activity-series', 0, 0)",
         )
-        execSQL("INSERT INTO activity_snapshot_settings (snapshot_id) VALUES ('activity-snapshot')")
+        execSQL("INSERT INTO activity_snapshot_settings VALUES ('activity-snapshot', 1, 0, 'FINISH', 1, 1, 0, 0)")
         execSQL(
             "INSERT INTO activity_snapshot_fields VALUES ('activity-snapshot-field', 'activity-snapshot', 'activity-field', 0, 'Category', NULL, 'CATEGORY', NULL, NULL, NULL, 'activity-option', NULL, 0)",
         )
@@ -144,7 +164,7 @@ class SequenceExecutionMigrationTest {
         execSQL("INSERT INTO sequence_template_settings (sequence_template_id) VALUES ('sequence-template')")
         execSQL("INSERT INTO sequence_template_user_state VALUES ('sequence-template', 1, 0)")
         execSQL(
-            "INSERT INTO sequence_template_fields VALUES ('sequence-field', 'sequence-template', 0, 'Number', 'NUMBER', NULL, 0, 0, NULL, NULL, 0, 0, 0, NULL)",
+            "INSERT INTO sequence_template_fields VALUES ('sequence-field', 'sequence-template', 0, 'Category', 'CATEGORY', NULL, NULL, NULL, 'sequence-option', NULL, 0, 0, 0, NULL)",
         )
         execSQL(
             "INSERT INTO sequence_template_category_options VALUES ('sequence-option', 'sequence-field', 0, 'Option', 0)",
@@ -161,7 +181,7 @@ class SequenceExecutionMigrationTest {
         )
         execSQL("INSERT INTO sequence_snapshot_settings VALUES ('sequence-snapshot', 1, 0, 0, 1, 1, 0, 1, 1, 'ACTIVE')")
         execSQL(
-            "INSERT INTO sequence_snapshot_fields VALUES ('sequence-snapshot-field', 'sequence-snapshot', 'sequence-field', 0, 'Number', NULL, 'NUMBER', NULL, 0, 0, NULL, NULL, 0)",
+            "INSERT INTO sequence_snapshot_fields VALUES ('sequence-snapshot-field', 'sequence-snapshot', 'sequence-field', 0, 'Category', NULL, 'CATEGORY', NULL, NULL, NULL, 'sequence-snapshot-option', NULL, 0)",
         )
         execSQL(
             "INSERT INTO sequence_snapshot_category_options VALUES ('sequence-snapshot-option', 'sequence-snapshot-field', 'sequence-option', 0, 'Option', NULL)",
@@ -170,30 +190,89 @@ class SequenceExecutionMigrationTest {
             "INSERT INTO sequence_snapshot_nodes VALUES ('sequence-snapshot-step', 'sequence-snapshot', 'STEP', NULL, 0, 'activity-snapshot', NULL)",
         )
         execSQL(
-            "INSERT INTO sequence_snapshot_step_overrides (sequence_snapshot_node_id, start_countdown_ms) VALUES ('sequence-snapshot-step', 0)",
-        )
-    }
-
-    private fun SupportSQLiteDatabase.insertV7Aggregate() {
-        execSQL(
             "INSERT INTO sequence_snapshot_nodes VALUES ('sequence-snapshot-repeat', 'sequence-snapshot', 'REPEAT', NULL, 1, NULL, 2)",
         )
         execSQL(
             "INSERT INTO sequence_snapshot_nodes VALUES ('sequence-snapshot-repeat-child', 'sequence-snapshot', 'STEP', 'sequence-snapshot-repeat', 0, 'activity-snapshot', NULL)",
         )
         execSQL(
-            "INSERT INTO sequence_executions VALUES ('sequence-execution', 'sequence-snapshot', NULL, 'sequence-series', 'COMPLETED', 0, 100, 60, 40, 100, 'UTC', 0, '1970-01-01', NULL, 0, 100)",
-        )
-        execSQL(
-            "INSERT INTO sequence_occurrences VALUES ('occurrence', 'sequence-execution', 'sequence-snapshot-repeat-child', 'activity-snapshot', 0, 'sequence-snapshot-repeat', 1, 'COMPLETED', 0, 60, 'MANUAL_FINISH', 0, 0)",
-        )
-        execSQL(
-            "INSERT INTO sequence_intervals VALUES ('interval', 'sequence-execution', 'ACTIVE_STEP', 0, 60, 'occurrence')",
-        )
-        execSQL(
-            "INSERT INTO sequence_execution_field_values VALUES ('sequence-execution', 'sequence-snapshot-field', 0, NULL, NULL)",
+            "INSERT INTO sequence_snapshot_step_overrides (sequence_snapshot_node_id, start_countdown_ms) VALUES ('sequence-snapshot-step', 0)",
         )
     }
+
+    private fun validV7Aggregate() =
+        SequenceExecutionAggregateEntity(
+            execution =
+                SequenceExecutionEntity(
+                    "sequence-execution",
+                    "sequence-snapshot",
+                    null,
+                    "sequence-series",
+                    "COMPLETED",
+                    0,
+                    100,
+                    60,
+                    40,
+                    100,
+                    "UTC",
+                    0,
+                    "1970-01-01",
+                    null,
+                    0,
+                    100,
+                ),
+            occurrences =
+                listOf(
+                    SequenceOccurrenceEntity(
+                        "occurrence",
+                        "sequence-execution",
+                        "sequence-snapshot-step",
+                        "activity-snapshot",
+                        0,
+                        null,
+                        null,
+                        "COMPLETED",
+                        0,
+                        30,
+                        "ADVANCED_TO_NEXT",
+                    ),
+                    SequenceOccurrenceEntity(
+                        "repeat-occurrence",
+                        "sequence-execution",
+                        "sequence-snapshot-repeat-child",
+                        "activity-snapshot",
+                        1,
+                        "sequence-snapshot-repeat",
+                        1,
+                        "COMPLETED",
+                        30,
+                        60,
+                        "MANUAL_FINISH",
+                    ),
+                ),
+            intervals =
+                listOf(
+                    SequenceIntervalEntity("interval-1", "sequence-execution", "ACTIVE_STEP", 0, 30, "occurrence"),
+                    SequenceIntervalEntity(
+                        "interval-2",
+                        "sequence-execution",
+                        "ACTIVE_STEP",
+                        30,
+                        60,
+                        "repeat-occurrence",
+                    ),
+                ),
+            values =
+                listOf(
+                    SequenceExecutionFieldValueEntity(
+                        "sequence-execution",
+                        "sequence-snapshot-field",
+                        null,
+                        "sequence-snapshot-option",
+                        null,
+                    ),
+                ),
+        )
 
     private fun SupportSQLiteDatabase.rowCount(
         table: String,

@@ -28,7 +28,15 @@ class ActivityExecutionDatabaseTest {
                 .allowMainThreadQueries()
                 .build()
         executions = database.activityExecutionDao()
-        database.statisticsSeriesDao().insert(StatisticsSeriesEntity("series", "ACTIVITY", "Series", 10, null))
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("series", "ACTIVITY", "Series", 10, null),
+        )
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("other-series", "ACTIVITY", "Other", 10, null),
+        )
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("sequence-series", "SEQUENCE", "Sequence", 10, null),
+        )
         database.activitySnapshotDao().insertAggregate(
             ActivitySnapshotAggregateEntity(
                 snapshot =
@@ -168,13 +176,15 @@ class ActivityExecutionDatabaseTest {
         }
         assertNull(executions.getById("failed"))
 
+        insertSequenceSnapshotFixture()
+        insertSequenceExecutionFixture("sequence", listOf("occurrence" to "snapshot"))
         insertRawExecution(
             completed(
                 "child-1",
                 context = "SEQUENCE_CHILD",
                 sequenceExecutionId = "sequence",
                 sequenceOccurrenceId = "occurrence",
-                seriesId = null,
+                seriesId = "series",
             ),
         )
         assertThrows(SQLiteConstraintException::class.java) {
@@ -184,7 +194,7 @@ class ActivityExecutionDatabaseTest {
                     context = "SEQUENCE_CHILD",
                     sequenceExecutionId = "sequence",
                     sequenceOccurrenceId = "occurrence",
-                    seriesId = null,
+                    seriesId = "series",
                 ),
             )
         }
@@ -307,6 +317,95 @@ class ActivityExecutionDatabaseTest {
     }
 
     @Test
+    fun aggregateInsertAndReadEnforceContextSensitiveStatisticsSeriesIdentity() {
+        insertSnapshot("one-off", "STOPWATCH", null)
+        insertSequenceSnapshotFixture()
+        val childOccurrences =
+            listOf(
+                "valid-reusable-child" to "snapshot",
+                "valid-one-off-child" to "one-off",
+                "wrong-reusable-child" to "snapshot",
+                "null-reusable-child" to "snapshot",
+                "bucket-one-off-child" to "one-off",
+                "wrong-one-off-child" to "one-off",
+            )
+        insertSequenceExecutionFixture("statistics-sequence", childOccurrences)
+
+        listOf(
+            completed("valid-standalone-reusable"),
+            completed(
+                "valid-standalone-one-off",
+                snapshotId = "one-off",
+                seriesId = ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
+            ),
+            completed(
+                "valid-reusable-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "valid-reusable-child",
+            ),
+            completed(
+                "valid-one-off-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "valid-one-off-child",
+                snapshotId = "one-off",
+                seriesId = null,
+            ),
+        ).forEach { execution ->
+            executions.insertAggregate(ActivityExecutionAggregateEntity(execution))
+            assertEquals(
+                execution.statisticsSeriesId,
+                executions.getAggregate(execution.id)?.execution?.statisticsSeriesId,
+            )
+        }
+
+        listOf(
+            completed("wrong-standalone-reusable", seriesId = "other-series"),
+            completed("null-standalone-reusable", seriesId = null),
+            completed("null-standalone-one-off", snapshotId = "one-off", seriesId = null),
+            completed(
+                "wrong-reusable-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "wrong-reusable-child",
+                seriesId = "other-series",
+            ),
+            completed(
+                "null-reusable-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "null-reusable-child",
+                seriesId = null,
+            ),
+            completed(
+                "bucket-one-off-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "bucket-one-off-child",
+                snapshotId = "one-off",
+                seriesId = ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
+            ),
+            completed(
+                "wrong-one-off-child-execution",
+                context = "SEQUENCE_CHILD",
+                sequenceExecutionId = "statistics-sequence",
+                sequenceOccurrenceId = "wrong-one-off-child",
+                snapshotId = "one-off",
+                seriesId = "other-series",
+            ),
+        ).forEach { execution ->
+            assertThrows(IllegalArgumentException::class.java) {
+                executions.insertAggregate(ActivityExecutionAggregateEntity(execution))
+            }
+            assertNull(executions.getById(execution.id))
+        }
+
+        insertRawExecution(completed("raw-wrong-series", seriesId = "other-series"))
+        assertThrows(IllegalArgumentException::class.java) { executions.getAggregate("raw-wrong-series") }
+    }
+
+    @Test
     fun malformedPauseOwnershipRollsBackWithoutTouchingExistingExecution() {
         insertSnapshot("pause-owner-snapshot", "STOPWATCH")
         executions.insertAggregate(
@@ -397,6 +496,91 @@ class ActivityExecutionDatabaseTest {
         }
         assertEquals("RUNNING", executions.getById("corrupt-running")?.status)
         assertTrue(executions.getPauses("corrupt-running").isEmpty())
+    }
+
+    @Test
+    fun standalonePauseResumeAndCompleteRejectSequenceChildrenAtomically() {
+        insertSequenceSnapshotFixture()
+        listOf("pause", "resume", "complete").forEach { operation ->
+            insertSequenceExecutionFixture(
+                "$operation-sequence",
+                listOf("$operation-occurrence" to "snapshot"),
+                currentOccurrenceId = "$operation-occurrence",
+            )
+        }
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(
+                running("pause-child").asChild("pause-sequence", "pause-occurrence"),
+            ),
+        )
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(
+                running("resume-child")
+                    .asChild("resume-sequence", "resume-occurrence")
+                    .copy(status = "PAUSED", updatedAtMs = 20),
+                pauses = listOf(ActivityExecutionPauseEntity("resume-pause", "resume-child", 20, null)),
+            ),
+        )
+        executions.insertAggregate(
+            ActivityExecutionAggregateEntity(
+                running("complete-child").asChild("complete-sequence", "complete-occurrence"),
+            ),
+        )
+        val childBefore =
+            listOf("pause-child", "resume-child", "complete-child").associateWith {
+                requireNotNull(executions.getAggregate(it))
+            }
+        val parentBefore =
+            listOf("pause-sequence", "resume-sequence", "complete-sequence").associateWith {
+                requireNotNull(database.sequenceExecutionDao().getAggregate(it))
+            }
+
+        assertThrows(IllegalArgumentException::class.java) { executions.pause("pause-child", "blocked-pause", 20) }
+        assertThrows(IllegalArgumentException::class.java) { executions.resume("resume-child", 30) }
+        assertThrows(IllegalArgumentException::class.java) { executions.complete("complete-child", 100) }
+
+        childBefore.forEach { (id, aggregate) -> assertEquals(aggregate, executions.getAggregate(id)) }
+        parentBefore.forEach { (id, aggregate) ->
+            assertEquals(aggregate, database.sequenceExecutionDao().getAggregate(id))
+        }
+    }
+
+    @Test
+    fun standaloneDeletionAndRestoreRejectSequenceChildrenWhileValueEditsRemainSupported() {
+        insertSequenceSnapshotFixture()
+        insertSequenceExecutionFixture(
+            "delete-sequence",
+            listOf(
+                "soft-occurrence" to "snapshot",
+                "hard-occurrence" to "snapshot",
+                "restore-occurrence" to "snapshot",
+            ),
+        )
+        val softChild = completed("soft-child").asChild("delete-sequence", "soft-occurrence")
+        val hardChild = completed("hard-child").asChild("delete-sequence", "hard-occurrence")
+        val restoreChild =
+            completed("restore-child")
+                .asChild("delete-sequence", "restore-occurrence")
+                .copy(deletedAtMs = 110, updatedAtMs = 110)
+        listOf(softChild, hardChild, restoreChild).forEach {
+            executions.insertAggregate(ActivityExecutionAggregateEntity(it))
+        }
+        val childrenBefore =
+            listOf("soft-child", "hard-child", "restore-child").associateWith {
+                requireNotNull(executions.getAggregate(it))
+            }
+        val parentBefore = requireNotNull(database.sequenceExecutionDao().getAggregate("delete-sequence"))
+
+        assertThrows(IllegalArgumentException::class.java) { executions.softDelete("soft-child", 120) }
+        assertThrows(IllegalArgumentException::class.java) { executions.hardDelete("hard-child") }
+        assertThrows(IllegalArgumentException::class.java) { executions.restore("restore-child", 120) }
+
+        childrenBefore.forEach { (id, aggregate) -> assertEquals(aggregate, executions.getAggregate(id)) }
+        assertEquals(parentBefore, database.sequenceExecutionDao().getAggregate("delete-sequence"))
+
+        executions.upsertValue(ActivityExecutionFieldValueEntity("soft-child", "number", 7, null, null))
+        assertEquals(7L, executions.getValues("soft-child").single().numberScaled)
+        assertEquals(parentBefore, database.sequenceExecutionDao().getAggregate("delete-sequence"))
     }
 
     @Test
@@ -523,14 +707,119 @@ class ActivityExecutionDatabaseTest {
     private fun insertSnapshot(
         id: String,
         mode: String,
+        seriesId: String? = "series",
     ) {
         database.activitySnapshotDao().insertAggregate(
             ActivitySnapshotAggregateEntity(
-                snapshot = ActivitySnapshotEntity(id, id, null, mode, null, null, null, "series", false, 10),
+                snapshot = ActivitySnapshotEntity(id, id, null, mode, null, null, null, seriesId, false, 10),
                 settings = ActivitySnapshotSettingsEntity(id),
             ),
         )
     }
+
+    private fun insertSequenceSnapshotFixture() {
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                snapshot =
+                    SequenceSnapshotEntity(
+                        "activity-test-sequence-snapshot",
+                        "Sequence",
+                        null,
+                        null,
+                        null,
+                        "sequence-series",
+                        10,
+                    ),
+                settings =
+                    SequenceSnapshotSettingsEntity(
+                        "activity-test-sequence-snapshot",
+                        true,
+                        0,
+                        0,
+                        true,
+                        true,
+                        false,
+                        true,
+                        true,
+                        "ACTIVE",
+                    ),
+                nodes =
+                    listOf(
+                        SequenceSnapshotNodeEntity(
+                            "activity-test-sequence-step",
+                            "activity-test-sequence-snapshot",
+                            "STEP",
+                            null,
+                            0,
+                            "snapshot",
+                            null,
+                        ),
+                    ),
+            ),
+        )
+    }
+
+    private fun insertSequenceExecutionFixture(
+        id: String,
+        occurrences: List<Pair<String, String>>,
+        currentOccurrenceId: String? = null,
+    ) {
+        database.sequenceExecutionDao().insertAggregate(
+            SequenceExecutionAggregateEntity(
+                execution =
+                    SequenceExecutionEntity(
+                        id,
+                        "activity-test-sequence-snapshot",
+                        null,
+                        "sequence-series",
+                        "RUNNING",
+                        10,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "UTC",
+                        0,
+                        "1970-01-01",
+                        currentOccurrenceId,
+                        10,
+                        10,
+                    ),
+                occurrences =
+                    occurrences.mapIndexed { position, (occurrenceId, snapshotId) ->
+                        val current = occurrenceId == currentOccurrenceId
+                        SequenceOccurrenceEntity(
+                            occurrenceId,
+                            id,
+                            null,
+                            snapshotId,
+                            position,
+                            null,
+                            null,
+                            if (current) "CURRENT" else "COMPLETED",
+                            10,
+                            if (current) null else 100,
+                            if (current) null else "MANUAL_FINISH",
+                            true,
+                            false,
+                        )
+                    },
+                intervals =
+                    currentOccurrenceId?.let {
+                        listOf(SequenceIntervalEntity("$id-active", id, "ACTIVE_STEP", 10, null, it))
+                    } ?: emptyList(),
+            ),
+        )
+    }
+
+    private fun ActivityExecutionEntity.asChild(
+        sequenceExecutionId: String,
+        sequenceOccurrenceId: String,
+    ) = copy(
+        contextType = "SEQUENCE_CHILD",
+        sequenceExecutionId = sequenceExecutionId,
+        sequenceOccurrenceId = sequenceOccurrenceId,
+    )
 
     private fun ownershipField(
         id: String,

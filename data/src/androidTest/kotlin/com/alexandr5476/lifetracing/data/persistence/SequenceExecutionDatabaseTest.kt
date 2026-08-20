@@ -280,13 +280,13 @@ class SequenceExecutionDatabaseTest {
                 runningRoot(),
                 occurrences =
                     listOf(
-                        occurrence("child-occurrence", 0, "CURRENT", 0),
-                        occurrence("one-off-occurrence", 1).copy(
+                        occurrence("child-occurrence", 0, "COMPLETED", 0, 10, "MANUAL_FINISH"),
+                        occurrence("one-off-occurrence", 1, "COMPLETED", 0, 10, "MANUAL_FINISH").copy(
                             sourceSequenceSnapshotNodeId = null,
                             activitySnapshotId = "one-off",
                             isRuntimeAdded = true,
                         ),
-                        occurrence("no-live-occurrence", 2).copy(
+                        occurrence("no-live-occurrence", 2, "COMPLETED", 0, 10, "MANUAL_FINISH").copy(
                             sourceSequenceSnapshotNodeId = null,
                             activitySnapshotId = "no-live",
                             isRuntimeAdded = true,

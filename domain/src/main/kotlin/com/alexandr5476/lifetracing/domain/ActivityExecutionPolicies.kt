@@ -52,6 +52,15 @@ object ActivityExecutionValidator {
                         execution.completionReason == null,
                 ) { "Sequence child requires both parent links and no Activity completion reason" }
         }
+        val expectedStatisticsSeriesId =
+            when (execution.context) {
+                ActivityExecutionContext.STANDALONE ->
+                    snapshot.statisticsSeriesId ?: ActivityExecutionStatistics.ONE_OFF_BUCKET_ID
+                ActivityExecutionContext.SEQUENCE_CHILD -> snapshot.statisticsSeriesId
+            }
+        require(execution.statisticsSeriesId == expectedStatisticsSeriesId) {
+            "Execution StatisticsSeries must match its snapshot and context"
+        }
         require(execution.updatedAt.toEpochMilli() >= execution.createdAt.toEpochMilli()) {
             "Updated time must not precede creation"
         }
