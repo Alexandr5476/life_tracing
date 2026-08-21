@@ -43,10 +43,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SequenceIntervalEntity::class,
         SequenceExecutionFieldValueEntity::class,
         ActiveSessionEntity::class,
+        PlanEntryEntity::class,
     ],
-    version = ACTIVE_SESSION_SCHEMA_VERSION,
+    version = PLAN_ENTRY_SCHEMA_VERSION,
     exportSchema = true,
 )
+@Suppress("TooManyFunctions")
 internal abstract class LifeTracingDatabase : RoomDatabase() {
     abstract fun folderDao(): FolderDao
 
@@ -68,6 +70,8 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
 
     abstract fun activeSessionDao(): ActiveSessionDao
 
+    abstract fun planEntryDao(): PlanEntryDao
+
     companion object {
         fun inMemoryBuilder(context: Context): Builder<LifeTracingDatabase> =
             Room
@@ -81,6 +85,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
                 )
 
         fun builder(
@@ -98,11 +103,13 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
                 )
 
         private val FRESH_SCHEMA_CALLBACK =
             object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
+                    PlanEntrySchemaV9.dropPlan(db)
                     ActiveSessionSchemaV8.drop(db)
                     SequenceExecutionSchemaV7.drop(db)
                     SequenceSnapshotSchemaV6.drop(db)
@@ -116,6 +123,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     SequenceSnapshotSchemaV6.create(db)
                     SequenceExecutionSchemaV7.create(db)
                     ActiveSessionSchemaV8.create(db)
+                    PlanEntrySchemaV9.migrate(db)
                 }
             }
     }

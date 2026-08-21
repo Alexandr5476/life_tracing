@@ -2,6 +2,16 @@
 
 Read this addendum together with the frozen product v0.16, domain v0.10, and database v0.6 specifications. The historical versioned documents remain unchanged.
 
+## Live Plan engagement and fulfillment
+
+Stored Plan status remains only `PLANNED`, `FULFILLED`, or `CANCELLED`; v1 does not persist `IN_PROGRESS`.
+
+A `PLANNED` Activity Plan is derived in progress while a linked top-level standalone `ActivityExecution` is `RUNNING` or `PAUSED`. A `PLANNED` Sequence Plan is derived in progress while its linked root `SequenceExecution` is `RUNNING` or `PAUSED`. This is a persistence/domain invariant derived from indexed `plan_entry_id` linkage, not process or UI state.
+
+While engaged, the Plan cannot be cancelled, rescheduled, updated from its Template, or started again. It remains stored `PLANNED` until actual completion. Execution completion and `PLANNED -> FULFILLED` commit atomically using the Execution's logical completion timestamp. No-live quick completion creates its completed Execution and fulfills the Plan in one transaction without an intermediate live interval.
+
+This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. Whether a future `SequenceExecution.status = ENDED_EARLY` fulfills a linked Plan remains deferred until early-end runtime is implemented.
+
 ## ActivitySnapshot StatisticsSeries foreign key
 
 When non-null, `activity_snapshots.statistics_series_id` references `statistics_series.id` with `ON DELETE RESTRICT`. The column remains nullable for true one-off Sequence child snapshots without a per-Activity Statistics Series.

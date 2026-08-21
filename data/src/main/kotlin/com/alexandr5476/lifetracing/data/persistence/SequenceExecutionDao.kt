@@ -70,6 +70,9 @@ internal abstract class SequenceExecutionDao {
     @Query("SELECT id, time_tracking_mode FROM activity_snapshots WHERE id IN (:ids)")
     protected abstract fun activitySnapshotModes(ids: List<String>): List<ActivitySnapshotModeRow>
 
+    @Query("SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id FROM plan_entries WHERE id = :id")
+    protected abstract fun getPlanLink(id: String): ExecutionPlanLinkRow?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertExecutionUnchecked(execution: SequenceExecutionEntity)
 
@@ -253,6 +256,12 @@ internal abstract class SequenceExecutionDao {
         require(aggregate.intervals.all { it.sequenceExecutionId == id }) { "Interval owner mismatch" }
         require(aggregate.values.all { it.sequenceExecutionId == id }) { "Sequence value owner mismatch" }
         val snapshotId = aggregate.execution.snapshotId
+        aggregate.execution.planEntryId?.let { planId ->
+            val plan = requireNotNull(getPlanLink(planId)) { "Unknown Plan: $planId" }
+            require(plan.trackableKind == "SEQUENCE" && plan.sequencePlanSnapshotId == snapshotId) {
+                "SequenceExecution Plan linkage must match kind and snapshot"
+            }
+        }
         val snapshotAggregate =
             SequenceSnapshotAggregateEntity(
                 requireNotNull(getSnapshot(snapshotId)) { "Unknown Sequence snapshot: $snapshotId" },

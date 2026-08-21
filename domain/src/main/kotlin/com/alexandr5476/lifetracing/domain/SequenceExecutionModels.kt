@@ -112,6 +112,7 @@ data class SequenceExecution(
     val occurrences: List<RuntimeOccurrence> = emptyList(),
     val intervals: List<SequenceInterval> = emptyList(),
     val values: List<SequenceExecutionFieldValue> = emptyList(),
+    val planEntryId: PlanEntryId? = null,
 )
 
 data class SequenceTimelineDurations(

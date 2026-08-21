@@ -92,6 +92,12 @@ internal abstract class SequenceSnapshotDao {
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE snapshot_id = :snapshotId LIMIT 1)")
     abstract fun hasSequenceExecutionReference(snapshotId: String): Boolean
 
+    @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE sequence_plan_snapshot_id = :snapshotId LIMIT 1)")
+    abstract fun hasPlanReference(snapshotId: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
+    protected abstract fun hasActivityPlanReference(snapshotId: String): Boolean
+
     @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
 
@@ -131,6 +137,7 @@ internal abstract class SequenceSnapshotDao {
         require(!hasSequenceExecutionReference(snapshotId)) {
             "Sequence snapshot is retained by a SequenceExecution"
         }
+        require(!hasPlanReference(snapshotId)) { "Sequence snapshot is retained by a Plan" }
         val children = stepActivitySnapshotIds(snapshotId)
         if (deleteSnapshotUnchecked(snapshotId) == 0) return
         children.forEach { child ->
@@ -138,6 +145,7 @@ internal abstract class SequenceSnapshotDao {
             if (hasFrozenStepReference(child)) return@forEach
             if (hasExecutionReference(child)) return@forEach
             if (hasOccurrenceReference(child)) return@forEach
+            if (hasActivityPlanReference(child)) return@forEach
             check(deleteActivitySnapshotUnchecked(child) == 1)
         }
     }

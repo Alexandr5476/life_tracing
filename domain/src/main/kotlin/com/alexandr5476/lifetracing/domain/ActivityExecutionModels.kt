@@ -73,6 +73,7 @@ data class ActivityExecution(
     val updatedAt: Instant,
     val sequenceExecutionId: SequenceExecutionId? = null,
     val sequenceOccurrenceId: SequenceOccurrenceId? = null,
+    val planEntryId: PlanEntryId? = null,
     val pauses: List<ActivityExecutionPause> = emptyList(),
     val values: List<ActivityExecutionFieldValue> = emptyList(),
 )

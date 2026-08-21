@@ -20,12 +20,17 @@ import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
+import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
+import com.alexandr5476.lifetracing.domain.PlanEntry
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
@@ -99,6 +104,75 @@ class LiveSessionRepository internal constructor(
             execution
         }
 
+    fun startActivityFromPlan(
+        planEntryId: PlanEntryId,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+    ): ActivityExecution =
+        transaction {
+            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
+            val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
+            require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+                "NO_LIVE_TRACKING Plan requires quick completion"
+            }
+            val execution = activityFactory.startTimed(snapshot, startedAt, createdAt, zoneId, planEntryId)
+            database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
+            database.activeSessionDao().insert(
+                ActiveSession(
+                    ActiveSessionKind.ACTIVITY,
+                    ActiveSessionState.RUNNING,
+                    execution.id,
+                    null,
+                    execution.updatedAt,
+                ),
+            )
+            plan.sourceActivityTemplateId?.let {
+                database.planEntryDao().touchActivitySource(it.value, startedAt.toEpochMilli())
+            }
+            execution
+        }
+
+    fun completeNoLiveActivityFromPlan(
+        planEntryId: PlanEntryId,
+        completedAt: Instant,
+        zoneId: ZoneId,
+        createdAt: Instant = completedAt,
+        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+    ): ActivityExecution =
+        transaction {
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
+            val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
+            require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                "Quick Plan completion requires NO_LIVE_TRACKING"
+            }
+            val generated =
+                activityFactory.completeNoLiveNow(snapshot, completedAt, zoneId, planEntryId, createdAt)
+            val overrides = actualValues.associateBy(ActivityExecutionFieldValue::snapshotFieldId)
+            val execution =
+                generated
+                    .copy(
+                        values =
+                            (generated.values.associateBy(ActivityExecutionFieldValue::snapshotFieldId) + overrides)
+                                .values
+                                .toList(),
+                    ).also { ActivityExecutionValidator.requireValid(it, snapshot) }
+            database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
+            check(
+                database.planEntryDao().fulfillActivity(
+                    plan.id.value,
+                    snapshot.id.value,
+                    execution.id.value,
+                    execution.completedAt!!.toEpochMilli(),
+                ) == 1,
+            ) { "Plan changed before quick completion" }
+            plan.sourceActivityTemplateId?.let {
+                database.planEntryDao().touchActivitySource(it.value, completedAt.toEpochMilli())
+            }
+            execution
+        }
+
     fun pauseActiveActivity(
         pauseId: ActivityExecutionPauseId,
         at: Instant,
@@ -133,6 +207,7 @@ class LiveSessionRepository internal constructor(
                 requireNotNull(session.activityExecutionId).value,
                 at.toEpochMilli(),
             )
+            fulfillActivityPlanIfLinked(requireNotNull(session.activityExecutionId))
             check(database.activeSessionDao().clear() == 1)
         }
     }
@@ -151,6 +226,28 @@ class LiveSessionRepository internal constructor(
             database.sequenceExecutionDao().insertAggregate(state.execution.toEntityAggregate())
             state.children.values.forEach { database.activityExecutionDao().insertAggregate(it.toEntityAggregate()) }
             database.activeSessionDao().insert(sequenceSession(state.execution))
+            state
+        }
+
+    fun startSequenceFromPlan(
+        planEntryId: PlanEntryId,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+    ): SequenceRuntimeState =
+        transaction {
+            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.SEQUENCE)
+            val snapshot = loadSequenceSnapshot(requireNotNull(plan.sequenceSnapshotId))
+            val activities = loadActivitySnapshots(snapshot)
+            val generated = sequenceEngine.start(snapshot, activities, startedAt, createdAt, zoneId)
+            val state = generated.copy(execution = generated.execution.copy(planEntryId = planEntryId))
+            database.sequenceExecutionDao().insertAggregate(state.execution.toEntityAggregate())
+            state.children.values.forEach { database.activityExecutionDao().insertAggregate(it.toEntityAggregate()) }
+            database.activeSessionDao().insert(sequenceSession(state.execution))
+            plan.sourceSequenceTemplateId?.let {
+                database.planEntryDao().touchSequenceSource(it.value, startedAt.toEpochMilli())
+            }
             state
         }
 
@@ -272,6 +369,7 @@ class LiveSessionRepository internal constructor(
             ) ?: return emptyList()
         if (deadline <= persisted(now)) {
             database.activityExecutionDao().complete(id, deadline.toEpochMilli())
+            fulfillActivityPlanIfLinked(ActivityExecutionId(id))
             check(database.activeSessionDao().clear() == 1)
             return listOf(
                 RuntimeDeadlineFeedback(
@@ -436,6 +534,7 @@ class LiveSessionRepository internal constructor(
             }
         }
         if (after.execution.status == SequenceExecutionStatus.COMPLETED) {
+            fulfillSequencePlanIfLinked(after.execution.id)
             check(database.activeSessionDao().clear() == 1)
         } else if (before.execution != after.execution) {
             val session = sequenceSession(after.execution)
@@ -723,6 +822,68 @@ class LiveSessionRepository internal constructor(
             database.activitySnapshotDao().getAggregate(id.value),
         ) { "Unknown Activity snapshot: ${id.value}" }
             .toDomain()
+
+    private fun requireStartablePlan(
+        id: PlanEntryId,
+        kind: PlanTrackableKind,
+    ): PlanEntry {
+        val plan =
+            requireNotNull(database.planEntryDao().getById(id.value)) { "Unknown Plan: ${id.value}" }
+                .toDomain()
+        require(plan.kind == kind && plan.status == PlanEntryStatus.PLANNED) { "Plan is not startable for $kind" }
+        val engaged =
+            when (kind) {
+                PlanTrackableKind.ACTIVITY -> database.planEntryDao().hasLiveActivity(id.value)
+                PlanTrackableKind.SEQUENCE -> database.planEntryDao().hasLiveSequence(id.value)
+            }
+        require(!engaged) { "Plan already has a linked live execution" }
+        when (kind) {
+            PlanTrackableKind.ACTIVITY -> {
+                val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
+                plan.sourceActivityTemplateId?.let { source ->
+                    snapshot.sourceTemplateId?.let { require(it == source) { "Plan Activity source mismatch" } }
+                    require(snapshot.sourceRevision == plan.sourceRevision) { "Plan Activity revision mismatch" }
+                }
+            }
+            PlanTrackableKind.SEQUENCE -> {
+                val snapshot = loadSequenceSnapshot(requireNotNull(plan.sequenceSnapshotId))
+                plan.sourceSequenceTemplateId?.let { source ->
+                    snapshot.sourceTemplateId?.let { require(it == source) { "Plan Sequence source mismatch" } }
+                    require(snapshot.sourceRevision == plan.sourceRevision) { "Plan Sequence revision mismatch" }
+                }
+            }
+        }
+        return plan
+    }
+
+    private fun fulfillActivityPlanIfLinked(id: ActivityExecutionId) {
+        val execution = requireNotNull(database.activityExecutionDao().getAggregate(id.value)).toDomain()
+        val planId = execution.planEntryId ?: return
+        val completedAt = requireNotNull(execution.completedAt)
+        check(
+            database.planEntryDao().fulfillActivity(
+                planId.value,
+                execution.snapshotId.value,
+                execution.id.value,
+                completedAt.toEpochMilli(),
+            ) == 1,
+        ) { "Linked Activity Plan cannot be fulfilled" }
+    }
+
+    private fun fulfillSequencePlanIfLinked(id: SequenceExecutionId) {
+        val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id.value)).toDomain()
+        val planId = execution.planEntryId ?: return
+        require(execution.status == SequenceExecutionStatus.COMPLETED) { "Only completed Sequence fulfills a Plan" }
+        val endedAt = requireNotNull(execution.endedAt)
+        check(
+            database.planEntryDao().fulfillSequence(
+                planId.value,
+                execution.snapshotId.value,
+                execution.id.value,
+                endedAt.toEpochMilli(),
+            ) == 1,
+        ) { "Linked Sequence Plan cannot be fulfilled" }
+    }
 
     private fun loadSequenceSnapshot(id: SequenceSnapshotId): SequenceConfigSnapshot =
         requireNotNull(
