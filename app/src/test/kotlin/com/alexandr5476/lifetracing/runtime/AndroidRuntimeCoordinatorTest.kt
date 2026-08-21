@@ -445,6 +445,151 @@ class AndroidRuntimeCoordinatorTest {
         }
 
     @Test
+    fun backwardWallRaceReanchorsBeforeRearmingAlreadyDueLocalDeadline() =
+        runBlocking {
+            var current: ActiveRuntime? = runningTimer(timerTargetSeconds = 10)
+            val wall = MutableWallClock(Instant.EPOCH)
+            val monotonic = MutableMonotonicClock(0)
+            val local = FakeLocalDriver()
+            val scheduler = FakeScheduler()
+            val effects = mutableListOf<RuntimeDeadlineFeedback>()
+            val notifications = FakeNotifications()
+            var reconciliations = 0
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        reconciliations++
+                        RuntimeReconciliationResult(current?.session, emptyList())
+                    },
+                    scheduler = scheduler,
+                    local = local,
+                    feedback = effects::add,
+                    notifications = notifications,
+                    wall = wall,
+                    monotonic = monotonic,
+                )
+            coordinator.onRuntimeStateChanged()
+            wall.value = instant(-100)
+            monotonic.value = 10_000
+
+            local.fire()
+
+            assertEquals(0, reconciliations)
+            assertEquals(emptyList<RuntimeDeadlineFeedback>(), effects)
+            assertEquals(emptyList<RuntimeDeadlineFeedback>(), notifications.completions)
+            assertEquals(2, local.armed.size)
+            assertEquals(2, scheduler.scheduled.size)
+            assertEquals(local.armed.first().deadline, local.armed.last().deadline)
+            assertEquals(
+                true,
+                local.armed
+                    .last()
+                    .anchor
+                    .elapsedAt(
+                        local.armed
+                            .last()
+                            .deadline.at,
+                    ) > monotonic.value,
+            )
+
+            coordinator.onSystemTimeChanged()
+
+            assertEquals(1, reconciliations)
+            assertEquals(1, local.cancellations)
+            assertEquals(1, scheduler.cancellations)
+            assertEquals(3, local.armed.size)
+            assertEquals(3, scheduler.scheduled.size)
+        }
+
+    @Test
+    fun staleOldSignalReanchorsAuthoritativeNewDeadlineWhenOldMappingSaysItIsDue() =
+        runBlocking {
+            val first = runningTimer("first", timerTargetSeconds = 10)
+            val firstDeadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(first))
+            val second = runningTimer("second", startedAtSeconds = 10, timerTargetSeconds = 10)
+            val secondDeadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(second))
+            var current: ActiveRuntime? = first
+            val wall = MutableWallClock(Instant.EPOCH)
+            val monotonic = MutableMonotonicClock(0)
+            val local = FakeLocalDriver()
+            val scheduler = FakeScheduler()
+            var reconciliations = 0
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        reconciliations++
+                        RuntimeReconciliationResult(current?.session, emptyList())
+                    },
+                    scheduler = scheduler,
+                    local = local,
+                    wall = wall,
+                    monotonic = monotonic,
+                )
+            coordinator.onRuntimeStateChanged()
+            current = second
+            wall.value = instant(-100)
+            monotonic.value = 20_000
+
+            coordinator.onDeadlineSignal(firstDeadline)
+
+            assertEquals(0, reconciliations)
+            assertEquals(2, local.armed.size)
+            assertEquals(secondDeadline, local.armed.last().deadline)
+            assertEquals(
+                true,
+                local.armed
+                    .last()
+                    .anchor
+                    .elapsedAt(secondDeadline.at) > monotonic.value,
+            )
+            assertEquals(listOf(firstDeadline, secondDeadline), scheduler.scheduled)
+        }
+
+    @Test
+    fun normallyEarlySignalRearmsWithoutUnnecessaryReanchorOrTransition() =
+        runBlocking {
+            val current = runningTimer(timerTargetSeconds = 10)
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(current))
+            val wall = MutableWallClock(Instant.EPOCH)
+            val monotonic = MutableMonotonicClock(0)
+            val local = FakeLocalDriver()
+            var reconciliations = 0
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        reconciliations++
+                        RuntimeReconciliationResult(current.session, emptyList())
+                    },
+                    local = local,
+                    wall = wall,
+                    monotonic = monotonic,
+                )
+            coordinator.onRuntimeStateChanged()
+            wall.value = instant(5)
+            monotonic.value = 5_000
+
+            coordinator.onDeadlineSignal(deadline)
+
+            assertEquals(0, reconciliations)
+            assertEquals(2, local.armed.size)
+            assertEquals(
+                com.alexandr5476.lifetracing.domain
+                    .WallMonotonicAnchor(Instant.EPOCH, 0),
+                local.armed.last().anchor,
+            )
+            assertEquals(
+                10_000,
+                local.armed
+                    .last()
+                    .anchor
+                    .elapsedAt(deadline.at),
+            )
+        }
+
+    @Test
     fun exactCapabilitySelectsOneExactOrInexactPath() {
         val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(runningTimer()))
         val exactBackend = FakeAlarmBackend(true)
@@ -506,6 +651,7 @@ class AndroidRuntimeCoordinatorTest {
     private fun runningTimer(
         id: String = "execution",
         startedAtSeconds: Long = 0,
+        timerTargetSeconds: Long = 60,
     ): ActiveActivityRuntime {
         val snapshot =
             ActivityConfigSnapshot(
@@ -513,7 +659,7 @@ class AndroidRuntimeCoordinatorTest {
                 "Timer",
                 null,
                 TimeTrackingMode.TIMER,
-                Duration.ofSeconds(60),
+                Duration.ofSeconds(timerTargetSeconds),
                 null,
                 null,
                 null,
@@ -621,6 +767,7 @@ class AndroidRuntimeCoordinatorTest {
         private val throwOnPublish: Boolean = false,
     ) : RuntimeNotificationPublisher {
         val states = mutableListOf<ActiveSessionState?>()
+        val completions = mutableListOf<RuntimeDeadlineFeedback>()
         var attempts = 0
 
         override fun publish(
@@ -629,6 +776,7 @@ class AndroidRuntimeCoordinatorTest {
         ) {
             attempts++
             states += runtime?.session?.state
+            completion?.let(completions::add)
             if (throwOnPublish) error("notification failed")
         }
 

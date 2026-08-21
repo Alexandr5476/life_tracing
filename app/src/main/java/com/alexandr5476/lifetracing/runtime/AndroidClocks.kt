@@ -28,9 +28,18 @@ class RuntimeClockAnchor(
         anchor = capture()
     }
 
+    fun reset(
+        wallNow: Instant,
+        elapsedRealtimeNowMs: Long,
+    ) {
+        anchor = WallMonotonicAnchor(wallNow, elapsedRealtimeNowMs)
+    }
+
     fun estimatedWallNow(): Instant = anchor.wallAt(monotonicClock.elapsedRealtimeMillis())
 
     fun snapshot(): WallMonotonicAnchor = anchor
+
+    fun elapsedRealtimeNow(): Long = monotonicClock.elapsedRealtimeMillis()
 
     private fun capture() = WallMonotonicAnchor(wallClock.now(), monotonicClock.elapsedRealtimeMillis())
 }

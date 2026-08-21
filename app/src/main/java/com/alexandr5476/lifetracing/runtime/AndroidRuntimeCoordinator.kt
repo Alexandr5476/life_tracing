@@ -89,8 +89,15 @@ class AndroidRuntimeCoordinator internal constructor(
             val before = loadRuntime()
             val current = before?.let(NextRuntimeDeadlineResolver::resolve)
             val now = wallClock.now()
+            val elapsedNow = clockAnchor.elapsedRealtimeNow()
             if (current != expected || now < expected.at) {
                 log("stale_runtime_deadline_signal_ignored kind=${expected.kind}")
+                if (current != null &&
+                    now < current.at &&
+                    clockAnchor.snapshot().elapsedAt(current.at) <= elapsedNow
+                ) {
+                    clockAnchor.reset(now, elapsedNow)
+                }
                 schedule(before)
                 return@withLock
             }
@@ -120,13 +127,15 @@ class AndroidRuntimeCoordinator internal constructor(
     }
 
     private fun schedule(runtime: ActiveRuntime?) {
-        displayBaseline = runtime?.let { RuntimeDisplayBaseline.capture(it, clockAnchor.snapshot()) }
+        val anchor = clockAnchor.snapshot()
+        val elapsedNow = clockAnchor.elapsedRealtimeNow()
+        displayBaseline = runtime?.let { RuntimeDisplayBaseline.capture(it, anchor, elapsedNow) }
         val deadline = runtime?.let(NextRuntimeDeadlineResolver::resolve)
         if (deadline == null) {
             localDeadlineDriver.cancel()
             scheduler.cancel()
         } else {
-            localDeadlineDriver.arm(deadline, clockAnchor.snapshot(), ::onDeadlineSignal)
+            localDeadlineDriver.arm(deadline, anchor, ::onDeadlineSignal)
             scheduler.schedule(deadline)
         }
     }

@@ -219,20 +219,22 @@ class RuntimeDisplayBaseline private constructor(
         fun capture(
             runtime: ActiveRuntime,
             anchor: WallMonotonicAnchor,
+            elapsedRealtimeNowMs: Long,
         ): RuntimeDisplayBaseline {
+            val observedWall = anchor.wallAt(elapsedRealtimeNowMs)
             val timer = timerSource(runtime)
             val timerDeadline =
                 timer?.let { TimerDeadlineCalculator.deadline(it.execution, it.target, TimerZeroBehavior.FINISH) }
-            val timerElapsed = timer?.let { activityElapsed(it.execution, anchor.wallAtAnchor) }
+            val timerElapsed = timer?.let { activityElapsed(it.execution, observedWall) }
             val transitionDeadline =
                 NextRuntimeDeadlineResolver
                     .resolve(runtime)
                     ?.takeIf { it.kind == RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN }
             return RuntimeDisplayBaseline(
-                anchor.elapsedAtAnchorMs,
+                elapsedRealtimeNowMs,
                 when (runtime) {
-                    is ActiveActivityRuntime -> activityElapsed(runtime.execution, anchor.wallAtAnchor)
-                    is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, anchor.wallAtAnchor)
+                    is ActiveActivityRuntime -> activityElapsed(runtime.execution, observedWall)
+                    is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, observedWall)
                 },
                 activeProgresses(runtime),
                 timerDeadline?.let(anchor::elapsedAt),

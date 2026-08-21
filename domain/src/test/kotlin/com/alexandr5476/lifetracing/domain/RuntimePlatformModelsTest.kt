@@ -81,7 +81,7 @@ class RuntimePlatformModelsTest {
 
         assertEquals(RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN, deadline?.kind)
         assertEquals(instant(23), deadline?.at)
-        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(20), 1_000))
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(20), 1_000), 1_000)
         assertEquals(Duration.ofSeconds(3), baseline.transitionCountdownRemaining(1_000))
     }
 
@@ -93,7 +93,7 @@ class RuntimePlatformModelsTest {
                 .startTimed(timer, instant(100), instant(100), ZoneOffset.UTC)
         val runtime = ActiveActivityRuntime(activitySession(execution), execution, timer)
 
-        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(100), 1_000))
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(100), 1_000), 1_000)
         assertEquals(Duration.ZERO, baseline.activeElapsed(1_000))
         assertEquals(Duration.ZERO, baseline.timerOvertime(6_000))
         assertEquals(Duration.ofSeconds(5), baseline.timerOvertime(16_000))
@@ -107,9 +107,52 @@ class RuntimePlatformModelsTest {
                     execution = pausedExecution,
                 ),
                 WallMonotonicAnchor(instant(110), 20_000),
+                20_000,
             )
         assertEquals(Duration.ofSeconds(5), paused.timerRemaining(20_000))
         assertEquals(Duration.ofSeconds(5), paused.timerRemaining(120_000))
+    }
+
+    @Test
+    fun delayedStandaloneStartUsesTheBaselineCaptureObservationAsItsTimeOrigin() {
+        val stopwatch = activity("watch", TimeTrackingMode.STOPWATCH)
+        val execution =
+            ActivityExecutionFactory { ActivityExecutionId("execution") }
+                .startTimed(stopwatch, instant(100), instant(100), ZoneOffset.UTC)
+        val runtime = ActiveActivityRuntime(activitySession(execution), execution, stopwatch)
+
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(0), 0), 100_000)
+
+        assertEquals(Duration.ZERO, baseline.activeElapsed(100_000))
+        assertEquals(Duration.ofSeconds(1), baseline.activeElapsed(101_000))
+        assertEquals(Duration.ofSeconds(10), baseline.activeElapsed(110_000))
+    }
+
+    @Test
+    fun sequenceTransitionBaselineDoesNotDoubleCountTimeBeforeCurrentStep() {
+        val first = activity("first", TimeTrackingMode.TIMER, 10)
+        val second = activity("second", TimeTrackingMode.STOPWATCH)
+        val snapshot = sequence(listOf(first.id, second.id), countdownSeconds = 0)
+        val engine = engine()
+        val started =
+            engine.start(
+                snapshot,
+                mapOf(first.id to first, second.id to second),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val transitioned =
+            engine.reconcile(started, snapshot, mapOf(first.id to first, second.id to second), instant(10))
+        val runtime = sequenceRuntime(transitioned, snapshot, mapOf(first.id to first, second.id to second))
+
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(0), 0), 10_000)
+
+        assertEquals(Duration.ofSeconds(10), baseline.activeElapsed(10_000))
+        assertEquals(Duration.ofSeconds(11), baseline.activeElapsed(11_000))
+        assertEquals(Duration.ofSeconds(15), baseline.activeElapsed(15_000))
+        assertNull(baseline.timerRemaining(15_000))
+        assertNull(baseline.timerOvertime(15_000))
     }
 
     @Test
@@ -143,6 +186,7 @@ class RuntimePlatformModelsTest {
             RuntimeDisplayBaseline.capture(
                 sequenceRuntime(state, snapshot, mapOf(stopwatch.id to stopwatch)),
                 WallMonotonicAnchor(instant(2_010), 5_000),
+                5_000,
             )
 
         repeat(10_000) { baseline.activeElapsed(5_000L + it) }
