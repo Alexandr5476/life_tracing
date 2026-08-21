@@ -3,10 +3,16 @@
     "LongMethod",
     "ReturnCount",
     "TooManyFunctions",
+    "LargeClass",
+    "ComplexCondition",
 ) // One coordinator owns the single atomic live-runtime boundary.
 
 package com.alexandr5476.lifetracing.data.persistence
 
+import android.content.Context
+import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+import com.alexandr5476.lifetracing.domain.ActiveRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
@@ -20,7 +26,10 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
+import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
+import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionFactory
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
@@ -39,9 +48,10 @@ import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
 import java.time.ZoneId
+import java.util.UUID
 import java.util.concurrent.Callable
 
-internal class LiveSessionRepository(
+class LiveSessionRepository internal constructor(
     private val database: LifeTracingDatabase,
     nextActivityExecutionId: () -> ActivityExecutionId,
     nextActivityPauseId: () -> ActivityExecutionPauseId,
@@ -63,6 +73,8 @@ internal class LiveSessionRepository(
         )
 
     fun getActiveSession(): ActiveSession? = transaction(::getActiveSessionLocked)
+
+    fun getActiveRuntime(): ActiveRuntime? = transaction(::getActiveRuntimeLocked)
 
     fun startStandaloneTimedActivityFromSnapshot(
         snapshotId: ActivitySnapshotId,
@@ -142,15 +154,32 @@ internal class LiveSessionRepository(
             state
         }
 
-    fun reconcileActiveSession(now: Instant): ActiveSession? =
+    fun reconcileActiveSession(now: Instant): RuntimeReconciliationResult =
         transaction {
-            when (getActiveSessionLocked()?.kind) {
-                ActiveSessionKind.ACTIVITY -> reconcileActivityLocked(now)
-                ActiveSessionKind.SEQUENCE -> reconcileSequenceLocked(now)
-                null -> Unit
-            }
-            getActiveSessionLocked()
+            val before =
+                getActiveRuntimeLocked()
+                    ?: return@transaction RuntimeReconciliationResult(null, emptyList())
+            val events =
+                when (before) {
+                    is ActiveActivityRuntime -> reconcileActivityLocked(now, before)
+                    is ActiveSequenceRuntime -> reconcileSequenceLocked(now, before)
+                }
+            RuntimeReconciliationResult(getActiveSessionLocked(), events)
         }
+
+    companion object {
+        fun create(context: Context): LiveSessionRepository =
+            LiveSessionRepository(
+                LifeTracingDatabase.builder(context.applicationContext, DATABASE_NAME).build(),
+                { ActivityExecutionId(UUID.randomUUID().toString()) },
+                { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
+                { SequenceExecutionId(UUID.randomUUID().toString()) },
+                { SequenceOccurrenceId(UUID.randomUUID().toString()) },
+                { SequenceIntervalId(UUID.randomUUID().toString()) },
+            )
+
+        private const val DATABASE_NAME = "lifetracing.db"
+    }
 
     fun completeCurrentSequenceStep(
         expectedOccurrenceId: SequenceOccurrenceId,
@@ -224,28 +253,126 @@ internal class LiveSessionRepository(
             resumed
         }
 
-    private fun reconcileActivityLocked(now: Instant) {
-        val session = getActiveSessionLocked() ?: return
-        if (session.kind != ActiveSessionKind.ACTIVITY || session.state == ActiveSessionState.PAUSED) return
+    private fun reconcileActivityLocked(
+        now: Instant,
+        before: ActiveActivityRuntime? = null,
+    ): List<RuntimeDeadlineFeedback> {
+        val runtime = before ?: (getActiveRuntimeLocked() as? ActiveActivityRuntime) ?: return emptyList()
+        val session = runtime.session
+        if (session.state == ActiveSessionState.PAUSED) return emptyList()
         val id = requireNotNull(session.activityExecutionId).value
-        val execution = requireNotNull(database.activityExecutionDao().getAggregate(id)).toDomain()
-        val snapshot = loadActivitySnapshot(execution.snapshotId)
-        if (snapshot.timeTrackingMode != TimeTrackingMode.TIMER) return
+        val execution = runtime.execution
+        val snapshot = runtime.snapshot
+        if (snapshot.timeTrackingMode != TimeTrackingMode.TIMER) return emptyList()
         val deadline =
             TimerDeadlineCalculator.deadline(
                 execution,
                 requireNotNull(snapshot.timerTarget),
                 snapshot.settings.timerZeroBehavior,
-            ) ?: return
+            ) ?: return emptyList()
         if (deadline <= persisted(now)) {
             database.activityExecutionDao().complete(id, deadline.toEpochMilli())
             check(database.activeSessionDao().clear() == 1)
+            return listOf(
+                RuntimeDeadlineFeedback(
+                    com.alexandr5476.lifetracing.domain.RuntimeDeadline(
+                        deadline,
+                        RuntimeDeadlineKind.ACTIVITY_TIMER_ZERO,
+                        ActiveSessionKind.ACTIVITY,
+                        id,
+                    ),
+                    snapshot.settings.timerEndSound,
+                    snapshot.settings.timerEndVibration,
+                ),
+            )
         }
+        return emptyList()
     }
 
-    private fun reconcileSequenceLocked(now: Instant) {
+    private fun reconcileSequenceLocked(
+        now: Instant,
+        beforeRuntime: ActiveSequenceRuntime? = null,
+    ): List<RuntimeDeadlineFeedback> {
         val loaded = loadSequenceRuntime()
-        persistSequenceRuntime(loaded, sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, now))
+        val before = beforeRuntime?.execution ?: loaded.state.execution
+        val after = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, now)
+        val events = sequenceEvents(before, after.execution, loaded.snapshot, loaded.activities)
+        persistSequenceRuntime(loaded, after)
+        return events
+    }
+
+    private fun sequenceEvents(
+        before: com.alexandr5476.lifetracing.domain.SequenceExecution,
+        after: com.alexandr5476.lifetracing.domain.SequenceExecution,
+        snapshot: SequenceConfigSnapshot,
+        activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): List<RuntimeDeadlineFeedback> {
+        val previous = before.occurrences.associateBy { it.id }
+        val steps =
+            snapshot.nodes
+                .flatMap {
+                    when (it) {
+                        is SequenceSnapshotActivityStep -> listOf(it)
+                        is SequenceSnapshotRepeatBlock -> it.children
+                    }
+                }.associateBy { it.id }
+        return after.occurrences
+            .flatMap { occurrence ->
+                val old = previous.getValue(occurrence.id)
+                val source = occurrence.sourceSequenceSnapshotNodeId
+                val settings =
+                    source?.let {
+                        EffectiveSequenceStepSettingsResolver.resolve(
+                            steps.getValue(it),
+                            activities.getValue(occurrence.activitySnapshotId),
+                            snapshot.settings,
+                            false,
+                        )
+                    }
+                buildList {
+                    if (old.completedAt == null &&
+                        occurrence.completionReason ==
+                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.NATURAL_TIMER_END
+                    ) {
+                        add(
+                            RuntimeDeadlineFeedback(
+                                com.alexandr5476.lifetracing.domain.RuntimeDeadline(
+                                    requireNotNull(occurrence.completedAt),
+                                    RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
+                                    ActiveSessionKind.SEQUENCE,
+                                    after.id.value,
+                                    occurrence.id,
+                                ),
+                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndVibration,
+                            ),
+                        )
+                    }
+                    val enteredAt = occurrence.enteredAt
+                    if (old.enteredAt == null &&
+                        enteredAt != null &&
+                        after.intervals.any {
+                            it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
+                                it.occurrenceId == occurrence.id &&
+                                it.endedAt == enteredAt
+                        }
+                    ) {
+                        add(
+                            RuntimeDeadlineFeedback(
+                                com.alexandr5476.lifetracing.domain.RuntimeDeadline(
+                                    enteredAt,
+                                    RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN,
+                                    ActiveSessionKind.SEQUENCE,
+                                    after.id.value,
+                                    occurrence.id,
+                                ),
+                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndVibration,
+                            ),
+                        )
+                    }
+                }
+            }.sortedBy { it.deadline.at }
     }
 
     private fun persistSequenceRuntime(
@@ -344,6 +471,29 @@ internal class LiveSessionRepository(
             ActiveSessionKind.SEQUENCE -> validateSequenceSession(session)
         }
         return session
+    }
+
+    private fun getActiveRuntimeLocked(): ActiveRuntime? {
+        val session = getActiveSessionLocked() ?: return null
+        return when (session.kind) {
+            ActiveSessionKind.ACTIVITY -> {
+                val execution =
+                    requireNotNull(
+                        database.activityExecutionDao().getAggregate(requireNotNull(session.activityExecutionId).value),
+                    ).toDomain()
+                ActiveActivityRuntime(session, execution, loadActivitySnapshot(execution.snapshotId))
+            }
+            ActiveSessionKind.SEQUENCE -> {
+                val loaded = loadSequenceRuntime()
+                ActiveSequenceRuntime(
+                    session,
+                    loaded.state.execution,
+                    loaded.snapshot,
+                    loaded.activities,
+                    loaded.state.currentChild,
+                )
+            }
+        }
     }
 
     private fun validateActivitySession(session: ActiveSession) {

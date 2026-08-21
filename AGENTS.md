@@ -16,6 +16,7 @@
 - Custom rounded interactive surfaces must clip press indication to the same shape as their visual surface.
 - Never commit secrets, credentials, signing keys, local SDK paths, or `AGENTS.override.md`.
 - Live runtime commands spanning `active_session` and Execution state commit atomically at one database transaction boundary; `active_session` is the v1 pointer/policy guard, while execution, occurrence, and interval rows remain source of truth.
+- Android scheduling is advisory: durable `active_session`/Execution state is authoritative. Platform alarms may trigger reconciliation but may never force a stale transition, and alarm delivery time must not replace the calculated logical event timestamp.
 - A task is complete only when all relevant checks pass.
 
 Canonical commands (PowerShell):

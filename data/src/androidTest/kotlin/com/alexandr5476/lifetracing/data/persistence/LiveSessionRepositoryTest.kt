@@ -7,6 +7,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
@@ -97,9 +98,21 @@ class LiveSessionRepositoryTest {
         }
         assertNull(database.activityExecutionDao().getById("activity-2"))
 
-        repository.reconcileActiveSession(instant(100))
+        val firstDelivery = repository.reconcileActiveSession(instant(100))
+        val duplicateDelivery = repository.reconcileActiveSession(instant(100))
 
         assertEquals(instant(60), repositoryExecution(execution.id.value).completedAt)
+        assertEquals(
+            listOf(RuntimeDeadlineKind.ACTIVITY_TIMER_ZERO),
+            firstDelivery.appliedEvents.map { it.deadline.kind },
+        )
+        assertEquals(
+            instant(60),
+            firstDelivery.appliedEvents
+                .single()
+                .deadline.at,
+        )
+        assertEquals(emptyList<Any>(), duplicateDelivery.appliedEvents)
         assertNull(repository.getActiveSession())
     }
 

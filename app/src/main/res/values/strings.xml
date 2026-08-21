@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="runtime_notification_channel_name">Active timers</string>
+    <string name="runtime_notification_channel_description">Current LifeTracing activity and timer status</string>
+    <string name="runtime_notification_activity">Activity in progress</string>
+    <string name="runtime_notification_sequence">Sequence in progress</string>
+    <string name="runtime_notification_due">Timer completed</string>
+    <string name="runtime_notification_running">Running</string>
+    <string name="runtime_notification_paused">Paused</string>
+    <string name="runtime_notification_waiting">Waiting for the next step</string>
+    <string name="runtime_notification_completed">Open LifeTracing to continue</string>
     <string name="app_name">LifeTracing</string>
     <string name="design_preview_title">LifeTracing</string>
     <string name="design_preview_heading">Design foundation</string>

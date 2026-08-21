@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="runtime_notification_channel_name">Активные таймеры</string>
+    <string name="runtime_notification_channel_description">Состояние текущего дела и таймера LifeTracing</string>
+    <string name="runtime_notification_activity">Дело выполняется</string>
+    <string name="runtime_notification_sequence">Последовательность выполняется</string>
+    <string name="runtime_notification_due">Таймер завершён</string>
+    <string name="runtime_notification_running">Выполняется</string>
+    <string name="runtime_notification_paused">Приостановлено</string>
+    <string name="runtime_notification_waiting">Ожидание следующего шага</string>
+    <string name="runtime_notification_completed">Откройте LifeTracing, чтобы продолжить</string>
     <string name="app_name">LifeTracing</string>
     <string name="design_preview_title">LifeTracing</string>
     <string name="design_preview_heading">Основа дизайна</string>
