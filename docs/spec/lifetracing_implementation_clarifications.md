@@ -81,9 +81,13 @@ Every runtime-created `TRANSITION_COUNTDOWN` interval points through `occurrence
 
 ## Android runtime scheduling boundary
 
-Android runtime recovery uses no foreground service, wakelock loop, repeating alarm, or WorkManager polling. Durable `active_session` and Execution state remain authoritative; one advisory next-deadline `AlarmManager` alarm is reconstructed after each committed reconciliation, foreground return, boot, or system wall/timezone change. Alarm delivery never directly applies a transition and its delivery timestamp never replaces the core's calculated logical deadline.
+Android runtime recovery uses no foreground service, wakelock loop, repeating alarm, or WorkManager polling. Persisted Activity and Sequence state remains timestamp-based: durable `active_session` and Execution state are authoritative, late platform delivery never replaces a calculated logical event timestamp, and reconciliation after process death or background delay is deterministic.
 
-In-process display progression uses a wall/`elapsedRealtime()` anchor that includes deep sleep and is discarded on process death, reboot, or a wall/timezone-change broadcast. Only epoch timestamps are persisted. `BOOT_COMPLETED` recovery runs after credential-protected storage is available; `LOCKED_BOOT_COMPLETED` is intentionally unsupported.
+While the process exists, the next deterministic live deadline is also armed as one boot-local, monotonic, elapsed-realtime-based one-shot. It does not poll or keep the process alive. The external `AlarmManager` alarm remains the advisory background/process-death backup, and both signals pass through the same stale-deadline validation and durable reconciliation boundary.
+
+Without a foreground service, Android does not guarantee timely delivery of every rapidly recurring short deadline while the process is dead or the device is deeply idle; allow-while-idle alarms may be throttled. The v1 guarantee is exact durable state after reconciliation, best-effort timely background wake and feedback, and precise in-process live transitions—not that every sub-minute Sequence boundary wakes a deeply idle device. If product requirements later demand interval-timer-style screen-off feedback at every short boundary, a foreground-service strategy must be evaluated separately.
+
+In-process display progression uses an immutable baseline built from a wall/`elapsedRealtime()` anchor that includes deep sleep and is discarded on process death, reboot, or a wall/timezone-change broadcast. Baseline construction may inspect persisted history once; each display tick uses only the current monotonic value and O(1) checked arithmetic. Only epoch timestamps are persisted. `BOOT_COMPLETED` recovery runs after credential-protected storage is available; `LOCKED_BOOT_COMPLETED` is intentionally unsupported.
 
 When exact-alarm special access is unavailable, the adapter uses one `setAndAllowWhileIdle()` `RTC_WAKEUP` fallback. Delivery may be delayed, while later reconciliation still persists exact logical event timestamps. No background component opens Settings or requests notification permission.
 

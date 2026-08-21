@@ -20,7 +20,7 @@ class RuntimeDeadlineReceiver : BroadcastReceiver() {
         val pending = goAsync()
         val graph = LifeTracingRuntimeGraph.from(context)
         graph.scope.launch {
-            finishBroadcast(pending::finish) { graph.coordinator.onDeadlineAlarm(deadline) }
+            finishBroadcast(pending::finish) { graph.coordinator.onDeadlineSignal(deadline) }
         }
     }
 }

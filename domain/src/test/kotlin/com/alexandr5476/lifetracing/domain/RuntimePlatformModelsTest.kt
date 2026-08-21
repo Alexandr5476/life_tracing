@@ -14,6 +14,7 @@ class RuntimePlatformModelsTest {
         val anchor = WallMonotonicAnchor(instant(100), 1_000)
 
         assertEquals(instant(105), anchor.wallAt(6_000))
+        assertEquals(6_000, anchor.elapsedAt(instant(105)))
         assertThrows(ArithmeticException::class.java) { anchor.wallAt(Long.MIN_VALUE) }
 
         val rebuilt = WallMonotonicAnchor(instant(1_000), 6_000)
@@ -80,7 +81,8 @@ class RuntimePlatformModelsTest {
 
         assertEquals(RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN, deadline?.kind)
         assertEquals(instant(23), deadline?.at)
-        assertEquals(Duration.ofSeconds(3), RuntimeDisplayDurations.transitionCountdownRemaining(runtime, instant(20)))
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(20), 1_000))
+        assertEquals(Duration.ofSeconds(3), baseline.transitionCountdownRemaining(1_000))
     }
 
     @Test
@@ -91,9 +93,61 @@ class RuntimePlatformModelsTest {
                 .startTimed(timer, instant(100), instant(100), ZoneOffset.UTC)
         val runtime = ActiveActivityRuntime(activitySession(execution), execution, timer)
 
-        assertEquals(Duration.ZERO, RuntimeDisplayDurations.activeElapsed(runtime, instant(50)))
-        assertEquals(Duration.ZERO, RuntimeDisplayDurations.timerOvertime(runtime, instant(105)))
-        assertEquals(Duration.ofSeconds(5), RuntimeDisplayDurations.timerOvertime(runtime, instant(115)))
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(100), 1_000))
+        assertEquals(Duration.ZERO, baseline.activeElapsed(1_000))
+        assertEquals(Duration.ZERO, baseline.timerOvertime(6_000))
+        assertEquals(Duration.ofSeconds(5), baseline.timerOvertime(16_000))
+
+        val pausedExecution =
+            ActivityExecutionTransitions.pause(execution, ActivityExecutionPauseId("pause"), instant(105))
+        val paused =
+            RuntimeDisplayBaseline.capture(
+                runtime.copy(
+                    session = runtime.session.copy(state = ActiveSessionState.PAUSED),
+                    execution = pausedExecution,
+                ),
+                WallMonotonicAnchor(instant(110), 20_000),
+            )
+        assertEquals(Duration.ofSeconds(5), paused.timerRemaining(20_000))
+        assertEquals(Duration.ofSeconds(5), paused.timerRemaining(120_000))
+    }
+
+    @Test
+    fun largeHistoryIsConsumedOnlyWhenBuildingConstantInputTickBaseline() {
+        val stopwatch = activity("watch", TimeTrackingMode.STOPWATCH)
+        val snapshot = sequence(listOf(stopwatch.id), countdownSeconds = 0)
+        val started = engine().start(snapshot, mapOf(stopwatch.id to stopwatch), instant(0), instant(0), ZoneOffset.UTC)
+        val occurrenceId = requireNotNull(started.execution.currentOccurrenceId)
+        val intervals =
+            (0 until 2_000).map { index ->
+                SequenceInterval(
+                    SequenceIntervalId("closed-$index"),
+                    SequenceIntervalKind.ACTIVE_STEP,
+                    instant(index.toLong()),
+                    instant(index + 1L),
+                    occurrenceId,
+                )
+            } +
+                SequenceInterval(
+                    SequenceIntervalId("open"),
+                    SequenceIntervalKind.ACTIVE_STEP,
+                    instant(2_000),
+                    null,
+                    occurrenceId,
+                )
+        val state =
+            started.copy(
+                execution = started.execution.copy(intervals = intervals, updatedAt = instant(2_000)),
+            )
+        val baseline =
+            RuntimeDisplayBaseline.capture(
+                sequenceRuntime(state, snapshot, mapOf(stopwatch.id to stopwatch)),
+                WallMonotonicAnchor(instant(2_010), 5_000),
+            )
+
+        repeat(10_000) { baseline.activeElapsed(5_000L + it) }
+
+        assertEquals(Duration.ofSeconds(2_020), baseline.activeElapsed(15_000))
     }
 
     private fun activitySession(execution: ActivityExecution) =

@@ -17,6 +17,12 @@ data class WallMonotonicAnchor(
     val wallAtAnchor: Instant,
     val elapsedAtAnchorMs: Long,
 ) {
+    fun elapsedAt(wall: Instant): Long =
+        Math.addExact(
+            elapsedAtAnchorMs,
+            Math.subtractExact(wall.toEpochMilli(), wallAtAnchor.toEpochMilli()),
+        )
+
     fun wallAt(elapsedNowMs: Long): Instant =
         Instant.ofEpochMilli(
             Math.addExact(
@@ -171,121 +177,158 @@ object NextRuntimeDeadlineResolver {
     }
 }
 
-object RuntimeDisplayDurations {
-    fun activeElapsed(
-        runtime: ActiveRuntime,
-        observedWall: Instant,
-    ): Duration =
-        when (runtime) {
-            is ActiveActivityRuntime -> activityElapsed(runtime.execution, observedWall)
-            is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, observedWall)
+@Suppress("LongParameterList") // Flat immutable values keep every tick independent from runtime history.
+class RuntimeDisplayBaseline private constructor(
+    private val anchorElapsedRealtimeMs: Long,
+    private val activeElapsedAtAnchor: Duration,
+    private val activeProgresses: Boolean,
+    private val timerZeroElapsedRealtimeMs: Long?,
+    private val timerRemainingAtAnchor: Duration?,
+    private val timerOvertimeAtAnchor: Duration?,
+    private val timerZeroBehavior: TimerZeroBehavior?,
+    private val transitionCountdownElapsedRealtimeMs: Long?,
+) {
+    fun activeElapsed(elapsedRealtimeNowMs: Long): Duration =
+        if (activeProgresses) {
+            activeElapsedAtAnchor.plusMillis(monotonicDelta(elapsedRealtimeNowMs))
+        } else {
+            activeElapsedAtAnchor
         }
 
-    fun timerRemaining(
-        runtime: ActiveRuntime,
-        observedWall: Instant,
-    ): Duration? {
-        val deadline = naturalTimerDeadline(runtime) ?: return null
-        return Duration.between(observedWall, deadline).coerceAtLeast(Duration.ZERO)
-    }
+    fun timerRemaining(elapsedRealtimeNowMs: Long): Duration? =
+        timerZeroElapsedRealtimeMs?.let { remaining(it, elapsedRealtimeNowMs) } ?: timerRemainingAtAnchor
 
-    fun timerOvertime(
-        runtime: ActiveRuntime,
-        observedWall: Instant,
-    ): Duration? {
-        val zeroBehavior = timerZeroBehavior(runtime) ?: return null
-        if (zeroBehavior != TimerZeroBehavior.OVERTIME) return null
-        val deadline = naturalTimerDeadline(runtime) ?: return null
-        return Duration.between(deadline, observedWall).coerceAtLeast(Duration.ZERO)
-    }
+    fun timerOvertime(elapsedRealtimeNowMs: Long): Duration? =
+        timerZeroElapsedRealtimeMs
+            ?.takeIf { timerZeroBehavior == TimerZeroBehavior.OVERTIME }
+            ?.let { remaining(elapsedRealtimeNowMs, it) }
+            ?: timerOvertimeAtAnchor?.takeIf { timerZeroBehavior == TimerZeroBehavior.OVERTIME }
 
-    fun transitionCountdownRemaining(
-        runtime: ActiveSequenceRuntime,
-        observedWall: Instant,
-    ): Duration? {
-        val deadline = NextRuntimeDeadlineResolver.resolve(runtime)
-        if (deadline?.kind != RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN) return null
-        return Duration.between(observedWall, deadline.at).coerceAtLeast(Duration.ZERO)
-    }
+    fun transitionCountdownRemaining(elapsedRealtimeNowMs: Long): Duration? =
+        transitionCountdownElapsedRealtimeMs?.let { remaining(it, elapsedRealtimeNowMs) }
 
-    private fun naturalTimerDeadline(runtime: ActiveRuntime): Instant? =
-        when (runtime) {
-            is ActiveActivityRuntime ->
-                if (runtime.snapshot.timeTrackingMode == TimeTrackingMode.TIMER) {
-                    TimerDeadlineCalculator.deadline(
-                        runtime.execution,
-                        requireNotNull(runtime.snapshot.timerTarget),
-                        TimerZeroBehavior.FINISH,
-                    )
-                } else {
-                    null
-                }
-            is ActiveSequenceRuntime -> {
-                val currentId = runtime.execution.currentOccurrenceId ?: return null
-                val occurrence = runtime.execution.occurrences.single { it.id == currentId }
-                val activity = runtime.activitySnapshots.getValue(occurrence.activitySnapshotId)
-                val child = runtime.currentChild
-                if (activity.timeTrackingMode == TimeTrackingMode.TIMER && child != null) {
-                    TimerDeadlineCalculator.deadline(
-                        child,
-                        requireNotNull(activity.timerTarget),
-                        TimerZeroBehavior.FINISH,
-                    )
-                } else {
-                    null
-                }
+    private fun monotonicDelta(elapsedRealtimeNowMs: Long): Long =
+        Math.subtractExact(elapsedRealtimeNowMs, anchorElapsedRealtimeMs).coerceAtLeast(0L)
+
+    private fun remaining(
+        laterMs: Long,
+        earlierMs: Long,
+    ): Duration = Duration.ofMillis(Math.subtractExact(laterMs, earlierMs).coerceAtLeast(0L))
+
+    companion object {
+        fun capture(
+            runtime: ActiveRuntime,
+            anchor: WallMonotonicAnchor,
+        ): RuntimeDisplayBaseline {
+            val timer = timerSource(runtime)
+            val timerDeadline =
+                timer?.let { TimerDeadlineCalculator.deadline(it.execution, it.target, TimerZeroBehavior.FINISH) }
+            val timerElapsed = timer?.let { activityElapsed(it.execution, anchor.wallAtAnchor) }
+            val transitionDeadline =
+                NextRuntimeDeadlineResolver
+                    .resolve(runtime)
+                    ?.takeIf { it.kind == RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN }
+            return RuntimeDisplayBaseline(
+                anchor.elapsedAtAnchorMs,
+                when (runtime) {
+                    is ActiveActivityRuntime -> activityElapsed(runtime.execution, anchor.wallAtAnchor)
+                    is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, anchor.wallAtAnchor)
+                },
+                activeProgresses(runtime),
+                timerDeadline?.let(anchor::elapsedAt),
+                timer?.target?.minus(requireNotNull(timerElapsed))?.coerceAtLeastZero(),
+                timerElapsed?.minus(requireNotNull(timer).target)?.coerceAtLeastZero(),
+                timer?.zeroBehavior,
+                transitionDeadline?.at?.let(anchor::elapsedAt),
+            )
+        }
+
+        private fun activeProgresses(runtime: ActiveRuntime): Boolean {
+            if (runtime.session.state != ActiveSessionState.RUNNING) return false
+            return when (runtime) {
+                is ActiveActivityRuntime -> true
+                is ActiveSequenceRuntime ->
+                    runtime.execution.intervals
+                        .singleOrNull { it.endedAt == null }
+                        ?.kind ==
+                        SequenceIntervalKind.ACTIVE_STEP
             }
         }
 
-    private fun timerZeroBehavior(runtime: ActiveRuntime): TimerZeroBehavior? =
-        when (runtime) {
-            is ActiveActivityRuntime ->
-                runtime.snapshot.settings.timerZeroBehavior.takeIf {
-                    runtime.snapshot.timeTrackingMode == TimeTrackingMode.TIMER
+        private fun timerSource(runtime: ActiveRuntime): TimerSource? =
+            when (runtime) {
+                is ActiveActivityRuntime ->
+                    if (runtime.snapshot.timeTrackingMode == TimeTrackingMode.TIMER) {
+                        TimerSource(
+                            runtime.execution,
+                            requireNotNull(runtime.snapshot.timerTarget),
+                            runtime.snapshot.settings.timerZeroBehavior,
+                        )
+                    } else {
+                        null
+                    }
+                is ActiveSequenceRuntime -> {
+                    val currentId = runtime.execution.currentOccurrenceId ?: return null
+                    val occurrence = runtime.execution.occurrences.single { it.id == currentId }
+                    val activity = runtime.activitySnapshots.getValue(occurrence.activitySnapshotId)
+                    val child = runtime.currentChild
+                    if (activity.timeTrackingMode == TimeTrackingMode.TIMER && child != null) {
+                        TimerSource(
+                            child,
+                            requireNotNull(activity.timerTarget),
+                            requireNotNull(
+                                NextRuntimeDeadlineResolver.effectiveSettings(runtime, occurrence).timerZeroBehavior,
+                            ),
+                        )
+                    } else {
+                        null
+                    }
                 }
-            is ActiveSequenceRuntime -> {
-                val currentId = runtime.execution.currentOccurrenceId ?: return null
-                val occurrence = runtime.execution.occurrences.single { it.id == currentId }
-                NextRuntimeDeadlineResolver.effectiveSettings(runtime, occurrence).timerZeroBehavior
             }
+
+        private data class TimerSource(
+            val execution: ActivityExecution,
+            val target: Duration,
+            val zeroBehavior: TimerZeroBehavior,
+        )
+
+        private fun activityElapsed(
+            execution: ActivityExecution,
+            observedWall: Instant,
+        ): Duration {
+            val startedAt = requireNotNull(execution.startedAt)
+            val effectiveEnd = maxOf(observedWall, execution.updatedAt, startedAt)
+            val pauses =
+                execution.pauses.map { pause ->
+                    if (pause.endedAt ==
+                        null
+                    ) {
+                        pause.copy(endedAt = effectiveEnd)
+                    } else {
+                        pause
+                    }
+                }
+            return ActivityExecutionDurationCalculator.calculate(startedAt, effectiveEnd, pauses)
         }
 
-    private fun activityElapsed(
-        execution: ActivityExecution,
-        observedWall: Instant,
-    ): Duration {
-        val startedAt = requireNotNull(execution.startedAt)
-        val effectiveEnd = maxOf(observedWall, execution.updatedAt, startedAt)
-        val pauses =
-            execution.pauses.map { pause ->
-                if (pause.endedAt ==
-                    null
-                ) {
-                    pause.copy(endedAt = effectiveEnd)
-                } else {
-                    pause
+        private fun sequenceElapsed(
+            execution: SequenceExecution,
+            observedWall: Instant,
+        ): Duration {
+            val effectiveEnd = maxOf(observedWall, execution.updatedAt, execution.startedAt)
+            val intervals =
+                execution.intervals.map { interval ->
+                    if (interval.endedAt ==
+                        null
+                    ) {
+                        interval.copy(endedAt = effectiveEnd)
+                    } else {
+                        interval
+                    }
                 }
-            }
-        return ActivityExecutionDurationCalculator.calculate(startedAt, effectiveEnd, pauses)
-    }
-
-    private fun sequenceElapsed(
-        execution: SequenceExecution,
-        observedWall: Instant,
-    ): Duration {
-        val effectiveEnd = maxOf(observedWall, execution.updatedAt, execution.startedAt)
-        val intervals =
-            execution.intervals.map { interval ->
-                if (interval.endedAt ==
-                    null
-                ) {
-                    interval.copy(endedAt = effectiveEnd)
-                } else {
-                    interval
-                }
-            }
-        return SequenceTimelineCalculator.calculate(execution.startedAt, effectiveEnd, intervals).active
+            return SequenceTimelineCalculator.calculate(execution.startedAt, effectiveEnd, intervals).active
+        }
     }
 }
 
-private fun Duration.coerceAtLeast(minimum: Duration): Duration = if (this < minimum) minimum else this
+private fun Duration.coerceAtLeastZero(): Duration = if (isNegative) Duration.ZERO else this

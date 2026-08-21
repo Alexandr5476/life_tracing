@@ -34,8 +34,12 @@ class AndroidRuntimeNotificationPublisher(
             NotificationChannel(
                 CHANNEL_ID,
                 applicationContext.getString(R.string.runtime_notification_channel_name),
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply { description = applicationContext.getString(R.string.runtime_notification_channel_description) },
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = applicationContext.getString(R.string.runtime_notification_channel_description)
+                setSound(null, null)
+                enableVibration(false)
+            },
         )
     }
 
@@ -71,6 +75,7 @@ class AndroidRuntimeNotificationPublisher(
                 .setContentText(applicationContext.getString(state))
                 .setOngoing(runtime != null)
                 .setOnlyAlertOnce(completion == null)
+                .setSilent(true)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
                 .build()

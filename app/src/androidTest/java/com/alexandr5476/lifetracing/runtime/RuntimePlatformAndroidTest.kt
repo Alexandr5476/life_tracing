@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
+import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import org.junit.Assert.assertEquals
@@ -71,7 +72,27 @@ class RuntimePlatformAndroidTest {
                 .getNotificationChannel(AndroidRuntimeNotificationPublisher.CHANNEL_ID)
 
         assertNotNull(channel)
-        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, channel.importance)
+        assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
+        assertEquals(null, channel.sound)
+        assertEquals(false, channel.shouldVibrate())
+    }
+
+    @Test
+    fun silentDueNotificationDoesNotOwnSoundOrVibrationFeedback() {
+        var sounds = 0
+        var vibrations = 0
+        val due = RuntimeDeadlineFeedback(deadline("execution", "occurrence", 60), false, false)
+        val dispatcher =
+            AndroidRuntimeFeedbackDispatcher(
+                RuntimeSoundPlayer { sounds++ },
+                RuntimeVibrator { vibrations++ },
+            )
+
+        dispatcher.dispatch(due)
+        AndroidRuntimeNotificationPublisher(context).publish(null, due)
+
+        assertEquals(0, sounds)
+        assertEquals(0, vibrations)
     }
 
     private fun deadline(

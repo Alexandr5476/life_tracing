@@ -7,9 +7,15 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
+import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
+import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 
 interface RuntimeDeadlineScheduler {
@@ -20,18 +26,74 @@ interface RuntimeDeadlineScheduler {
     fun canScheduleExactRuntimeDeadlines(): Boolean
 }
 
-class AndroidRuntimeDeadlineScheduler internal constructor(
+interface InProcessRuntimeDeadlineDriver {
+    fun arm(
+        deadline: RuntimeDeadline,
+        anchor: WallMonotonicAnchor,
+        callback: suspend (RuntimeDeadline) -> Unit,
+    )
+
+    fun cancel()
+}
+
+class CoroutineInProcessRuntimeDeadlineDriver(
+    private val scope: CoroutineScope,
+    private val monotonicClock: MonotonicClock,
+) : InProcessRuntimeDeadlineDriver {
+    private var job: Job? = null
+
+    override fun arm(
+        deadline: RuntimeDeadline,
+        anchor: WallMonotonicAnchor,
+        callback: suspend (RuntimeDeadline) -> Unit,
+    ) {
+        job?.cancel()
+        job =
+            scope.launch {
+                val remainingMs =
+                    Math.subtractExact(anchor.elapsedAt(deadline.at), monotonicClock.elapsedRealtimeMillis())
+                if (remainingMs > 0) delay(remainingMs)
+                callback(deadline)
+            }
+    }
+
+    override fun cancel() {
+        job?.cancel()
+        job = null
+    }
+}
+
+class AndroidRuntimeDeadlineScheduler private constructor(
     private val backend: RuntimeAlarmBackend,
+    private val exactFailureLog: (SecurityException) -> Unit,
 ) : RuntimeDeadlineScheduler {
-    constructor(context: Context) : this(AndroidRuntimeAlarmBackend(context))
+    internal constructor(backend: RuntimeAlarmBackend) : this(backend, {})
+
+    constructor(context: Context) : this(
+        AndroidRuntimeAlarmBackend(context),
+        { Log.w(TAG, "runtime_exact_alarm_denied_falling_back", it) },
+    )
 
     override fun schedule(deadline: RuntimeDeadline) {
-        if (backend.canScheduleExactAlarms()) backend.scheduleExact(deadline) else backend.scheduleInexact(deadline)
+        if (!backend.canScheduleExactAlarms()) {
+            backend.scheduleInexact(deadline)
+            return
+        }
+        try {
+            backend.scheduleExact(deadline)
+        } catch (error: SecurityException) {
+            exactFailureLog(error)
+            backend.scheduleInexact(deadline)
+        }
     }
 
     override fun cancel() = backend.cancel()
 
     override fun canScheduleExactRuntimeDeadlines(): Boolean = backend.canScheduleExactAlarms()
+
+    private companion object {
+        const val TAG = "LifeTracingRuntime"
+    }
 }
 
 internal interface RuntimeAlarmBackend {

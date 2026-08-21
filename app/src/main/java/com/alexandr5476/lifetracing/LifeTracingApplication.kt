@@ -13,6 +13,7 @@ import com.alexandr5476.lifetracing.runtime.AndroidRuntimeFeedbackDispatcher
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeNotificationPublisher
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeVibrator
 import com.alexandr5476.lifetracing.runtime.AndroidWallClock
+import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
 import kotlinx.coroutines.launch
 
@@ -66,6 +67,7 @@ class LifeTracingRuntimeGraph private constructor(
             AndroidWallClock(),
             AndroidMonotonicClock,
             AndroidRuntimeDeadlineScheduler(context),
+            CoroutineInProcessRuntimeDeadlineDriver(scope, AndroidMonotonicClock),
             AndroidRuntimeFeedbackDispatcher(NoOpRuntimeSoundPlayer, AndroidRuntimeVibrator(context)),
             AndroidRuntimeNotificationPublisher(context),
         )

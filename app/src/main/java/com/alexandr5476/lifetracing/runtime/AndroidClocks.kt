@@ -30,5 +30,7 @@ class RuntimeClockAnchor(
 
     fun estimatedWallNow(): Instant = anchor.wallAt(monotonicClock.elapsedRealtimeMillis())
 
+    fun snapshot(): WallMonotonicAnchor = anchor
+
     private fun capture() = WallMonotonicAnchor(wallClock.now(), monotonicClock.elapsedRealtimeMillis())
 }
