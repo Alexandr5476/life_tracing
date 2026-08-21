@@ -78,3 +78,13 @@ V1 classifies live Sequence intervals as follows:
 - inter-Step countdown: `TRANSITION_COUNTDOWN`.
 
 Every runtime-created `TRANSITION_COUNTDOWN` interval points through `occurrence_id` to the next occurrence whose start is being counted down. Pause/resume/recovery derives the countdown target and consumed duration from these intervals; no separate pointer or `remaining_ms` cache is stored. `STEP_PAUSE` currently means No-live-as-pause only; the deferred advanced pause-behavior setting is not inferred.
+
+## Android runtime scheduling boundary
+
+Android runtime recovery uses no foreground service, wakelock loop, repeating alarm, or WorkManager polling. Durable `active_session` and Execution state remain authoritative; one advisory next-deadline `AlarmManager` alarm is reconstructed after each committed reconciliation, foreground return, boot, or system wall/timezone change. Alarm delivery never directly applies a transition and its delivery timestamp never replaces the core's calculated logical deadline.
+
+In-process display progression uses a wall/`elapsedRealtime()` anchor that includes deep sleep and is discarded on process death, reboot, or a wall/timezone-change broadcast. Only epoch timestamps are persisted. `BOOT_COMPLETED` recovery runs after credential-protected storage is available; `LOCKED_BOOT_COMPLETED` is intentionally unsupported.
+
+When exact-alarm special access is unavailable, the adapter uses one `setAndAllowWhileIdle()` `RTC_WAKEUP` fallback. Delivery may be delayed, while later reconciliation still persists exact logical event timestamps. No background component opens Settings or requests notification permission.
+
+Deadline feedback is a non-durable effect. Alarm and user-present foreground recovery, including foreground process start, emit at most the latest applied semantic deadline from that bounded reconciliation; earlier catch-up events are suppressed. Boot and time-change recovery reconcile and reschedule without sound or vibration. The sound contract is currently backed by a no-op adapter until a product-owned cue asset is selected; vibration is implemented through the platform vibrator API.
