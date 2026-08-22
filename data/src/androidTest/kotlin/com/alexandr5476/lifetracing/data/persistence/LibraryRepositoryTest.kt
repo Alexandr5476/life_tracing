@@ -321,14 +321,14 @@ class LibraryRepositoryTest {
 
         repository.archiveActivityTemplate(ActivityTemplateId("timed"), instant(5))
         assertThrows(IllegalArgumentException::class.java) {
-            repository.startActivityFromTemplate(ActivityTemplateId("timed"), instant(10), instant(9), ZoneOffset.UTC)
+            repository.startActivityFromTemplate(ActivityTemplateId("timed"), instant(10), instant(10), ZoneOffset.UTC)
         }
         repository.restoreActivityTemplate(ActivityTemplateId("timed"))
         val timed =
             repository.startActivityFromTemplate(
                 ActivityTemplateId("timed"),
                 instant(10),
-                instant(9),
+                instant(10),
                 ZoneOffset.UTC,
             )
         assertEquals(ActivityExecutionContext.STANDALONE, timed.context)
@@ -357,7 +357,7 @@ class LibraryRepositoryTest {
             repository.startSequenceFromTemplate(
                 SequenceTemplateId("sequence"),
                 instant(40),
-                instant(39),
+                instant(40),
                 ZoneOffset.UTC,
             )
         }
@@ -366,7 +366,7 @@ class LibraryRepositoryTest {
             repository.startSequenceFromTemplate(
                 SequenceTemplateId("sequence"),
                 instant(40),
-                instant(39),
+                instant(40),
                 ZoneOffset.UTC,
             )
         assertNull(sequence.execution.planEntryId)
@@ -391,7 +391,7 @@ class LibraryRepositoryTest {
             activityRepository.startActivityFromTemplate(
                 ActivityTemplateId("activity"),
                 instant(10),
-                instant(9),
+                instant(10),
                 ZoneOffset.UTC,
             )
         }
@@ -412,7 +412,7 @@ class LibraryRepositoryTest {
             sequenceRepository.startSequenceFromTemplate(
                 SequenceTemplateId("sequence"),
                 instant(20),
-                instant(19),
+                instant(20),
                 ZoneOffset.UTC,
             )
         }
