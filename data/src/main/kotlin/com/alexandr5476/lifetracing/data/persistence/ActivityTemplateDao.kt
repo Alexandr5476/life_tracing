@@ -102,6 +102,25 @@ internal abstract class ActivityTemplateDao {
     @Query("UPDATE activity_templates SET deleted_at_ms = NULL WHERE id = :id")
     abstract fun restore(id: String): Int
 
+    @Query(
+        "UPDATE activity_templates SET statistics_series_id = :newSeriesId, revision = revision + 1, " +
+            "updated_at_ms = :updatedAtMs WHERE id = :id AND statistics_series_id = :oldSeriesId " +
+            "AND revision = :expectedRevision AND deleted_at_ms IS NULL",
+    )
+    abstract fun startNewStatisticsSeries(
+        id: String,
+        oldSeriesId: String,
+        expectedRevision: Long,
+        newSeriesId: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query("UPDATE statistics_series SET display_name = :displayName WHERE id = :seriesId")
+    protected abstract fun updateSeriesDisplayName(
+        seriesId: String,
+        displayName: String,
+    ): Int
+
     @Query("UPDATE activity_template_fields SET deleted_at_ms = :deletedAtMs WHERE id = :id")
     abstract fun archiveField(
         id: String,
@@ -143,7 +162,14 @@ internal abstract class ActivityTemplateDao {
 
     @Transaction
     open fun updateSemanticAggregate(update: ActivityTemplateSemanticUpdate) {
+        val current = requireNotNull(getById(update.template.id)) { "Unknown ActivityTemplate: ${update.template.id}" }
+        require(update.template.statisticsSeriesId == current.statisticsSeriesId) {
+            "Semantic commit cannot change Statistics Series; use Start new statistics"
+        }
         updateTemplate(update.template)
+        if (update.template.name != current.name) {
+            check(updateSeriesDisplayName(current.statisticsSeriesId, update.template.name) == 1)
+        }
         updateSettings(update.settings)
         if (update.fields.isNotEmpty()) updateFields(update.fields)
         if (update.options.isNotEmpty()) updateOptions(update.options)
