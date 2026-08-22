@@ -94,8 +94,8 @@ class LibraryRepository internal constructor(
         transaction {
             filtered(
                 filter,
-                database.libraryDao().getActiveActivities(),
-                database.libraryDao().getActiveSequences(),
+                { database.libraryDao().getActiveActivities() },
+                { database.libraryDao().getActiveSequences() },
             )
         }
 
@@ -107,8 +107,8 @@ class LibraryRepository internal constructor(
             val pattern = query.toLikePattern()
             filtered(
                 filter,
-                database.libraryDao().searchActivities(pattern),
-                database.libraryDao().searchSequences(pattern),
+                { database.libraryDao().searchActivities(pattern) },
+                { database.libraryDao().searchSequences(pattern) },
             )
         }
 
@@ -116,8 +116,8 @@ class LibraryRepository internal constructor(
         transaction {
             filtered(
                 filter,
-                database.libraryDao().getArchivedActivities(),
-                database.libraryDao().getArchivedSequences(),
+                { database.libraryDao().getArchivedActivities() },
+                { database.libraryDao().getArchivedSequences() },
             )
         }
 
@@ -129,8 +129,8 @@ class LibraryRepository internal constructor(
             requireNotNull(database.tagDao().getById(tagId.value)) { "Unknown Tag: ${tagId.value}" }
             filtered(
                 filter,
-                database.libraryDao().getActivitiesByTag(tagId.value),
-                database.libraryDao().getSequencesByTag(tagId.value),
+                { database.libraryDao().getActivitiesByTag(tagId.value) },
+                { database.libraryDao().getSequencesByTag(tagId.value) },
             )
         }
 
@@ -517,12 +517,12 @@ class LibraryRepository internal constructor(
 
     private fun filtered(
         filter: LibraryKindFilter,
-        activities: List<LibrarySummaryRow>,
-        sequences: List<LibrarySummaryRow>,
+        activityQuery: () -> List<LibrarySummaryRow>,
+        sequenceQuery: () -> List<LibrarySummaryRow>,
     ): List<LibraryTrackable> =
         rowsToTrackables(
-            if (filter == LibraryKindFilter.SEQUENCES) emptyList() else activities,
-            if (filter == LibraryKindFilter.ACTIVITIES) emptyList() else sequences,
+            if (filter == LibraryKindFilter.SEQUENCES) emptyList() else activityQuery(),
+            if (filter == LibraryKindFilter.ACTIVITIES) emptyList() else sequenceQuery(),
         ).sortedWith(catalogComparator)
 
     private fun pinnedLocked(): List<LibraryTrackable> =
