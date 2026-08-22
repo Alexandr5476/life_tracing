@@ -56,6 +56,8 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
 
     abstract fun statisticsSeriesDao(): StatisticsSeriesDao
 
+    abstract fun libraryDao(): LibraryDao
+
     abstract fun activityTemplateDao(): ActivityTemplateDao
 
     abstract fun activitySnapshotDao(): ActivitySnapshotDao

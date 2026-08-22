@@ -5,6 +5,7 @@
     "TooManyFunctions",
     "LargeClass",
     "ComplexCondition",
+    "LongParameterList",
 ) // One coordinator owns the single atomic live-runtime boundary.
 
 package com.alexandr5476.lifetracing.data.persistence
@@ -134,6 +135,23 @@ class LiveSessionRepository internal constructor(
             execution
         }
 
+    fun completeNoLiveActivityFromSnapshot(
+        snapshotId: ActivitySnapshotId,
+        completedAt: Instant,
+        zoneId: ZoneId,
+        createdAt: Instant = completedAt,
+        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+    ): ActivityExecution =
+        transaction {
+            val snapshot = loadActivitySnapshot(snapshotId)
+            require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                "Quick completion requires NO_LIVE_TRACKING"
+            }
+            val execution = noLiveExecution(snapshot, completedAt, zoneId, null, createdAt, actualValues)
+            database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
+            execution
+        }
+
     fun completeNoLiveActivityFromPlan(
         planEntryId: PlanEntryId,
         completedAt: Instant,
@@ -147,17 +165,7 @@ class LiveSessionRepository internal constructor(
             require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick Plan completion requires NO_LIVE_TRACKING"
             }
-            val generated =
-                activityFactory.completeNoLiveNow(snapshot, completedAt, zoneId, planEntryId, createdAt)
-            val overrides = actualValues.associateBy(ActivityExecutionFieldValue::snapshotFieldId)
-            val execution =
-                generated
-                    .copy(
-                        values =
-                            (generated.values.associateBy(ActivityExecutionFieldValue::snapshotFieldId) + overrides)
-                                .values
-                                .toList(),
-                    ).also { ActivityExecutionValidator.requireValid(it, snapshot) }
+            val execution = noLiveExecution(snapshot, completedAt, zoneId, planEntryId, createdAt, actualValues)
             database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
             check(
                 database.planEntryDao().fulfillActivity(
@@ -822,6 +830,25 @@ class LiveSessionRepository internal constructor(
             database.activitySnapshotDao().getAggregate(id.value),
         ) { "Unknown Activity snapshot: ${id.value}" }
             .toDomain()
+
+    private fun noLiveExecution(
+        snapshot: ActivityConfigSnapshot,
+        completedAt: Instant,
+        zoneId: ZoneId,
+        planEntryId: PlanEntryId?,
+        createdAt: Instant,
+        actualValues: List<ActivityExecutionFieldValue>,
+    ): ActivityExecution {
+        val generated = activityFactory.completeNoLiveNow(snapshot, completedAt, zoneId, planEntryId, createdAt)
+        val overrides = actualValues.associateBy(ActivityExecutionFieldValue::snapshotFieldId)
+        return generated
+            .copy(
+                values =
+                    (generated.values.associateBy(ActivityExecutionFieldValue::snapshotFieldId) + overrides)
+                        .values
+                        .toList(),
+            ).also { ActivityExecutionValidator.requireValid(it, snapshot) }
+    }
 
     private fun requireStartablePlan(
         id: PlanEntryId,
