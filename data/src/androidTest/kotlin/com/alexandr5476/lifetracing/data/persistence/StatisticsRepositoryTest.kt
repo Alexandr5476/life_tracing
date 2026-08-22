@@ -252,9 +252,9 @@ class StatisticsRepositoryTest {
         assertEquals(4, number.relevantExecutionCount)
         assertEquals(1, number.recordedCount)
         assertEquals(3, number.missingCount)
-        assertEquals(0, number.values.totalScaled.longValueExact())
+        assertEquals(0L, number.values.totalScaled.longValueExact())
         assertEquals(ExactValue.of(0, 1), number.values.averageScaled)
-        assertEquals(0, number.values.minimumScaled)
+        assertEquals(0L, number.values.minimumScaled)
 
         val category =
             repository.categoryFieldStatistics(
@@ -280,7 +280,7 @@ class StatisticsRepositoryTest {
                 "WHERE activity_execution_id = 'c' AND snapshot_field_id = 'no-live-fields-category'",
         )
         assertEquals(
-            30,
+            30L,
             repository
                 .numberFieldStatistics(
                     StatisticsSeriesId("activity-series"),
@@ -366,7 +366,7 @@ class StatisticsRepositoryTest {
         assertEquals(2, statistics.relevantExecutionCount)
         assertEquals(1, statistics.recordedCount)
         assertEquals(1, statistics.missingCount)
-        assertEquals(7, statistics.values.totalScaled.longValueExact())
+        assertEquals(7L, statistics.values.totalScaled.longValueExact())
     }
 
     @Test
@@ -441,8 +441,8 @@ class StatisticsRepositoryTest {
                 "PLANNED",
                 null,
                 null,
-                START_2330,
-                START_2330,
+                PLAN_CREATED,
+                PLAN_CREATED,
                 null,
                 null,
             ),
@@ -998,6 +998,7 @@ class StatisticsRepositoryTest {
         const val AUG_21 = "2026-08-21"
         const val ONE_OFF = "system:statistics-series:one-off-activities"
         val START_2330 = millis("2026-08-20T23:30:00Z")
+        val PLAN_CREATED = millis("2026-08-20T09:00:00Z")
 
         fun instant(value: String): Instant = Instant.parse(value)
 
