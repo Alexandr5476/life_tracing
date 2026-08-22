@@ -36,6 +36,27 @@ internal data class SequenceTemplateSemanticUpdate(
 internal data class SequenceStepSnapshotReplacement(
     val sequenceNodeId: String,
     val replacement: ActivitySnapshotAggregateEntity,
+    val mode: SequenceStepSnapshotReplacementMode = SequenceStepSnapshotReplacementMode.LOCAL,
+)
+
+internal enum class SequenceStepSnapshotReplacementMode {
+    LOCAL,
+    FROM_SOURCE,
+    NEW_SOURCE,
+}
+
+internal data class LinkedStepOwnerRow(
+    @ColumnInfo(name = "sequence_node_id") val sequenceNodeId: String,
+    @ColumnInfo(name = "sequence_template_id") val sequenceTemplateId: String,
+    @ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String,
+    @ColumnInfo(name = "locally_modified") val locallyModified: Boolean,
+    @ColumnInfo(name = "sequence_revision") val sequenceRevision: Long,
+    @ColumnInfo(name = "sequence_updated_at_ms") val sequenceUpdatedAtMs: Long,
+)
+
+internal data class BulkStepSnapshotReplacement(
+    val owner: LinkedStepOwnerRow,
+    val replacement: ActivitySnapshotAggregateEntity,
 )
 
 internal data class ActivitySnapshotModeRow(
@@ -44,7 +65,7 @@ internal data class ActivitySnapshotModeRow(
 )
 
 @Dao
-@Suppress("TooManyFunctions") // One internal DAO owns the bounded aggregate and its transactions.
+@Suppress("LargeClass", "TooManyFunctions") // One internal DAO owns the bounded aggregate and its transactions.
 internal abstract class SequenceTemplateDao {
     @Query("SELECT * FROM sequence_templates WHERE id = :id")
     abstract fun getById(id: String): SequenceTemplateEntity?
@@ -88,6 +109,18 @@ internal abstract class SequenceTemplateDao {
 
     @Query("SELECT * FROM sequence_step_overrides WHERE sequence_node_id = :nodeId")
     abstract fun getStepOverride(nodeId: String): SequenceStepOverrideEntity?
+
+    @Query(
+        "SELECT nodes.id AS sequence_node_id, nodes.sequence_template_id, nodes.activity_snapshot_id, " +
+            "snapshots.locally_modified, templates.revision AS sequence_revision, " +
+            "templates.updated_at_ms AS sequence_updated_at_ms " +
+            "FROM sequence_nodes AS nodes " +
+            "INNER JOIN activity_snapshots AS snapshots ON snapshots.id = nodes.activity_snapshot_id " +
+            "INNER JOIN sequence_templates AS templates ON templates.id = nodes.sequence_template_id " +
+            "WHERE snapshots.source_template_id = :sourceTemplateId AND templates.deleted_at_ms IS NULL " +
+            "ORDER BY nodes.sequence_template_id, nodes.id",
+    )
+    abstract fun getLinkedStepOwners(sourceTemplateId: String): List<LinkedStepOwnerRow>
 
     @Query(
         "SELECT overrides.* FROM sequence_step_overrides AS overrides " +
@@ -180,6 +213,26 @@ internal abstract class SequenceTemplateDao {
 
     @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
+
+    @Query(
+        "UPDATE sequence_nodes SET activity_snapshot_id = :newSnapshotId " +
+            "WHERE id = :nodeId AND activity_snapshot_id = :oldSnapshotId",
+    )
+    protected abstract fun repointStepUnchecked(
+        nodeId: String,
+        oldSnapshotId: String,
+        newSnapshotId: String,
+    ): Int
+
+    @Query(
+        "UPDATE sequence_templates SET revision = revision + 1, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :templateId AND revision = :expectedRevision AND deleted_at_ms IS NULL",
+    )
+    protected abstract fun incrementRevisionUnchecked(
+        templateId: String,
+        expectedRevision: Long,
+        updatedAtMs: Long,
+    ): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertActivitySnapshotUnchecked(snapshot: ActivitySnapshotEntity)
@@ -308,6 +361,7 @@ internal abstract class SequenceTemplateDao {
         require(current.template.revision == update.expectedRevision) {
             "SequenceTemplate revision changed concurrently"
         }
+        require(current.template.deletedAtMs == null) { "Archived SequenceTemplate cannot be edited" }
         require(update.template.revision == update.expectedRevision + 1) {
             "A semantic aggregate update must increment revision exactly once"
         }
@@ -365,7 +419,7 @@ internal abstract class SequenceTemplateDao {
             require(proposedNode.activitySnapshotId == replacement.snapshot.id) {
                 "Proposed Step must reference its staged replacement"
             }
-            requireValidLocalSnapshotReplacement(oldSnapshotId, replacement)
+            requireValidSnapshotReplacement(oldSnapshotId, replacement, descriptor.mode)
         }
         current.nodes.filter { it.nodeType == "STEP" }.forEach { previousNode ->
             val proposedNode = proposedById[previousNode.id]
@@ -380,22 +434,39 @@ internal abstract class SequenceTemplateDao {
         }
     }
 
-    private fun requireValidLocalSnapshotReplacement(
+    private fun requireValidSnapshotReplacement(
         oldSnapshotId: String,
         replacement: ActivitySnapshotAggregateEntity,
+        mode: SequenceStepSnapshotReplacementMode,
     ) {
         val previous =
             requireNotNull(getActivitySnapshot(oldSnapshotId)) { "Step snapshot is missing: $oldSnapshotId" }
         requireValidSnapshotAggregate(replacement)
-        require(replacement.snapshot.locallyModified) { "Local Step replacement must be locally modified" }
-        require(replacement.snapshot.sourceTemplateId == previous.sourceTemplateId) {
-            "Local Step replacement must preserve source Template identity"
-        }
-        require(replacement.snapshot.sourceRevision == previous.sourceRevision) {
-            "Local Step replacement must preserve source revision"
-        }
-        require(replacement.snapshot.statisticsSeriesId == previous.statisticsSeriesId) {
-            "Local Step replacement must preserve Statistics Series identity"
+        when (mode) {
+            SequenceStepSnapshotReplacementMode.LOCAL -> {
+                require(replacement.snapshot.locallyModified) { "Local Step replacement must be locally modified" }
+                require(replacement.snapshot.sourceTemplateId == previous.sourceTemplateId) {
+                    "Local Step replacement must preserve source Template identity"
+                }
+                require(replacement.snapshot.sourceRevision == previous.sourceRevision) {
+                    "Local Step replacement must preserve source revision"
+                }
+                require(replacement.snapshot.statisticsSeriesId == previous.statisticsSeriesId) {
+                    "Local Step replacement must preserve Statistics Series identity"
+                }
+            }
+            SequenceStepSnapshotReplacementMode.FROM_SOURCE -> {
+                require(previous.sourceTemplateId != null) { "Update from source requires a source Template" }
+                require(replacement.snapshot.sourceTemplateId == previous.sourceTemplateId) {
+                    "Update from source must preserve source Template identity"
+                }
+                require(!replacement.snapshot.locallyModified) { "Source replacement must be unmodified" }
+            }
+            SequenceStepSnapshotReplacementMode.NEW_SOURCE -> {
+                require(replacement.snapshot.sourceTemplateId != null) { "New source replacement requires a Template" }
+                require(replacement.snapshot.sourceRevision == 1L) { "New source replacement must start at revision 1" }
+                require(!replacement.snapshot.locallyModified) { "New source replacement must be unmodified" }
+            }
         }
     }
 
@@ -542,6 +613,7 @@ internal abstract class SequenceTemplateDao {
         replacement: ActivitySnapshotAggregateEntity,
         expectedRevision: Long,
         updatedAtMs: Long,
+        mode: SequenceStepSnapshotReplacementMode = SequenceStepSnapshotReplacementMode.LOCAL,
     ) {
         val node = requireNotNull(findNode(nodeId)) { "Unknown Sequence node: $nodeId" }
         require(node.nodeType == "STEP") { "Only a Step can replace its ActivitySnapshot" }
@@ -565,9 +637,50 @@ internal abstract class SequenceTemplateDao {
                         }
                     },
                 stepOverrides = current.stepOverrides,
-                stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement(nodeId, replacement)),
+                stepSnapshotReplacements = listOf(SequenceStepSnapshotReplacement(nodeId, replacement, mode)),
             ),
         )
+    }
+
+    @Transaction
+    open fun bulkReplaceLinkedSteps(
+        replacements: List<BulkStepSnapshotReplacement>,
+        updatedAtMs: Long,
+    ) {
+        require(replacements.map { it.owner.sequenceNodeId }.distinct().size == replacements.size) {
+            "Bulk propagation owners must be unique"
+        }
+        require(replacements.map { it.replacement.snapshot.id }.distinct().size == replacements.size) {
+            "Bulk propagation snapshots must be unique"
+        }
+        require(replacements.all { updatedAtMs > it.owner.sequenceUpdatedAtMs }) {
+            "Bulk propagation time must advance persisted Sequence milliseconds"
+        }
+        replacements.forEach { item ->
+            requireValidSnapshotReplacement(
+                item.owner.activitySnapshotId,
+                item.replacement,
+                SequenceStepSnapshotReplacementMode.FROM_SOURCE,
+            )
+            insertSnapshotAggregate(item.replacement)
+        }
+        replacements.forEach { item ->
+            check(
+                repointStepUnchecked(
+                    item.owner.sequenceNodeId,
+                    item.owner.activitySnapshotId,
+                    item.replacement.snapshot.id,
+                ) == 1,
+            ) { "Linked Step changed concurrently" }
+        }
+        replacements.groupBy { it.owner.sequenceTemplateId }.forEach { (templateId, items) ->
+            val revisions = items.map { it.owner.sequenceRevision }.distinct()
+            require(revisions.size == 1) { "One SequenceTemplate must have one expected revision" }
+            check(incrementRevisionUnchecked(templateId, revisions.single(), updatedAtMs) == 1) {
+                "SequenceTemplate revision changed concurrently"
+            }
+        }
+        replacements.map { it.owner.activitySnapshotId }.distinct().forEach(::pruneSnapshotIfUnreferenced)
     }
 
     @Query("SELECT * FROM sequence_nodes WHERE id = :id")

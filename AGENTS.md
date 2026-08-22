@@ -4,6 +4,8 @@
 
 - Keep the layers separate: UI/Compose consumes domain-facing models, never Room entities. The domain module must stay free of Android, Compose, and Room dependencies.
 - Persisted snapshots are immutable historical objects, not editor drafts. Replace a snapshot only on semantic **Save**, **Apply**, or **Done**—never for each keystroke.
+- Sequence structure-only edits preserve existing Step snapshot identity; replace an ActivitySnapshot only when that Step's Activity configuration or explicit source linkage changes.
+- Bulk ActivityTemplate propagation targets only mutable linked SequenceTemplate Steps, never Plan or historical Execution snapshots, and increments each affected SequenceTemplate revision at most once per command.
 - Tests are executable specifications. Every behavioral change needs appropriate tests; prefer behavioral/domain tests over implementation-detail tests.
 - Every test establishes its own relevant prerequisites and must not depend on execution order, another test's mutable state, or unrelated application behavior. Integration tests may combine real components, but their fixture and required state remain explicit and self-contained.
 - Test representable invalid and boundary states that can enter through persistence, migrations, mapping/deserialization, illegal transitions, concurrent/stale state, or regressions, so failures occur at the invariant boundary. This does not require exhaustive values, reflection/unsafe construction of unrepresentable states, or meaningless property/getter tests.
