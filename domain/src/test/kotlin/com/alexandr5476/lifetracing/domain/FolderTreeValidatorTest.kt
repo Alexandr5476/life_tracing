@@ -1,8 +1,11 @@
 package com.alexandr5476.lifetracing.domain
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.Instant
 
 class FolderTreeValidatorTest {
     private val root = FolderId("root")
@@ -50,5 +53,43 @@ class FolderTreeValidatorTest {
             }
 
         assertTrue(FolderTreeValidator.canMove(FolderId("new"), FolderId("folder-100"), deepParents))
+    }
+
+    @Test
+    fun `path is root first and corrupt cycles fail explicitly`() {
+        val folders =
+            parents.mapValues { (id, parent) -> Folder(id, id.value, parent, Instant.EPOCH, Instant.EPOCH) }
+        assertEquals(
+            listOf(root, child, grandchild),
+            FolderTreeValidator.path(grandchild, folders::get).map(Folder::id),
+        )
+
+        val corrupt =
+            mapOf(
+                root to folders.getValue(root).copy(parentFolderId = grandchild),
+                child to folders.getValue(child),
+                grandchild to folders.getValue(grandchild),
+            )
+        assertThrows(IllegalArgumentException::class.java) {
+            FolderTreeValidator.path(grandchild, corrupt::get)
+        }
+    }
+
+    @Test
+    fun `move validation rejects descendant and corrupt destination chains`() {
+        val folders =
+            parents.mapValues { (id, parent) -> Folder(id, id.value, parent, Instant.EPOCH, Instant.EPOCH) }
+        assertThrows(IllegalArgumentException::class.java) {
+            FolderTreeValidator.requireCanMove(root, grandchild, folders::get)
+        }
+
+        val cycle =
+            mapOf(
+                child to folders.getValue(child).copy(parentFolderId = grandchild),
+                grandchild to folders.getValue(grandchild).copy(parentFolderId = child),
+            )
+        assertThrows(IllegalArgumentException::class.java) {
+            FolderTreeValidator.requireCanMove(unrelated, child, cycle::get)
+        }
     }
 }

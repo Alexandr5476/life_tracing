@@ -45,3 +45,69 @@ enum class StatisticsSeriesKind {
     SEQUENCE,
     ONE_OFF_BUCKET,
 }
+
+sealed interface LibraryTemplateId {
+    val value: String
+
+    data class Activity(
+        val id: ActivityTemplateId,
+    ) : LibraryTemplateId {
+        override val value: String = id.value
+    }
+
+    data class Sequence(
+        val id: SequenceTemplateId,
+    ) : LibraryTemplateId {
+        override val value: String = id.value
+    }
+}
+
+enum class LibraryTrackableKind {
+    ACTIVITY,
+    SEQUENCE,
+}
+
+enum class LibraryKindFilter {
+    ALL,
+    ACTIVITIES,
+    SEQUENCES,
+}
+
+data class LibraryTrackable(
+    val id: LibraryTemplateId,
+    val name: String,
+    val shortComment: String?,
+    val folderId: FolderId?,
+    val tagIds: Set<TagId>,
+    val pinnedRank: Int?,
+    val lastUsedAt: Instant?,
+    val archivedAt: Instant?,
+) {
+    val kind: LibraryTrackableKind =
+        when (id) {
+            is LibraryTemplateId.Activity -> LibraryTrackableKind.ACTIVITY
+            is LibraryTemplateId.Sequence -> LibraryTrackableKind.SEQUENCE
+        }
+
+    val isArchived: Boolean = archivedAt != null
+}
+
+data class LibraryContents(
+    val folders: List<Folder>,
+    val activities: List<LibraryTrackable>,
+    val sequences: List<LibraryTrackable>,
+)
+
+data class LibraryRoot(
+    val contents: LibraryContents,
+    val pinned: List<LibraryTrackable>,
+)
+
+object LibraryPinnedRanks {
+    private const val STEP = 1024
+
+    fun forOrder(ids: List<LibraryTemplateId>): Map<LibraryTemplateId, Int> {
+        require(ids.distinct().size == ids.size) { "Pinned order cannot contain duplicate Template identities" }
+        return ids.mapIndexed { index, id -> id to Math.multiplyExact(index + 1, STEP) }.toMap()
+    }
+}
