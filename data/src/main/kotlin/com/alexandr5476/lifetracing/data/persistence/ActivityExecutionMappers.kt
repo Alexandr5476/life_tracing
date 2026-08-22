@@ -14,6 +14,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -33,7 +34,7 @@ internal fun ActivityExecution.toEntityAggregate(): ActivityExecutionAggregateEn
                 contextType = context.name,
                 sequenceExecutionId = sequenceExecutionId?.value,
                 sequenceOccurrenceId = sequenceOccurrenceId?.value,
-                planEntryId = null,
+                planEntryId = planEntryId?.value,
                 statisticsSeriesId = statisticsSeriesId?.value,
                 status = status.name,
                 startedAtMs = startedAt?.toEpochMilli(),
@@ -79,6 +80,7 @@ internal fun ActivityExecutionAggregateEntity.toDomain(): ActivityExecution =
         updatedAt = Instant.ofEpochMilli(execution.updatedAtMs),
         sequenceExecutionId = execution.sequenceExecutionId?.let(::SequenceExecutionId),
         sequenceOccurrenceId = execution.sequenceOccurrenceId?.let(::SequenceOccurrenceId),
+        planEntryId = execution.planEntryId?.let(::PlanEntryId),
         pauses =
             pauses.map { pause ->
                 ActivityExecutionPause(

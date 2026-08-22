@@ -6,6 +6,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue
 import com.alexandr5476.lifetracing.domain.NumberSequenceExecutionValue
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecution
@@ -33,7 +34,7 @@ internal fun SequenceExecution.toEntityAggregate(): SequenceExecutionAggregateEn
         SequenceExecutionEntity(
             id.value,
             snapshotId.value,
-            null,
+            planEntryId?.value,
             statisticsSeriesId?.value,
             status.name,
             startedAt.toEpochMilli(),
@@ -73,6 +74,7 @@ internal fun SequenceExecutionAggregateEntity.toDomain(): SequenceExecution =
         occurrences.map(SequenceOccurrenceEntity::toDomain),
         intervals.map(SequenceIntervalEntity::toDomain),
         values.map(SequenceExecutionFieldValueEntity::toDomain),
+        execution.planEntryId?.let(::PlanEntryId),
     ).also(SequenceExecutionValidator::requireRootState)
 
 private fun RuntimeOccurrence.toEntity(executionId: SequenceExecutionId) =

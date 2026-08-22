@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package com.alexandr5476.lifetracing.data.persistence
 
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
@@ -48,6 +50,18 @@ internal fun ActivityTemplateEntity.toDomain(
     fields = fields,
     tagIds = tagIds,
 )
+
+internal fun ActivityTemplateAggregateEntity.toDomain(): ActivityTemplate {
+    val options = options.groupBy(ActivityTemplateCategoryOptionEntity::activityTemplateFieldId)
+    return template
+        .toDomain(
+            settings.toDomain(),
+            fields.map { field ->
+                field.toDomain(options[field.id].orEmpty().map(ActivityTemplateCategoryOptionEntity::toDomain))
+            },
+            tags.map { TagId(it.tagId) }.toSet(),
+        ).also(com.alexandr5476.lifetracing.domain.ActivityTemplateValidator::requireValid)
+}
 
 internal fun ActivityTemplateSettings.toEntity(templateId: ActivityTemplateId) =
     ActivityTemplateSettingsEntity(

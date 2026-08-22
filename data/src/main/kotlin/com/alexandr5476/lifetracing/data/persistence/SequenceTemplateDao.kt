@@ -175,6 +175,9 @@ internal abstract class SequenceTemplateDao {
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_occurrences WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
     protected abstract fun hasSequenceOccurrenceReference(snapshotId: String): Boolean
 
+    @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
+    protected abstract fun hasPlanReference(snapshotId: String): Boolean
+
     @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
 
@@ -632,9 +635,13 @@ internal abstract class SequenceTemplateDao {
     }
 
     private fun pruneSnapshotIfUnreferenced(snapshotId: String) {
-        if (hasSequenceNodeReference(snapshotId) || hasSequenceSnapshotNodeReference(snapshotId)) return
-        if (hasActivityExecutionReference(snapshotId) || hasSequenceOccurrenceReference(snapshotId)) return
-        check(deleteActivitySnapshotUnchecked(snapshotId) == 1)
+        val isReferenced =
+            hasSequenceNodeReference(snapshotId) ||
+                hasSequenceSnapshotNodeReference(snapshotId) ||
+                hasActivityExecutionReference(snapshotId) ||
+                hasSequenceOccurrenceReference(snapshotId) ||
+                hasPlanReference(snapshotId)
+        if (!isReferenced) check(deleteActivitySnapshotUnchecked(snapshotId) == 1)
     }
 
     private fun SequenceStepOverrideEntity.isEmpty(): Boolean =

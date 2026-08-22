@@ -15,6 +15,12 @@ import androidx.room.Index
             onDelete = ForeignKey.RESTRICT,
         ),
         ForeignKey(
+            entity = PlanEntryEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["plan_entry_id"],
+            onDelete = ForeignKey.SET_NULL,
+        ),
+        ForeignKey(
             entity = StatisticsSeriesEntity::class,
             parentColumns = ["id"],
             childColumns = ["statistics_series_id"],

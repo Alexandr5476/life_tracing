@@ -49,6 +49,7 @@ object ActivityExecutionValidator {
                 require(
                     execution.sequenceExecutionId != null &&
                         execution.sequenceOccurrenceId != null &&
+                        execution.planEntryId == null &&
                         execution.completionReason == null,
                 ) { "Sequence child requires both parent links and no Activity completion reason" }
         }
@@ -196,6 +197,7 @@ class ActivityExecutionFactory(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        planEntryId: PlanEntryId? = null,
     ): ActivityExecution {
         require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
             "NO_LIVE_TRACKING snapshots cannot start a timed execution"
@@ -203,7 +205,7 @@ class ActivityExecutionFactory(
         val persistedStart = startedAt.toPersistenceInstant()
         val persistedCreation = createdAt.toPersistenceInstant()
         require(persistedStart <= persistedCreation) { "Start must not be in the future" }
-        return base(snapshot, persistedStart, persistedCreation, zoneId)
+        return base(snapshot, persistedStart, persistedCreation, zoneId, planEntryId = planEntryId)
             .copy(
                 status = ActivityExecutionStatus.RUNNING,
                 startedAt = persistedStart,
@@ -247,12 +249,14 @@ class ActivityExecutionFactory(
         snapshot: ActivityConfigSnapshot,
         at: Instant,
         zoneId: ZoneId,
+        planEntryId: PlanEntryId? = null,
+        createdAt: Instant = at,
     ): ActivityExecution {
         require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
             "Quick completion requires NO_LIVE_TRACKING"
         }
         val persistedAt = at.toPersistenceInstant()
-        return base(snapshot, persistedAt, persistedAt, zoneId)
+        return base(snapshot, persistedAt, createdAt.toPersistenceInstant(), zoneId, planEntryId = planEntryId)
             .copy(
                 status = ActivityExecutionStatus.COMPLETED,
                 completedAt = persistedAt,
@@ -346,6 +350,7 @@ class ActivityExecutionFactory(
         context: ActivityExecutionContext = ActivityExecutionContext.STANDALONE,
         sequenceExecutionId: SequenceExecutionId? = null,
         sequenceOccurrenceId: SequenceOccurrenceId? = null,
+        planEntryId: PlanEntryId? = null,
     ): ActivityExecution {
         ActivityConfigSnapshotValidator.requireValid(snapshot)
         val persistedEvent = eventAt.toPersistenceInstant()
@@ -373,6 +378,7 @@ class ActivityExecutionFactory(
             updatedAt = persistedCreation,
             sequenceExecutionId = sequenceExecutionId,
             sequenceOccurrenceId = sequenceOccurrenceId,
+            planEntryId = planEntryId,
             values = snapshot.materializedDefaults(),
         )
     }

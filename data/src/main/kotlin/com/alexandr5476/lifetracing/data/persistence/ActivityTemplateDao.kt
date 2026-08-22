@@ -118,6 +118,20 @@ internal abstract class ActivityTemplateDao {
     ): Int
 
     @Transaction
+    open fun getAggregate(id: String): ActivityTemplateAggregateEntity? {
+        val template = getById(id) ?: return null
+        val fields = getAllFields(id)
+        return ActivityTemplateAggregateEntity(
+            template,
+            checkNotNull(getSettings(id)) { "ActivityTemplate $id is missing settings" },
+            fields,
+            fields.flatMap { getCategoryOptions(it.id) },
+            getTagIds(id).map { ActivityTemplateTagEntity(id, it) },
+            getUserState(id),
+        ).also { it.toDomain() }
+    }
+
+    @Transaction
     open fun insertAggregate(aggregate: ActivityTemplateAggregateEntity) {
         insertTemplate(aggregate.template)
         insertSettings(aggregate.settings)

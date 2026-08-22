@@ -34,6 +34,12 @@ internal data class ActivitySnapshotExecutionMetadataRow(
     @androidx.room.ColumnInfo(name = "statistics_series_id") val statisticsSeriesId: String?,
 )
 
+internal data class ExecutionPlanLinkRow(
+    @androidx.room.ColumnInfo(name = "trackable_kind") val trackableKind: String,
+    @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
+    @androidx.room.ColumnInfo(name = "sequence_plan_snapshot_id") val sequencePlanSnapshotId: String?,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // Atomic aggregate state transitions belong together.
 internal abstract class ActivityExecutionDao {
@@ -78,6 +84,9 @@ internal abstract class ActivityExecutionDao {
 
     @Query("SELECT sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
     protected abstract fun getSequenceOccurrenceLink(id: String): SequenceOccurrenceLinkRow?
+
+    @Query("SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id FROM plan_entries WHERE id = :id")
+    protected abstract fun getPlanLink(id: String): ExecutionPlanLinkRow?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertExecutionUnchecked(execution: ActivityExecutionEntity)
@@ -360,30 +369,7 @@ internal abstract class ActivityExecutionDao {
 
     private fun requireValidAggregate(aggregate: ActivityExecutionAggregateEntity) {
         val execution = aggregate.execution
-        when (execution.contextType) {
-            "STANDALONE" ->
-                require(execution.sequenceExecutionId == null && execution.sequenceOccurrenceId == null) {
-                    "Standalone execution cannot reference Sequence ownership"
-                }
-            "SEQUENCE_CHILD" -> {
-                val sequenceExecutionId =
-                    requireNotNull(execution.sequenceExecutionId) { "Sequence child requires its parent execution" }
-                val occurrenceId =
-                    requireNotNull(execution.sequenceOccurrenceId) { "Sequence child requires its occurrence" }
-                require(execution.completionReason == null) {
-                    "Normal Sequence child completion reason belongs to the occurrence"
-                }
-                val occurrence =
-                    requireNotNull(
-                        getSequenceOccurrenceLink(occurrenceId),
-                    ) { "Unknown Sequence occurrence: $occurrenceId" }
-                require(
-                    occurrence.sequenceExecutionId == sequenceExecutionId &&
-                        occurrence.activitySnapshotId == execution.snapshotId,
-                ) { "Sequence child must match its occurrence parent and Activity snapshot" }
-            }
-            else -> throw IllegalArgumentException("Unknown execution context: ${execution.contextType}")
-        }
+        requireValidContext(execution)
         requireValidOwnedRows(aggregate)
         val snapshot =
             requireNotNull(getSnapshotExecutionMetadata(execution.snapshotId)) {
@@ -401,6 +387,41 @@ internal abstract class ActivityExecutionDao {
                         aggregate.pauses.isEmpty(),
                 ) { "NO_LIVE_TRACKING requires an immediate completed execution without duration or pauses" }
             else -> throw IllegalArgumentException("Unknown snapshot time tracking mode: ${snapshot.timeTrackingMode}")
+        }
+    }
+
+    private fun requireValidContext(execution: ActivityExecutionEntity) {
+        when (execution.contextType) {
+            "STANDALONE" -> {
+                require(execution.sequenceExecutionId == null && execution.sequenceOccurrenceId == null) {
+                    "Standalone execution cannot reference Sequence ownership"
+                }
+                execution.planEntryId?.let { planId ->
+                    val plan = requireNotNull(getPlanLink(planId)) { "Unknown Plan: $planId" }
+                    require(plan.trackableKind == "ACTIVITY" && plan.activitySnapshotId == execution.snapshotId) {
+                        "ActivityExecution Plan linkage must match kind and snapshot"
+                    }
+                }
+            }
+            "SEQUENCE_CHILD" -> {
+                val sequenceExecutionId =
+                    requireNotNull(execution.sequenceExecutionId) { "Sequence child requires its parent execution" }
+                val occurrenceId =
+                    requireNotNull(execution.sequenceOccurrenceId) { "Sequence child requires its occurrence" }
+                require(execution.completionReason == null) {
+                    "Normal Sequence child completion reason belongs to the occurrence"
+                }
+                require(execution.planEntryId == null) { "Sequence child cannot link a Plan directly" }
+                val occurrence =
+                    requireNotNull(
+                        getSequenceOccurrenceLink(occurrenceId),
+                    ) { "Unknown Sequence occurrence: $occurrenceId" }
+                require(
+                    occurrence.sequenceExecutionId == sequenceExecutionId &&
+                        occurrence.activitySnapshotId == execution.snapshotId,
+                ) { "Sequence child must match its occurrence parent and Activity snapshot" }
+            }
+            else -> throw IllegalArgumentException("Unknown execution context: ${execution.contextType}")
         }
     }
 

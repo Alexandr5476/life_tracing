@@ -366,6 +366,7 @@ class SequenceExecutionFactory(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        planEntryId: PlanEntryId? = null,
     ): SequenceExecution {
         SequenceConfigSnapshotValidator.requireValid(snapshot)
         val start = startedAt.toPersistenceInstant()
@@ -389,6 +390,7 @@ class SequenceExecutionFactory(
             creation,
             occurrenceMaterializer.materialize(snapshot),
             values = snapshot.materializedDefaults(),
+            planEntryId = planEntryId,
         ).also { SequenceExecutionValidator.requireValid(it, snapshot) }
     }
 }
