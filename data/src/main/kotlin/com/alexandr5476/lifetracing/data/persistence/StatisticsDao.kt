@@ -248,7 +248,10 @@ internal interface StatisticsDao {
 
     @Query(
         "SELECT options.id AS source_option_id, NULL AS snapshot_option_id, options.label AS current_label, NULL AS fallback_label " +
-            "FROM activity_template_category_options AS options WHERE options.activity_template_field_id = :fieldId " +
+            "FROM activity_template_category_options AS options INNER JOIN activity_template_fields AS source_fields " +
+            "ON source_fields.id = options.activity_template_field_id INNER JOIN activity_templates AS templates " +
+            "ON templates.id = source_fields.activity_template_id WHERE options.activity_template_field_id = :fieldId " +
+            "AND templates.statistics_series_id = :seriesId " +
             "UNION ALL " +
             "SELECT snapshot_options.source_option_id, " +
             "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END AS snapshot_option_id, " +
@@ -270,7 +273,10 @@ internal interface StatisticsDao {
 
     @Query(
         "SELECT options.id AS source_option_id, NULL AS snapshot_option_id, options.label AS current_label, NULL AS fallback_label " +
-            "FROM sequence_template_category_options AS options WHERE options.sequence_template_field_id = :fieldId " +
+            "FROM sequence_template_category_options AS options INNER JOIN sequence_template_fields AS source_fields " +
+            "ON source_fields.id = options.sequence_template_field_id INNER JOIN sequence_templates AS templates " +
+            "ON templates.id = source_fields.sequence_template_id WHERE options.sequence_template_field_id = :fieldId " +
+            "AND templates.statistics_series_id = :seriesId " +
             "UNION ALL " +
             "SELECT snapshot_options.source_option_id, " +
             "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END AS snapshot_option_id, " +

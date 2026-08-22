@@ -232,12 +232,14 @@ class StatisticsRepository internal constructor(
                 }.also { it.toDomain() }
             require(current.template.deletedAtMs == null) { "Archived ActivityTemplate cannot start a new Series" }
             requireSeriesKind(current.template.statisticsSeriesId, StatisticsSeriesKind.ACTIVITY)
+            val atMs = at.toEpochMilli()
+            require(atMs >= current.template.updatedAtMs) { "Statistics Series split time is out of order" }
             val series =
                 StatisticsSeries(
                     nextStatisticsSeriesId(),
                     StatisticsSeriesKind.ACTIVITY,
                     current.template.name,
-                    at,
+                    Instant.ofEpochMilli(atMs),
                     null,
                 )
             database.statisticsSeriesDao().insert(series.toEntity())
@@ -247,7 +249,7 @@ class StatisticsRepository internal constructor(
                     current.template.statisticsSeriesId,
                     current.template.revision,
                     series.id.value,
-                    at.toEpochMilli(),
+                    atMs,
                 ) == 1,
             ) { "ActivityTemplate changed concurrently" }
             series
@@ -264,12 +266,14 @@ class StatisticsRepository internal constructor(
                 }.also { it.toDomain() }
             require(current.template.deletedAtMs == null) { "Archived SequenceTemplate cannot start a new Series" }
             requireSeriesKind(current.template.statisticsSeriesId, StatisticsSeriesKind.SEQUENCE)
+            val atMs = at.toEpochMilli()
+            require(atMs >= current.template.updatedAtMs) { "Statistics Series split time is out of order" }
             val series =
                 StatisticsSeries(
                     nextStatisticsSeriesId(),
                     StatisticsSeriesKind.SEQUENCE,
                     current.template.name,
-                    at,
+                    Instant.ofEpochMilli(atMs),
                     null,
                 )
             database.statisticsSeriesDao().insert(series.toEntity())
@@ -279,7 +283,7 @@ class StatisticsRepository internal constructor(
                     current.template.statisticsSeriesId,
                     current.template.revision,
                     series.id.value,
-                    at.toEpochMilli(),
+                    atMs,
                 ) == 1,
             ) { "SequenceTemplate changed concurrently" }
             series

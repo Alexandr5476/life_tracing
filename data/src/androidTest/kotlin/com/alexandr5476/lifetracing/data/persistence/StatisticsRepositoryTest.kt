@@ -594,6 +594,207 @@ class StatisticsRepositoryTest {
     }
 
     @Test
+    fun activityCategoryOptionsStayWithinTheirSeriesLineageAfterSplit() {
+        series("activity-series-a", "ACTIVITY", "Activity A")
+        val field =
+            ActivityTemplateFieldEntity(
+                "activity-lineage-field",
+                "activity-lineage-template",
+                0,
+                "Choice",
+                "CATEGORY",
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                0,
+                0,
+                null,
+            )
+        val optionX = ActivityTemplateCategoryOptionEntity("activity-option-x", field.id, 0, "X")
+        activityTemplate(
+            "activity-lineage-template",
+            "Activity A",
+            "activity-series-a",
+            fields = listOf(field),
+            options = listOf(optionX),
+        )
+        activityCategorySnapshot("activity-lineage-snapshot", "activity-series-a", field.id, optionX.id)
+        completedActivity(
+            "activity-lineage-execution",
+            "activity-lineage-snapshot",
+            "activity-series-a",
+            MINUTE,
+            AUG_20,
+            values =
+                listOf(
+                    categoryValue(
+                        "activity-lineage-execution",
+                        "activity-lineage-snapshot-field",
+                        "activity-lineage-snapshot-option",
+                    ),
+                ),
+        )
+
+        repository.startNewActivityStatisticsSeries(
+            ActivityTemplateId("activity-lineage-template"),
+            Instant.ofEpochMilli(10),
+        )
+        database.activityTemplateDao().insertOptions(
+            listOf(ActivityTemplateCategoryOptionEntity("activity-option-y", field.id, 1, "Y")),
+        )
+
+        val oldBeforeRename =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("activity-series-a"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId(field.id)),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(1L, oldBeforeRename.values.single().count)
+        assertEquals("X", oldBeforeRename.values.single().displayLabel)
+        val current =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("generated-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId(field.id)),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(mapOf("X" to 0L, "Y" to 0L), current.values.associate { it.displayLabel to it.count })
+
+        database.activityTemplateDao().updateOptions(listOf(optionX.copy(label = "X renamed")))
+        val oldAfterRename =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("activity-series-a"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId(field.id)),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(oldBeforeRename.values.single().id, oldAfterRename.values.single().id)
+        assertEquals(1L, oldAfterRename.values.single().count)
+        assertEquals("X renamed", oldAfterRename.values.single().displayLabel)
+    }
+
+    @Test
+    fun sequenceCategoryOptionsStayWithinTheirSeriesLineageAfterSplit() {
+        series("sequence-series-a", "SEQUENCE", "Sequence A")
+        val field =
+            SequenceTemplateFieldEntity(
+                "sequence-lineage-field",
+                "sequence-lineage-template",
+                0,
+                "Choice",
+                "CATEGORY",
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                0,
+                0,
+                null,
+            )
+        val optionX = SequenceTemplateCategoryOptionEntity("sequence-option-x", field.id, 0, "X")
+        sequenceTemplate(
+            "sequence-lineage-template",
+            "Sequence A",
+            "sequence-series-a",
+            fields = listOf(field),
+            options = listOf(optionX),
+        )
+        activitySnapshot("sequence-lineage-child", null)
+        completedSequence(
+            "sequence-lineage-execution",
+            "sequence-series-a",
+            "sequence-lineage-child",
+            MINUTE,
+            0,
+            AUG_20,
+            categoryFieldId = field.id,
+            categoryOptionId = optionX.id,
+        )
+
+        repository.startNewSequenceStatisticsSeries(
+            SequenceTemplateId("sequence-lineage-template"),
+            Instant.ofEpochMilli(10),
+        )
+        val currentTemplate = database.sequenceTemplateDao().getAggregate("sequence-lineage-template")!!
+        database.sequenceTemplateDao().updateSemanticAggregate(
+            SequenceTemplateSemanticUpdate(
+                expectedRevision = 2,
+                template = currentTemplate.template.copy(revision = 3, updatedAtMs = 20),
+                settings = currentTemplate.settings,
+                fields = currentTemplate.fields,
+                options =
+                    currentTemplate.options +
+                        SequenceTemplateCategoryOptionEntity("sequence-option-y", field.id, 1, "Y"),
+                nodes = currentTemplate.nodes,
+                stepOverrides = currentTemplate.stepOverrides,
+            ),
+        )
+
+        val old =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("sequence-series-a"),
+                StatisticsFieldId.Sequence(SequenceTemplateFieldId(field.id)),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(1L, old.values.single().count)
+        assertEquals("X", old.values.single().displayLabel)
+        val current =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("generated-series"),
+                StatisticsFieldId.Sequence(SequenceTemplateFieldId(field.id)),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(mapOf("X" to 0L, "Y" to 0L), current.values.associate { it.displayLabel to it.count })
+    }
+
+    @Test
+    fun seriesSplitRejectsStalePersistedMillisecondForBothKinds() {
+        series("activity-series-a", "ACTIVITY", "Activity A")
+        series("sequence-series-a", "SEQUENCE", "Sequence A")
+        activityTemplate(
+            "stale-activity",
+            "Activity A",
+            "activity-series-a",
+            revision = 7,
+            createdAtMs = 100,
+            updatedAtMs = 200,
+        )
+        sequenceTemplate(
+            "stale-sequence",
+            "Sequence A",
+            "sequence-series-a",
+            revision = 9,
+            createdAtMs = 100,
+            updatedAtMs = 200,
+        )
+        val activityBefore = database.activityTemplateDao().getById("stale-activity")!!
+        val sequenceBefore = database.sequenceTemplateDao().getById("stale-sequence")!!
+        val activitySeriesBefore = database.statisticsSeriesDao().getById("activity-series-a")!!
+        val sequenceSeriesBefore = database.statisticsSeriesDao().getById("sequence-series-a")!!
+        val staleAt = Instant.ofEpochMilli(199).plusNanos(999_999)
+
+        val activityFailure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.startNewActivityStatisticsSeries(ActivityTemplateId("stale-activity"), staleAt)
+            }
+        val sequenceFailure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.startNewSequenceStatisticsSeries(SequenceTemplateId("stale-sequence"), staleAt)
+            }
+
+        assertEquals("Statistics Series split time is out of order", activityFailure.message)
+        assertEquals("Statistics Series split time is out of order", sequenceFailure.message)
+        assertNull(database.statisticsSeriesDao().getById("generated-series"))
+        assertEquals(activityBefore, database.activityTemplateDao().getById("stale-activity"))
+        assertEquals(sequenceBefore, database.sequenceTemplateDao().getById("stale-sequence"))
+        assertEquals(activitySeriesBefore, database.statisticsSeriesDao().getById("activity-series-a"))
+        assertEquals(sequenceSeriesBefore, database.statisticsSeriesDao().getById("sequence-series-a"))
+    }
+
+    @Test
     fun boundedLargeHistoryUsesFreshAggregateQueries() {
         series("large-series", "ACTIVITY", "Large")
         activitySnapshot("large-snapshot", "large-series")
@@ -649,9 +850,24 @@ class StatisticsRepositoryTest {
         deletedAt: Long? = null,
         fields: List<ActivityTemplateFieldEntity> = emptyList(),
         options: List<ActivityTemplateCategoryOptionEntity> = emptyList(),
+        revision: Long = 1,
+        createdAtMs: Long = 0,
+        updatedAtMs: Long = 0,
     ) = database.activityTemplateDao().insertAggregate(
         ActivityTemplateAggregateEntity(
-            ActivityTemplateEntity(id, name, null, "STOPWATCH", null, seriesId, 1, 0, 0, deletedAt, null),
+            ActivityTemplateEntity(
+                id,
+                name,
+                null,
+                "STOPWATCH",
+                null,
+                seriesId,
+                revision,
+                createdAtMs,
+                updatedAtMs,
+                deletedAt,
+                null,
+            ),
             ActivityTemplateSettingsEntity(id),
             fields,
             options,
@@ -725,12 +941,58 @@ class StatisticsRepositoryTest {
         name: String,
         seriesId: String,
         fields: List<SequenceTemplateFieldEntity> = emptyList(),
+        options: List<SequenceTemplateCategoryOptionEntity> = emptyList(),
+        revision: Long = 1,
+        createdAtMs: Long = 0,
+        updatedAtMs: Long = 0,
     ) = database.sequenceTemplateDao().insertAggregate(
         SequenceTemplateAggregateEntity(
-            SequenceTemplateEntity(id, name, null, seriesId, 1, 0, 0, null, null),
+            SequenceTemplateEntity(id, name, null, seriesId, revision, createdAtMs, updatedAtMs, null, null),
             SequenceTemplateSettingsEntity(id),
             SequenceTemplateUserStateEntity(id, null, null),
             fields = fields,
+            options = options,
+        ),
+    )
+
+    private fun activityCategorySnapshot(
+        id: String,
+        seriesId: String,
+        sourceFieldId: String,
+        sourceOptionId: String,
+    ) = database.activitySnapshotDao().insertAggregate(
+        ActivitySnapshotAggregateEntity(
+            ActivitySnapshotEntity(id, id, null, "STOPWATCH", null, null, null, seriesId, false, 0),
+            ActivitySnapshotSettingsEntity(id),
+            fields =
+                listOf(
+                    ActivitySnapshotFieldEntity(
+                        "$id-field",
+                        id,
+                        sourceFieldId,
+                        0,
+                        "Choice",
+                        null,
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false,
+                    ),
+                ),
+            options =
+                listOf(
+                    ActivitySnapshotCategoryOptionEntity(
+                        "$id-option",
+                        "$id-field",
+                        sourceOptionId,
+                        0,
+                        "X",
+                        null,
+                    ),
+                ),
         ),
     )
 
@@ -872,7 +1134,10 @@ class StatisticsRepositoryTest {
         primaryDate: String,
         withNumberField: Boolean = false,
         numberValue: Long? = null,
+        categoryFieldId: String? = null,
+        categoryOptionId: String? = null,
     ): Pair<String, String> {
+        require((categoryFieldId == null) == (categoryOptionId == null))
         val snapshotId = "$id-snapshot"
         val occurrenceId = "$id-occurrence"
         val started = START_2330
@@ -882,27 +1147,60 @@ class StatisticsRepositoryTest {
                 SequenceSnapshotEntity(snapshotId, id, null, null, null, seriesId, 0),
                 sequenceSettings(snapshotId),
                 fields =
-                    if (withNumberField) {
-                        listOf(
-                            SequenceSnapshotFieldEntity(
-                                "$snapshotId-number",
-                                snapshotId,
-                                "sequence-number-source",
-                                0,
-                                "Effort",
-                                null,
-                                "NUMBER",
-                                "points",
-                                0,
-                                null,
-                                null,
-                                null,
-                                true,
-                            ),
-                        )
-                    } else {
-                        emptyList()
+                    buildList {
+                        if (withNumberField) {
+                            add(
+                                SequenceSnapshotFieldEntity(
+                                    "$snapshotId-number",
+                                    snapshotId,
+                                    "sequence-number-source",
+                                    0,
+                                    "Effort",
+                                    null,
+                                    "NUMBER",
+                                    "points",
+                                    0,
+                                    null,
+                                    null,
+                                    null,
+                                    true,
+                                ),
+                            )
+                        }
+                        categoryFieldId?.let { sourceFieldId ->
+                            add(
+                                SequenceSnapshotFieldEntity(
+                                    "$snapshotId-category",
+                                    snapshotId,
+                                    sourceFieldId,
+                                    0,
+                                    "Choice",
+                                    null,
+                                    "CATEGORY",
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    false,
+                                ),
+                            )
+                        }
                     },
+                options =
+                    categoryOptionId
+                        ?.let { sourceOptionId ->
+                            listOf(
+                                SequenceSnapshotCategoryOptionEntity(
+                                    "$snapshotId-option",
+                                    "$snapshotId-category",
+                                    sourceOptionId,
+                                    0,
+                                    "X",
+                                    null,
+                                ),
+                            )
+                        }.orEmpty(),
             ),
         )
         database.sequenceExecutionDao().insertAggregate(
@@ -956,10 +1254,22 @@ class StatisticsRepositoryTest {
                         SequenceIntervalEntity("$id-pause", id, "IMPLICIT_IDLE", started + activeMs, ended, null),
                     ),
                 values =
-                    numberValue
-                        ?.let {
-                            listOf(SequenceExecutionFieldValueEntity(id, "$snapshotId-number", it, null, null))
-                        }.orEmpty(),
+                    buildList {
+                        numberValue?.let {
+                            add(SequenceExecutionFieldValueEntity(id, "$snapshotId-number", it, null, null))
+                        }
+                        categoryOptionId?.let {
+                            add(
+                                SequenceExecutionFieldValueEntity(
+                                    id,
+                                    "$snapshotId-category",
+                                    null,
+                                    "$snapshotId-option",
+                                    null,
+                                ),
+                            )
+                        }
+                    },
             ),
         )
         return id to occurrenceId
