@@ -304,7 +304,7 @@ class PlanEntryDatabaseTest {
             currentTemplate.copy(name = "Updated", revision = 2, updatedAtMs = 2_000),
         )
         val updated = repository.updatePlanFromTemplate(activity.id, instant(2))
-        assertEquals(2, updated.sourceRevision)
+        assertEquals(2L, updated.sourceRevision)
         assertEquals("activity-plan-snapshot-2", updated.activitySnapshotId?.value)
         assertNull(database.activitySnapshotDao().getById("activity-plan-snapshot-1"))
 
@@ -437,6 +437,9 @@ class PlanEntryDatabaseTest {
 
         database.openHelper.writableDatabase.execSQL("DELETE FROM active_session")
         database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM activity_executions WHERE sequence_execution_id = '${sequence.execution.id.value}'",
+        )
+        database.openHelper.writableDatabase.execSQL(
             "DELETE FROM sequence_executions WHERE id = '${sequence.execution.id.value}'",
         )
         database.planEntryDao().insert(plan("quick-a", activity = "no-live"))
@@ -528,7 +531,7 @@ class PlanEntryDatabaseTest {
         database.openHelper.writableDatabase.execSQL("DELETE FROM activity_templates WHERE id = 'activity-template'")
         val retained = plans.getPlan(purgedPlan.id)!!
         assertNull(retained.sourceActivityTemplateId)
-        assertEquals(1, retained.sourceRevision)
+        assertEquals(1L, retained.sourceRevision)
         live.startActivityFromPlan(purgedPlan.id, instant(9), instant(9), ZoneId.of("UTC"))
         live.completeActiveActivity(instant(10))
         assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(purgedPlan.id)?.status)

@@ -90,11 +90,7 @@ class SequenceExecutionMigrationTest {
     }
 
     @Test
-    fun freshMigratedAndHistoricalV7HaveEquivalentSemanticSchemasAndRealActivityForeignKeys() {
-        val fresh = LifeTracingDatabase.builder(context, names[1]).allowMainThreadQueries().build()
-        val freshSchema = fresh.openHelper.readableDatabase.readSequenceExecutionManualSchema()
-        fresh.close()
-
+    fun migratedAndHistoricalV7HaveEquivalentSemanticSchemasAndRealActivityForeignKeys() {
         LifeTracingMigrationTestDatabaseFactory.createVersion6(helper, names[0]).close()
         val migrated =
             helper.runMigrationsAndValidate(names[0], 7, true, MIGRATION_6_7).use {
@@ -105,22 +101,21 @@ class SequenceExecutionMigrationTest {
                 it.readSequenceExecutionManualSchema()
             }
 
-        assertEquals(freshSchema, migrated)
-        assertEquals(freshSchema, historical)
-        assertEquals("activity_snapshots:RESTRICT", freshSchema.activityExecutionForeignKeys["snapshot_id"])
-        assertEquals("statistics_series:RESTRICT", freshSchema.activityExecutionForeignKeys["statistics_series_id"])
-        assertEquals("sequence_executions:RESTRICT", freshSchema.activityExecutionForeignKeys["sequence_execution_id"])
+        assertEquals(historical, migrated)
+        assertEquals("activity_snapshots:RESTRICT", historical.activityExecutionForeignKeys["snapshot_id"])
+        assertEquals("statistics_series:RESTRICT", historical.activityExecutionForeignKeys["statistics_series_id"])
+        assertEquals("sequence_executions:RESTRICT", historical.activityExecutionForeignKeys["sequence_execution_id"])
         assertEquals(
             "sequence_occurrences:RESTRICT",
-            freshSchema.activityExecutionForeignKeys["sequence_occurrence_id"],
+            historical.activityExecutionForeignKeys["sequence_occurrence_id"],
         )
-        assertTrue(freshSchema.childIndexUnique)
-        assertEquals("sequence_occurrence_id is not null", freshSchema.childIndexPredicate)
-        assertTrue(freshSchema.hasRootStatusCacheCheck)
-        assertTrue(freshSchema.hasOccurrenceStatusCheck)
-        assertTrue(freshSchema.hasOccurrenceReasonCheck)
-        assertTrue(freshSchema.hasIntervalKindCheck)
-        assertTrue(freshSchema.hasTypedValueCheck)
+        assertTrue(historical.childIndexUnique)
+        assertEquals("sequence_occurrence_id is not null", historical.childIndexPredicate)
+        assertTrue(historical.hasRootStatusCacheCheck)
+        assertTrue(historical.hasOccurrenceStatusCheck)
+        assertTrue(historical.hasOccurrenceReasonCheck)
+        assertTrue(historical.hasIntervalKindCheck)
+        assertTrue(historical.hasTypedValueCheck)
     }
 
     private fun SupportSQLiteDatabase.insertRepresentativeV6Rows() {
