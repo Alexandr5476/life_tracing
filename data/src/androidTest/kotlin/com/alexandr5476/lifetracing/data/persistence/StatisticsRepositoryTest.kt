@@ -87,16 +87,16 @@ class StatisticsRepositoryTest {
 
         val all = repository.global(StatisticsPeriod.AllTime)
         assertEquals(Duration.ofMinutes(210), all.totalTrackedDuration)
-        assertEquals(4, all.topLevelExecutionCount)
-        assertEquals(2, all.activeDayCount)
+        assertEquals(4L, all.topLevelExecutionCount)
+        assertEquals(2L, all.activeDayCount)
         assertEquals(Duration.ofMinutes(15), all.totalSequencePauseIdleDuration)
-        assertEquals(1, all.oneOffActivityExecutionCount)
+        assertEquals(1L, all.oneOffActivityExecutionCount)
         assertNull(all.calendarDayCount)
         assertNull(all.averageTrackedMillisecondsPerCalendarDay)
 
         val aug20 = repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
         assertEquals(Duration.ofMinutes(210), aug20.totalTrackedDuration)
-        assertEquals(3, aug20.topLevelExecutionCount)
+        assertEquals(3L, aug20.topLevelExecutionCount)
         assertEquals(ExactValue.of(210 * MINUTE, 1), aug20.averageTrackedMillisecondsPerCalendarDay)
         assertEquals(
             Duration.ofMinutes(210),
@@ -122,7 +122,7 @@ class StatisticsRepositoryTest {
         ).forEach { period ->
             assertEquals(Duration.ofMinutes(210), repository.global(period).totalTrackedDuration)
         }
-        assertEquals(1, repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_21))).topLevelExecutionCount)
+        assertEquals(1L, repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_21))).topLevelExecutionCount)
 
         val correctedStart = millis("2026-08-21T13:00:00Z")
         database.openHelper.writableDatabase.execSQL(
@@ -148,7 +148,7 @@ class StatisticsRepositoryTest {
 
         database.activityExecutionDao().softDelete("standalone-execution", millis("2026-08-22T00:00:00Z"))
         assertEquals(Duration.ofMinutes(120), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
-        assertEquals(3, repository.global(StatisticsPeriod.AllTime).topLevelExecutionCount)
+        assertEquals(3L, repository.global(StatisticsPeriod.AllTime).topLevelExecutionCount)
 
         activitySnapshot("one-off-child", null)
         val oneOffChildParent =
@@ -164,7 +164,7 @@ class StatisticsRepositoryTest {
             occurrenceId = oneOffChildParent.second,
         )
         assertEquals(Duration.ofMinutes(130), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
-        assertEquals(1, repository.global(StatisticsPeriod.AllTime).oneOffActivityExecutionCount)
+        assertEquals(1L, repository.global(StatisticsPeriod.AllTime).oneOffActivityExecutionCount)
     }
 
     @Test
@@ -210,8 +210,8 @@ class StatisticsRepositoryTest {
         )
 
         val detail = repository.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
-        assertEquals(4, detail.executionCount)
-        assertEquals(2, detail.durations.sampleCount)
+        assertEquals(4L, detail.executionCount)
+        assertEquals(2L, detail.durations.sampleCount)
         assertEquals(Duration.ofMinutes(30), detail.durations.total)
         assertEquals(ExactValue.of(15 * MINUTE, 1), detail.durations.averageMilliseconds)
 
@@ -249,9 +249,9 @@ class StatisticsRepositoryTest {
                 StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
                 StatisticsPeriod.AllTime,
             )
-        assertEquals(4, number.relevantExecutionCount)
-        assertEquals(1, number.recordedCount)
-        assertEquals(3, number.missingCount)
+        assertEquals(4L, number.relevantExecutionCount)
+        assertEquals(1L, number.recordedCount)
+        assertEquals(3L, number.missingCount)
         assertEquals(0L, number.values.totalScaled.longValueExact())
         assertEquals(ExactValue.of(0, 1), number.values.averageScaled)
         assertEquals(0L, number.values.minimumScaled)
@@ -262,11 +262,11 @@ class StatisticsRepositoryTest {
                 StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
                 StatisticsPeriod.AllTime,
             )
-        assertEquals(4, category.relevantExecutionCount)
-        assertEquals(2, category.recordedCount)
-        assertEquals(2, category.missingCount)
+        assertEquals(4L, category.relevantExecutionCount)
+        assertEquals(2L, category.recordedCount)
+        assertEquals(2L, category.missingCount)
         assertEquals("Tempo", category.values.single().displayLabel)
-        assertEquals(2, category.values.single().count)
+        assertEquals(2L, category.values.single().count)
         assertEquals(
             ExactValue.of(1, 1),
             category.values
@@ -295,9 +295,9 @@ class StatisticsRepositoryTest {
                 StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
                 StatisticsPeriod.AllTime,
             )
-        assertEquals(1, editedCategory.recordedCount)
-        assertEquals(3, editedCategory.missingCount)
-        assertEquals(1, editedCategory.values.single().count)
+        assertEquals(1L, editedCategory.recordedCount)
+        assertEquals(3L, editedCategory.missingCount)
+        assertEquals(1L, editedCategory.values.single().count)
 
         activitySnapshot("local-one-off", null, fields = true, sourceLinked = false)
         completedActivity(
@@ -311,7 +311,7 @@ class StatisticsRepositoryTest {
         assertTrue(repository.fieldCatalog(StatisticsSeriesId(ONE_OFF)).isEmpty())
         val oneOffSummary =
             repository.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id.value == ONE_OFF }
-        assertEquals(1, oneOffSummary.executionCount)
+        assertEquals(1L, oneOffSummary.executionCount)
         assertEquals(Duration.ofMinutes(5), oneOffSummary.totalDuration)
     }
 
@@ -363,9 +363,9 @@ class StatisticsRepositoryTest {
                 field.id,
                 StatisticsPeriod.AllTime,
             )
-        assertEquals(2, statistics.relevantExecutionCount)
-        assertEquals(1, statistics.recordedCount)
-        assertEquals(1, statistics.missingCount)
+        assertEquals(2L, statistics.relevantExecutionCount)
+        assertEquals(1L, statistics.recordedCount)
+        assertEquals(1L, statistics.missingCount)
         assertEquals(7L, statistics.values.totalScaled.longValueExact())
     }
 
@@ -387,9 +387,9 @@ class StatisticsRepositoryTest {
         assertEquals(StatisticsSeriesSourceState.NO_CURRENT_SOURCE, states["sourceless-series"])
         assertEquals(StatisticsSeriesSourceState.SYSTEM_ONE_OFF, states[ONE_OFF])
         val summaries = repository.seriesSummaries(StatisticsPeriod.AllTime).associateBy { it.series.id.value }
-        assertEquals(1, summaries.getValue("sourceless-series").executionCount)
+        assertEquals(1L, summaries.getValue("sourceless-series").executionCount)
         assertEquals(Duration.ofMinutes(1), summaries.getValue("sourceless-series").totalDuration)
-        assertEquals(1, summaries.getValue("active-series").executionCount)
+        assertEquals(1L, summaries.getValue("active-series").executionCount)
 
         database.activityTemplateDao().archive("active", 20)
         assertEquals(
@@ -397,7 +397,7 @@ class StatisticsRepositoryTest {
             repository.seriesCatalog().single { it.id.value == "active-series" }.sourceState,
         )
         assertEquals(
-            1,
+            1L,
             repository.activitySeries(StatisticsSeriesId("active-series"), StatisticsPeriod.AllTime).executionCount,
         )
         assertNull(database.statisticsSeriesDao().getById("active-series")?.archivedAtMs)
@@ -458,7 +458,7 @@ class StatisticsRepositoryTest {
         assertEquals("generated-series", newActivity.id.value)
         val split = database.activityTemplateDao().getById("activity")!!
         assertEquals("generated-series", split.statisticsSeriesId)
-        assertEquals(2, split.revision)
+        assertEquals(2L, split.revision)
         val activityAfterSplit = database.activityTemplateDao().getAggregate("activity")!!
         assertEquals(activityBeforeSplit.settings, activityAfterSplit.settings)
         assertEquals(activityBeforeSplit.fields, activityAfterSplit.fields)
@@ -509,7 +509,7 @@ class StatisticsRepositoryTest {
             occurrenceId = oldSequence.second,
         )
         assertEquals(
-            2,
+            2L,
             repository
                 .activitySeries(
                     StatisticsSeriesId("old-activity-series"),
@@ -517,7 +517,7 @@ class StatisticsRepositoryTest {
                 ).executionCount,
         )
         assertEquals(
-            1,
+            1L,
             repository.activitySeries(StatisticsSeriesId("generated-series"), StatisticsPeriod.AllTime).executionCount,
         )
 
@@ -540,7 +540,7 @@ class StatisticsRepositoryTest {
         repository = StatisticsRepository(database) { StatisticsSeriesId("new-sequence-series") }
         repository.startNewSequenceStatisticsSeries(SequenceTemplateId("sequence"), instant("2026-08-20T14:00:00Z"))
         assertEquals("new-sequence-series", database.sequenceTemplateDao().getById("sequence")?.statisticsSeriesId)
-        assertEquals(2, database.sequenceTemplateDao().getById("sequence")?.revision)
+        assertEquals(2L, database.sequenceTemplateDao().getById("sequence")?.revision)
         val sequenceAfterSplit = database.sequenceTemplateDao().getAggregate("sequence")!!
         assertEquals(sequenceBeforeSplit.settings, sequenceAfterSplit.settings)
         assertEquals(sequenceBeforeSplit.fields, sequenceAfterSplit.fields)
@@ -549,7 +549,7 @@ class StatisticsRepositoryTest {
         assertEquals(sequenceBeforeSplit.userState, sequenceAfterSplit.userState)
         completedSequence("new-sequence-root", "new-sequence-series", "direct-new", 7 * MINUTE, 0, AUG_20)
         assertEquals(
-            1,
+            1L,
             repository
                 .sequenceSeries(
                     StatisticsSeriesId("old-sequence-series"),
@@ -557,7 +557,7 @@ class StatisticsRepositoryTest {
                 ).executionCount,
         )
         assertEquals(
-            1,
+            1L,
             repository
                 .sequenceSeries(
                     StatisticsSeriesId("new-sequence-series"),
@@ -589,7 +589,7 @@ class StatisticsRepositoryTest {
             repository.startNewActivityStatisticsSeries(ActivityTemplateId("activity"), instant("2026-08-20T15:00:00Z"))
         }
         assertEquals("generated-series", database.activityTemplateDao().getById("activity")?.statisticsSeriesId)
-        assertEquals(3, database.activityTemplateDao().getById("activity")?.revision)
+        assertEquals(3L, database.activityTemplateDao().getById("activity")?.revision)
         assertEquals(millis("2026-08-20T13:00:00Z"), database.activityTemplateDao().getById("activity")?.updatedAtMs)
     }
 
@@ -630,7 +630,7 @@ class StatisticsRepositoryTest {
                 StatisticsSeriesId("large-series"),
                 StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
             )
-        assertEquals(2_000, bounded.executionCount)
+        assertEquals(2_000L, bounded.executionCount)
         assertEquals(Duration.ofSeconds(2_000), bounded.durations.total)
         assertTrue(database.sequenceExecutionDao().getIntervals("missing").isEmpty())
     }
