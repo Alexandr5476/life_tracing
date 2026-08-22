@@ -202,6 +202,25 @@ internal abstract class SequenceTemplateDao {
     @Query("UPDATE sequence_templates SET deleted_at_ms = NULL WHERE id = :id")
     abstract fun restore(id: String): Int
 
+    @Query(
+        "UPDATE sequence_templates SET statistics_series_id = :newSeriesId, revision = revision + 1, " +
+            "updated_at_ms = :updatedAtMs WHERE id = :id AND statistics_series_id = :oldSeriesId " +
+            "AND revision = :expectedRevision AND deleted_at_ms IS NULL",
+    )
+    abstract fun startNewStatisticsSeries(
+        id: String,
+        oldSeriesId: String,
+        expectedRevision: Long,
+        newSeriesId: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query("UPDATE statistics_series SET display_name = :displayName WHERE id = :seriesId")
+    protected abstract fun updateSeriesDisplayName(
+        seriesId: String,
+        displayName: String,
+    ): Int
+
     @Query("UPDATE sequence_templates SET folder_id = :folderId WHERE id = :id")
     abstract fun updateFolder(
         id: String,
@@ -274,6 +293,9 @@ internal abstract class SequenceTemplateDao {
         update.stepSnapshotReplacements.forEach { insertSnapshotAggregate(it.replacement) }
         requireValidSemanticUpdateBody(current, proposed)
         updateTemplateWithRevisionCheck(update)
+        if (update.template.name != current.template.name) {
+            check(updateSeriesDisplayName(current.template.statisticsSeriesId, update.template.name) == 1)
+        }
         check(updateSettingsUnchecked(update.settings) == 1)
         persistFieldsAndOptions(current, update)
         replaceStructureAndPrune(current, update.nodes, canonicalOverrides)
