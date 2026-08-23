@@ -198,9 +198,9 @@ class ActivityCommandRepository internal constructor(
                     corrected.copy(
                         snapshotId = snapshot.id,
                         values =
-                            corrected.values.map { value ->
-                                value.remap(replacement.fieldIds, replacement.optionIds)
-                            },
+                            corrected.values
+                                .map { value -> value.remap(replacement.fieldIds, replacement.optionIds) }
+                                .sortedBy { it.snapshotFieldId.value },
                     )
                 ActivityExecutionValidator.requireValid(corrected, snapshot)
                 database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())

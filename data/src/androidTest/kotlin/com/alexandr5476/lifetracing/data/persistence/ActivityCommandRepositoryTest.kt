@@ -99,7 +99,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(instant(0), execution.startedAt)
         assertEquals(instant(1_200), execution.createdAt)
         assertEquals("1970-01-01", execution.primaryLocalDate.toString())
-        assertEquals(execution.id.value, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(execution.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(0L, database.activityTemplateDao().getUserState("stopwatch")?.lastUsedAtMs)
 
         val snapshotCount = count("activity_snapshots")
@@ -204,7 +204,7 @@ class ActivityCommandRepositoryTest {
             )
         assertNull(noLive.startedAt)
         assertNull(noLive.activeDuration)
-        assertEquals(active.id.value, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(active.id, database.activeSessionDao().get()?.activityExecutionId)
     }
 
     @Test
@@ -350,7 +350,7 @@ class ActivityCommandRepositoryTest {
                 ZoneOffset.UTC,
             )
         assertEquals(ActivityExecutionStatus.RUNNING, live.status)
-        assertEquals(live.id.value, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(live.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(0, count("activity_templates"))
         assertEquals(0, count("activity_template_user_state"))
         assertEquals(0, count("activity_template_tags"))
@@ -549,7 +549,7 @@ class ActivityCommandRepositoryTest {
                     StatisticsFieldId.Activity(ActivityTemplateFieldId("correction-category")),
                     StatisticsPeriod.AllTime,
                 ).values
-                .single()
+                .single { it.count == 1L }
                 .displayLabel,
         )
 
