@@ -143,7 +143,7 @@ class LiveSessionRepository internal constructor(
                 ),
             )
             plan.sourceActivityTemplateId?.let {
-                database.planEntryDao().touchActivitySource(it.value, startedAt.toEpochMilli())
+                database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli())
             }
             execution
         }
@@ -189,7 +189,7 @@ class LiveSessionRepository internal constructor(
                 ) == 1,
             ) { "Plan changed before quick completion" }
             plan.sourceActivityTemplateId?.let {
-                database.planEntryDao().touchActivitySource(it.value, completedAt.toEpochMilli())
+                database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli())
             }
             execution
         }

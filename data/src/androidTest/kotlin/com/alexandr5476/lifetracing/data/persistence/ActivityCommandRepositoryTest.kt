@@ -100,7 +100,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(instant(1_200), execution.createdAt)
         assertEquals("1970-01-01", execution.primaryLocalDate.toString())
         assertEquals(execution.id, database.activeSessionDao().get()?.activityExecutionId)
-        assertEquals(0L, database.activityTemplateDao().getUserState("stopwatch")?.lastUsedAtMs)
+        assertEquals(1_200_000L, database.activityTemplateDao().getUserState("stopwatch")?.lastUsedAtMs)
 
         val snapshotCount = count("activity_snapshots")
         assertThrows(IllegalArgumentException::class.java) {
@@ -113,6 +113,67 @@ class ActivityCommandRepositoryTest {
         }
         assertEquals(snapshotCount, count("activity_snapshots"))
         assertEquals(1, count("activity_executions"))
+    }
+
+    @Test
+    fun recentUsesCommandTimeAndCannotRewindForDirectOrPlanTemplateUse() {
+        template("manual-recent", TimeTrackingMode.STOPWATCH)
+        template("monotonic-recent", TimeTrackingMode.STOPWATCH)
+        template("plan-recent", TimeTrackingMode.STOPWATCH)
+        template("plan-rewind", TimeTrackingMode.STOPWATCH)
+        database.libraryDao().touchActivity("manual-recent", 2_000_000)
+        database.libraryDao().touchActivity("monotonic-recent", 5_000_000)
+        database.libraryDao().touchActivity("plan-recent", 2_000_000)
+        database.libraryDao().touchActivity("plan-rewind", 5_000_000)
+        val repository = repository("recent")
+
+        repository.addManualTimed(
+            ActivityEntrySource.Template(ActivityTemplateId("manual-recent")),
+            instant(100),
+            instant(200),
+            instant(3_000),
+            ZoneOffset.UTC,
+        )
+        assertEquals(3_000_000L, database.activityTemplateDao().getUserState("manual-recent")?.lastUsedAtMs)
+
+        repository.addManualTimed(
+            ActivityEntrySource.Template(ActivityTemplateId("monotonic-recent")),
+            instant(100),
+            instant(200),
+            instant(4_000),
+            ZoneOffset.UTC,
+        )
+        assertEquals(5_000_000L, database.activityTemplateDao().getUserState("monotonic-recent")?.lastUsedAtMs)
+
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-recent"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(50),
+            )
+        repository.addManualTimed(
+            ActivityEntrySource.Plan(plan.id),
+            instant(100),
+            instant(200),
+            instant(3_000),
+            ZoneOffset.UTC,
+        )
+        assertEquals(3_000_000L, database.activityTemplateDao().getUserState("plan-recent")?.lastUsedAtMs)
+
+        val rewindPlan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-rewind"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
+                instant(50),
+            )
+        repository.addManualTimed(
+            ActivityEntrySource.Plan(rewindPlan.id),
+            instant(100),
+            instant(200),
+            instant(4_000),
+            ZoneOffset.UTC,
+        )
+        assertEquals(5_000_000L, database.activityTemplateDao().getUserState("plan-rewind")?.lastUsedAtMs)
     }
 
     @Test
@@ -132,6 +193,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(0, count("activity_snapshots"))
         assertEquals(0, count("activity_executions"))
         assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("finish")?.lastUsedAtMs)
 
         val overtime =
             repository.startLive(
@@ -205,6 +267,7 @@ class ActivityCommandRepositoryTest {
         assertNull(noLive.startedAt)
         assertNull(noLive.activeDuration)
         assertEquals(active.id, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(1_000_000L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
     }
 
     @Test
@@ -246,6 +309,10 @@ class ActivityCommandRepositoryTest {
         assertNull(noLive.activeDuration)
         assertEquals(LocalDate.of(2026, 8, 21), noLive.primaryLocalDate)
         assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(noLivePlan.id)?.status)
+        assertEquals(
+            Instant.parse("2026-08-22T00:00:00Z").toEpochMilli(),
+            database.activityTemplateDao().getUserState("cross-no-live")?.lastUsedAtMs,
+        )
 
         repository.softDeleteHistory(timed.id, timed.updatedAt, Instant.parse("2026-08-23T00:00:00Z"))
         assertFalse(repository.overlapsCompletedHistory(start, end))
@@ -479,6 +546,72 @@ class ActivityCommandRepositoryTest {
                 .executionCount,
         )
         assertFalse(repository.overlapsCompletedHistory(instant(90), instant(210), execution.id))
+    }
+
+    @Test
+    fun fulfilledPlanCorrectionRejectsArbitrarySnapshotButAcceptsCommentOnlyReplacement() {
+        template("plan-boundary", TimeTrackingMode.STOPWATCH)
+        val plans = planRepository()
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-boundary"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(0),
+            )
+        val repository = repository("plan-boundary")
+        val execution =
+            repository.addManualTimed(
+                ActivityEntrySource.Plan(plan.id),
+                instant(10),
+                instant(20),
+                instant(30),
+                ZoneOffset.UTC,
+            )
+        val frozen =
+            requireNotNull(database.activitySnapshotDao().getAggregate(requireNotNull(plan.activitySnapshotId).value))
+                .toDomain()
+        val arbitrary =
+            frozen.copy(
+                id = ActivitySnapshotId("plan-boundary-arbitrary"),
+                name = "materially different",
+                createdAt = instant(40),
+            )
+        database.activitySnapshotDao().insertAggregate(arbitrary.toEntityAggregate())
+        val executionBefore = requireNotNull(database.activityExecutionDao().getAggregate(execution.id.value))
+        val planBefore = requireNotNull(database.planEntryDao().getById(plan.id.value))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            database.activityExecutionDao().correctCompletedStandalone(
+                execution.updatedAt.toEpochMilli(),
+                frozen.id.value,
+                executionBefore.copy(
+                    execution =
+                        executionBefore.execution.copy(
+                            snapshotId = arbitrary.id.value,
+                            updatedAtMs = instant(40).toEpochMilli(),
+                        ),
+                ),
+            )
+        }
+        assertEquals(executionBefore, database.activityExecutionDao().getAggregate(execution.id.value))
+        assertEquals(planBefore, database.planEntryDao().getById(plan.id.value))
+
+        val corrected =
+            repository.correctHistory(
+                execution.id,
+                ActivityHistoryCorrection(
+                    execution.updatedAt,
+                    ActivityHistoryTimeCorrection.Timed(instant(10), instant(20)),
+                    ZoneOffset.UTC,
+                    execution.values,
+                    "corrected comment",
+                ),
+                instant(50),
+            )
+        assertNotEquals(frozen.id, corrected.snapshot.id)
+        assertEquals("corrected comment", corrected.snapshot.shortComment)
+        assertEquals(frozen.id, plans.getPlan(plan.id)?.activitySnapshotId)
+        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
     }
 
     @Test

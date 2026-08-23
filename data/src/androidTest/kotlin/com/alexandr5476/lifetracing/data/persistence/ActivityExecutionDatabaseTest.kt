@@ -277,6 +277,32 @@ class ActivityExecutionDatabaseTest {
             )
         }
         assertNull(executions.getById("invalid-owner-aggregate"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.insertAggregate(
+                ActivityExecutionAggregateEntity(
+                    completed("duplicate-value-aggregate", snapshotId = "owner-a"),
+                    values =
+                        listOf(
+                            ActivityExecutionFieldValueEntity(
+                                "duplicate-value-aggregate",
+                                "number-a",
+                                1,
+                                null,
+                                null,
+                            ),
+                            ActivityExecutionFieldValueEntity(
+                                "duplicate-value-aggregate",
+                                "number-a",
+                                2,
+                                null,
+                                null,
+                            ),
+                        ),
+                ),
+            )
+        }
+        assertNull(executions.getById("duplicate-value-aggregate"))
     }
 
     @Test

@@ -127,6 +127,43 @@ object ActivityConfigSnapshotValidator {
     }
 }
 
+object ActivityHistoricalSnapshotPolicy {
+    fun isCommentOnlyReplacement(
+        previous: ActivityConfigSnapshot,
+        replacement: ActivityConfigSnapshot,
+    ): Boolean {
+        if (
+            replacement.fields.size != previous.fields.size ||
+            replacement.fields.zip(previous.fields).any { (field, previousField) ->
+                field.categoryOptions.size != previousField.categoryOptions.size
+            }
+        ) {
+            return false
+        }
+        val normalizedFields =
+            replacement.fields.zip(previous.fields).map { (field, previousField) ->
+                val optionIds =
+                    field.categoryOptions.zip(previousField.categoryOptions).associate { (option, previousOption) ->
+                        option.id to previousOption.id
+                    }
+                field.copy(
+                    id = previousField.id,
+                    defaultCategoryOptionId = field.defaultCategoryOptionId?.let(optionIds::getValue),
+                    categoryOptions =
+                        field.categoryOptions.zip(previousField.categoryOptions).map { (option, previousOption) ->
+                            option.copy(id = previousOption.id)
+                        },
+                )
+            }
+        return replacement.copy(
+            id = previous.id,
+            shortComment = previous.shortComment,
+            createdAt = previous.createdAt,
+            fields = normalizedFields,
+        ) == previous
+    }
+}
+
 class ActivitySnapshotFactory(
     private val nextSnapshotId: () -> ActivitySnapshotId,
     private val nextFieldId: () -> ActivitySnapshotFieldId,

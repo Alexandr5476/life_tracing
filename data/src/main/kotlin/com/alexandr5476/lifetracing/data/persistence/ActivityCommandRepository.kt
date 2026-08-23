@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValuePolicy
+import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrectionPolicy
 import com.alexandr5476.lifetracing.domain.ActivityHistoryItem
@@ -84,7 +85,7 @@ class ActivityCommandRepository internal constructor(
                         )
                 }
             prepared.directTemplateId?.let { templateId ->
-                check(database.libraryDao().touchActivity(templateId, startedAt.toEpochMilli()) == 1) {
+                check(database.libraryDao().touchActivity(templateId, createdAt.toEpochMilli()) == 1) {
                     "ActivityTemplate is missing user state"
                 }
             }
@@ -113,7 +114,7 @@ class ActivityCommandRepository internal constructor(
                     eventZoneId,
                     prepared.plan?.id,
                 )
-            persistManual(prepared, generated, valueOverrides, completedAt)
+            persistManual(prepared, generated, valueOverrides, createdAt)
         }
 
     fun addManualNoLive(
@@ -136,7 +137,7 @@ class ActivityCommandRepository internal constructor(
                     eventZoneId,
                     prepared.plan?.id,
                 )
-            persistManual(prepared, generated, valueOverrides, completedAt)
+            persistManual(prepared, generated, valueOverrides, createdAt)
         }
 
     fun overlapsCompletedHistory(
@@ -194,6 +195,9 @@ class ActivityCommandRepository internal constructor(
                         correctedAt,
                     )
                 snapshot = replacement.snapshot
+                require(ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(current.snapshot, snapshot)) {
+                    "Historical Short Comment replacement changed frozen Activity configuration"
+                }
                 corrected =
                     corrected.copy(
                         snapshotId = snapshot.id,
@@ -232,7 +236,7 @@ class ActivityCommandRepository internal constructor(
         prepared: PreparedSource,
         generated: ActivityExecution,
         valueOverrides: List<ActivityEntryValueOverride>,
-        usedAt: Instant,
+        commandAt: Instant,
     ): ActivityExecution {
         val execution =
             ActivityExecutionValuePolicy.apply(
@@ -251,13 +255,13 @@ class ActivityCommandRepository internal constructor(
                 ) == 1,
             ) { "Plan changed before manual completion" }
             plan.sourceActivityTemplateId?.let { sourceId ->
-                check(database.planEntryDao().touchActivitySource(sourceId.value, usedAt.toEpochMilli()) == 1) {
+                check(database.planEntryDao().touchActivitySource(sourceId.value, commandAt.toEpochMilli()) == 1) {
                     "Plan source is missing user state"
                 }
             }
         }
         prepared.directTemplateId?.let { templateId ->
-            check(database.libraryDao().touchActivity(templateId, usedAt.toEpochMilli()) == 1) {
+            check(database.libraryDao().touchActivity(templateId, commandAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
             }
         }

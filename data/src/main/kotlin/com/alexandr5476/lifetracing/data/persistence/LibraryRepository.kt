@@ -389,7 +389,7 @@ class LibraryRepository internal constructor(
             database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val execution =
                 liveSessions.startStandaloneTimedActivityFromSnapshot(snapshot.id, startedAt, createdAt, zoneId)
-            check(database.libraryDao().touchActivity(templateId.value, startedAt.toEpochMilli()) == 1) {
+            check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
             }
             execution
@@ -417,7 +417,7 @@ class LibraryRepository internal constructor(
                     createdAt,
                     actualValues.map { ActivityExecutionValueOverride(it.snapshotFieldId, it) },
                 )
-            check(database.libraryDao().touchActivity(templateId.value, completedAt.toEpochMilli()) == 1) {
+            check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
             }
             execution

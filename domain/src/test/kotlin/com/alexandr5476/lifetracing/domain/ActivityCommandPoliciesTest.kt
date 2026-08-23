@@ -64,6 +64,30 @@ class ActivityCommandPoliciesTest {
     }
 
     @Test
+    fun `value overrides reject unknown targets and mismatched carried value identities`() {
+        val built = snapshots.fromOneOff(oneOffDraft(), instant(20))
+        val snapshot = built.snapshot
+        val execution = executions.startTimed(snapshot, instant(10), instant(20), ZoneOffset.UTC)
+        val numberId = built.fieldIdsByKey.getValue("number")
+        val textId = built.fieldIdsByKey.getValue("text")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValuePolicy.apply(
+                execution,
+                snapshot,
+                listOf(ActivityExecutionValueOverride(ActivitySnapshotFieldId("missing"), null)),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityExecutionValuePolicy.apply(
+                execution,
+                snapshot,
+                listOf(ActivityExecutionValueOverride(numberId, TextExecutionValue(textId, "wrong target"))),
+            )
+        }
+    }
+
+    @Test
     fun `one-off draft rejects persistence and source identities`() {
         val invalid =
             oneOffDraft().copy(

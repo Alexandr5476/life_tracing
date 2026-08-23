@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionDurationCalculator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
+import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import java.time.Instant
 import java.util.ConcurrentModificationException
 
@@ -35,6 +36,16 @@ internal data class ActivitySnapshotExecutionMetadataRow(
     @androidx.room.ColumnInfo(name = "statistics_series_id") val statisticsSeriesId: String?,
 )
 
+internal data class ActivitySnapshotFieldValueMetadataRow(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "field_type") val fieldType: String,
+)
+
+internal data class ActivitySnapshotOptionValueMetadataRow(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
+)
+
 internal data class ExecutionPlanLinkRow(
     @androidx.room.ColumnInfo(name = "trackable_kind") val trackableKind: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
@@ -44,7 +55,7 @@ internal data class ExecutionPlanLinkRow(
 )
 
 @Dao
-@Suppress("TooManyFunctions") // Atomic aggregate state transitions belong together.
+@Suppress("LargeClass", "TooManyFunctions") // Atomic aggregate state transitions belong together.
 internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
@@ -95,6 +106,25 @@ internal abstract class ActivityExecutionDao {
         categoryOptionId: String,
     ): Boolean
 
+    @Query(
+        "SELECT id, field_type FROM activity_snapshot_fields " +
+            "WHERE snapshot_id = :snapshotId AND id IN (:fieldIds)",
+    )
+    protected abstract fun getSnapshotFieldValueMetadata(
+        snapshotId: String,
+        fieldIds: List<String>,
+    ): List<ActivitySnapshotFieldValueMetadataRow>
+
+    @Query(
+        "SELECT options.id, options.snapshot_field_id FROM activity_snapshot_category_options AS options " +
+            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = options.snapshot_field_id " +
+            "WHERE fields.snapshot_id = :snapshotId AND options.id IN (:optionIds)",
+    )
+    protected abstract fun getSnapshotOptionValueMetadata(
+        snapshotId: String,
+        optionIds: List<String>,
+    ): List<ActivitySnapshotOptionValueMetadataRow>
+
     @Query("SELECT id, time_tracking_mode, statistics_series_id FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun getSnapshotExecutionMetadata(snapshotId: String): ActivitySnapshotExecutionMetadataRow?
 
@@ -106,6 +136,24 @@ internal abstract class ActivityExecutionDao {
             "fulfilled_activity_execution_id FROM plan_entries WHERE id = :id",
     )
     protected abstract fun getPlanLink(id: String): ExecutionPlanLinkRow?
+
+    @Query("SELECT * FROM activity_snapshots WHERE id = :id")
+    protected abstract fun getSnapshotForCorrectionValidation(id: String): ActivitySnapshotEntity?
+
+    @Query("SELECT * FROM activity_snapshot_settings WHERE snapshot_id = :id")
+    protected abstract fun getSnapshotSettingsForCorrectionValidation(id: String): ActivitySnapshotSettingsEntity?
+
+    @Query("SELECT * FROM activity_snapshot_fields WHERE snapshot_id = :id ORDER BY position, id")
+    protected abstract fun getSnapshotFieldsForCorrectionValidation(id: String): List<ActivitySnapshotFieldEntity>
+
+    @Query(
+        "SELECT options.* FROM activity_snapshot_category_options AS options " +
+            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = options.snapshot_field_id " +
+            "WHERE fields.snapshot_id = :id ORDER BY fields.position, options.position, options.id",
+    )
+    protected abstract fun getSnapshotOptionsForCorrectionValidation(
+        id: String,
+    ): List<ActivitySnapshotCategoryOptionEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertExecutionUnchecked(execution: ActivityExecutionEntity)
@@ -361,6 +409,14 @@ internal abstract class ActivityExecutionDao {
         require(after.execution.correctionIdentity() == current.execution.correctionIdentity()) {
             "Historical correction cannot change execution identity or frozen linkage"
         }
+        if (after.execution.snapshotId != current.execution.snapshotId) {
+            require(
+                ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(
+                    loadSnapshotForCorrectionValidation(current.execution.snapshotId),
+                    loadSnapshotForCorrectionValidation(after.execution.snapshotId),
+                ),
+            ) { "Historical correction may only replace a snapshot's Short Comment" }
+        }
         requireValidAggregate(after)
         val row = after.execution
         if (
@@ -527,16 +583,7 @@ internal abstract class ActivityExecutionDao {
                 }
                 execution.planEntryId?.let { planId ->
                     val plan = requireNotNull(getPlanLink(planId)) { "Unknown Plan: $planId" }
-                    require(
-                        plan.trackableKind == "ACTIVITY" &&
-                            (
-                                plan.activitySnapshotId == execution.snapshotId ||
-                                    (
-                                        plan.status == "FULFILLED" &&
-                                            plan.fulfilledActivityExecutionId == execution.id
-                                    )
-                            ),
-                    ) {
+                    require(validActivityPlanLink(execution, plan)) {
                         "ActivityExecution Plan linkage must match kind and snapshot"
                     }
                 }
@@ -578,17 +625,67 @@ internal abstract class ActivityExecutionDao {
         }
     }
 
+    private fun validActivityPlanLink(
+        execution: ActivityExecutionEntity,
+        plan: ExecutionPlanLinkRow,
+    ): Boolean =
+        plan.trackableKind == "ACTIVITY" &&
+            plan.activitySnapshotId?.let { frozenSnapshotId ->
+                frozenSnapshotId == execution.snapshotId ||
+                    (
+                        plan.status == "FULFILLED" &&
+                            plan.fulfilledActivityExecutionId == execution.id &&
+                            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(
+                                loadSnapshotForCorrectionValidation(frozenSnapshotId),
+                                loadSnapshotForCorrectionValidation(execution.snapshotId),
+                            )
+                    )
+            } == true
+
+    private fun loadSnapshotForCorrectionValidation(id: String) =
+        ActivitySnapshotAggregateEntity(
+            requireNotNull(getSnapshotForCorrectionValidation(id)) { "Unknown snapshot: $id" },
+            requireNotNull(getSnapshotSettingsForCorrectionValidation(id)) { "Snapshot $id is missing settings" },
+            getSnapshotFieldsForCorrectionValidation(id),
+            getSnapshotOptionsForCorrectionValidation(id),
+        ).toDomain()
+
     private fun requireValidOwnedRows(aggregate: ActivityExecutionAggregateEntity) {
         aggregate.pauses.forEach { pause ->
             require(pause.activityExecutionId == aggregate.execution.id) {
                 "Execution pause must belong to the inserted execution"
             }
         }
-        aggregate.values.forEach { value ->
+        val values = aggregate.values
+        values.forEach { value ->
             require(value.activityExecutionId == aggregate.execution.id) {
                 "Execution value must belong to the inserted execution"
             }
-            requireValidValue(aggregate.execution.snapshotId, value)
+        }
+        val fieldIds = values.map(ActivityExecutionFieldValueEntity::snapshotFieldId)
+        require(fieldIds.distinct().size == fieldIds.size) { "Execution values must target unique snapshot Fields" }
+        if (fieldIds.isEmpty()) return
+        val fields =
+            fieldIds
+                .distinct()
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap { getSnapshotFieldValueMetadata(aggregate.execution.snapshotId, it) }
+                .associateBy(ActivitySnapshotFieldValueMetadataRow::id)
+        require(fields.size == fieldIds.distinct().size) {
+            "Execution value field must belong to its execution snapshot"
+        }
+        val optionIds = values.mapNotNull(ActivityExecutionFieldValueEntity::categoryOptionId).distinct()
+        val options =
+            optionIds
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap { getSnapshotOptionValueMetadata(aggregate.execution.snapshotId, it) }
+                .associateBy(ActivitySnapshotOptionValueMetadataRow::id)
+        values.forEach { value ->
+            requireValidValue(
+                value,
+                fields.getValue(value.snapshotFieldId).fieldType,
+                value.categoryOptionId?.let(options::get)?.snapshotFieldId,
+            )
         }
     }
 
@@ -658,12 +755,24 @@ internal abstract class ActivityExecutionDao {
             requireNotNull(getSnapshotFieldType(snapshotId, value.snapshotFieldId)) {
                 "Execution value field must belong to its execution snapshot"
             }
+        val categoryOptionFieldId =
+            value.categoryOptionId
+                ?.takeIf { categoryOptionBelongsToField(value.snapshotFieldId, it) }
+                ?.let { value.snapshotFieldId }
+        requireValidValue(value, fieldType, categoryOptionFieldId)
+    }
+
+    private fun requireValidValue(
+        value: ActivityExecutionFieldValueEntity,
+        fieldType: String,
+        categoryOptionFieldId: String?,
+    ) {
         when {
             value.numberScaled != null && value.categoryOptionId == null && value.textValue == null ->
                 require(fieldType == "NUMBER") { "Number value requires a NUMBER snapshot field" }
             value.numberScaled == null && value.categoryOptionId != null && value.textValue == null -> {
                 require(fieldType == "CATEGORY") { "Category value requires a CATEGORY snapshot field" }
-                require(categoryOptionBelongsToField(value.snapshotFieldId, value.categoryOptionId)) {
+                require(categoryOptionFieldId == value.snapshotFieldId) {
                     "Category option must belong to the value snapshot field"
                 }
             }
@@ -671,6 +780,10 @@ internal abstract class ActivityExecutionDao {
                 require(fieldType == "TEXT") { "Text value requires a TEXT snapshot field" }
             else -> throw IllegalArgumentException("Execution field value must contain exactly one typed value")
         }
+    }
+
+    private companion object {
+        const val SQLITE_BIND_CHUNK_SIZE = 900
     }
 }
 

@@ -171,7 +171,11 @@ internal abstract class PlanEntryDao {
     @Query("SELECT id, revision, deleted_at_ms FROM sequence_templates WHERE id IN (:ids)")
     abstract fun sequenceSources(ids: List<String>): List<PlanSourceMetadataRow>
 
-    @Query("UPDATE activity_template_user_state SET last_used_at_ms = :atMs WHERE activity_template_id = :id")
+    @Query(
+        "UPDATE activity_template_user_state SET last_used_at_ms = " +
+            "CASE WHEN last_used_at_ms IS NULL OR last_used_at_ms < :atMs THEN :atMs ELSE last_used_at_ms END " +
+            "WHERE activity_template_id = :id",
+    )
     abstract fun touchActivitySource(
         id: String,
         atMs: Long,

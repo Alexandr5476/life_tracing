@@ -22,6 +22,7 @@
 - Plan execution is explicit snapshot linkage: starting/completing through a specific `PlanEntry` must atomically preserve `plan_entry_id` and fulfillment; matching ordinary Execution to Plan by Template, name, or StatisticsSeries is forbidden.
 - A live Plan remains stored `PLANNED` and is derived in progress from its nonterminal linked root Execution; snapshot, target, source replacement, cancellation, rescheduling, and a second start are blocked until completion.
 - Library organization metadata (Folder, Tags, Pinned, Recent) is non-semantic Template state: these operations must not increment Template revision, replace snapshots, or change StatisticsSeries identity.
+- Recent `last_used_at` records the latest explicit reusable-Template use time, never a backdated Execution's historical event time, and must never move backwards.
 - Normal Library delete archives Templates; deleting a Folder never silently cascades reusable contents.
 - Statistics is history-derived. Global tracked time counts only top-level standalone ActivityExecution plus terminal SequenceExecution; Sequence child ActivityExecution may contribute to per-Activity Series but must never be added again to global tracked time.
 - No-live ActivityExecution participates in count/frequency/field statistics but has missing duration, never duration zero.

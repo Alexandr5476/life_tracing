@@ -396,6 +396,15 @@ object ActivityExecutionValuePolicy {
         require(overrides.map(ActivityExecutionValueOverride::snapshotFieldId).distinct().size == overrides.size) {
             "Execution value overrides must target unique Fields"
         }
+        val snapshotFieldIds = snapshot.fields.map(ActivitySnapshotField::id).toSet()
+        overrides.forEach { override ->
+            require(override.snapshotFieldId in snapshotFieldIds) {
+                "Execution value override Field must belong to the supplied snapshot"
+            }
+            require(override.value == null || override.value.snapshotFieldId == override.snapshotFieldId) {
+                "Execution value override and carried value must target the same Field"
+            }
+        }
         val values = execution.values.associateByTo(linkedMapOf(), ActivityExecutionFieldValue::snapshotFieldId)
         overrides.forEach { override ->
             if (override.value == null) {
