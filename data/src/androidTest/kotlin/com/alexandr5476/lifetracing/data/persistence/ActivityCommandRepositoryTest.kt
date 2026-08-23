@@ -126,6 +126,7 @@ class ActivityCommandRepositoryTest {
         database.libraryDao().touchActivity("plan-recent", 2_000_000)
         database.libraryDao().touchActivity("plan-rewind", 5_000_000)
         val repository = repository("recent")
+        val plans = planRepository()
 
         repository.addManualTimed(
             ActivityEntrySource.Template(ActivityTemplateId("manual-recent")),
@@ -146,7 +147,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(5_000_000L, database.activityTemplateDao().getUserState("monotonic-recent")?.lastUsedAtMs)
 
         val plan =
-            planRepository().createActivityPlanFromTemplate(
+            plans.createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-recent"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
                 instant(50),
@@ -161,7 +162,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(3_000_000L, database.activityTemplateDao().getUserState("plan-recent")?.lastUsedAtMs)
 
         val rewindPlan =
-            planRepository().createActivityPlanFromTemplate(
+            plans.createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-rewind"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
                 instant(50),
