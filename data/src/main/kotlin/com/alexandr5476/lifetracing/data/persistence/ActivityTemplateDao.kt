@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldEvolution
 import kotlinx.coroutines.flow.Flow
 
 internal data class ActivityTemplateAggregateEntity(
@@ -22,6 +23,7 @@ internal data class ActivityTemplateSemanticUpdate(
     val settings: ActivityTemplateSettingsEntity,
     val fields: List<ActivityTemplateFieldEntity> = emptyList(),
     val options: List<ActivityTemplateCategoryOptionEntity> = emptyList(),
+    val expectedRevision: Long = template.revision - 1,
 )
 
 @Dao
@@ -82,16 +84,47 @@ internal abstract class ActivityTemplateDao {
     abstract fun updateTemplate(template: ActivityTemplateEntity)
 
     @Update(onConflict = OnConflictStrategy.ABORT)
-    abstract fun updateSettings(settings: ActivityTemplateSettingsEntity)
+    abstract fun updateSettings(settings: ActivityTemplateSettingsEntity): Int
 
     @Update(onConflict = OnConflictStrategy.ABORT)
     abstract fun updateUserState(userState: ActivityTemplateUserStateEntity)
 
     @Update(onConflict = OnConflictStrategy.ABORT)
-    abstract fun updateFields(fields: List<ActivityTemplateFieldEntity>)
+    abstract fun updateFields(fields: List<ActivityTemplateFieldEntity>): Int
 
     @Update(onConflict = OnConflictStrategy.ABORT)
-    abstract fun updateOptions(options: List<ActivityTemplateCategoryOptionEntity>)
+    abstract fun updateOptions(options: List<ActivityTemplateCategoryOptionEntity>): Int
+
+    @Query(
+        "UPDATE activity_templates SET name = :name, short_comment = :shortComment, " +
+            "time_tracking_mode = :timeTrackingMode, timer_target_ms = :timerTargetMs, " +
+            "revision = :newRevision, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND revision = :expectedRevision AND deleted_at_ms IS NULL",
+    )
+    @Suppress("LongParameterList")
+    protected abstract fun updateSemanticTemplateUnchecked(
+        id: String,
+        expectedRevision: Long,
+        newRevision: Long,
+        name: String,
+        shortComment: String?,
+        timeTrackingMode: String,
+        timerTargetMs: Long?,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query("UPDATE activity_template_fields SET name = :name, updated_at_ms = :updatedAtMs WHERE id = :id")
+    abstract fun updateFieldDisplayName(
+        id: String,
+        name: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query("UPDATE activity_template_category_options SET label = :label WHERE id = :id")
+    abstract fun updateOptionDisplayLabel(
+        id: String,
+        label: String,
+    ): Int
 
     @Query("UPDATE activity_templates SET deleted_at_ms = :deletedAtMs WHERE id = :id")
     abstract fun archive(
@@ -162,16 +195,86 @@ internal abstract class ActivityTemplateDao {
 
     @Transaction
     open fun updateSemanticAggregate(update: ActivityTemplateSemanticUpdate) {
-        val current = requireNotNull(getById(update.template.id)) { "Unknown ActivityTemplate: ${update.template.id}" }
-        require(update.template.statisticsSeriesId == current.statisticsSeriesId) {
+        val current =
+            requireNotNull(getAggregate(update.template.id)) { "Unknown ActivityTemplate: ${update.template.id}" }
+        require(current.template.deletedAtMs == null) { "Archived ActivityTemplate cannot be edited" }
+        require(current.template.revision == update.expectedRevision) {
+            "ActivityTemplate revision changed concurrently"
+        }
+        require(update.template.revision == update.expectedRevision + 1) {
+            "A semantic aggregate update must increment revision exactly once"
+        }
+        require(update.template.statisticsSeriesId == current.template.statisticsSeriesId) {
             "Semantic commit cannot change Statistics Series; use Start new statistics"
         }
-        updateTemplate(update.template)
-        if (update.template.name != current.name) {
-            check(updateSeriesDisplayName(current.statisticsSeriesId, update.template.name) == 1)
+        require(
+            update.template.id == current.template.id &&
+                update.template.createdAtMs == current.template.createdAtMs &&
+                update.template.deletedAtMs == current.template.deletedAtMs &&
+                update.template.folderId == current.template.folderId,
+        ) { "Semantic commit cannot change Activity identity, ownership, lifecycle, or Library metadata" }
+        require(current.fields.map { it.id }.all(update.fields.map { it.id }.toSet()::contains)) {
+            "Existing Field identities must be retained and archived instead of removed"
         }
-        updateSettings(update.settings)
-        if (update.fields.isNotEmpty()) updateFields(update.fields)
-        if (update.options.isNotEmpty()) updateOptions(update.options)
+        require(current.options.map { it.id }.all(update.options.map { it.id }.toSet()::contains)) {
+            "Existing Category option identities must be retained and archived instead of removed"
+        }
+        requireCompatibleEvolution(current, update)
+        check(
+            updateSemanticTemplateUnchecked(
+                update.template.id,
+                update.expectedRevision,
+                update.template.revision,
+                update.template.name,
+                update.template.shortComment,
+                update.template.timeTrackingMode,
+                update.template.timerTargetMs,
+                update.template.updatedAtMs,
+            ) == 1,
+        ) { "ActivityTemplate revision changed concurrently" }
+        if (update.template.name != current.template.name) {
+            check(updateSeriesDisplayName(current.template.statisticsSeriesId, update.template.name) == 1)
+        }
+        check(updateSettings(update.settings) == 1)
+        val existingFields = current.fields.mapTo(hashSetOf()) { it.id }
+        val existingOptions = current.options.mapTo(hashSetOf()) { it.id }
+        update.fields.partition { it.id in existingFields }.let { (old, new) ->
+            if (old.isNotEmpty()) check(updateFields(old) == old.size)
+            if (new.isNotEmpty()) insertFields(new)
+        }
+        update.options.partition { it.id in existingOptions }.let { (old, new) ->
+            if (old.isNotEmpty()) check(updateOptions(old) == old.size)
+            if (new.isNotEmpty()) insertOptions(new)
+        }
+    }
+
+    private fun requireCompatibleEvolution(
+        current: ActivityTemplateAggregateEntity,
+        update: ActivityTemplateSemanticUpdate,
+    ) {
+        val previous = current.toDomain().fields.associateBy { it.id }
+        update
+            .copy(template = update.template, settings = update.settings)
+            .let {
+                ActivityTemplateAggregateEntity(
+                    it.template,
+                    it.settings,
+                    it.fields,
+                    it.options,
+                ).toDomain()
+            }.fields
+            .forEach { field ->
+                previous[field.id]?.let {
+                    ActivityTemplateFieldEvolution.requireSameIdentityCompatible(it, field)
+                }
+            }
+        val owners = current.options.associate { it.id to it.activityTemplateFieldId }
+        update.options.forEach { option ->
+            owners[option.id]?.let { owner ->
+                require(owner == option.activityTemplateFieldId) {
+                    "Category option owner Field is immutable for the same option identity"
+                }
+            }
+        }
     }
 }
