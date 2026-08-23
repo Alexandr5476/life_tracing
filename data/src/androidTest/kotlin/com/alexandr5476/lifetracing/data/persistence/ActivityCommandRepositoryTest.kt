@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionTransitions
+import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -616,6 +617,91 @@ class ActivityCommandRepositoryTest {
     }
 
     @Test
+    fun commentOnlyCorrectionSurvivesRoomReorderingTiedFieldAndOptionPositions() {
+        template("room-order", TimeTrackingMode.STOPWATCH, fields = true, tiedSchemaPositions = true)
+        val plans = planRepository()
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("room-order"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(0),
+            )
+        val execution =
+            repository("room-order-entry").addManualTimed(
+                ActivityEntrySource.Plan(plan.id),
+                instant(10),
+                instant(20),
+                instant(30),
+                ZoneOffset.UTC,
+            )
+        val oldSnapshotId = requireNotNull(plan.activitySnapshotId)
+        val oldSnapshot = requireNotNull(database.activitySnapshotDao().getAggregate(oldSnapshotId.value)).toDomain()
+        val fieldIds =
+            listOf(
+                ActivitySnapshotFieldId("room-order-new-z-category"),
+                ActivitySnapshotFieldId("room-order-new-a-number"),
+                ActivitySnapshotFieldId("room-order-new-text"),
+            ).iterator()
+        val optionIds =
+            listOf(
+                ActivitySnapshotCategoryOptionId("room-order-new-z-option-a"),
+                ActivitySnapshotCategoryOptionId("room-order-new-a-option-b"),
+            ).iterator()
+        val corrected =
+            repository(
+                "room-order-correction",
+                nextSnapshotId = { ActivitySnapshotId("room-order-new-snapshot") },
+                nextFieldId = { fieldIds.next() },
+                nextOptionId = { optionIds.next() },
+            ).correctHistory(
+                execution.id,
+                ActivityHistoryCorrection(
+                    execution.updatedAt,
+                    ActivityHistoryTimeCorrection.Timed(instant(10), instant(20)),
+                    ZoneOffset.UTC,
+                    execution.values,
+                    "new comment",
+                ),
+                instant(40),
+            )
+        val reloadedOld = requireNotNull(database.activitySnapshotDao().getAggregate(oldSnapshotId.value)).toDomain()
+        val reloadedReplacement =
+            requireNotNull(database.activitySnapshotDao().getAggregate(corrected.snapshot.id.value)).toDomain()
+
+        assertEquals(
+            listOf("room-order-category", "room-order-number"),
+            reloadedOld.fields.filter { it.position == 0 }.map { it.sourceFieldId?.value },
+        )
+        assertEquals(
+            listOf("room-order-number", "room-order-category"),
+            reloadedReplacement.fields.filter { it.position == 0 }.map { it.sourceFieldId?.value },
+        )
+        assertEquals(
+            listOf("room-order-option-a", "room-order-option-b"),
+            reloadedOld.fields
+                .single { it.type == CustomFieldType.CATEGORY }
+                .categoryOptions
+                .map { it.sourceOptionId?.value },
+        )
+        assertEquals(
+            listOf("room-order-option-b", "room-order-option-a"),
+            reloadedReplacement.fields
+                .single { it.type == CustomFieldType.CATEGORY }
+                .categoryOptions
+                .map { it.sourceOptionId?.value },
+        )
+        assertTrue(
+            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(reloadedOld, reloadedReplacement),
+        )
+        assertEquals(
+            corrected.snapshot.id.value,
+            database.activityExecutionDao().getById(execution.id.value)?.snapshotId,
+        )
+        assertEquals(oldSnapshot.id, plans.getPlan(plan.id)?.activitySnapshotId)
+        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
+    }
+
+    @Test
     fun valueTimeAndNoLiveCorrectionsReplaceOnlyRequestedHistoricalFacts() {
         template("correction", TimeTrackingMode.STOPWATCH, fields = true, shortComment = "original")
         template("correction-no-live", TimeTrackingMode.NO_LIVE_TRACKING, fields = true)
@@ -878,6 +964,8 @@ class ActivityCommandRepositoryTest {
     private fun repository(
         prefix: String,
         nextSnapshotId: (() -> ActivitySnapshotId)? = null,
+        nextFieldId: (() -> ActivitySnapshotFieldId)? = null,
+        nextOptionId: (() -> ActivitySnapshotCategoryOptionId)? = null,
         nextExecutionId: (() -> ActivityExecutionId)? = null,
     ): ActivityCommandRepository {
         var id = 0
@@ -897,8 +985,8 @@ class ActivityCommandRepositoryTest {
             live,
             ActivitySnapshotFactory(
                 nextSnapshotId ?: { ActivitySnapshotId(next("snapshot")) },
-                { ActivitySnapshotFieldId(next("field")) },
-                { ActivitySnapshotCategoryOptionId(next("option")) },
+                nextFieldId ?: { ActivitySnapshotFieldId(next("field")) },
+                nextOptionId ?: { ActivitySnapshotCategoryOptionId(next("option")) },
             ),
             nextExecutionId ?: { ActivityExecutionId(next("manual-execution")) },
         )
@@ -933,6 +1021,7 @@ class ActivityCommandRepositoryTest {
         zeroBehavior: String = "FINISH",
         fields: Boolean = false,
         shortComment: String? = null,
+        tiedSchemaPositions: Boolean = false,
     ) {
         val seriesId = "$id-series"
         database.statisticsSeriesDao().insert(StatisticsSeriesEntity(seriesId, "ACTIVITY", id, 0, null))
@@ -974,7 +1063,7 @@ class ActivityCommandRepositoryTest {
                     ActivityTemplateFieldEntity(
                         "$id-category",
                         id,
-                        2,
+                        if (tiedSchemaPositions) 0 else 2,
                         "Category",
                         "CATEGORY",
                         null,
@@ -995,7 +1084,12 @@ class ActivityCommandRepositoryTest {
             if (fields) {
                 listOf(
                     ActivityTemplateCategoryOptionEntity("$id-option-a", "$id-category", 0, "A"),
-                    ActivityTemplateCategoryOptionEntity("$id-option-b", "$id-category", 1, "B"),
+                    ActivityTemplateCategoryOptionEntity(
+                        "$id-option-b",
+                        "$id-category",
+                        if (tiedSchemaPositions) 0 else 1,
+                        "B",
+                    ),
                 )
             } else {
                 emptyList()

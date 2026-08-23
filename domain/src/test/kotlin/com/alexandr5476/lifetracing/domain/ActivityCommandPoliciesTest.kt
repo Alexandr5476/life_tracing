@@ -222,6 +222,80 @@ class ActivityCommandPoliciesTest {
         )
     }
 
+    @Test
+    fun `comment-only replacement matches semantically different Fields with tied positions in any order`() {
+        val previous = tiedPositionSnapshot()
+        val replacement =
+            snapshots
+                .replaceShortComment(previous, "new", instant(1))
+                .snapshot
+                .let { it.copy(fields = it.fields.reversed()) }
+
+        assertTrue(ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(previous, replacement))
+        assertFalse(
+            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(
+                previous,
+                replacement.copy(
+                    fields =
+                        replacement.fields.map { field ->
+                            if (field.sourceFieldId == ActivityTemplateFieldId("number")) {
+                                field.copy(unit = "changed")
+                            } else {
+                                field
+                            }
+                        },
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `comment-only replacement matches tied Category options by semantics and preserves default`() {
+        val previous = tiedPositionSnapshot()
+        val replacement =
+            snapshots
+                .replaceShortComment(previous, "new", instant(1))
+                .snapshot
+                .let { snapshot ->
+                    snapshot.copy(
+                        fields =
+                            snapshot.fields.map { field ->
+                                if (field.type == CustomFieldType.CATEGORY) {
+                                    field.copy(categoryOptions = field.categoryOptions.reversed())
+                                } else {
+                                    field
+                                }
+                            },
+                    )
+                }
+
+        assertTrue(ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(previous, replacement))
+        assertFalse(
+            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(
+                previous,
+                replacement.copy(
+                    fields =
+                        replacement.fields.map { field ->
+                            if (field.type == CustomFieldType.CATEGORY) {
+                                field.copy(
+                                    categoryOptions =
+                                        field.categoryOptions.map { option ->
+                                            if (option.sourceOptionId == CategoryOptionId("option-b")) {
+                                                option.copy(labelAtCreation = "changed")
+                                            } else {
+                                                option
+                                            }
+                                        },
+                                )
+                            } else {
+                                field
+                            }
+                        },
+                ),
+            ),
+        )
+    }
+
     private fun oneOffDraft() =
         ActivitySnapshotDraft(
             name = "One-off",
@@ -258,6 +332,57 @@ class ActivityCommandPoliciesTest {
                         "Text",
                         type = CustomFieldType.TEXT,
                         defaultText = "default",
+                    ),
+                ),
+        )
+
+    private fun tiedPositionSnapshot() =
+        ActivityConfigSnapshot(
+            id = ActivitySnapshotId("previous"),
+            name = "Tied positions",
+            shortComment = "old",
+            timeTrackingMode = TimeTrackingMode.STOPWATCH,
+            timerTarget = null,
+            sourceTemplateId = ActivityTemplateId("template"),
+            sourceRevision = 1,
+            statisticsSeriesId = StatisticsSeriesId("series"),
+            locallyModified = false,
+            createdAt = instant(0),
+            fields =
+                listOf(
+                    ActivitySnapshotField(
+                        id = ActivitySnapshotFieldId("old-number"),
+                        sourceFieldId = ActivityTemplateFieldId("number"),
+                        position = 0,
+                        nameAtCreation = "Number",
+                        type = CustomFieldType.NUMBER,
+                        unit = "reps",
+                        displayPrecision = 1,
+                        defaultNumberScaled = 5,
+                        isMainValue = true,
+                    ),
+                    ActivitySnapshotField(
+                        id = ActivitySnapshotFieldId("old-category"),
+                        sourceFieldId = ActivityTemplateFieldId("category"),
+                        position = 0,
+                        nameAtCreation = "Category",
+                        type = CustomFieldType.CATEGORY,
+                        defaultCategoryOptionId = ActivitySnapshotCategoryOptionId("old-option-a"),
+                        categoryOptions =
+                            listOf(
+                                ActivitySnapshotCategoryOption(
+                                    ActivitySnapshotCategoryOptionId("old-option-a"),
+                                    CategoryOptionId("option-a"),
+                                    0,
+                                    "A",
+                                ),
+                                ActivitySnapshotCategoryOption(
+                                    ActivitySnapshotCategoryOptionId("old-option-b"),
+                                    CategoryOptionId("option-b"),
+                                    0,
+                                    "B",
+                                ),
+                            ),
                     ),
                 ),
         )

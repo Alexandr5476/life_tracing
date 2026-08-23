@@ -131,38 +131,47 @@ object ActivityHistoricalSnapshotPolicy {
     fun isCommentOnlyReplacement(
         previous: ActivityConfigSnapshot,
         replacement: ActivityConfigSnapshot,
-    ): Boolean {
-        if (
-            replacement.fields.size != previous.fields.size ||
-            replacement.fields.zip(previous.fields).any { (field, previousField) ->
-                field.categoryOptions.size != previousField.categoryOptions.size
-            }
-        ) {
-            return false
-        }
-        val normalizedFields =
-            replacement.fields.zip(previous.fields).map { (field, previousField) ->
-                val optionIds =
-                    field.categoryOptions.zip(previousField.categoryOptions).associate { (option, previousOption) ->
-                        option.id to previousOption.id
-                    }
-                field.copy(
-                    id = previousField.id,
-                    defaultCategoryOptionId = field.defaultCategoryOptionId?.let(optionIds::getValue),
-                    categoryOptions =
-                        field.categoryOptions.zip(previousField.categoryOptions).map { (option, previousOption) ->
-                            option.copy(id = previousOption.id)
-                        },
-                )
-            }
-        return replacement.copy(
-            id = previous.id,
-            shortComment = previous.shortComment,
-            createdAt = previous.createdAt,
-            fields = normalizedFields,
-        ) == previous
-    }
+    ): Boolean = previous.historicalSemantic() == replacement.historicalSemantic()
 }
+
+private data class HistoricalActivitySnapshotSemantic(
+    val snapshot: ActivityConfigSnapshot,
+    val fields: Map<HistoricalActivitySnapshotFieldSemantic, Int>,
+)
+
+private data class HistoricalActivitySnapshotFieldSemantic(
+    val field: ActivitySnapshotField,
+    val defaultCategoryOption: ActivitySnapshotCategoryOption?,
+    val categoryOptions: Map<ActivitySnapshotCategoryOption, Int>,
+)
+
+private fun ActivityConfigSnapshot.historicalSemantic() =
+    HistoricalActivitySnapshotSemantic(
+        snapshot =
+            copy(
+                id = ActivitySnapshotId(""),
+                shortComment = null,
+                createdAt = Instant.EPOCH,
+                fields = emptyList(),
+            ),
+        fields = fields.map(ActivitySnapshotField::historicalSemantic).groupingBy { it }.eachCount(),
+    )
+
+private fun ActivitySnapshotField.historicalSemantic(): HistoricalActivitySnapshotFieldSemantic {
+    val optionSemantics = categoryOptions.associate { it.id to it.withoutPersistenceId() }
+    return HistoricalActivitySnapshotFieldSemantic(
+        field =
+            copy(
+                id = ActivitySnapshotFieldId(""),
+                defaultCategoryOptionId = null,
+                categoryOptions = emptyList(),
+            ),
+        defaultCategoryOption = defaultCategoryOptionId?.let(optionSemantics::getValue),
+        categoryOptions = categoryOptions.map { it.withoutPersistenceId() }.groupingBy { it }.eachCount(),
+    )
+}
+
+private fun ActivitySnapshotCategoryOption.withoutPersistenceId() = copy(id = ActivitySnapshotCategoryOptionId(""))
 
 class ActivitySnapshotFactory(
     private val nextSnapshotId: () -> ActivitySnapshotId,
