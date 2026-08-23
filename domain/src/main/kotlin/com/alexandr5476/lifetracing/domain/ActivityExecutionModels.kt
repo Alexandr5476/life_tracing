@@ -40,6 +40,17 @@ sealed interface ActivityExecutionFieldValue {
     val snapshotFieldId: ActivitySnapshotFieldId
 }
 
+data class ActivityExecutionValueOverride(
+    val snapshotFieldId: ActivitySnapshotFieldId,
+    val value: ActivityExecutionFieldValue?,
+) {
+    init {
+        require(value == null || value.snapshotFieldId == snapshotFieldId) {
+            "Override value must target the same snapshot Field"
+        }
+    }
+}
+
 data class NumberExecutionValue(
     override val snapshotFieldId: ActivitySnapshotFieldId,
     val scaledValue: Long,

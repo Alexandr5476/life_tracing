@@ -5,6 +5,7 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -366,7 +367,7 @@ class PlanRepository internal constructor(
 
     private fun loadValidPlan(id: String): PlanEntry? = database.planEntryDao().getById(id)?.let(::validatePlanRow)
 
-    @Suppress("LongMethod")
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun validatePlanRow(row: PlanEntryEntity): PlanEntry {
         val plan = row.toDomain()
         when (plan.kind) {
@@ -390,10 +391,20 @@ class PlanRepository internal constructor(
                         requireNotNull(database.activityExecutionDao().getAggregate(executionId.value)) {
                             "Fulfilled ActivityExecution is missing"
                         }.toDomain()
+                    val executionSnapshot =
+                        requireNotNull(database.activitySnapshotDao().getAggregate(execution.snapshotId.value)) {
+                            "Fulfilled ActivityExecution snapshot is missing"
+                        }.toDomain()
                     require(
                         execution.context == ActivityExecutionContext.STANDALONE &&
                             execution.planEntryId == plan.id &&
-                            execution.snapshotId == snapshot.id &&
+                            (
+                                execution.snapshotId == snapshot.id ||
+                                    ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(
+                                        snapshot,
+                                        executionSnapshot,
+                                    )
+                            ) &&
                             execution.status == ActivityExecutionStatus.COMPLETED,
                     ) { "Plan fulfillment ActivityExecution linkage is invalid" }
                 }

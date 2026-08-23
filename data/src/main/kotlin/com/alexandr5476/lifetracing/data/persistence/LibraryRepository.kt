@@ -7,6 +7,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -388,7 +389,7 @@ class LibraryRepository internal constructor(
             database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val execution =
                 liveSessions.startStandaloneTimedActivityFromSnapshot(snapshot.id, startedAt, createdAt, zoneId)
-            check(database.libraryDao().touchActivity(templateId.value, startedAt.toEpochMilli()) == 1) {
+            check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
             }
             execution
@@ -414,9 +415,9 @@ class LibraryRepository internal constructor(
                     completedAt,
                     zoneId,
                     createdAt,
-                    actualValues,
+                    actualValues.map { ActivityExecutionValueOverride(it.snapshotFieldId, it) },
                 )
-            check(database.libraryDao().touchActivity(templateId.value, completedAt.toEpochMilli()) == 1) {
+            check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
             }
             execution

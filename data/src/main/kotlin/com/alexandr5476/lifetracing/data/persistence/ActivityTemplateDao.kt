@@ -59,6 +59,13 @@ internal abstract class ActivityTemplateDao {
     )
     abstract fun getCategoryOptions(fieldId: String): List<ActivityTemplateCategoryOptionEntity>
 
+    @Query(
+        "SELECT * FROM activity_template_category_options " +
+            "WHERE activity_template_field_id IN (:fieldIds) " +
+            "ORDER BY activity_template_field_id, position, id",
+    )
+    abstract fun getCategoryOptions(fieldIds: List<String>): List<ActivityTemplateCategoryOptionEntity>
+
     @Query("SELECT tag_id FROM activity_template_tags WHERE activity_template_id = :templateId ORDER BY tag_id")
     abstract fun getTagIds(templateId: String): List<String>
 
@@ -177,7 +184,7 @@ internal abstract class ActivityTemplateDao {
             template,
             checkNotNull(getSettings(id)) { "ActivityTemplate $id is missing settings" },
             fields,
-            fields.flatMap { getCategoryOptions(it.id) },
+            if (fields.isEmpty()) emptyList() else getCategoryOptions(fields.map { it.id }),
             getTagIds(id).map { ActivityTemplateTagEntity(id, it) },
             getUserState(id),
         ).also { it.toDomain() }

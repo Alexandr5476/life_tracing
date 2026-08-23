@@ -70,7 +70,10 @@ internal abstract class SequenceExecutionDao {
     @Query("SELECT id, time_tracking_mode FROM activity_snapshots WHERE id IN (:ids)")
     protected abstract fun activitySnapshotModes(ids: List<String>): List<ActivitySnapshotModeRow>
 
-    @Query("SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id FROM plan_entries WHERE id = :id")
+    @Query(
+        "SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id, status, " +
+            "fulfilled_activity_execution_id FROM plan_entries WHERE id = :id",
+    )
     protected abstract fun getPlanLink(id: String): ExecutionPlanLinkRow?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)

@@ -350,7 +350,7 @@ class LibraryRepositoryTest {
         assertEquals(1_000L, (noLive.values.single() as NumberExecutionValue).scaledValue)
         assertNull(noLive.planEntryId)
         assertNull(database.activeSessionDao().get())
-        assertEquals(30L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+        assertEquals(29L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
 
         repository.archiveSequenceTemplate(SequenceTemplateId("sequence"), instant(35))
         assertThrows(IllegalArgumentException::class.java) {
@@ -472,11 +472,12 @@ class LibraryRepositoryTest {
             com.alexandr5476.lifetracing.domain
                 .PlanEntryId("source-plan"),
             instant(50),
-            instant(50),
+            instant(60),
             ZoneOffset.UTC,
         )
 
         assertEquals(listOf("plan-source"), repository.getRecent(1).map { it.id.value })
+        assertEquals(60L, database.activityTemplateDao().getUserState("plan-source")?.lastUsedAtMs)
         assertEquals(5L, database.activityTemplateDao().getById("plan-source")?.revision)
     }
 

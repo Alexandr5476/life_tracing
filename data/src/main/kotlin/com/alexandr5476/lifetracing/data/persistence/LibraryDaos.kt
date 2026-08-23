@@ -330,7 +330,11 @@ internal interface LibraryDao {
         rank: Int?,
     ): Int
 
-    @Query("UPDATE activity_template_user_state SET last_used_at_ms = :atMs WHERE activity_template_id = :id")
+    @Query(
+        "UPDATE activity_template_user_state SET last_used_at_ms = " +
+            "CASE WHEN last_used_at_ms IS NULL OR last_used_at_ms < :atMs THEN :atMs ELSE last_used_at_ms END " +
+            "WHERE activity_template_id = :id",
+    )
     fun touchActivity(
         id: String,
         atMs: Long,
