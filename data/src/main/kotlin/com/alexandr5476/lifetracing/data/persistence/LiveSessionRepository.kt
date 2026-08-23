@@ -21,11 +21,12 @@ import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
-import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValuePolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -87,11 +88,17 @@ class LiveSessionRepository internal constructor(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
             require(getActiveSessionLocked() == null) { "Another live session is already active" }
             val snapshot = loadActivitySnapshot(snapshotId)
-            val execution = activityFactory.startTimed(snapshot, startedAt, createdAt, zoneId)
+            val execution =
+                ActivityExecutionValuePolicy.apply(
+                    activityFactory.startTimed(snapshot, startedAt, createdAt, zoneId),
+                    snapshot,
+                    valueOverrides,
+                )
             database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
             database.activeSessionDao().insert(
                 ActiveSession(
@@ -110,6 +117,7 @@ class LiveSessionRepository internal constructor(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
             require(getActiveSessionLocked() == null) { "Another live session is already active" }
@@ -118,7 +126,12 @@ class LiveSessionRepository internal constructor(
             require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "NO_LIVE_TRACKING Plan requires quick completion"
             }
-            val execution = activityFactory.startTimed(snapshot, startedAt, createdAt, zoneId, planEntryId)
+            val execution =
+                ActivityExecutionValuePolicy.apply(
+                    activityFactory.startTimed(snapshot, startedAt, createdAt, zoneId, planEntryId),
+                    snapshot,
+                    valueOverrides,
+                )
             database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
             database.activeSessionDao().insert(
                 ActiveSession(
@@ -140,14 +153,14 @@ class LiveSessionRepository internal constructor(
         completedAt: Instant,
         zoneId: ZoneId,
         createdAt: Instant = completedAt,
-        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
             val snapshot = loadActivitySnapshot(snapshotId)
             require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick completion requires NO_LIVE_TRACKING"
             }
-            val execution = noLiveExecution(snapshot, completedAt, zoneId, null, createdAt, actualValues)
+            val execution = noLiveExecution(snapshot, completedAt, zoneId, null, createdAt, valueOverrides)
             database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
             execution
         }
@@ -157,7 +170,7 @@ class LiveSessionRepository internal constructor(
         completedAt: Instant,
         zoneId: ZoneId,
         createdAt: Instant = completedAt,
-        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
             val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
@@ -165,7 +178,7 @@ class LiveSessionRepository internal constructor(
             require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick Plan completion requires NO_LIVE_TRACKING"
             }
-            val execution = noLiveExecution(snapshot, completedAt, zoneId, planEntryId, createdAt, actualValues)
+            val execution = noLiveExecution(snapshot, completedAt, zoneId, planEntryId, createdAt, valueOverrides)
             database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
             check(
                 database.planEntryDao().fulfillActivity(
@@ -837,17 +850,12 @@ class LiveSessionRepository internal constructor(
         zoneId: ZoneId,
         planEntryId: PlanEntryId?,
         createdAt: Instant,
-        actualValues: List<ActivityExecutionFieldValue>,
+        valueOverrides: List<ActivityExecutionValueOverride>,
     ): ActivityExecution {
         val generated = activityFactory.completeNoLiveNow(snapshot, completedAt, zoneId, planEntryId, createdAt)
-        val overrides = actualValues.associateBy(ActivityExecutionFieldValue::snapshotFieldId)
-        return generated
-            .copy(
-                values =
-                    (generated.values.associateBy(ActivityExecutionFieldValue::snapshotFieldId) + overrides)
-                        .values
-                        .toList(),
-            ).also { ActivityExecutionValidator.requireValid(it, snapshot) }
+        return ActivityExecutionValuePolicy
+            .apply(generated, snapshot, valueOverrides)
+            .also { ActivityExecutionValidator.requireValid(it, snapshot) }
     }
 
     private fun requireStartablePlan(

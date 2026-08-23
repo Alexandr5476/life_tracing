@@ -7,6 +7,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -414,7 +415,7 @@ class LibraryRepository internal constructor(
                     completedAt,
                     zoneId,
                     createdAt,
-                    actualValues,
+                    actualValues.map { ActivityExecutionValueOverride(it.snapshotFieldId, it) },
                 )
             check(database.libraryDao().touchActivity(templateId.value, completedAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"

@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import java.time.Instant
+import java.util.ConcurrentModificationException
 
 internal data class ActivityExecutionAggregateEntity(
     val execution: ActivityExecutionEntity,
@@ -38,6 +39,8 @@ internal data class ExecutionPlanLinkRow(
     @androidx.room.ColumnInfo(name = "trackable_kind") val trackableKind: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
     @androidx.room.ColumnInfo(name = "sequence_plan_snapshot_id") val sequencePlanSnapshotId: String?,
+    val status: String,
+    @androidx.room.ColumnInfo(name = "fulfilled_activity_execution_id") val fulfilledActivityExecutionId: String?,
 )
 
 @Dao
@@ -60,6 +63,19 @@ internal abstract class ActivityExecutionDao {
             "WHERE activity_execution_id = :executionId ORDER BY snapshot_field_id",
     )
     abstract fun getValues(executionId: String): List<ActivityExecutionFieldValueEntity>
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM activity_executions " +
+            "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "AND started_at_ms IS NOT NULL AND completed_at_ms IS NOT NULL " +
+            "AND started_at_ms <= :endMs AND completed_at_ms >= :startMs " +
+            "AND (:excludeId IS NULL OR id != :excludeId) LIMIT 1)",
+    )
+    abstract fun overlapsCompletedStandalone(
+        startMs: Long,
+        endMs: Long,
+        excludeId: String? = null,
+    ): Boolean
 
     @Query(
         "SELECT field_type FROM activity_snapshot_fields " +
@@ -85,7 +101,10 @@ internal abstract class ActivityExecutionDao {
     @Query("SELECT sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
     protected abstract fun getSequenceOccurrenceLink(id: String): SequenceOccurrenceLinkRow?
 
-    @Query("SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id FROM plan_entries WHERE id = :id")
+    @Query(
+        "SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id, status, " +
+            "fulfilled_activity_execution_id FROM plan_entries WHERE id = :id",
+    )
     protected abstract fun getPlanLink(id: String): ExecutionPlanLinkRow?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
@@ -96,6 +115,9 @@ internal abstract class ActivityExecutionDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertValuesUnchecked(values: List<ActivityExecutionFieldValueEntity>)
+
+    @Query("DELETE FROM activity_execution_field_values WHERE activity_execution_id = :executionId")
+    protected abstract fun deleteValuesUnchecked(executionId: String): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertPauseUnchecked(pause: ActivityExecutionPauseEntity)
@@ -164,6 +186,40 @@ internal abstract class ActivityExecutionDao {
     @Query("UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs WHERE id = :id")
     protected abstract fun softDeleteUnchecked(
         id: String,
+        deletedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE activity_executions SET snapshot_id = :snapshotId, started_at_ms = :startedAtMs, " +
+            "completed_at_ms = :completedAtMs, active_duration_ms = :activeDurationMs, " +
+            "original_zone_id = :originalZoneId, original_utc_offset_minutes = :originalUtcOffsetMinutes, " +
+            "primary_local_date = :primaryLocalDate, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND context_type = 'STANDALONE' AND status = 'COMPLETED' " +
+            "AND deleted_at_ms IS NULL AND updated_at_ms = :expectedUpdatedAtMs " +
+            "AND snapshot_id = :expectedSnapshotId",
+    )
+    protected abstract fun correctCompletedStandaloneUnchecked(
+        id: String,
+        expectedUpdatedAtMs: Long,
+        expectedSnapshotId: String,
+        snapshotId: String,
+        startedAtMs: Long?,
+        completedAtMs: Long,
+        activeDurationMs: Long?,
+        originalZoneId: String,
+        originalUtcOffsetMinutes: Int,
+        primaryLocalDate: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs " +
+            "WHERE id = :id AND context_type = 'STANDALONE' AND status = 'COMPLETED' " +
+            "AND deleted_at_ms IS NULL AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    protected abstract fun softDeleteCompletedStandaloneUnchecked(
+        id: String,
+        expectedUpdatedAtMs: Long,
         deletedAtMs: Long,
     ): Int
 
@@ -276,6 +332,79 @@ internal abstract class ActivityExecutionDao {
                     execution.updatedAtMs,
                 ) == 1,
             )
+        }
+    }
+
+    @Transaction
+    open fun correctCompletedStandalone(
+        expectedUpdatedAtMs: Long,
+        expectedSnapshotId: String,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        val current = requireNotNull(getAggregate(after.execution.id)) { "Unknown execution: ${after.execution.id}" }
+        require(current.execution.contextType == "STANDALONE") {
+            "Sequence child history requires coordinated Sequence correction"
+        }
+        require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
+            "Only non-deleted completed history can be corrected"
+        }
+        if (
+            current.execution.updatedAtMs != expectedUpdatedAtMs ||
+            current.execution.snapshotId != expectedSnapshotId
+        ) {
+            throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+        require(after.execution.updatedAtMs > current.execution.updatedAtMs) {
+            "Historical correction time must advance"
+        }
+        require(after.pauses == current.pauses) { "Historical correction cannot edit pause rows" }
+        require(after.execution.correctionIdentity() == current.execution.correctionIdentity()) {
+            "Historical correction cannot change execution identity or frozen linkage"
+        }
+        requireValidAggregate(after)
+        val row = after.execution
+        if (
+            correctCompletedStandaloneUnchecked(
+                row.id,
+                expectedUpdatedAtMs,
+                expectedSnapshotId,
+                row.snapshotId,
+                row.startedAtMs,
+                requireNotNull(row.completedAtMs),
+                row.activeDurationMs,
+                row.originalZoneId,
+                requireNotNull(row.originalUtcOffsetMinutes),
+                row.primaryLocalDate,
+                row.updatedAtMs,
+            ) != 1
+        ) {
+            throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+        if (after.values != current.values) {
+            deleteValuesUnchecked(row.id)
+            if (after.values.isNotEmpty()) insertValuesUnchecked(after.values)
+        }
+    }
+
+    @Transaction
+    open fun softDeleteCompletedStandalone(
+        id: String,
+        expectedUpdatedAtMs: Long,
+        deletedAtMs: Long,
+    ) {
+        val current = requireNotNull(getById(id)) { "Unknown execution: $id" }
+        require(current.contextType == "STANDALONE") {
+            "Sequence child history requires coordinated Sequence deletion"
+        }
+        require(current.status == "COMPLETED" && current.deletedAtMs == null) {
+            "Only non-deleted completed history can be deleted"
+        }
+        if (current.updatedAtMs != expectedUpdatedAtMs) {
+            throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+        require(deletedAtMs > current.updatedAtMs) { "Historical deletion time must advance" }
+        if (softDeleteCompletedStandaloneUnchecked(id, expectedUpdatedAtMs, deletedAtMs) != 1) {
+            throw ConcurrentModificationException("Activity history changed concurrently")
         }
     }
 
@@ -398,7 +527,16 @@ internal abstract class ActivityExecutionDao {
                 }
                 execution.planEntryId?.let { planId ->
                     val plan = requireNotNull(getPlanLink(planId)) { "Unknown Plan: $planId" }
-                    require(plan.trackableKind == "ACTIVITY" && plan.activitySnapshotId == execution.snapshotId) {
+                    require(
+                        plan.trackableKind == "ACTIVITY" &&
+                            (
+                                plan.activitySnapshotId == execution.snapshotId ||
+                                    (
+                                        plan.status == "FULFILLED" &&
+                                            plan.fulfilledActivityExecutionId == execution.id
+                                    )
+                            ),
+                    ) {
                         "ActivityExecution Plan linkage must match kind and snapshot"
                     }
                 }
@@ -549,5 +687,19 @@ private fun ActivityExecutionEntity.stableIdentity(): List<Any?> =
         originalZoneId,
         originalUtcOffsetMinutes,
         primaryLocalDate,
+        createdAtMs,
+    )
+
+private fun ActivityExecutionEntity.correctionIdentity(): List<Any?> =
+    listOf(
+        id,
+        contextType,
+        sequenceExecutionId,
+        sequenceOccurrenceId,
+        planEntryId,
+        statisticsSeriesId,
+        status,
+        completionReason,
+        deletedAtMs,
         createdAtMs,
     )

@@ -156,7 +156,7 @@ object ActivityExecutionValidator {
         }
     }
 
-    private fun requireValidValues(
+    fun requireValidValues(
         values: List<ActivityExecutionFieldValue>,
         snapshot: ActivityConfigSnapshot,
     ) {
@@ -213,12 +213,14 @@ class ActivityExecutionFactory(
             ).validatedAgainst(snapshot)
     }
 
+    @Suppress("LongParameterList") // Plan linkage is the only optional owner in the canonical factory.
     fun createManualTimed(
         snapshot: ActivityConfigSnapshot,
         startedAt: Instant,
         completedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        planEntryId: PlanEntryId? = null,
     ): ActivityExecution {
         require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
             "NO_LIVE_TRACKING snapshots require an immediate manual entry"
@@ -229,7 +231,7 @@ class ActivityExecutionFactory(
         require(persistedStart <= persistedCompletion && persistedCompletion <= persistedCreation) {
             "Manual interval must be ordered and not in the future"
         }
-        return base(snapshot, persistedStart, persistedCreation, zoneId)
+        return base(snapshot, persistedStart, persistedCreation, zoneId, planEntryId = planEntryId)
             .copy(
                 status = ActivityExecutionStatus.COMPLETED,
                 startedAt = persistedStart,
@@ -325,6 +327,7 @@ class ActivityExecutionFactory(
         completedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        planEntryId: PlanEntryId? = null,
     ): ActivityExecution {
         require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
             "Immediate manual entry requires NO_LIVE_TRACKING"
@@ -332,7 +335,7 @@ class ActivityExecutionFactory(
         val persistedCompletion = completedAt.toPersistenceInstant()
         val persistedCreation = createdAt.toPersistenceInstant()
         require(persistedCompletion <= persistedCreation) { "Manual completion must not be in the future" }
-        return base(snapshot, persistedCompletion, persistedCreation, zoneId)
+        return base(snapshot, persistedCompletion, persistedCreation, zoneId, planEntryId = planEntryId)
             .copy(
                 status = ActivityExecutionStatus.COMPLETED,
                 completedAt = persistedCompletion,
@@ -382,6 +385,119 @@ class ActivityExecutionFactory(
             values = snapshot.materializedDefaults(),
         )
     }
+}
+
+object ActivityExecutionValuePolicy {
+    fun apply(
+        execution: ActivityExecution,
+        snapshot: ActivityConfigSnapshot,
+        overrides: List<ActivityExecutionValueOverride>,
+    ): ActivityExecution {
+        require(overrides.map(ActivityExecutionValueOverride::snapshotFieldId).distinct().size == overrides.size) {
+            "Execution value overrides must target unique Fields"
+        }
+        val values = execution.values.associateByTo(linkedMapOf(), ActivityExecutionFieldValue::snapshotFieldId)
+        overrides.forEach { override ->
+            if (override.value == null) {
+                values.remove(override.snapshotFieldId)
+            } else {
+                values[override.snapshotFieldId] = override.value
+            }
+        }
+        ActivityExecutionValidator.requireValidValues(values.values.toList(), snapshot)
+        return execution.copy(values = values.values.toList())
+    }
+}
+
+object ActivityHistoryCorrectionPolicy {
+    fun isNoOp(
+        execution: ActivityExecution,
+        snapshot: ActivityConfigSnapshot,
+        correction: ActivityHistoryCorrection,
+    ): Boolean {
+        val timeMatches =
+            when (val time = correction.time) {
+                is ActivityHistoryTimeCorrection.Timed ->
+                    execution.startedAt == time.startedAt.toPersistenceInstant() &&
+                        execution.completedAt == time.completedAt.toPersistenceInstant()
+                is ActivityHistoryTimeCorrection.NoLive ->
+                    execution.startedAt == null && execution.completedAt == time.completedAt.toPersistenceInstant()
+            }
+        return timeMatches &&
+            execution.originalZoneId == correction.eventZoneId &&
+            sameValues(execution.values, correction.values) &&
+            snapshot.shortComment == correction.shortComment
+    }
+
+    fun correct(
+        execution: ActivityExecution,
+        snapshot: ActivityConfigSnapshot,
+        correction: ActivityHistoryCorrection,
+        correctedAt: Instant,
+    ): ActivityExecution {
+        require(execution.context == ActivityExecutionContext.STANDALONE) {
+            "Sequence child history requires coordinated Sequence correction"
+        }
+        require(execution.status == ActivityExecutionStatus.COMPLETED && execution.deletedAt == null) {
+            "Only non-deleted completed history can be corrected"
+        }
+        val persistedCorrectionTime = correctedAt.toPersistenceInstant()
+        require(persistedCorrectionTime > execution.updatedAt) { "Historical correction time must advance" }
+        val corrected =
+            when (val time = correction.time) {
+                is ActivityHistoryTimeCorrection.Timed -> {
+                    require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+                        "Timed correction requires a timed Activity snapshot"
+                    }
+                    val start = time.startedAt.toPersistenceInstant()
+                    val completion = time.completedAt.toPersistenceInstant()
+                    require(start <= completion && completion <= persistedCorrectionTime) {
+                        "Corrected interval must be ordered and not in the future"
+                    }
+                    execution.copy(
+                        startedAt = start,
+                        completedAt = completion,
+                        activeDuration =
+                            ActivityExecutionDurationCalculator.calculate(
+                                start,
+                                completion,
+                                execution.pauses,
+                            ),
+                        originalZoneId = correction.eventZoneId,
+                        originalUtcOffsetMinutes =
+                            start.atZone(correction.eventZoneId).offset.totalSeconds / SECONDS_PER_MINUTE,
+                        primaryLocalDate = start.atZone(correction.eventZoneId).toLocalDate(),
+                        updatedAt = persistedCorrectionTime,
+                        values = correction.values.sortedBy { it.snapshotFieldId.value },
+                    )
+                }
+                is ActivityHistoryTimeCorrection.NoLive -> {
+                    require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                        "No-live correction requires a NO_LIVE_TRACKING snapshot"
+                    }
+                    val completion = time.completedAt.toPersistenceInstant()
+                    require(completion <= persistedCorrectionTime) { "Corrected completion must not be in the future" }
+                    execution.copy(
+                        startedAt = null,
+                        completedAt = completion,
+                        activeDuration = null,
+                        originalZoneId = correction.eventZoneId,
+                        originalUtcOffsetMinutes =
+                            completion.atZone(correction.eventZoneId).offset.totalSeconds / SECONDS_PER_MINUTE,
+                        primaryLocalDate = completion.atZone(correction.eventZoneId).toLocalDate(),
+                        updatedAt = persistedCorrectionTime,
+                        values = correction.values.sortedBy { it.snapshotFieldId.value },
+                    )
+                }
+            }
+        ActivityExecutionValidator.requireValid(corrected, snapshot)
+        return corrected
+    }
+
+    private fun sameValues(
+        left: List<ActivityExecutionFieldValue>,
+        right: List<ActivityExecutionFieldValue>,
+    ): Boolean = left.sortedBy { it.snapshotFieldId.value } == right.sortedBy { it.snapshotFieldId.value }
 }
 
 object ActivityExecutionTransitions {

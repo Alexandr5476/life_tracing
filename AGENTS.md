@@ -26,6 +26,9 @@
 - Statistics is history-derived. Global tracked time counts only top-level standalone ActivityExecution plus terminal SequenceExecution; Sequence child ActivityExecution may contribute to per-Activity Series but must never be added again to global tracked time.
 - No-live ActivityExecution participates in count/frequency/field statistics but has missing duration, never duration zero.
 - Statistics groups reusable Custom Fields and Category options by stable source identity, never display labels; missing values are distinct from numeric zero.
+- Manual completed Activity is historical fact entry, not Timer runtime replay: persisted duration follows the explicit interval, and overlap with other history is advisory rather than blocking.
+- Standalone historical Activity corrections mutate only explicit historical facts; Field schema and Statistics identity stay frozen, and a Short Comment change uses immutable snapshot replacement rather than in-place mutation.
+- Normal historical Activity deletion is soft deletion; deleting a fulfilled Plan-linked execution never reopens the Plan.
 - A task is complete only when all relevant checks pass.
 
 Canonical commands (PowerShell):

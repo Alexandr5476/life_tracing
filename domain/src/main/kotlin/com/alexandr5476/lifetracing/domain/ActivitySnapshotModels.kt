@@ -56,6 +56,18 @@ data class ActivityConfigSnapshot(
     val fields: List<ActivitySnapshotField> = emptyList(),
 )
 
+data class OneOffActivitySnapshot(
+    val snapshot: ActivityConfigSnapshot,
+    val fieldIdsByKey: Map<String, ActivitySnapshotFieldId>,
+    val optionIdsByKey: Map<String, ActivitySnapshotCategoryOptionId>,
+)
+
+data class ActivitySnapshotReplacement(
+    val snapshot: ActivityConfigSnapshot,
+    val fieldIds: Map<ActivitySnapshotFieldId, ActivitySnapshotFieldId>,
+    val optionIds: Map<ActivitySnapshotCategoryOptionId, ActivitySnapshotCategoryOptionId>,
+)
+
 object ActivityConfigSnapshotValidator {
     fun requireValid(snapshot: ActivityConfigSnapshot) {
         ActivityTemplateValidator.requireValidTracking(snapshot.timeTrackingMode, snapshot.timerTarget)
@@ -170,7 +182,109 @@ class ActivitySnapshotFactory(
             fields = fields,
         ).also(ActivityConfigSnapshotValidator::requireValid)
     }
+
+    @Suppress("LongMethod") // Field and option IDs are allocated together so defaults cannot drift.
+    fun fromOneOff(
+        draft: ActivitySnapshotDraft,
+        createdAt: Instant,
+    ): OneOffActivitySnapshot {
+        val fieldIds = linkedMapOf<String, ActivitySnapshotFieldId>()
+        val optionIds = linkedMapOf<String, ActivitySnapshotCategoryOptionId>()
+        val fields =
+            draft.fields.map { field ->
+                val fieldKey = requireNewKey(field.identity, "One-off Field")
+                require(field.sourceFieldId == null) { "One-off Field cannot claim source identity" }
+                val fieldId = nextFieldId()
+                require(fieldIds.put(fieldKey, fieldId) == null) { "One-off Field keys must be unique" }
+                val options =
+                    field.categoryOptions.map { option ->
+                        val optionKey = requireNewKey(option.identity, "One-off Category option")
+                        require(option.sourceOptionId == null) { "One-off option cannot claim source identity" }
+                        val optionId = nextOptionId()
+                        require(optionIds.put(optionKey, optionId) == null) {
+                            "One-off Category option keys must be unique"
+                        }
+                        ActivitySnapshotCategoryOption(
+                            optionId,
+                            null,
+                            option.position,
+                            option.labelAtCreation,
+                            option.localLabelOverride,
+                        )
+                    }
+                ActivitySnapshotField(
+                    fieldId,
+                    null,
+                    field.position,
+                    field.nameAtCreation,
+                    field.localNameOverride,
+                    field.type,
+                    field.unit,
+                    field.displayPrecision,
+                    field.defaultNumberScaled,
+                    field.defaultCategoryOption?.let {
+                        optionIds[requireNewKey(it, "One-off Category default")]
+                            ?: error("One-off Category default must belong to its Field")
+                    },
+                    field.defaultText,
+                    field.isMainValue,
+                    options,
+                )
+            }
+        val snapshot =
+            ActivityConfigSnapshot(
+                nextSnapshotId(),
+                draft.name,
+                draft.shortComment,
+                draft.timeTrackingMode,
+                draft.timerTarget,
+                null,
+                null,
+                null,
+                false,
+                Instant.ofEpochMilli(createdAt.toEpochMilli()),
+                draft.settings,
+                fields,
+            ).also(ActivityConfigSnapshotValidator::requireValid)
+        return OneOffActivitySnapshot(snapshot, fieldIds, optionIds)
+    }
+
+    fun replaceShortComment(
+        source: ActivityConfigSnapshot,
+        shortComment: String?,
+        createdAt: Instant,
+    ): ActivitySnapshotReplacement {
+        val fieldIds = source.fields.associate { it.id to nextFieldId() }
+        val optionIds =
+            source.fields
+                .flatMap(ActivitySnapshotField::categoryOptions)
+                .associate { it.id to nextOptionId() }
+        val replacement =
+            source
+                .copy(
+                    id = nextSnapshotId(),
+                    shortComment = shortComment,
+                    createdAt = Instant.ofEpochMilli(createdAt.toEpochMilli()),
+                    fields =
+                        source.fields.map { field ->
+                            field.copy(
+                                id = fieldIds.getValue(field.id),
+                                defaultCategoryOptionId = field.defaultCategoryOptionId?.let(optionIds::getValue),
+                                categoryOptions =
+                                    field.categoryOptions.map { option ->
+                                        option.copy(id = optionIds.getValue(option.id))
+                                    },
+                            )
+                        },
+                ).also(ActivityConfigSnapshotValidator::requireValid)
+        return ActivitySnapshotReplacement(replacement, fieldIds, optionIds)
+    }
 }
+
+private fun requireNewKey(
+    identity: DraftIdentity<*>,
+    label: String,
+): String = (identity as? DraftIdentity.New)?.key ?: throw IllegalArgumentException("$label must use a new draft key")
 
 object ActivitySnapshotDisplayResolver {
     fun fieldName(

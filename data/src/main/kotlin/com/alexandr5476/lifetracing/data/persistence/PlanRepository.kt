@@ -3,6 +3,7 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
@@ -366,7 +367,7 @@ class PlanRepository internal constructor(
 
     private fun loadValidPlan(id: String): PlanEntry? = database.planEntryDao().getById(id)?.let(::validatePlanRow)
 
-    @Suppress("LongMethod")
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun validatePlanRow(row: PlanEntryEntity): PlanEntry {
         val plan = row.toDomain()
         when (plan.kind) {
@@ -390,10 +391,17 @@ class PlanRepository internal constructor(
                         requireNotNull(database.activityExecutionDao().getAggregate(executionId.value)) {
                             "Fulfilled ActivityExecution is missing"
                         }.toDomain()
+                    val executionSnapshot =
+                        requireNotNull(database.activitySnapshotDao().getAggregate(execution.snapshotId.value)) {
+                            "Fulfilled ActivityExecution snapshot is missing"
+                        }.toDomain()
                     require(
                         execution.context == ActivityExecutionContext.STANDALONE &&
                             execution.planEntryId == plan.id &&
-                            execution.snapshotId == snapshot.id &&
+                            (
+                                execution.snapshotId == snapshot.id ||
+                                    executionSnapshot.isHistoricalCommentVariantOf(snapshot)
+                            ) &&
                             execution.status == ActivityExecutionStatus.COMPLETED,
                     ) { "Plan fulfillment ActivityExecution linkage is invalid" }
                 }
@@ -479,6 +487,40 @@ class PlanRepository internal constructor(
                 zoneIdProvider,
             )
     }
+}
+
+private fun ActivityConfigSnapshot.isHistoricalCommentVariantOf(frozen: ActivityConfigSnapshot): Boolean {
+    if (
+        fields.size != frozen.fields.size ||
+        fields.zip(frozen.fields).any { (field, frozenField) ->
+            field.categoryOptions.size != frozenField.categoryOptions.size
+        }
+    ) {
+        return false
+    }
+    val normalizedFields =
+        fields.zip(frozen.fields).map { (field, frozenField) ->
+            val normalizedOptions =
+                field.categoryOptions.zip(frozenField.categoryOptions).map { (option, frozenOption) ->
+                    option.copy(id = frozenOption.id)
+                }
+            val optionIds =
+                field.categoryOptions.zip(frozenField.categoryOptions).associate { (it, frozenIt) ->
+                    it.id to
+                        frozenIt.id
+                }
+            field.copy(
+                id = frozenField.id,
+                defaultCategoryOptionId = field.defaultCategoryOptionId?.let(optionIds::getValue),
+                categoryOptions = normalizedOptions,
+            )
+        }
+    return copy(
+        id = frozen.id,
+        shortComment = frozen.shortComment,
+        createdAt = frozen.createdAt,
+        fields = normalizedFields,
+    ) == frozen
 }
 
 private data class PlanTargetPersistenceShape(
