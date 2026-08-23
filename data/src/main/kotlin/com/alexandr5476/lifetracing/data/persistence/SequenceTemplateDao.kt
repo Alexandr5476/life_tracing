@@ -49,6 +49,7 @@ internal data class LinkedStepOwnerRow(
     @ColumnInfo(name = "sequence_node_id") val sequenceNodeId: String,
     @ColumnInfo(name = "sequence_template_id") val sequenceTemplateId: String,
     @ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String,
+    @ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
     @ColumnInfo(name = "locally_modified") val locallyModified: Boolean,
     @ColumnInfo(name = "sequence_revision") val sequenceRevision: Long,
     @ColumnInfo(name = "sequence_updated_at_ms") val sequenceUpdatedAtMs: Long,
@@ -63,6 +64,8 @@ internal data class ActivitySnapshotModeRow(
     val id: String,
     @ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
 )
+
+private const val BULK_SNAPSHOT_BIND_LIMIT = 900
 
 @Dao
 @Suppress("LargeClass", "TooManyFunctions") // One internal DAO owns the bounded aggregate and its transactions.
@@ -112,7 +115,7 @@ internal abstract class SequenceTemplateDao {
 
     @Query(
         "SELECT nodes.id AS sequence_node_id, nodes.sequence_template_id, nodes.activity_snapshot_id, " +
-            "snapshots.locally_modified, templates.revision AS sequence_revision, " +
+            "snapshots.source_template_id, snapshots.locally_modified, templates.revision AS sequence_revision, " +
             "templates.updated_at_ms AS sequence_updated_at_ms " +
             "FROM sequence_nodes AS nodes " +
             "INNER JOIN activity_snapshots AS snapshots ON snapshots.id = nodes.activity_snapshot_id " +
@@ -211,8 +214,32 @@ internal abstract class SequenceTemplateDao {
     @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
     protected abstract fun hasPlanReference(snapshotId: String): Boolean
 
+    @Query("SELECT DISTINCT activity_snapshot_id FROM sequence_nodes WHERE activity_snapshot_id IN (:snapshotIds)")
+    protected abstract fun getSequenceNodeReferences(snapshotIds: List<String>): List<String>
+
+    @Query(
+        "SELECT DISTINCT activity_snapshot_id FROM sequence_snapshot_nodes " +
+            "WHERE activity_snapshot_id IN (:snapshotIds)",
+    )
+    protected abstract fun getSequenceSnapshotNodeReferences(snapshotIds: List<String>): List<String>
+
+    @Query("SELECT DISTINCT snapshot_id FROM activity_executions WHERE snapshot_id IN (:snapshotIds)")
+    protected abstract fun getActivityExecutionReferences(snapshotIds: List<String>): List<String>
+
+    @Query(
+        "SELECT DISTINCT activity_snapshot_id FROM sequence_occurrences " +
+            "WHERE activity_snapshot_id IN (:snapshotIds)",
+    )
+    protected abstract fun getSequenceOccurrenceReferences(snapshotIds: List<String>): List<String>
+
+    @Query("SELECT DISTINCT activity_snapshot_id FROM plan_entries WHERE activity_snapshot_id IN (:snapshotIds)")
+    protected abstract fun getPlanReferences(snapshotIds: List<String>): List<String>
+
     @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
+
+    @Query("DELETE FROM activity_snapshots WHERE id IN (:snapshotIds)")
+    protected abstract fun deleteActivitySnapshotsUnchecked(snapshotIds: List<String>): Int
 
     @Query(
         "UPDATE sequence_nodes SET activity_snapshot_id = :newSnapshotId " +
@@ -238,7 +265,13 @@ internal abstract class SequenceTemplateDao {
     protected abstract fun insertActivitySnapshotUnchecked(snapshot: ActivitySnapshotEntity)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertActivitySnapshotsUnchecked(snapshots: List<ActivitySnapshotEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertActivitySnapshotSettingsUnchecked(settings: ActivitySnapshotSettingsEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertActivitySnapshotSettingsBatchUnchecked(settings: List<ActivitySnapshotSettingsEntity>)
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertActivitySnapshotFieldsUnchecked(fields: List<ActivitySnapshotFieldEntity>)
@@ -351,7 +384,13 @@ internal abstract class SequenceTemplateDao {
         }
         check(updateSettingsUnchecked(update.settings) == 1)
         persistFieldsAndOptions(current, update)
-        replaceStructureAndPrune(current, update.nodes, canonicalOverrides)
+        if (
+            current.nodes.toSet() != update.nodes.toSet() ||
+            current.stepOverrides.toSet() != canonicalOverrides.toSet() ||
+            update.stepSnapshotReplacements.isNotEmpty()
+        ) {
+            replaceStructureAndPrune(current, update.nodes, canonicalOverrides)
+        }
     }
 
     private fun requireValidSemanticUpdateHeader(
@@ -475,6 +514,14 @@ internal abstract class SequenceTemplateDao {
         insertActivitySnapshotSettingsUnchecked(aggregate.settings)
         if (aggregate.fields.isNotEmpty()) insertActivitySnapshotFieldsUnchecked(aggregate.fields)
         if (aggregate.options.isNotEmpty()) insertActivitySnapshotOptionsUnchecked(aggregate.options)
+    }
+
+    private fun insertSnapshotAggregates(aggregates: List<ActivitySnapshotAggregateEntity>) {
+        if (aggregates.isEmpty()) return
+        insertActivitySnapshotsUnchecked(aggregates.map { it.snapshot })
+        insertActivitySnapshotSettingsBatchUnchecked(aggregates.map { it.settings })
+        aggregates.flatMap { it.fields }.let { if (it.isNotEmpty()) insertActivitySnapshotFieldsUnchecked(it) }
+        aggregates.flatMap { it.options }.let { if (it.isNotEmpty()) insertActivitySnapshotOptionsUnchecked(it) }
     }
 
     private fun requireCompatibleFieldAndOptionEvolution(
@@ -654,13 +701,14 @@ internal abstract class SequenceTemplateDao {
             "Bulk propagation time must advance persisted Sequence milliseconds"
         }
         replacements.forEach { item ->
-            requireValidSnapshotReplacement(
-                item.owner.activitySnapshotId,
-                item.replacement,
-                SequenceStepSnapshotReplacementMode.FROM_SOURCE,
-            )
-            insertSnapshotAggregate(item.replacement)
+            requireValidSnapshotAggregate(item.replacement)
+            require(item.owner.sourceTemplateId != null) { "Update from source requires a source Template" }
+            require(item.replacement.snapshot.sourceTemplateId == item.owner.sourceTemplateId) {
+                "Update from source must preserve source Template identity"
+            }
+            require(!item.replacement.snapshot.locallyModified) { "Source replacement must be unmodified" }
         }
+        insertSnapshotAggregates(replacements.map(BulkStepSnapshotReplacement::replacement))
         replacements.forEach { item ->
             check(
                 repointStepUnchecked(
@@ -677,7 +725,7 @@ internal abstract class SequenceTemplateDao {
                 "SequenceTemplate revision changed concurrently"
             }
         }
-        replacements.map { it.owner.activitySnapshotId }.distinct().forEach(::pruneSnapshotIfUnreferenced)
+        pruneSnapshotsIfUnreferenced(replacements.map { it.owner.activitySnapshotId })
     }
 
     @Query("SELECT * FROM sequence_nodes WHERE id = :id")
@@ -774,6 +822,23 @@ internal abstract class SequenceTemplateDao {
                 hasSequenceOccurrenceReference(snapshotId) ||
                 hasPlanReference(snapshotId)
         if (!isReferenced) check(deleteActivitySnapshotUnchecked(snapshotId) == 1)
+    }
+
+    private fun pruneSnapshotsIfUnreferenced(snapshotIds: List<String>) {
+        snapshotIds.distinct().chunked(BULK_SNAPSHOT_BIND_LIMIT).forEach { chunk ->
+            val referenced =
+                buildSet {
+                    addAll(getSequenceNodeReferences(chunk))
+                    addAll(getSequenceSnapshotNodeReferences(chunk))
+                    addAll(getActivityExecutionReferences(chunk))
+                    addAll(getSequenceOccurrenceReferences(chunk))
+                    addAll(getPlanReferences(chunk))
+                }
+            val unreferenced = chunk.filterNot(referenced::contains)
+            if (unreferenced.isNotEmpty()) {
+                check(deleteActivitySnapshotsUnchecked(unreferenced) == unreferenced.size)
+            }
+        }
     }
 
     private fun SequenceStepOverrideEntity.isEmpty(): Boolean =

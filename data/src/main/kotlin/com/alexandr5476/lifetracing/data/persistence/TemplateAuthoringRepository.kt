@@ -185,7 +185,11 @@ class TemplateAuthoringRepository internal constructor(
         transaction {
             val (sequence, step, current) = requireEditableStep(sequenceTemplateId, stepId, expectedRevision)
             requireStrictlyLater(savedAt, sequence.updatedAt, "Sequence save")
-            val created = createActivityTemplateLocked(current.toNewTemplateDraft(), placement, savedAt)
+            val source =
+                current.sourceTemplateId?.let { sourceId ->
+                    database.activityTemplateDao().getAggregate(sourceId.value)?.toDomain()
+                }
+            val created = createActivityTemplateLocked(current.toNewTemplateDraft(source), placement, savedAt)
             val replacement = activitySnapshotFactory().fromTemplate(created, savedAt)
             database.sequenceTemplateDao().replaceStepSnapshot(
                 step.id.value,
@@ -213,12 +217,11 @@ class TemplateAuthoringRepository internal constructor(
             val replacements =
                 eligible.mapNotNull { owner ->
                     val current = requireNotNull(currentSnapshots[owner.activitySnapshotId])
-                    val replacement = activitySnapshotFactory().fromTemplate(source, savedAt)
-                    if (!owner.locallyModified && TemplateAuthoringPolicy.sameConfiguration(current, replacement)) {
-                        null
-                    } else {
-                        BulkStepSnapshotReplacement(owner, replacement.toEntityAggregate())
+                    if (!owner.locallyModified && current.isSemanticallyCurrent(source)) {
+                        return@mapNotNull null
                     }
+                    val replacement = activitySnapshotFactory().fromTemplate(source, savedAt)
+                    BulkStepSnapshotReplacement(owner, replacement.toEntityAggregate())
                 }
             if (replacements.isNotEmpty()) {
                 database.sequenceTemplateDao().bulkReplaceLinkedSteps(replacements, savedAt.toEpochMilli())
@@ -435,7 +438,11 @@ class TemplateAuthoringRepository internal constructor(
         fun resolveStep(draft: ActivityStepDraft): ActivityStep {
             val id = resolveNodeIdentity(draft.identity)
             val previous = existingNodes[id]
-            require(previous == null || previous is ActivityStep) { "Sequence node kind cannot change" }
+            when (draft.identity) {
+                is DraftIdentity.Existing ->
+                    require(previous is ActivityStep) { "Existing Step must belong to the current SequenceTemplate" }
+                is DraftIdentity.New -> require(previous == null) { "New Step identity collided with an existing node" }
+            }
             val snapshotId =
                 when (val activity = draft.activity) {
                     is StepActivityDraft.Existing -> {
@@ -483,9 +490,14 @@ class TemplateAuthoringRepository internal constructor(
                     is SequenceNodeDraft.Repeat -> {
                         val repeatId = resolveNodeIdentity(node.identity)
                         val previous = existingNodes[repeatId]
-                        require(
-                            previous == null || previous is SequenceRepeatBlock,
-                        ) { "Sequence node kind cannot change" }
+                        when (node.identity) {
+                            is DraftIdentity.Existing ->
+                                require(previous is SequenceRepeatBlock) {
+                                    "Existing Repeat must belong to the current SequenceTemplate"
+                                }
+                            is DraftIdentity.New ->
+                                require(previous == null) { "New Repeat identity collided with an existing node" }
+                        }
                         SequenceRepeatBlock(
                             repeatId,
                             node.position,
@@ -666,6 +678,11 @@ class TemplateAuthoringRepository internal constructor(
                 }
                 require(previousField == null || previousField.sourceFieldId == fieldDraft.sourceFieldId) {
                     "Snapshot Field source identity is immutable"
+                }
+                if (previousField?.sourceFieldId != null) {
+                    require(previousField.type == fieldDraft.type && previousField.unit == fieldDraft.unit) {
+                        "Source-linked snapshot Field type and unit are immutable"
+                    }
                 }
                 val previousOptions =
                     previousField?.categoryOptions.orEmpty().associateBy(ActivitySnapshotCategoryOption::id)
@@ -855,28 +872,44 @@ class TemplateAuthoringRepository internal constructor(
             ) { "Activity Library placement must be preserved" }
         }
 
-    private fun ActivityConfigSnapshot.toNewTemplateDraft(): ActivityTemplateDraft = toTemplateDraft(null)
+    private fun ActivityConfigSnapshot.toNewTemplateDraft(source: ActivityTemplate?): ActivityTemplateDraft =
+        toTemplateDraft(source, preserveSourceIdentities = false)
 
-    private fun ActivityConfigSnapshot.toTemplateDraft(source: ActivityTemplate?): ActivityTemplateDraft {
+    private fun ActivityConfigSnapshot.isSemanticallyCurrent(source: ActivityTemplate): Boolean =
+        sourceTemplateId == source.id &&
+            sourceRevision == source.revision &&
+            statisticsSeriesId == source.statisticsSeriesId
+
+    private fun ActivityConfigSnapshot.toTemplateDraft(
+        source: ActivityTemplate?,
+        preserveSourceIdentities: Boolean = true,
+    ): ActivityTemplateDraft {
         val sourceFields =
-            source?.fields.orEmpty().filter { it.deletedAt == null }.associateBy(
+            source?.fields.orEmpty().associateBy(
                 ActivityTemplateField::id,
             )
         val fields =
             fields.mapIndexed { fieldIndex, field ->
                 val sourceField = field.sourceFieldId?.let(sourceFields::get)
                 val fieldIdentity: DraftIdentity<ActivityTemplateFieldId> =
-                    sourceField?.let { DraftIdentity.Existing(it.id) } ?: DraftIdentity.New("field-$fieldIndex")
+                    if (preserveSourceIdentities && sourceField != null && sourceField.deletedAt == null) {
+                        DraftIdentity.Existing(sourceField.id)
+                    } else {
+                        DraftIdentity.New("field-$fieldIndex")
+                    }
                 val sourceOptions =
-                    sourceField?.categoryOptions.orEmpty().filterNot { it.isArchived }.associateBy(
+                    sourceField?.categoryOptions.orEmpty().associateBy(
                         CategoryOption::id,
                     )
                 val optionDrafts =
                     field.categoryOptions.mapIndexed { optionIndex, option ->
                         val sourceOption = option.sourceOptionId?.let(sourceOptions::get)
                         ActivityCategoryOptionDraft(
-                            sourceOption?.let { DraftIdentity.Existing(it.id) }
-                                ?: DraftIdentity.New("field-$fieldIndex-option-$optionIndex"),
+                            if (preserveSourceIdentities && sourceOption?.isArchived == false) {
+                                DraftIdentity.Existing(sourceOption.id)
+                            } else {
+                                DraftIdentity.New("field-$fieldIndex-option-$optionIndex")
+                            },
                             option.position,
                             option.localLabelOverride ?: sourceOption?.label ?: option.labelAtCreation,
                         )

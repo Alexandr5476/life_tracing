@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDisplayResolver
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -271,6 +272,281 @@ class TemplateAuthoringRepositoryTest {
     }
 
     @Test
+    fun sourceLinkedLocalFieldRejectsIdentityCorruptionAndAllowsExplicitReplacement() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "field"), createdAt = at(2))
+        val step = sequence.nodes.flatMap { it.stepIds() }.single()
+        val original = repository.getStepSnapshot(sequence.id, step)!!
+        val field = original.toAuthoringDraft().fields.single()
+        val snapshotCount = count("activity_snapshots")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveStepConfiguration(
+                sequence.id,
+                step,
+                1,
+                original.toAuthoringDraft().copy(fields = listOf(field.copy(unit = "m"))),
+                at(3),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveStepConfiguration(
+                sequence.id,
+                step,
+                1,
+                original.toAuthoringDraft().copy(fields = listOf(field.copy(type = CustomFieldType.TEXT, unit = null))),
+                at(3),
+            )
+        }
+        assertEquals(snapshotCount, count("activity_snapshots"))
+        assertEquals(1L, repository.getSequenceTemplate(sequence.id)?.revision)
+        assertEquals(original, repository.getStepSnapshot(sequence.id, step))
+
+        val saved =
+            repository.saveStepConfiguration(
+                sequence.id,
+                step,
+                1,
+                original.toAuthoringDraft().copy(
+                    fields =
+                        listOf(
+                            field.copy(
+                                identity = DraftIdentity.New("distance-metres"),
+                                sourceFieldId = null,
+                                unit = "m",
+                            ),
+                        ),
+                ),
+                at(3),
+            )
+        val replacement = repository.getStepSnapshot(sequence.id, step)!!
+        assertEquals(2L, saved.revision)
+        assertNotEquals(original.id, replacement.id)
+        assertNull(replacement.fields.single().sourceFieldId)
+        assertEquals("m", replacement.fields.single().unit)
+        assertEquals(source.statisticsSeriesId, replacement.statisticsSeriesId)
+    }
+
+    @Test
+    fun saveAsNewUsesEffectiveSourceLabelsAndLocalOverridePrecedence() {
+        val typoDraft =
+            categoryActivityDraft().let { draft ->
+                draft.copy(
+                    fields =
+                        listOf(
+                            draft.fields.single().copy(
+                                name = "Distnace",
+                                categoryOptions =
+                                    listOf(
+                                        draft.fields
+                                            .single()
+                                            .categoryOptions
+                                            .single()
+                                            .copy(label = "Tempoo"),
+                                    ),
+                            ),
+                        ),
+                )
+            }
+        val source = repository.createActivityTemplate(typoDraft, createdAt = at(1))
+        val first = repository.createSequenceTemplate(singleStepSequence(source.id, "effective"), createdAt = at(2))
+        val firstStep = first.nodes.flatMap { it.stepIds() }.single()
+        val physical = repository.getStepSnapshot(first.id, firstStep)!!
+        val sourceDraft = source.toAuthoringDraft()
+        val corrected =
+            repository.saveActivityTemplate(
+                source.id,
+                1,
+                sourceDraft.copy(
+                    fields =
+                        listOf(
+                            sourceDraft.fields.single().copy(
+                                name = "Distance",
+                                categoryOptions =
+                                    listOf(
+                                        sourceDraft.fields
+                                            .single()
+                                            .categoryOptions
+                                            .single()
+                                            .copy(label = "Tempo"),
+                                    ),
+                            ),
+                        ),
+                ),
+                at(3),
+            )
+        assertEquals(1L, corrected.revision)
+        assertEquals("Distnace", physical.fields.single().nameAtCreation)
+        assertEquals(
+            "Tempoo",
+            physical.fields
+                .single()
+                .categoryOptions
+                .single()
+                .labelAtCreation,
+        )
+
+        val copied = repository.saveStepAsNewActivityTemplate(first.id, firstStep, 1, savedAt = at(4))
+        assertEquals("Distance", copied.fields.single().name)
+        assertEquals(
+            "Tempo",
+            copied.fields
+                .single()
+                .categoryOptions
+                .single()
+                .label,
+        )
+        assertNotEquals(corrected.fields.single().id, copied.fields.single().id)
+        assertNotEquals(
+            corrected.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+            copied.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+        )
+
+        val second = repository.createSequenceTemplate(singleStepSequence(source.id, "override"), createdAt = at(4))
+        val secondStep = second.nodes.flatMap { it.stepIds() }.single()
+        val secondSnapshot = repository.getStepSnapshot(second.id, secondStep)!!
+        repository.saveStepConfiguration(
+            second.id,
+            secondStep,
+            1,
+            secondSnapshot.toAuthoringDraft().copy(
+                fields =
+                    listOf(
+                        secondSnapshot
+                            .toAuthoringDraft()
+                            .fields
+                            .single()
+                            .copy(localNameOverride = "Route distance"),
+                    ),
+            ),
+            at(5),
+        )
+        database.activityTemplateDao().archive(source.id.value, at(6).toEpochMilli())
+        val overridden = repository.saveStepAsNewActivityTemplate(second.id, secondStep, 2, savedAt = at(7))
+        assertEquals("Route distance", overridden.fields.single().name)
+        assertEquals(
+            "Tempo",
+            overridden.fields
+                .single()
+                .categoryOptions
+                .single()
+                .label,
+        )
+    }
+
+    @Test
+    fun sequenceNodeExistingIdentityRequiresPersistedOwnerAndKind() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequenceCount = count("sequence_templates")
+        val seriesCount = count("statistics_series")
+        val snapshotCount = count("activity_snapshots")
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Fake Step",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.Existing(SequenceNodeId("fake-step")),
+                                    0,
+                                    StepActivityDraft.FromTemplate(source.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = at(2),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Fake Repeat",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Repeat(
+                                SequenceRepeatBlockDraft(
+                                    DraftIdentity.Existing(SequenceNodeId("fake-repeat")),
+                                    0,
+                                    2,
+                                    listOf(
+                                        ActivityStepDraft(
+                                            DraftIdentity.New("child"),
+                                            0,
+                                            StepActivityDraft.FromTemplate(source.id),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = at(2),
+            )
+        }
+        assertEquals(sequenceCount, count("sequence_templates"))
+        assertEquals(seriesCount, count("statistics_series"))
+        assertEquals(snapshotCount, count("activity_snapshots"))
+
+        val created = repository.createSequenceTemplate(singleStepSequence(source.id, "valid"), createdAt = at(2))
+        val beforeNodes = database.sequenceTemplateDao().getNodes(created.id.value)
+        val beforeSnapshots = count("activity_snapshots")
+        val currentDraft = created.toAuthoringDraft(snapshots(created.id))
+        val unknownStep =
+            SequenceNodeDraft.Step(
+                ActivityStepDraft(
+                    DraftIdentity.Existing(SequenceNodeId("unknown-step")),
+                    1,
+                    StepActivityDraft.FromTemplate(source.id),
+                ),
+            )
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveSequenceTemplate(
+                created.id,
+                1,
+                currentDraft.copy(nodes = currentDraft.nodes + unknownStep),
+                at(3),
+            )
+        }
+        val unknownRepeat =
+            SequenceNodeDraft.Repeat(
+                SequenceRepeatBlockDraft(
+                    DraftIdentity.Existing(SequenceNodeId("unknown-repeat")),
+                    1,
+                    2,
+                    listOf(
+                        ActivityStepDraft(
+                            DraftIdentity.New("new-child"),
+                            0,
+                            StepActivityDraft.FromTemplate(source.id),
+                        ),
+                    ),
+                ),
+            )
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveSequenceTemplate(
+                created.id,
+                1,
+                currentDraft.copy(nodes = currentDraft.nodes + unknownRepeat),
+                at(3),
+            )
+        }
+        assertEquals(1L, repository.getSequenceTemplate(created.id)?.revision)
+        assertEquals(beforeNodes, database.sequenceTemplateDao().getNodes(created.id.value))
+        assertEquals(beforeSnapshots, count("activity_snapshots"))
+        assertTrue(created.nodes.flatMap { it.stepIds() }.none { it.value == "step-valid" })
+    }
+
+    @Test
     fun archivedSourceBlocksBothUpdateDirectionsButLocalEditAndSaveAsNewRemainAvailable() {
         val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
         val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "orphan"), createdAt = at(2))
@@ -293,6 +569,145 @@ class TemplateAuthoringRepositoryTest {
         val replacement = repository.saveStepAsNewActivityTemplate(sequence.id, step, 2, savedAt = at(5))
         assertEquals(replacement.id, repository.getStepSnapshot(sequence.id, step)?.sourceTemplateId)
         assertEquals("Orphan local", replacement.name)
+    }
+
+    @Test
+    fun presentationRenamesDoNotPropagateCurrentSnapshotsButAllStillReplacesModified() {
+        val source = repository.createActivityTemplate(categoryActivityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "labels"), createdAt = at(2))
+        val step = sequence.nodes.flatMap { it.stepIds() }.single()
+        val original = repository.getStepSnapshot(sequence.id, step)!!
+        val draft = source.toAuthoringDraft()
+        val renamed =
+            repository.saveActivityTemplate(
+                source.id,
+                1,
+                draft.copy(
+                    fields =
+                        listOf(
+                            draft.fields.single().copy(
+                                name = "Effort",
+                                categoryOptions =
+                                    listOf(
+                                        draft.fields
+                                            .single()
+                                            .categoryOptions
+                                            .single()
+                                            .copy(label = "Comfortable"),
+                                    ),
+                            ),
+                        ),
+                ),
+                at(3),
+            )
+        assertEquals(1L, renamed.revision)
+        assertEquals(
+            "Effort",
+            ActivitySnapshotDisplayResolver.fieldName(original.fields.single(), renamed.fields.single().name),
+        )
+        assertEquals(
+            "Comfortable",
+            ActivitySnapshotDisplayResolver.optionLabel(
+                original.fields
+                    .single()
+                    .categoryOptions
+                    .single(),
+                renamed.fields
+                    .single()
+                    .categoryOptions
+                    .single()
+                    .label,
+            ),
+        )
+
+        val only =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                1,
+                LinkedStepPropagationMode.ONLY_UNMODIFIED,
+                at(4),
+            )
+        val allCurrent =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                1,
+                LinkedStepPropagationMode.ALL,
+                at(5),
+            )
+        assertEquals(0, only.updatedSteps)
+        assertEquals(0, only.updatedSequences)
+        assertEquals(0, allCurrent.updatedSteps)
+        assertEquals(original.id, repository.getStepSnapshot(sequence.id, step)?.id)
+        assertEquals(1L, repository.getSequenceTemplate(sequence.id)?.revision)
+
+        repository.saveStepConfiguration(
+            sequence.id,
+            step,
+            1,
+            original.toAuthoringDraft().copy(name = "Local"),
+            at(6),
+        )
+        val local = repository.getStepSnapshot(sequence.id, step)!!
+        val replaced =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                1,
+                LinkedStepPropagationMode.ALL,
+                at(7),
+            )
+        assertEquals(1, replaced.updatedSteps)
+        assertEquals(1, replaced.updatedSequences)
+        assertNotEquals(local.id, repository.getStepSnapshot(sequence.id, step)?.id)
+        assertFalse(repository.getStepSnapshot(sequence.id, step)!!.locallyModified)
+        assertEquals(3L, repository.getSequenceTemplate(sequence.id)?.revision)
+    }
+
+    @Test
+    fun simpleSequenceSaveDoesNotRewriteNodesButReorderDoes() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence =
+            repository.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Many Steps",
+                    null,
+                    nodes = List(10) { sourceStep("node-$it", it, source.id) },
+                ),
+                createdAt = at(2),
+            )
+        val originalSnapshots = snapshots(sequence.id).keys
+        installNodeWriteCounters()
+
+        val renamed =
+            repository.saveSequenceTemplate(
+                sequence.id,
+                1,
+                sequence.toAuthoringDraft(snapshots(sequence.id)).let { draft ->
+                    draft.copy(
+                        name = "Renamed",
+                        settings = draft.settings.copy(autoAdvance = false),
+                    )
+                },
+                at(3),
+            )
+        assertEquals(2L, renamed.revision)
+        assertEquals(0, nodeWrites("insert"))
+        assertEquals(0, nodeWrites("delete"))
+
+        val reorderedDraft =
+            renamed.toAuthoringDraft(snapshots(sequence.id)).let { draft ->
+                draft.copy(
+                    nodes =
+                        draft.nodes.reversed().mapIndexed { position, node ->
+                            val stepNode = node as SequenceNodeDraft.Step
+                            SequenceNodeDraft.Step(stepNode.value.copy(position = position))
+                        },
+                )
+            }
+        val reordered = repository.saveSequenceTemplate(sequence.id, 2, reorderedDraft, at(4))
+        assertEquals(3L, reordered.revision)
+        assertTrue(nodeWrites("insert") > 0)
+        assertTrue(nodeWrites("delete") > 0)
+        assertEquals(originalSnapshots, snapshots(sequence.id).keys)
     }
 
     @Test
@@ -364,6 +779,38 @@ class TemplateAuthoringRepositoryTest {
         assertEquals(localA.id.value, database.activityExecutionDao().getById("execution")?.snapshotId)
         assertEquals(3L, repository.getSequenceTemplate(sequenceA.id)?.revision)
         assertEquals(2L, repository.getSequenceTemplate(sequenceB.id)?.revision)
+    }
+
+    @Test
+    fun bulkPruningRetainsSequenceSnapshotAndOccurrenceReferences() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequenceA = repository.createSequenceTemplate(singleStepSequence(source.id, "frozen"), createdAt = at(2))
+        val sequenceB =
+            repository.createSequenceTemplate(
+                singleStepSequence(source.id, "occurrence"),
+                createdAt = at(2),
+            )
+        val oldA = repository.getStepSnapshot(sequenceA.id, sequenceA.nodes.flatMap { it.stepIds() }.single())!!
+        val oldB = repository.getStepSnapshot(sequenceB.id, sequenceB.nodes.flatMap { it.stepIds() }.single())!!
+        insertSequenceSnapshotReference("frozen-sequence", oldA.id.value)
+        insertSequenceOccurrenceReference("occurrence-sequence", oldB.id.value)
+        repository.saveActivityTemplate(
+            source.id,
+            1,
+            source.toAuthoringDraft().copy(shortComment = "Changed"),
+            at(3),
+        )
+
+        val result =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                2,
+                LinkedStepPropagationMode.ALL,
+                at(4),
+            )
+        assertEquals(2, result.updatedSteps)
+        assertNotNull(database.activitySnapshotDao().getById(oldA.id.value))
+        assertNotNull(database.activitySnapshotDao().getById(oldB.id.value))
     }
 
     @Test
@@ -665,6 +1112,103 @@ class TemplateAuthoringRepositoryTest {
             ),
         )
     }
+
+    private fun insertSequenceSnapshotReference(
+        id: String,
+        activitySnapshotId: String,
+    ) {
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(id, id, null, null, null, null, 1_000),
+                SequenceSnapshotSettingsEntity(id, true, 0, 0, true, true, false, true, true, "ACTIVE"),
+                nodes =
+                    listOf(
+                        SequenceSnapshotNodeEntity("$id-step", id, "STEP", null, 0, activitySnapshotId, null),
+                    ),
+            ),
+        )
+    }
+
+    private fun insertSequenceOccurrenceReference(
+        id: String,
+        activitySnapshotId: String,
+    ) {
+        val snapshotId = "$id-snapshot"
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(snapshotId, id, null, null, null, null, 1_000),
+                SequenceSnapshotSettingsEntity(snapshotId, true, 0, 0, true, true, false, true, true, "ACTIVE"),
+            ),
+        )
+        database.sequenceExecutionDao().insertAggregate(
+            SequenceExecutionAggregateEntity(
+                SequenceExecutionEntity(
+                    id,
+                    snapshotId,
+                    null,
+                    null,
+                    "ENDED_EARLY",
+                    1_000,
+                    2_000,
+                    1_000,
+                    0,
+                    1_000,
+                    "UTC",
+                    0,
+                    "1970-01-01",
+                    null,
+                    1_000,
+                    2_000,
+                ),
+                occurrences =
+                    listOf(
+                        SequenceOccurrenceEntity(
+                            "$id-occurrence",
+                            id,
+                            null,
+                            activitySnapshotId,
+                            0,
+                            null,
+                            null,
+                            "COMPLETED",
+                            1_000,
+                            2_000,
+                            "SEQUENCE_ENDED_EARLY",
+                            true,
+                            false,
+                        ),
+                    ),
+                intervals =
+                    listOf(
+                        SequenceIntervalEntity("$id-active", id, "ACTIVE_STEP", 1_000, 2_000, "$id-occurrence"),
+                    ),
+            ),
+        )
+    }
+
+    private fun installNodeWriteCounters() {
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("CREATE TABLE node_write_counter(kind TEXT PRIMARY KEY, writes INTEGER NOT NULL)")
+        sql.execSQL("INSERT INTO node_write_counter VALUES ('insert', 0), ('delete', 0)")
+        sql.execSQL(
+            "CREATE TRIGGER count_node_insert AFTER INSERT ON sequence_nodes " +
+                "BEGIN UPDATE node_write_counter SET writes = writes + 1 WHERE kind = 'insert'; END",
+        )
+        sql.execSQL(
+            "CREATE TRIGGER count_node_delete AFTER DELETE ON sequence_nodes " +
+                "BEGIN UPDATE node_write_counter SET writes = writes + 1 WHERE kind = 'delete'; END",
+        )
+    }
+
+    private fun nodeWrites(kind: String): Int =
+        database.openHelper.readableDatabase
+            .query(
+                "SELECT writes FROM node_write_counter WHERE kind = ?",
+                arrayOf(kind),
+            ).use {
+                check(it.moveToFirst())
+                it.getInt(0)
+            }
 
     private fun count(table: String): Int =
         database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM `$table`").use {
