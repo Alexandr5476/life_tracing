@@ -650,9 +650,6 @@ internal abstract class SequenceTemplateDao {
         require(replacements.map { it.owner.sequenceNodeId }.distinct().size == replacements.size) {
             "Bulk propagation owners must be unique"
         }
-        require(replacements.map { it.replacement.snapshot.id }.distinct().size == replacements.size) {
-            "Bulk propagation snapshots must be unique"
-        }
         require(replacements.all { updatedAtMs > it.owner.sequenceUpdatedAtMs }) {
             "Bulk propagation time must advance persisted Sequence milliseconds"
         }

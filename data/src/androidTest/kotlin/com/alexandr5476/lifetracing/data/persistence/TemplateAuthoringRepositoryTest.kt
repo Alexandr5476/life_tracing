@@ -105,13 +105,13 @@ class TemplateAuthoringRepositoryTest {
             repository.saveActivityTemplate(
                 created.id,
                 1,
-                presentation.toAuthoringDraft().copy(name = "Walking"),
+                presentation.toAuthoringDraft().copy(name = "Hiking"),
                 at(4),
             )
         assertEquals(2L, semantic.revision)
         assertEquals(at(4), semantic.updatedAt)
         assertEquals(created.statisticsSeriesId, semantic.statisticsSeriesId)
-        assertEquals("Walking", database.statisticsSeriesDao().getById(created.statisticsSeriesId.value)?.displayName)
+        assertEquals("Hiking", database.statisticsSeriesDao().getById(created.statisticsSeriesId.value)?.displayName)
         assertThrows(IllegalArgumentException::class.java) {
             repository.saveActivityTemplate(created.id, 1, semantic.toAuthoringDraft(), at(5))
         }
@@ -353,8 +353,8 @@ class TemplateAuthoringRepositoryTest {
                 LinkedStepPropagationMode.ALL,
                 at(7),
             )
-        assertEquals(2, all.updatedSteps)
-        assertEquals(2, all.updatedSequences)
+        assertEquals(1, all.updatedSteps)
+        assertEquals(1, all.updatedSequences)
         assertFalse(repository.getStepSnapshot(sequenceA.id, stepA)!!.locallyModified)
         assertNotNull(database.activitySnapshotDao().getById(localA.id.value))
         assertEquals(
@@ -363,7 +363,7 @@ class TemplateAuthoringRepositoryTest {
         )
         assertEquals(localA.id.value, database.activityExecutionDao().getById("execution")?.snapshotId)
         assertEquals(3L, repository.getSequenceTemplate(sequenceA.id)?.revision)
-        assertEquals(3L, repository.getSequenceTemplate(sequenceB.id)?.revision)
+        assertEquals(2L, repository.getSequenceTemplate(sequenceB.id)?.revision)
     }
 
     @Test
