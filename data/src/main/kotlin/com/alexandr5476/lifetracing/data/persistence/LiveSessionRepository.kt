@@ -77,6 +77,7 @@ class LiveSessionRepository internal constructor(
             activityFactory,
             nextActivityPauseId,
             nextIntervalId,
+            nextOccurrenceId,
         )
 
     fun getActiveSession(): ActiveSession? = transaction(::getActiveSessionLocked)

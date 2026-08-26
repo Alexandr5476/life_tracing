@@ -14,7 +14,7 @@ This is an implementation-order document only. Authoritative behavior remains in
    - Runtime Add;
    - Do again;
    - End sequence early;
-   - resolve linked-Plan `ENDED_EARLY` fulfillment semantics before cementing that behavior.
+   - linked-Plan `ENDED_EARLY` fulfillment semantics are defined in the implementation clarifications; the repository transaction remains part of this delivery item.
 4. Daily / History bounded read projections:
    - Plan;
    - completed history;

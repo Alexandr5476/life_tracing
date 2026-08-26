@@ -51,6 +51,12 @@ enum class SequenceIntervalKind {
     TRANSITION_COUNTDOWN,
 }
 
+enum class RuntimeInsertionPlacement {
+    TO_END,
+    AFTER_CURRENT,
+    START_NOW,
+}
+
 data class RuntimeOccurrence(
     val id: SequenceOccurrenceId,
     val sourceSequenceSnapshotNodeId: SequenceSnapshotNodeId?,

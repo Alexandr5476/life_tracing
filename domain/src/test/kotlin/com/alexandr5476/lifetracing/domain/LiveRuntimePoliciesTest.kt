@@ -347,6 +347,7 @@ class LiveRuntimePoliciesTest {
             ActivityExecutionFactory { ActivityExecutionId("child-${++child}") },
             { ActivityExecutionPauseId("pause-${++pause}") },
             { SequenceIntervalId("interval-${++interval}") },
+            { SequenceOccurrenceId("occurrence-${++occurrence}") },
         )
     }
 

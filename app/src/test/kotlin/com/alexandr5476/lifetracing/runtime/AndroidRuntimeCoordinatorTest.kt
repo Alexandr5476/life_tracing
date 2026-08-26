@@ -829,6 +829,7 @@ class AndroidRuntimeCoordinatorTest {
                         .ActivityExecutionPauseId("pause")
                 },
                 { SequenceIntervalId("interval-${++interval}") },
+                { SequenceOccurrenceId("occurrence-${++occurrence}") },
             )
         var state: SequenceRuntimeState =
             engine.start(
