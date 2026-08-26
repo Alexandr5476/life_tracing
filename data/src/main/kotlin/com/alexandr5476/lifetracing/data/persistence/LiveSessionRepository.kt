@@ -298,6 +298,7 @@ class LiveSessionRepository internal constructor(
             )
 
         private const val DATABASE_NAME = "lifetracing.db"
+        private const val SQLITE_SAFE_BIND_COUNT = 900
     }
 
     fun completeCurrentSequenceStep(
@@ -440,15 +441,16 @@ class LiveSessionRepository internal constructor(
             .flatMap { occurrence ->
                 val old = previous.getValue(occurrence.id)
                 val source = occurrence.sourceSequenceSnapshotNodeId
+                val activity = activities.getValue(occurrence.activitySnapshotId)
                 val settings =
                     source?.let {
                         EffectiveSequenceStepSettingsResolver.resolve(
                             steps.getValue(it),
-                            activities.getValue(occurrence.activitySnapshotId),
+                            activity,
                             snapshot.settings,
                             false,
                         )
-                    }
+                    } ?: EffectiveSequenceStepSettingsResolver.resolve(activity, snapshot.settings, false)
                 buildList {
                     if (old.completedAt == null &&
                         occurrence.completionReason ==
@@ -463,7 +465,7 @@ class LiveSessionRepository internal constructor(
                                     after.id.value,
                                     occurrence.id,
                                 ),
-                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndSound,
                                 settings.timerEndVibration,
                             ),
                         )
@@ -486,7 +488,7 @@ class LiveSessionRepository internal constructor(
                                     after.id.value,
                                     occurrence.id,
                                 ),
-                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndSound,
                                 settings.timerEndVibration,
                             ),
                         )
@@ -569,7 +571,7 @@ class LiveSessionRepository internal constructor(
         val id = requireNotNull(session.sequenceExecutionId).value
         val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id)).toDomain()
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
-        val activities = loadActivitySnapshots(snapshot)
+        val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
         SequenceExecutionValidator.requireValid(execution, snapshot)
         val child =
             execution.currentOccurrenceId?.let { occurrenceId ->
@@ -641,7 +643,7 @@ class LiveSessionRepository internal constructor(
             requireNotNull(database.sequenceExecutionDao().getAggregate(id)) { "Active SequenceExecution is missing" }
                 .toDomain()
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
-        val activities = loadActivitySnapshots(snapshot)
+        val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
         SequenceExecutionValidator.requireValid(execution, snapshot)
         validateSequenceRuntimeShape(session.state, execution, snapshot, activities)
         val current =
@@ -752,7 +754,14 @@ class LiveSessionRepository internal constructor(
         snapshot: SequenceConfigSnapshot,
         activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
     ): Long {
-        val source = requireNotNull(occurrence.sourceSequenceSnapshotNodeId)
+        val activity = activities.getValue(occurrence.activitySnapshotId)
+        val source = occurrence.sourceSequenceSnapshotNodeId
+        if (source == null) {
+            return EffectiveSequenceStepSettingsResolver
+                .resolve(activity, snapshot.settings, false)
+                .startCountdown
+                .toMillis()
+        }
         val step =
             snapshot.nodes
                 .flatMap {
@@ -762,7 +771,7 @@ class LiveSessionRepository internal constructor(
                     }
                 }.single { it.id == source }
         return EffectiveSequenceStepSettingsResolver
-            .resolve(step, activities.getValue(occurrence.activitySnapshotId), snapshot.settings, false)
+            .resolve(step, activity, snapshot.settings, false)
             .startCountdown
             .toMillis()
     }
@@ -929,24 +938,25 @@ class LiveSessionRepository internal constructor(
 
     private fun loadActivitySnapshots(
         snapshot: SequenceConfigSnapshot,
+        occurrenceSnapshotIds: Collection<ActivitySnapshotId> = emptyList(),
     ): Map<ActivitySnapshotId, ActivityConfigSnapshot> {
         val ids =
-            snapshot.nodes
-                .flatMap {
+            (
+                snapshot.nodes.flatMap {
                     when (it) {
                         is com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep ->
-                            listOf(
-                                it.activitySnapshotId,
-                            )
+                            listOf(it.activitySnapshotId)
                         is com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock ->
                             it.children.map(
                                 com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep::activitySnapshotId,
                             )
                     }
-                }.distinct()
-        return database
-            .activitySnapshotDao()
-            .getAggregates(ids.map(ActivitySnapshotId::value))
+                } + occurrenceSnapshotIds
+            ).distinct()
+        return ids
+            .map(ActivitySnapshotId::value)
+            .chunked(SQLITE_SAFE_BIND_COUNT)
+            .flatMap(database.activitySnapshotDao()::getAggregates)
             .associate {
                 val domain = it.toDomain()
                 domain.id to domain

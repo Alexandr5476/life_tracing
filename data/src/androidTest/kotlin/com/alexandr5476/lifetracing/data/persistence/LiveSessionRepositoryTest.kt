@@ -3,10 +3,12 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
@@ -20,6 +22,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -320,6 +323,148 @@ class LiveSessionRepositoryTest {
             val restored = repositorySequence(executionId.value)
             assertEquals(instant(60), restored.occurrences[0].completedAt)
             assertEquals(instant(60), restored.occurrences[1].enteredAt)
+        }
+    }
+
+    @Test
+    fun persistedRuntimeAddedTimerTopologyRecoversBatchedMetadataAndReconcilesAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "runtime-added-reopen-${System.nanoTime()}"
+        val snapshotQueries = mutableListOf<Pair<String, Int>>()
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seed(database)
+            LiveRuntimeTestFixtures(database).sequence(
+                "sequence-runtime-recovery",
+                listOf("stopwatch", "stopwatch"),
+                autoAdvance = false,
+                countdownMs = 30_000,
+            )
+            repository = repository(database)
+            val started =
+                repository.startSequenceFromSnapshot(
+                    SequenceSnapshotId("sequence-runtime-recovery"),
+                    instant(0),
+                    instant(0),
+                    ZoneOffset.UTC,
+                )
+            repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+            val before = requireNotNull(database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+            val runtimeTimer =
+                SequenceOccurrenceEntity(
+                    "runtime-timer-occurrence",
+                    started.execution.id.value,
+                    null,
+                    "timer",
+                    1,
+                    null,
+                    null,
+                    "NOT_STARTED",
+                    null,
+                    null,
+                    null,
+                    isRuntimeAdded = true,
+                )
+            val runtimeNoLive =
+                runtimeTimer.copy(
+                    id = "runtime-no-live-occurrence",
+                    activitySnapshotId = "no-live",
+                    runtimePosition = 2,
+                )
+            val after =
+                before.copy(
+                    execution = before.execution.copy(updatedAtMs = 20_000),
+                    occurrences =
+                        listOf(
+                            before.occurrences[0],
+                            runtimeTimer,
+                            runtimeNoLive,
+                            before.occurrences[1].copy(runtimePosition = 3),
+                        ),
+                    intervals =
+                        before.intervals.map {
+                            if (it.endedAtMs == null) it.copy(endedAtMs = 20_000) else it
+                        } +
+                            SequenceIntervalEntity(
+                                "runtime-countdown",
+                                started.execution.id.value,
+                                "TRANSITION_COUNTDOWN",
+                                20_000,
+                                null,
+                                runtimeTimer.id,
+                            ),
+                )
+            database.runInTransaction {
+                database.sequenceExecutionDao().persistRuntimeDelta(before, after)
+                check(database.activeSessionDao().updateState("RUNNING", 20_000) == 1)
+            }
+            database.close()
+
+            database =
+                LifeTracingDatabase
+                    .builder(context, name)
+                    .allowMainThreadQueries()
+                    .setQueryCallback(
+                        { sql, arguments -> snapshotQueries += sql to arguments.size },
+                        java.util.concurrent.Executor(Runnable::run),
+                    ).build()
+            repository = repository(database, 100)
+            val recovered = repository.getActiveRuntime() as ActiveSequenceRuntime
+
+            assertEquals(
+                listOf(
+                    started.execution.occurrences[0]
+                        .id.value,
+                    runtimeTimer.id,
+                    runtimeNoLive.id,
+                    started.execution.occurrences[1]
+                        .id.value,
+                ),
+                recovered.execution.occurrences
+                    .sortedBy { it.runtimePosition }
+                    .map { it.id.value },
+            )
+            assertEquals(
+                setOf("stopwatch", "timer", "no-live"),
+                recovered.activitySnapshots.keys
+                    .map { it.value }
+                    .toSet(),
+            )
+            assertEquals(instant(50), requireNotNull(NextRuntimeDeadlineResolver.resolve(recovered)).at)
+            assertTrue(recovered.execution.occurrences[1].isRuntimeAdded)
+            assertNull(recovered.execution.occurrences[1].sourceSequenceSnapshotNodeId)
+            val batchedSnapshotQueries =
+                snapshotQueries.filter { (sql, _) ->
+                    sql.lowercase().startsWith("select * from activity_snapshots where id in")
+                }
+            assertTrue(batchedSnapshotQueries.size in 1..3)
+            assertTrue(batchedSnapshotQueries.all { (_, argumentCount) -> argumentCount == 3 })
+
+            repository.reconcileActiveSession(instant(50))
+            val startedRuntime = repository.getActiveRuntime() as ActiveSequenceRuntime
+            assertEquals(runtimeTimer.id, startedRuntime.execution.currentOccurrenceId?.value)
+            assertNotNull(startedRuntime.currentChild)
+            database.close()
+
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = repository(database, 200)
+            val restoredCurrent = repository.getActiveRuntime() as ActiveSequenceRuntime
+            assertEquals(runtimeTimer.id, restoredCurrent.execution.currentOccurrenceId?.value)
+            assertNotNull(restoredCurrent.currentChild)
+
+            repository.reconcileActiveSession(instant(110))
+            val completedRuntime = repositorySequence(started.execution.id.value)
+            assertEquals(
+                instant(110),
+                completedRuntime.occurrences.single { it.id.value == runtimeTimer.id }.completedAt,
+            )
+            assertEquals("WAITING_NEXT", repository.getActiveSession()?.state?.name)
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database = inMemoryDatabase()
         }
     }
 
