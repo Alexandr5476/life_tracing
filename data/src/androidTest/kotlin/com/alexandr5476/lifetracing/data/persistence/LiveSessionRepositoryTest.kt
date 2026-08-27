@@ -14,6 +14,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
@@ -28,6 +29,9 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.StatisticsFieldId
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -617,6 +621,129 @@ class LiveSessionRepositoryTest {
                 .single { it.endedAt == null }
                 .kind,
         )
+    }
+
+    @Test
+    fun earlyEndedRuntimeTemplateChildFeedsActivitySeriesWithoutGlobalDoubleCounting() {
+        runtimeTemplate("runtime-template", TimeTrackingMode.TIMER, 60_000)
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+        val added =
+            repository.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(20),
+            )
+        val runtimeOccurrence = added.execution.occurrences.single { it.isRuntimeAdded }
+        val runtimeSnapshot =
+            requireNotNull(
+                database.activitySnapshotDao().getAggregate(runtimeOccurrence.activitySnapshotId.value),
+            ).toDomain()
+
+        val ended = repository.endSequenceEarly(instant(50))
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        val global = statistics.global(StatisticsPeriod.AllTime)
+        val sequence =
+            statistics.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
+        val activity =
+            statistics.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        val number =
+            statistics.numberFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("runtime-template-number")),
+                StatisticsPeriod.AllTime,
+            )
+
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.execution.status)
+        assertEquals(StatisticsSeriesId("activity-series"), runtimeSnapshot.statisticsSeriesId)
+        assertEquals(Duration.ofSeconds(40), ended.execution.activeDuration)
+        assertEquals(Duration.ofSeconds(10), ended.execution.pauseDuration)
+        assertEquals(Duration.ofSeconds(40), global.totalTrackedDuration)
+        assertEquals(1L, global.topLevelExecutionCount)
+        assertEquals(Duration.ofSeconds(40), sequence.activeDurations.total)
+        assertEquals(Duration.ofSeconds(10), sequence.totalPauseIdleDuration)
+        assertEquals(2L, activity.executionCount)
+        assertEquals(Duration.ofSeconds(40), activity.durations.total)
+        assertEquals(2L, number.relevantExecutionCount)
+        assertEquals(1L, number.recordedCount)
+    }
+
+    @Test
+    fun runtimeAddedNoLivePauseUsesParentTimelineWithoutSyntheticChildDuration() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting-pause"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+        val added =
+            repository.runtimeAdd(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.NO_LIVE_TRACKING)),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(20),
+            )
+        val occurrence = added.execution.occurrences.single { it.isRuntimeAdded }
+
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(occurrence.id.value))
+        assertEquals(
+            SequenceIntervalKind.STEP_PAUSE,
+            added.execution.intervals
+                .single { it.endedAt == null }
+                .kind,
+        )
+
+        val ended = repository.endSequenceEarly(instant(50))
+        val child =
+            requireNotNull(
+                database.activityExecutionDao().getAggregateByOccurrence(occurrence.id.value),
+            ).toDomain()
+
+        assertEquals(Duration.ofSeconds(10), ended.execution.activeDuration)
+        assertEquals(Duration.ofSeconds(40), ended.execution.pauseDuration)
+        assertEquals(Duration.ofSeconds(50), ended.execution.wallDuration)
+        assertNull(child.activeDuration)
+    }
+
+    @Test
+    fun deferredRuntimeAddAndDoAgainAdvanceInCommittedOrder() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-timer-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val original = started.execution.occurrences.first()
+        val originalDeadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence()))
+        val added =
+            repository.runtimeAdd(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.STOPWATCH)),
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                instant(5),
+            )
+        val addedOccurrence = added.execution.occurrences.single { it.isRuntimeAdded }
+
+        assertEquals(originalDeadline, NextRuntimeDeadlineResolver.resolve(activeSequence()))
+        repository.reconcileActiveSession(instant(60))
+        assertEquals(addedOccurrence.id, activeSequence().execution.currentOccurrenceId)
+
+        val repeated =
+            repository.doAgain(original.id, RuntimeInsertionPlacement.AFTER_CURRENT, instant(61))
+        val repeatedOccurrence =
+            repeated.execution.occurrences.single {
+                it.isRuntimeAdded && it.id != addedOccurrence.id
+            }
+        repository.completeCurrentSequenceStep(addedOccurrence.id, instant(70))
+
+        assertEquals(repeatedOccurrence.id, activeSequence().execution.currentOccurrenceId)
     }
 
     @Test
@@ -1235,6 +1362,12 @@ class LiveSessionRepositoryTest {
         fixtures.sequence("sequence-timers", listOf("timer", "timer"), countdownMs = 30_000)
         fixtures.sequence("sequence-timer-no-live", listOf("timer", "no-live"))
         fixtures.sequence("sequence-waiting", listOf("timer", "stopwatch"), autoAdvance = false)
+        fixtures.sequence(
+            "sequence-waiting-pause",
+            listOf("timer", "stopwatch"),
+            autoAdvance = false,
+            noLiveAccounting = "PAUSE",
+        )
         fixtures.sequence("sequence-overtime", listOf("timer-overtime", "stopwatch"))
         fixtures.sequence("sequence-empty", emptyList())
         fixtures.sequence("sequence-one-timer", listOf("timer"))
