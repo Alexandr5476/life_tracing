@@ -45,6 +45,7 @@ import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(AndroidJUnit4::class)
 class LiveSessionRepositoryTest {
@@ -964,7 +965,7 @@ class LiveSessionRepositoryTest {
     fun persistedRuntimeAddedTimerTopologyRecoversBatchedMetadataAndReconcilesAfterReopen() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "runtime-added-reopen-${System.nanoTime()}"
-        val snapshotQueries = mutableListOf<Pair<String, Int>>()
+        val snapshotQueries = CopyOnWriteArrayList<Pair<String, Int>>()
         database.close()
         context.deleteDatabase(name)
         try {
