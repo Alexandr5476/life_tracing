@@ -1,4 +1,6 @@
-@file:Suppress("LongMethod", "MaxLineLength") // Scenario setup stays beside the asserted runtime transition.
+@file:Suppress("LargeClass", "LongMethod", "MaxLineLength")
+
+// Scenario setup stays beside the asserted runtime transition.
 
 package com.alexandr5476.lifetracing.domain
 
@@ -237,6 +239,194 @@ class SequenceRuntimeSecondaryCommandsTest {
                         currentId
                 }.completionReason,
         )
+    }
+
+    @Test
+    fun startNowInterruptsTransitionCountdownAndReturnsToItsConsumedFrontier() {
+        val first = activity("first", TimeTrackingMode.STOPWATCH)
+        val target = activity("target", TimeTrackingMode.STOPWATCH)
+        val added = activity("added", TimeTrackingMode.STOPWATCH)
+        val activities = listOf(first, target).associateBy(ActivityConfigSnapshot::id)
+        val snapshot = sequence(activities.keys.toList(), countdownSeconds = 10)
+        val runtime = engine()
+        val started = runtime.start(snapshot, activities, at(0), at(0), ZoneOffset.UTC)
+        val countdown =
+            runtime.completeCurrent(
+                started,
+                started.execution.currentOccurrenceId!!,
+                at(1),
+                snapshot,
+                activities,
+            )
+        val targetOccurrence = countdown.execution.occurrences[1]
+
+        val inserted =
+            runtime.addRuntimeOccurrence(
+                countdown,
+                added,
+                RuntimeInsertionPlacement.START_NOW,
+                at(4),
+                snapshot,
+                activities,
+            )
+        val addedOccurrence = inserted.execution.occurrences.single { it.activitySnapshotId == added.id }
+
+        assertEquals(
+            at(4),
+            inserted.execution.intervals
+                .single { it.occurrenceId == targetOccurrence.id }
+                .endedAt,
+        )
+        assertEquals(
+            RuntimeOccurrenceStatus.NOT_STARTED,
+            inserted.execution.occurrences
+                .single {
+                    it.id ==
+                        targetOccurrence.id
+                }.status,
+        )
+        assertFalse(inserted.children.containsKey(targetOccurrence.id))
+        assertEquals(addedOccurrence.id, inserted.execution.currentOccurrenceId)
+
+        val resumedCountdown =
+            runtime.completeCurrent(
+                inserted,
+                addedOccurrence.id,
+                at(6),
+                snapshot,
+                activities + (added.id to added),
+            )
+        val staleDeadline = runtime.reconcile(resumedCountdown, snapshot, activities + (added.id to added), at(11))
+        assertNull(staleDeadline.execution.currentOccurrenceId)
+        assertEquals(
+            RuntimeOccurrenceStatus.NOT_STARTED,
+            staleDeadline.execution.occurrences
+                .single {
+                    it.id ==
+                        targetOccurrence.id
+                }.status,
+        )
+        val resumed = runtime.reconcile(staleDeadline, snapshot, activities + (added.id to added), at(13))
+        assertEquals(targetOccurrence.id, resumed.execution.currentOccurrenceId)
+    }
+
+    @Test
+    fun startNowAtTransitionBoundaryReconcilesTargetBeforeRejecting() {
+        val activities =
+            listOf(
+                activity("first", TimeTrackingMode.STOPWATCH),
+                activity("target", TimeTrackingMode.STOPWATCH),
+            ).associateBy(ActivityConfigSnapshot::id)
+        val snapshot = sequence(activities.keys.toList(), countdownSeconds = 10)
+        val runtime = engine()
+        val started = runtime.start(snapshot, activities, at(0), at(0), ZoneOffset.UTC)
+        val countdown =
+            runtime.completeCurrent(started, started.execution.currentOccurrenceId!!, at(1), snapshot, activities)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runtime.addRuntimeOccurrence(
+                countdown,
+                activity("added", TimeTrackingMode.STOPWATCH),
+                RuntimeInsertionPlacement.START_NOW,
+                at(11),
+                snapshot,
+                activities,
+            )
+        }
+        assertEquals(
+            countdown.execution.occurrences[1].id,
+            runtime.reconcile(countdown, snapshot, activities, at(11)).execution.currentOccurrenceId,
+        )
+    }
+
+    @Test
+    fun doAgainPreservesFrozenTimerOverrideDuringTransitionCountdown() {
+        val timer = activity("timer", TimeTrackingMode.TIMER, 5)
+        val next = activity("next", TimeTrackingMode.STOPWATCH)
+        val activities = listOf(timer, next).associateBy(ActivityConfigSnapshot::id)
+        val stepId = SequenceSnapshotNodeId("timer-step")
+        val snapshot =
+            sequenceWithNodes(
+                listOf(
+                    SequenceSnapshotActivityStep(
+                        stepId,
+                        0,
+                        timer.id,
+                        SequenceStepOverrides(timerZeroBehavior = TimerZeroBehavior.OVERTIME),
+                    ),
+                    SequenceSnapshotActivityStep(SequenceSnapshotNodeId("next-step"), 1, next.id),
+                ),
+                countdownSeconds = 10,
+            )
+        val runtime = engine()
+        val started = runtime.start(snapshot, activities, at(0), at(0), ZoneOffset.UTC)
+        val original = started.execution.occurrences.first()
+        val countdown = runtime.completeCurrent(started, original.id, at(1), snapshot, activities)
+
+        val replayed =
+            runtime.doAgain(
+                countdown,
+                original.id,
+                RuntimeInsertionPlacement.START_NOW,
+                at(2),
+                snapshot,
+                activities,
+            )
+        val replay = replayed.execution.occurrences.single { it.id != original.id && it.activitySnapshotId == timer.id }
+
+        assertTrue(replay.id != original.id)
+        assertEquals(timer.id, replay.activitySnapshotId)
+        assertEquals(stepId, replay.sourceSequenceSnapshotNodeId)
+        assertFalse(replay.isRuntimeAdded)
+        assertEquals(replay.id, replayed.execution.currentOccurrenceId)
+        assertEquals(
+            replay.id,
+            runtime.reconcile(replayed, snapshot, activities, at(100)).execution.currentOccurrenceId,
+        )
+    }
+
+    @Test
+    fun doAgainPreservesRepeatStepAndIterationProvenance() {
+        val repeated = activity("repeated", TimeTrackingMode.STOPWATCH)
+        val activities = mapOf(repeated.id to repeated)
+        val repeatId = SequenceSnapshotNodeId("repeat")
+        val stepId = SequenceSnapshotNodeId("repeat-step")
+        val snapshot =
+            sequenceWithNodes(
+                listOf(
+                    SequenceSnapshotRepeatBlock(
+                        repeatId,
+                        0,
+                        2,
+                        listOf(SequenceSnapshotActivityStep(stepId, 0, repeated.id)),
+                    ),
+                ),
+                autoAdvance = false,
+            )
+        val runtime = engine()
+        val started = runtime.start(snapshot, activities, at(0), at(0), ZoneOffset.UTC)
+        val original = started.execution.occurrences.first()
+        val waiting = runtime.completeCurrent(started, original.id, at(1), snapshot, activities)
+
+        val replayed =
+            runtime.doAgain(
+                waiting,
+                original.id,
+                RuntimeInsertionPlacement.START_NOW,
+                at(2),
+                snapshot,
+                activities,
+            )
+        val replay =
+            replayed.execution.occurrences.single {
+                it.id != original.id &&
+                    it.status == RuntimeOccurrenceStatus.CURRENT
+            }
+
+        assertEquals(stepId, replay.sourceSequenceSnapshotNodeId)
+        assertEquals(repeatId, replay.repeatSourceSnapshotNodeId)
+        assertEquals(1, replay.repeatIteration)
+        assertFalse(replay.isRuntimeAdded)
     }
 
     @Test
@@ -496,6 +686,32 @@ class SequenceRuntimeSecondaryCommandsTest {
                 ->
                 SequenceSnapshotActivityStep(SequenceSnapshotNodeId("step-$index"), index, id)
             },
+    )
+
+    private fun sequenceWithNodes(
+        nodes: List<SequenceSnapshotNode>,
+        autoAdvance: Boolean = true,
+        countdownSeconds: Long = 0,
+    ) = SequenceConfigSnapshot(
+        SequenceSnapshotId("sequence"),
+        "Sequence",
+        null,
+        null,
+        null,
+        null,
+        at(0),
+        SequenceSnapshotSettings(
+            autoAdvance,
+            Duration.ZERO,
+            Duration.ofSeconds(countdownSeconds),
+            true,
+            true,
+            false,
+            true,
+            true,
+            NoLiveTimeAccounting.ACTIVE,
+        ),
+        nodes = nodes,
     )
 
     private fun at(seconds: Long): Instant = Instant.ofEpochSecond(seconds)

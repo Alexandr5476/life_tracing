@@ -219,7 +219,7 @@ class SequenceExecutionDatabaseTest {
     }
 
     @Test
-    fun runtimeDeltaRejectsNewFrozenOccurrenceAndExistingIdentityMutationWithoutResidue() {
+    fun runtimeDeltaAcceptsValidSourceReplayAndRejectsMissingSourceOrIdentityMutation() {
         val before =
             SequenceExecutionAggregateEntity(
                 runningRoot(),
@@ -234,41 +234,90 @@ class SequenceExecutionDatabaseTest {
                     ),
             )
         executions.insertAggregate(before)
-        val newFrozen = occurrence("new-frozen", 2)
+        val replay = occurrence("replay", 2)
+        executions.persistRuntimeDelta(before, before.copy(occurrences = before.occurrences + replay))
+        val withReplay = requireNotNull(executions.getAggregate("execution"))
+        assertEquals(replay, withReplay.occurrences.single { it.id == replay.id })
+        val missingSource =
+            occurrence("missing-source", 3).copy(
+                sourceSequenceSnapshotNodeId = null,
+                isRuntimeAdded = false,
+            )
+        val invalidSource = occurrence("invalid-source", 3).copy(sourceSequenceSnapshotNodeId = "missing")
         val missingSnapshot =
-            occurrence("missing-snapshot", 2).copy(
+            occurrence("missing-snapshot", 3).copy(
                 sourceSequenceSnapshotNodeId = null,
                 activitySnapshotId = "missing",
                 isRuntimeAdded = true,
             )
-        val changedRuntime = before.occurrences[1].copy(activitySnapshotId = "no-live")
+        val changedRuntime = withReplay.occurrences.single { it.id == "runtime" }.copy(activitySnapshotId = "no-live")
         val changedFrozenSource =
-            before.occurrences[0].copy(
+            withReplay.occurrences.single { it.id == "frozen" }.copy(
                 sourceSequenceSnapshotNodeId = "repeat-child",
                 repeatSourceSnapshotNodeId = "repeat",
                 repeatIteration = 1,
             )
 
         assertThrows(IllegalArgumentException::class.java) {
-            executions.persistRuntimeDelta(before, before.copy(occurrences = before.occurrences + newFrozen))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            executions.persistRuntimeDelta(before, before.copy(occurrences = before.occurrences + missingSnapshot))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
             executions.persistRuntimeDelta(
-                before,
-                before.copy(occurrences = listOf(before.occurrences[0], changedRuntime)),
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences + missingSource,
+                ),
             )
         }
         assertThrows(IllegalArgumentException::class.java) {
             executions.persistRuntimeDelta(
-                before,
-                before.copy(occurrences = listOf(changedFrozenSource, before.occurrences[1])),
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences + missingSnapshot,
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(occurrences = withReplay.occurrences + invalidSource),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences.map {
+                            if (it.id ==
+                                changedRuntime.id
+                            ) {
+                                changedRuntime
+                            } else {
+                                it
+                            }
+                        },
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences.map {
+                            if (it.id ==
+                                changedFrozenSource.id
+                            ) {
+                                changedFrozenSource
+                            } else {
+                                it
+                            }
+                        },
+                ),
             )
         }
 
-        assertEquals(before, requireNotNull(executions.getAggregate("execution")))
+        assertEquals(withReplay, requireNotNull(executions.getAggregate("execution")))
     }
 
     @Test

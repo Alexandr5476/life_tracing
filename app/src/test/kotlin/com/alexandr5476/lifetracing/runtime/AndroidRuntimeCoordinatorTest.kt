@@ -465,7 +465,7 @@ class AndroidRuntimeCoordinatorTest {
             assertEquals(0, repeatReconciliations)
             val repeatedOccurrence =
                 repeated.state.execution.occurrences
-                    .single { it.isRuntimeAdded }
+                    .single { it.id != original && it.activitySnapshotId == ActivitySnapshotId("repeat") }
             assertEquals(instant(20), repeatedOccurrence.enteredAt)
         }
 

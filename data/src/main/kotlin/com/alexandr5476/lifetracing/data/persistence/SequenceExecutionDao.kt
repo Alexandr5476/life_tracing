@@ -204,12 +204,15 @@ internal abstract class SequenceExecutionDao {
         val newOccurrences = after.occurrences.filter { it.id !in beforeOccurrences }
         require(
             newOccurrences.all {
-                it.isRuntimeAdded &&
+                if (it.isRuntimeAdded) {
                     it.sourceSequenceSnapshotNodeId == null &&
-                    it.repeatSourceSnapshotNodeId == null &&
-                    it.repeatIteration == null
+                        it.repeatSourceSnapshotNodeId == null &&
+                        it.repeatIteration == null
+                } else {
+                    it.sourceSequenceSnapshotNodeId != null
+                }
             },
-        ) { "New runtime occurrences must use runtime-added source-null identity" }
+        ) { "New runtime occurrences require valid runtime-added or frozen source identity" }
 
         persistRuntimePositions(before.occurrences, afterOccurrences)
         after.occurrences

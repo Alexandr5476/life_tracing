@@ -6,6 +6,7 @@
     "TooManyFunctions",
     "CyclomaticComplexMethod",
     "ComplexCondition",
+    "LargeClass",
     "MaxLineLength",
 ) // The explicit state machine keeps every durable transition visible in one bounded engine.
 
@@ -197,24 +198,12 @@ class SequenceRuntimeEngine(
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
     ): SequenceRuntimeState {
         ActivityConfigSnapshotValidator.requireValid(activity)
-        val commandAt = persisted(at)
-        var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
-        require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Runtime Add requires a running Sequence" }
-        val current = current(state.execution)
-        require(placement != RuntimeInsertionPlacement.AFTER_CURRENT || current != null) {
-            "Add after current requires a current Step"
-        }
-        require(
-            placement != RuntimeInsertionPlacement.START_NOW ||
-                current == null &&
-                openInterval(state.execution)?.kind == SequenceIntervalKind.IMPLICIT_IDLE,
-        ) { "Start now requires WAITING_NEXT without a current Step" }
-        val added =
+        return insertOccurrence(initial, activity, placement, at, snapshot, activitySnapshots) { execution ->
             RuntimeOccurrence(
                 nextOccurrenceId().also { id ->
-                    require(
-                        state.execution.occurrences.none { it.id == id },
-                    ) { "Generated occurrence identity must be unique" }
+                    require(execution.occurrences.none { it.id == id }) {
+                        "Generated occurrence identity must be unique"
+                    }
                 },
                 null,
                 activity.id,
@@ -228,6 +217,32 @@ class SequenceRuntimeEngine(
                 isRuntimeAdded = true,
                 isDeletedFromHistory = false,
             )
+        }
+    }
+
+    private fun insertOccurrence(
+        initial: SequenceRuntimeState,
+        activity: ActivityConfigSnapshot,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+        create: (SequenceExecution) -> RuntimeOccurrence,
+    ): SequenceRuntimeState {
+        val commandAt = persisted(at)
+        var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
+        require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Runtime Add requires a running Sequence" }
+        val current = current(state.execution)
+        require(placement != RuntimeInsertionPlacement.AFTER_CURRENT || current != null) {
+            "Add after current requires a current Step"
+        }
+        require(
+            placement != RuntimeInsertionPlacement.START_NOW ||
+                current == null &&
+                openInterval(state.execution)?.kind in
+                setOf(SequenceIntervalKind.IMPLICIT_IDLE, SequenceIntervalKind.TRANSITION_COUNTDOWN),
+        ) { "Start now requires a running Sequence without a current Step" }
+        val added = create(state.execution)
         val ordered =
             state.execution.occurrences
                 .sortedBy { it.runtimePosition }
@@ -280,14 +295,30 @@ class SequenceRuntimeEngine(
         val reconciled = reconcile(initial, snapshot, activitySnapshots, persisted(at))
         val prior = occurrence(reconciled.execution, occurrenceId)
         require(prior.status == RuntimeOccurrenceStatus.COMPLETED) { "Do again requires a completed occurrence" }
-        return addRuntimeOccurrence(
+        val activity = activitySnapshots.requireSnapshot(prior.activitySnapshotId)
+        return insertOccurrence(
             reconciled,
-            activitySnapshots.requireSnapshot(prior.activitySnapshotId),
+            activity,
             placement,
             at,
             snapshot,
             activitySnapshots,
-        )
+        ) { execution ->
+            prior.copy(
+                id =
+                    nextOccurrenceId().also { id ->
+                        require(execution.occurrences.none { it.id == id }) {
+                            "Generated occurrence identity must be unique"
+                        }
+                    },
+                runtimePosition = 0,
+                status = RuntimeOccurrenceStatus.NOT_STARTED,
+                enteredAt = null,
+                completedAt = null,
+                completionReason = null,
+                isDeletedFromHistory = false,
+            )
+        }
     }
 
     fun endEarly(

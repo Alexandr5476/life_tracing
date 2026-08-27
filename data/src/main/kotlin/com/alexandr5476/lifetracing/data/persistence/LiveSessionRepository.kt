@@ -539,9 +539,23 @@ class LiveSessionRepository internal constructor(
                         is SequenceSnapshotRepeatBlock -> it.children
                     }
                 }.associateBy { it.id }
+        val countdownEntries =
+            after.intervals
+                .asSequence()
+                .filter { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.endedAt != null }
+                .map { requireNotNull(it.occurrenceId) to requireNotNull(it.endedAt) }
+                .toHashSet()
         return after.occurrences
             .flatMap { occurrence ->
                 val old = previous.getValue(occurrence.id)
+                val naturalTimerEnd =
+                    old.completedAt == null &&
+                        occurrence.completionReason ==
+                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.NATURAL_TIMER_END
+                val enteredAt = occurrence.enteredAt
+                val countdownEntry =
+                    old.enteredAt == null && enteredAt != null && (occurrence.id to enteredAt) in countdownEntries
+                if (!naturalTimerEnd && !countdownEntry) return@flatMap emptyList()
                 val source = occurrence.sourceSequenceSnapshotNodeId
                 val activity = activities.getValue(occurrence.activitySnapshotId)
                 val settings =
@@ -554,10 +568,7 @@ class LiveSessionRepository internal constructor(
                         )
                     } ?: EffectiveSequenceStepSettingsResolver.resolve(activity, snapshot.settings, false)
                 buildList {
-                    if (old.completedAt == null &&
-                        occurrence.completionReason ==
-                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.NATURAL_TIMER_END
-                    ) {
+                    if (naturalTimerEnd) {
                         add(
                             RuntimeDeadlineFeedback(
                                 com.alexandr5476.lifetracing.domain.RuntimeDeadline(
@@ -572,15 +583,7 @@ class LiveSessionRepository internal constructor(
                             ),
                         )
                     }
-                    val enteredAt = occurrence.enteredAt
-                    if (old.enteredAt == null &&
-                        enteredAt != null &&
-                        after.intervals.any {
-                            it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                                it.occurrenceId == occurrence.id &&
-                                it.endedAt == enteredAt
-                        }
-                    ) {
+                    if (countdownEntry) {
                         add(
                             RuntimeDeadlineFeedback(
                                 com.alexandr5476.lifetracing.domain.RuntimeDeadline(

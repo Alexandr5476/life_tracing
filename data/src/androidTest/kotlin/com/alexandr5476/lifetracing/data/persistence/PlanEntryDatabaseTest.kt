@@ -214,6 +214,7 @@ class PlanEntryDatabaseTest {
     @Test
     fun planLinkedEarlyEndFulfillsAtomicallyAndCannotStartAgain() {
         database.planEntryDao().insert(plan("early-plan", sequence = "sequence"))
+        val plans = planRepository(ZoneId.of("UTC"))
         val started =
             live.startSequenceFromPlan(
                 PlanEntryId("early-plan"),
@@ -223,15 +224,16 @@ class PlanEntryDatabaseTest {
             )
 
         val ended = live.endSequenceEarly(instant(10))
-        val plan = requireNotNull(database.planEntryDao().getById("early-plan"))
+        val plan = requireNotNull(plans.getPlan(PlanEntryId("early-plan")))
 
         assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.execution.status)
-        assertEquals("FULFILLED", plan.status)
-        assertEquals(started.execution.id.value, plan.fulfilledSequenceExecutionId)
+        assertEquals(PlanEntryStatus.FULFILLED, plan.status)
+        assertEquals(started.execution.id, plan.fulfilledSequenceExecutionId)
         assertNull(plan.fulfilledActivityExecutionId)
-        assertEquals(requireNotNull(ended.execution.endedAt).toEpochMilli(), plan.fulfilledAtMs)
-        assertNull(plan.cancelledAtMs)
+        assertEquals(ended.execution.endedAt, plan.fulfilledAt)
+        assertNull(plan.cancelledAt)
         assertNull(database.activeSessionDao().get())
+        assertFalse(plans.isEngaged(plan.id))
         assertThrows(IllegalArgumentException::class.java) {
             live.startSequenceFromPlan(
                 PlanEntryId("early-plan"),
@@ -239,6 +241,39 @@ class PlanEntryDatabaseTest {
                 instant(20),
                 ZoneId.of("UTC"),
             )
+        }
+    }
+
+    @Test
+    fun sequencePlanReadRejectsNonterminalFulfillmentAndTimestampMismatch() {
+        val plans = planRepository(ZoneId.of("UTC"))
+        database.planEntryDao().insert(plan("running-fulfilled", sequence = "sequence"))
+        val running =
+            live.startSequenceFromPlan(
+                PlanEntryId("running-fulfilled"),
+                instant(0),
+                instant(0),
+                ZoneId.of("UTC"),
+            )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET status = 'FULFILLED', fulfilled_sequence_execution_id = ?, " +
+                "fulfilled_at_ms = 1000 WHERE id = 'running-fulfilled'",
+            arrayOf(running.execution.id.value),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.getPlan(PlanEntryId("running-fulfilled"))
+        }
+
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET status = 'PLANNED', fulfilled_sequence_execution_id = NULL, " +
+                "fulfilled_at_ms = NULL WHERE id = 'running-fulfilled'",
+        )
+        live.endSequenceEarly(instant(10))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET fulfilled_at_ms = 11000 WHERE id = 'running-fulfilled'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.getPlan(PlanEntryId("running-fulfilled"))
         }
     }
 
