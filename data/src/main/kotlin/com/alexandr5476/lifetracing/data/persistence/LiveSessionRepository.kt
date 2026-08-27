@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
@@ -27,6 +28,9 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValuePolicy
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -66,6 +70,12 @@ class LiveSessionRepository internal constructor(
     nextSequenceExecutionId: () -> SequenceExecutionId,
     nextOccurrenceId: () -> SequenceOccurrenceId,
     nextIntervalId: () -> SequenceIntervalId,
+    private val activitySnapshotFactory: ActivitySnapshotFactory =
+        ActivitySnapshotFactory(
+            { ActivitySnapshotId(UUID.randomUUID().toString()) },
+            { ActivitySnapshotFieldId(UUID.randomUUID().toString()) },
+            { ActivitySnapshotCategoryOptionId(UUID.randomUUID().toString()) },
+        ),
 ) {
     private val activityFactory = ActivityExecutionFactory(nextActivityExecutionId)
     private val sequenceEngine =
@@ -360,6 +370,61 @@ class LiveSessionRepository internal constructor(
             )
         }
 
+    @Suppress("TooGenericExceptionCaught") // Any late Room failure must roll back the manual savepoint.
+    fun runtimeAdd(
+        source: ActivityEntrySource,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState =
+        transaction {
+            requireSequenceSession()
+            val loaded = loadSequenceRuntime()
+            val commandAt = persisted(at)
+            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, commandAt)
+            persistSequenceRuntime(loaded, reconciled)
+            val reconciledLoaded = loaded.copy(state = reconciled)
+            val preparedResult =
+                try {
+                    val prepared = prepareRuntimeAdd(source, commandAt)
+                    val activities = loaded.activities + (prepared.snapshot.id to prepared.snapshot)
+                    val preparedLoaded = reconciledLoaded.copy(activities = activities)
+                    val updated =
+                        sequenceEngine.addRuntimeOccurrence(
+                            reconciled,
+                            prepared.snapshot,
+                            placement,
+                            commandAt,
+                            loaded.snapshot,
+                            activities,
+                        )
+                    Result.success(RuntimeAddMutation(preparedLoaded, updated, prepared))
+                } catch (failure: IllegalArgumentException) {
+                    Result.failure(failure)
+                } catch (failure: IllegalStateException) {
+                    Result.failure(failure)
+                } catch (failure: NoSuchElementException) {
+                    Result.failure(failure)
+                }
+            val prepared = preparedResult.getOrElse { return@transaction Result.failure(it) }
+            val sql = database.openHelper.writableDatabase
+            sql.execSQL("SAVEPOINT runtime_add")
+            try {
+                database.activitySnapshotDao().insertAggregate(prepared.source.snapshot.toEntityAggregate())
+                persistSequenceRuntime(prepared.loaded, prepared.updated)
+                prepared.source.templateId?.let { templateId ->
+                    check(database.libraryDao().touchActivity(templateId, commandAt.toEpochMilli()) == 1) {
+                        "ActivityTemplate is missing user state"
+                    }
+                }
+                sql.execSQL("RELEASE SAVEPOINT runtime_add")
+                Result.success(prepared.updated)
+            } catch (failure: RuntimeException) {
+                sql.execSQL("ROLLBACK TO SAVEPOINT runtime_add")
+                sql.execSQL("RELEASE SAVEPOINT runtime_add")
+                Result.failure(failure)
+            }
+        }.getOrThrow()
+
     fun endSequenceEarly(at: Instant): SequenceRuntimeState =
         runSequenceCommand(at) { loaded, reconciled ->
             sequenceEngine.endEarly(reconciled, at, loaded.snapshot, loaded.activities)
@@ -635,6 +700,25 @@ class LiveSessionRepository internal constructor(
             persistSequenceRuntime(loaded, result.getOrElse { reconciled })
             result
         }.getOrThrow()
+
+    private fun prepareRuntimeAdd(
+        source: ActivityEntrySource,
+        commandAt: Instant,
+    ): RuntimeAddSource =
+        when (source) {
+            is ActivityEntrySource.Template -> {
+                val template =
+                    requireNotNull(database.activityTemplateDao().getAggregate(source.id.value)) {
+                        "Unknown ActivityTemplate: ${source.id.value}"
+                    }.toDomain()
+                require(template.deletedAt == null) { "Archived ActivityTemplate cannot be used directly" }
+                RuntimeAddSource(activitySnapshotFactory.fromTemplate(template, commandAt), source.id.value)
+            }
+            is ActivityEntrySource.OneOff ->
+                RuntimeAddSource(activitySnapshotFactory.fromOneOff(source.draft, commandAt).snapshot)
+            is ActivityEntrySource.Plan ->
+                throw IllegalArgumentException("Plan is not a Runtime Add source")
+        }
 
     private fun loadSequenceRuntime(): LoadedSequenceRuntime {
         val session = requireSequenceSession()
@@ -1049,6 +1133,17 @@ class LiveSessionRepository internal constructor(
     private data class PauseSequenceResult(
         val state: SequenceRuntimeState,
         val applied: Boolean,
+    )
+
+    private data class RuntimeAddSource(
+        val snapshot: ActivityConfigSnapshot,
+        val templateId: String? = null,
+    )
+
+    private data class RuntimeAddMutation(
+        val loaded: LoadedSequenceRuntime,
+        val updated: SequenceRuntimeState,
+        val source: RuntimeAddSource,
     )
 }
 

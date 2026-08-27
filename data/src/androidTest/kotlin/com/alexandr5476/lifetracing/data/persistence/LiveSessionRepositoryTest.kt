@@ -4,10 +4,19 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
@@ -19,6 +28,7 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -28,6 +38,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 
@@ -472,6 +483,286 @@ class LiveSessionRepositoryTest {
         assertNull(database.activityExecutionDao().getAggregateByOccurrence(deferredOccurrence.id.value))
         assertEquals(intervalsBeforeDeferred, database.sequenceExecutionDao().getIntervals(started.execution.id.value))
         assertEquals(originalChildBeforeRepeat, database.activityExecutionDao().getAggregate(originalChildId))
+    }
+
+    @Test
+    fun runtimeAddAuthorsTemplateAndOneOffSnapshotsWithDurableNonImmediatePlacements() {
+        runtimeTemplate("runtime-template", TimeTrackingMode.TIMER, 60_000, revision = 7)
+        val sequenceSnapshotBefore = database.sequenceSnapshotDao().getAggregate("sequence-navigation")
+        val templateBefore = database.activityTemplateDao().getById("runtime-template")
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+
+        val withTemplate =
+            repository.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                RuntimeInsertionPlacement.TO_END,
+                instant(5),
+            )
+        val templateOccurrence = withTemplate.execution.occurrences.single { it.isRuntimeAdded }
+        val templateSnapshot =
+            requireNotNull(database.activitySnapshotDao().getAggregate(templateOccurrence.activitySnapshotId.value))
+                .toDomain()
+        assertEquals(started.execution.occurrences.size, templateOccurrence.runtimePosition)
+        assertEquals(ActivityTemplateId("runtime-template"), templateSnapshot.sourceTemplateId)
+        assertEquals(7L, templateSnapshot.sourceRevision)
+        assertEquals("activity-series", templateSnapshot.statisticsSeriesId?.value)
+        assertEquals(
+            setOf("runtime-template-number", "runtime-template-category"),
+            templateSnapshot.fields.map { it.sourceFieldId?.value }.toSet(),
+        )
+        assertEquals(
+            "runtime-template-option-a",
+            templateSnapshot.fields
+                .single { it.sourceFieldId?.value == "runtime-template-category" }
+                .categoryOptions
+                .single()
+                .sourceOptionId
+                ?.value,
+        )
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(templateOccurrence.id.value))
+        assertEquals(5_000L, database.activityTemplateDao().getUserState("runtime-template")?.lastUsedAtMs)
+
+        val withOneOff =
+            repository.runtimeAdd(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.STOPWATCH)),
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                instant(6),
+            )
+        val oneOffOccurrence =
+            withOneOff.execution.occurrences.single {
+                it.isRuntimeAdded && it.id != templateOccurrence.id
+            }
+        val oneOffSnapshot =
+            requireNotNull(database.activitySnapshotDao().getAggregate(oneOffOccurrence.activitySnapshotId.value))
+                .toDomain()
+        assertEquals(1, oneOffOccurrence.runtimePosition)
+        assertEquals(
+            started.execution.occurrences
+                .drop(1)
+                .map { it.id } + templateOccurrence.id,
+            withOneOff.execution.occurrences
+                .sortedBy { it.runtimePosition }
+                .drop(2)
+                .map { it.id },
+        )
+        assertNull(oneOffSnapshot.sourceTemplateId)
+        assertNull(oneOffSnapshot.sourceRevision)
+        assertNull(oneOffSnapshot.statisticsSeriesId)
+        assertTrue(oneOffSnapshot.fields.all { it.sourceFieldId == null })
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(oneOffOccurrence.id.value))
+        assertEquals(5_000L, database.activityTemplateDao().getUserState("runtime-template")?.lastUsedAtMs)
+        database.libraryDao().touchActivity("runtime-template", 20_000)
+        repository.runtimeAdd(
+            ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+            RuntimeInsertionPlacement.TO_END,
+            instant(7),
+        )
+        assertEquals(20_000L, database.activityTemplateDao().getUserState("runtime-template")?.lastUsedAtMs)
+        assertEquals(templateBefore, database.activityTemplateDao().getById("runtime-template"))
+        assertEquals(sequenceSnapshotBefore, database.sequenceSnapshotDao().getAggregate("sequence-navigation"))
+    }
+
+    @Test
+    fun runtimeAddStartNowUsesSnapshotDefaultsAndNoLiveCreatesNoCurrentChild() {
+        val waiting =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(waiting.execution.currentOccurrenceId!!, instant(10))
+
+        val timed =
+            repository.runtimeAdd(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.TIMER)),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(20),
+            )
+        val timedOccurrence = timed.execution.occurrences.single { it.isRuntimeAdded }
+        val timedChild =
+            requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(timedOccurrence.id.value))
+        assertEquals(timedOccurrence.id, timed.execution.currentOccurrenceId)
+        assertEquals(5L, timedChild.values.single().numberScaled)
+        assertEquals(instant(80), requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence())).at)
+        assertEquals("RUNNING", repository.getActiveSession()?.state?.name)
+        repository.endSequenceEarly(instant(30))
+
+        val noLiveSequence =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(40),
+                instant(40),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(noLiveSequence.execution.currentOccurrenceId!!, instant(50))
+        val noLive =
+            repository.runtimeAdd(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.NO_LIVE_TRACKING)),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(60),
+            )
+        val noLiveOccurrence = noLive.execution.occurrences.single { it.isRuntimeAdded }
+        assertEquals(noLiveOccurrence.id, noLive.execution.currentOccurrenceId)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(noLiveOccurrence.id.value))
+        assertEquals(
+            SequenceIntervalKind.ACTIVE_STEP,
+            noLive.execution.intervals
+                .single { it.endedAt == null }
+                .kind,
+        )
+    }
+
+    @Test
+    fun invalidRuntimeAddAfterAutomaticTransitionCommitsOnlyReconciliation() {
+        runtimeTemplate("runtime-template", TimeTrackingMode.TIMER, 60_000)
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                instant(70),
+            )
+        }
+
+        val persisted = repositorySequence(started.execution.id.value)
+        assertEquals(instant(60), persisted.occurrences.first().completedAt)
+        assertEquals(OccurrenceCompletionReason.NATURAL_TIMER_END, persisted.occurrences.first().completionReason)
+        assertNull(persisted.currentOccurrenceId)
+        assertEquals(started.execution.occurrences.map { it.id }, persisted.occurrences.map { it.id })
+        assertNull(database.activitySnapshotDao().getAggregate("runtime-snapshot-1"))
+        assertNull(database.activityTemplateDao().getUserState("runtime-template")?.lastUsedAtMs)
+        database.activityTemplateDao().archive("runtime-template", 71_000)
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                RuntimeInsertionPlacement.TO_END,
+                instant(71),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.runtimeAdd(
+                ActivityEntrySource.Plan(
+                    com.alexandr5476.lifetracing.domain
+                        .PlanEntryId("plan"),
+                ),
+                RuntimeInsertionPlacement.TO_END,
+                instant(72),
+            )
+        }
+        assertNull(database.activitySnapshotDao().getAggregate("runtime-snapshot-2"))
+    }
+
+    @Test
+    fun lateRuntimeAddFailureRollsBackSnapshotTopologyChildSessionAndRecent() {
+        runtimeTemplate("runtime-template", TimeTrackingMode.TIMER, 60_000)
+        database.libraryDao().touchActivity("runtime-template", 15_000)
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+        val before = repositorySequence(started.execution.id.value)
+        val sessionBefore = database.activeSessionDao().get()
+        val snapshotCount = count("activity_snapshots")
+        val childCount = count("activity_executions")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_runtime_add_recent BEFORE UPDATE ON activity_template_user_state " +
+                "WHEN OLD.activity_template_id = 'runtime-template' " +
+                "BEGIN SELECT RAISE(ABORT, 'induced Runtime Add failure'); END",
+        )
+
+        assertThrows(RuntimeException::class.java) {
+            repository.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(20),
+            )
+        }
+
+        assertEquals(before, repositorySequence(started.execution.id.value))
+        assertEquals(sessionBefore, database.activeSessionDao().get())
+        assertEquals(snapshotCount, count("activity_snapshots"))
+        assertEquals(childCount, count("activity_executions"))
+        assertNull(database.activitySnapshotDao().getAggregate("runtime-snapshot-1"))
+        assertEquals(15_000L, database.activityTemplateDao().getUserState("runtime-template")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun authoredRuntimeAddSnapshotsAndCurrentChildRecoverAndReconcileAfterFileReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "runtime-add-authoring-reopen-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seed(database)
+            runtimeTemplate("runtime-template", TimeTrackingMode.TIMER, 60_000, revision = 9)
+            repository = repository(database)
+            val started =
+                repository.startSequenceFromSnapshot(
+                    SequenceSnapshotId("sequence-waiting"),
+                    instant(0),
+                    instant(0),
+                    ZoneOffset.UTC,
+                )
+            repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+            val deferred =
+                repository
+                    .runtimeAdd(
+                        ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.STOPWATCH)),
+                        RuntimeInsertionPlacement.TO_END,
+                        instant(15),
+                    ).execution.occurrences
+                    .single { it.isRuntimeAdded }
+            val immediateState =
+                repository.runtimeAdd(
+                    ActivityEntrySource.Template(ActivityTemplateId("runtime-template")),
+                    RuntimeInsertionPlacement.START_NOW,
+                    instant(20),
+                )
+            val immediate = immediateState.execution.occurrences.single { it.isRuntimeAdded && it.id != deferred.id }
+            val childId = requireNotNull(immediateState.currentChild).id
+            database.close()
+
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = repository(database, 100)
+            val recovered = activeSequence()
+            assertEquals(immediate.id, recovered.execution.currentOccurrenceId)
+            assertEquals(childId, recovered.currentChild?.id)
+            assertEquals(9L, recovered.activitySnapshots.getValue(immediate.activitySnapshotId).sourceRevision)
+            assertEquals(
+                ActivityTemplateId("runtime-template"),
+                recovered.activitySnapshots.getValue(immediate.activitySnapshotId).sourceTemplateId,
+            )
+            assertNull(recovered.activitySnapshots.getValue(deferred.activitySnapshotId).sourceTemplateId)
+            assertEquals(instant(80), requireNotNull(NextRuntimeDeadlineResolver.resolve(recovered)).at)
+
+            repository.reconcileActiveSession(instant(80))
+            val reconciled = repositorySequence(started.execution.id.value)
+            assertEquals(instant(80), reconciled.occurrences.single { it.id == immediate.id }.completedAt)
+            assertEquals("WAITING_NEXT", repository.getActiveSession()?.state?.name)
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database = inMemoryDatabase()
+        }
     }
 
     @Test
@@ -996,6 +1287,9 @@ class LiveSessionRepositoryTest {
         var sequence = offset
         var occurrence = offset
         var interval = offset
+        var snapshot = offset
+        var field = offset
+        var option = offset
         return LiveSessionRepository(
             database,
             childIds ?: { ActivityExecutionId("activity-${++activity}") },
@@ -1003,8 +1297,103 @@ class LiveSessionRepositoryTest {
             { SequenceExecutionId("sequence-${++sequence}") },
             { SequenceOccurrenceId("occurrence-${++occurrence}") },
             intervalIds ?: { SequenceIntervalId("interval-${++interval}") },
+            ActivitySnapshotFactory(
+                { ActivitySnapshotId("runtime-snapshot-${++snapshot}") },
+                { ActivitySnapshotFieldId("runtime-field-${++field}") },
+                { ActivitySnapshotCategoryOptionId("runtime-option-${++option}") },
+            ),
         )
     }
+
+    private fun runtimeTemplate(
+        id: String,
+        mode: TimeTrackingMode,
+        targetMs: Long? = null,
+        revision: Long = 1,
+    ) {
+        database.activityTemplateDao().insertAggregate(
+            ActivityTemplateAggregateEntity(
+                ActivityTemplateEntity(
+                    id,
+                    id,
+                    "Template note",
+                    mode.name,
+                    targetMs,
+                    "activity-series",
+                    revision,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                ActivityTemplateSettingsEntity(id),
+                fields =
+                    listOf(
+                        ActivityTemplateFieldEntity(
+                            "$id-number",
+                            id,
+                            0,
+                            "Number",
+                            "NUMBER",
+                            null,
+                            0,
+                            5,
+                            null,
+                            null,
+                            true,
+                            0,
+                            0,
+                            null,
+                        ),
+                        ActivityTemplateFieldEntity(
+                            "$id-category",
+                            id,
+                            1,
+                            "Category",
+                            "CATEGORY",
+                            null,
+                            null,
+                            null,
+                            "$id-option-a",
+                            null,
+                            false,
+                            0,
+                            0,
+                            null,
+                        ),
+                    ),
+                options =
+                    listOf(
+                        ActivityTemplateCategoryOptionEntity(
+                            "$id-option-a",
+                            "$id-category",
+                            0,
+                            "A",
+                        ),
+                    ),
+                userState = ActivityTemplateUserStateEntity(id, null, null),
+            ),
+        )
+    }
+
+    private fun oneOff(mode: TimeTrackingMode) =
+        ActivitySnapshotDraft(
+            "Runtime one-off",
+            "One-off note",
+            mode,
+            if (mode == TimeTrackingMode.TIMER) Duration.ofSeconds(60) else null,
+            fields =
+                listOf(
+                    ActivitySnapshotFieldDraft(
+                        DraftIdentity.New("number"),
+                        null,
+                        0,
+                        "Number",
+                        type = CustomFieldType.NUMBER,
+                        defaultNumberScaled = 5,
+                    ),
+                ),
+        )
 
     private fun repositoryExecution(id: String) =
         requireNotNull(database.activityExecutionDao().getAggregate(id)).toDomain()
@@ -1043,6 +1432,14 @@ class LiveSessionRepositoryTest {
     private fun auditCount(table: String): Int =
         database.openHelper.readableDatabase
             .query("SELECT COUNT(*) FROM mutation_audit WHERE table_name = ?", arrayOf(table))
+            .use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
+
+    private fun count(table: String): Int =
+        database.openHelper.readableDatabase
+            .query("SELECT COUNT(*) FROM $table")
             .use { cursor ->
                 check(cursor.moveToFirst())
                 cursor.getInt(0)
