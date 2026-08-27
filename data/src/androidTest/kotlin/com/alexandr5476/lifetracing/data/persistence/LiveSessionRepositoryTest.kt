@@ -9,7 +9,9 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
+import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
@@ -305,6 +307,220 @@ class LiveSessionRepositoryTest {
         assertEquals(instant(60), reconciled.occurrences[0].completedAt)
         assertEquals(instant(60), reconciled.occurrences[1].enteredAt)
         assertEquals(RuntimeOccurrenceStatus.CURRENT, reconciled.occurrences[1].status)
+    }
+
+    @Test
+    fun goNowPersistsJumpSkippedRowsFreshChildAndPostJumpDeadlineAcrossRepositoryReload() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val current = started.execution.occurrences[0]
+        val skipped = started.execution.occurrences[1]
+        val target = started.execution.occurrences[2]
+        val oldChildId = requireNotNull(started.currentChild).id
+
+        val jumped = repository.goNow(target.id, instant(10))
+
+        assertEquals(OccurrenceCompletionReason.JUMP, jumped.execution.occurrences[0].completionReason)
+        assertEquals(10_000L, repositoryExecution(oldChildId.value).activeDuration?.toMillis())
+        assertEquals(RuntimeOccurrenceStatus.SKIPPED, jumped.execution.occurrences[1].status)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(skipped.id.value))
+        assertEquals(target.id, jumped.execution.currentOccurrenceId)
+        assertEquals(instant(10), jumped.execution.occurrences[2].enteredAt)
+        assertEquals(instant(70), requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence())).at)
+
+        repository = repository(database, 100)
+        val reloaded = activeSequence()
+        assertEquals(jumped.execution, reloaded.execution)
+        assertEquals(target.id, reloaded.currentChild?.sequenceOccurrenceId)
+        assertTrue(reloaded.currentChild?.id != oldChildId)
+        assertEquals(current.id, repositoryExecution(oldChildId.value).sequenceOccurrenceId)
+    }
+
+    @Test
+    fun goNowFromNoLivePersistsOnlyLegitimateCompletedAndTargetChildren() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-no-live-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val noLive = started.execution.occurrences[0]
+        val target = started.execution.occurrences[1]
+        assertNull(started.currentChild)
+
+        val jumped = repository.goNow(target.id, instant(10))
+        val completedNoLive =
+            requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(noLive.id.value)).toDomain()
+
+        assertEquals(ActivityExecutionStatus.COMPLETED, completedNoLive.status)
+        assertNull(completedNoLive.startedAt)
+        assertNull(completedNoLive.activeDuration)
+        assertEquals(OccurrenceCompletionReason.JUMP, jumped.execution.occurrences[0].completionReason)
+        assertEquals(target.id, jumped.execution.currentOccurrenceId)
+        assertNotNull(database.activityExecutionDao().getAggregateByOccurrence(target.id.value))
+    }
+
+    @Test
+    fun staleGoNowCommitsEarlierAutomaticTimerTransitionWithoutRewritingIt() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-timer-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val automaticallyStarted = started.execution.occurrences[1]
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.goNow(automaticallyStarted.id, instant(70))
+        }
+
+        val persisted = repositorySequence(started.execution.id.value)
+        assertEquals(instant(60), persisted.occurrences[0].completedAt)
+        assertEquals(OccurrenceCompletionReason.NATURAL_TIMER_END, persisted.occurrences[0].completionReason)
+        assertEquals(instant(60), persisted.occurrences[1].enteredAt)
+        assertEquals(RuntimeOccurrenceStatus.CURRENT, persisted.occurrences[1].status)
+        assertEquals(automaticallyStarted.id, persisted.currentOccurrenceId)
+        assertNotNull(database.activityExecutionDao().getAggregateByOccurrence(automaticallyStarted.id.value))
+    }
+
+    @Test
+    fun makeNextPersistsOnlyFutureOrderThroughRepositoryReload() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-four"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val target = started.execution.occurrences[3]
+        val childBefore =
+            requireNotNull(
+                database.activityExecutionDao().getAggregateByOccurrence(started.execution.currentOccurrenceId!!.value),
+            )
+        val intervalsBefore = database.sequenceExecutionDao().getIntervals(started.execution.id.value)
+
+        val reordered = repository.makeNext(target.id, instant(5))
+
+        assertEquals(
+            listOf(
+                started.execution.occurrences[0].id,
+                target.id,
+                started.execution.occurrences[1].id,
+                started.execution.occurrences[2].id,
+            ),
+            reordered.execution.occurrences
+                .sortedBy { it.runtimePosition }
+                .map { it.id },
+        )
+        assertEquals(started.execution.currentOccurrenceId, reordered.execution.currentOccurrenceId)
+        assertEquals(
+            childBefore,
+            database.activityExecutionDao().getAggregateByOccurrence(
+                started.execution.currentOccurrenceId!!.value,
+            ),
+        )
+        assertEquals(intervalsBefore, database.sequenceExecutionDao().getIntervals(started.execution.id.value))
+        repository = repository(database, 100)
+        assertEquals(reordered.execution, activeSequence().execution)
+    }
+
+    @Test
+    fun doAgainUsesFreshIdentitiesSnapshotDefaultsAndCreatesNoDeferredChild() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-defaults"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val original = started.execution.occurrences[0]
+        val originalChildId = requireNotNull(started.currentChild).id.value
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity(originalChildId, "defaults-number", 99, null, null),
+        )
+        repository.completeCurrentSequenceStep(original.id, instant(10))
+        val originalChildBeforeRepeat = requireNotNull(database.activityExecutionDao().getAggregate(originalChildId))
+        val originalOccurrenceBeforeRepeat =
+            repositorySequence(started.execution.id.value).occurrences.single { it.id == original.id }
+
+        val immediate = repository.doAgain(original.id, RuntimeInsertionPlacement.START_NOW, instant(20))
+        val repeated = immediate.execution.occurrences.single { it.isRuntimeAdded }
+        val repeatedChild =
+            requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(repeated.id.value))
+
+        assertTrue(repeated.id != original.id)
+        assertEquals(original.activitySnapshotId, repeated.activitySnapshotId)
+        assertTrue(repeatedChild.execution.id != originalChildId)
+        assertEquals(originalChildBeforeRepeat, database.activityExecutionDao().getAggregate(originalChildId))
+        assertEquals(originalOccurrenceBeforeRepeat, immediate.execution.occurrences.single { it.id == original.id })
+        assertEquals(5L, repeatedChild.values.single().numberScaled)
+        assertEquals(instant(80), requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence())).at)
+
+        val intervalsBeforeDeferred = database.sequenceExecutionDao().getIntervals(started.execution.id.value)
+        val deferred = repository.doAgain(original.id, RuntimeInsertionPlacement.AFTER_CURRENT, instant(25))
+        val deferredOccurrence =
+            deferred.execution.occurrences.single { occurrence ->
+                occurrence.isRuntimeAdded && occurrence.id != repeated.id
+            }
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(deferredOccurrence.id.value))
+        assertEquals(intervalsBeforeDeferred, database.sequenceExecutionDao().getIntervals(started.execution.id.value))
+        assertEquals(originalChildBeforeRepeat, database.activityExecutionDao().getAggregate(originalChildId))
+    }
+
+    @Test
+    fun earlyEndPersistsTimedNoLiveAndWaitingTerminalShapesWithoutSyntheticChildren() {
+        val timed =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val timedCurrent = timed.execution.currentOccurrenceId!!
+        val timedEnded = repository.endSequenceEarly(instant(10))
+        assertEarlyEnded(timedEnded, timedCurrent, 10_000)
+        assertEquals(10_000L, repositoryExecution(timed.currentChild!!.id.value).activeDuration?.toMillis())
+        timed.execution.occurrences.drop(1).forEach {
+            assertNull(database.activityExecutionDao().getAggregateByOccurrence(it.id.value))
+        }
+
+        val noLive =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-no-live-navigation"),
+                instant(20),
+                instant(20),
+                ZoneOffset.UTC,
+            )
+        val noLiveCurrent = noLive.execution.currentOccurrenceId!!
+        val noLiveEnded = repository.endSequenceEarly(instant(30))
+        assertEarlyEnded(noLiveEnded, noLiveCurrent, 10_000)
+        assertNull(
+            requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(noLiveCurrent.value))
+                .execution.activeDurationMs,
+        )
+
+        val waiting =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(40),
+                instant(40),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(waiting.execution.currentOccurrenceId!!, instant(50))
+        val untouched = waiting.execution.occurrences[1]
+        val waitingEnded = repository.endSequenceEarly(instant(60))
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, waitingEnded.execution.status)
+        assertNull(waitingEnded.execution.currentOccurrenceId)
+        assertTrue(waitingEnded.execution.intervals.none { it.endedAt == null })
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(untouched.id.value))
+        assertNull(repository.getActiveSession())
     }
 
     @Test
@@ -682,7 +898,47 @@ class LiveSessionRepositoryTest {
         fixtures.activity("timer", "TIMER", 60_000)
         fixtures.activity("timer-overtime", "TIMER", 60_000, "OVERTIME")
         fixtures.activity("no-live", "NO_LIVE_TRACKING")
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "defaults",
+                    "defaults",
+                    null,
+                    "TIMER",
+                    60_000,
+                    null,
+                    null,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("defaults"),
+                fields =
+                    listOf(
+                        ActivitySnapshotFieldEntity(
+                            "defaults-number",
+                            "defaults",
+                            null,
+                            0,
+                            "Number",
+                            null,
+                            "NUMBER",
+                            null,
+                            0,
+                            5,
+                            null,
+                            null,
+                            false,
+                        ),
+                    ),
+            ),
+        )
         fixtures.sequence("sequence", listOf("stopwatch", "stopwatch"), countdownMs = 10_000)
+        fixtures.sequence("sequence-navigation", listOf("stopwatch", "stopwatch", "timer"))
+        fixtures.sequence("sequence-no-live-navigation", listOf("no-live", "stopwatch"))
+        fixtures.sequence("sequence-timer-navigation", listOf("timer", "stopwatch", "stopwatch"))
+        fixtures.sequence("sequence-four", List(4) { "stopwatch" })
+        fixtures.sequence("sequence-defaults", listOf("defaults", "stopwatch"), autoAdvance = false)
         fixtures.sequence("sequence-timer", listOf("timer", "stopwatch"), countdownMs = 30_000)
         fixtures.sequence("sequence-timer-direct", listOf("timer", "stopwatch"))
         fixtures.sequence("sequence-timers", listOf("timer", "timer"), countdownMs = 30_000)
@@ -755,6 +1011,34 @@ class LiveSessionRepositoryTest {
 
     private fun repositorySequence(id: String) =
         requireNotNull(database.sequenceExecutionDao().getAggregate(id)).toDomain()
+
+    private fun activeSequence() = repository.getActiveRuntime() as ActiveSequenceRuntime
+
+    private fun assertEarlyEnded(
+        state: com.alexandr5476.lifetracing.domain.SequenceRuntimeState,
+        occurrenceId: SequenceOccurrenceId,
+        expectedDurationMs: Long,
+    ) {
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, state.execution.status)
+        assertEquals(
+            OccurrenceCompletionReason.SEQUENCE_ENDED_EARLY,
+            state.execution.occurrences
+                .single { it.id == occurrenceId }
+                .completionReason,
+        )
+        assertEquals(
+            ActivityExecutionStatus.COMPLETED,
+            requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(occurrenceId.value))
+                .toDomain()
+                .status,
+        )
+        assertNull(state.execution.currentOccurrenceId)
+        assertEquals(expectedDurationMs, state.execution.activeDuration?.toMillis())
+        assertEquals(0L, state.execution.pauseDuration?.toMillis())
+        assertEquals(expectedDurationMs, state.execution.wallDuration?.toMillis())
+        assertTrue(state.execution.intervals.none { it.endedAt == null })
+        assertNull(repository.getActiveSession())
+    }
 
     private fun auditCount(table: String): Int =
         database.openHelper.readableDatabase

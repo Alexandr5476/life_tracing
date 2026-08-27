@@ -35,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
@@ -304,29 +305,65 @@ class LiveSessionRepository internal constructor(
     fun completeCurrentSequenceStep(
         expectedOccurrenceId: SequenceOccurrenceId,
         at: Instant,
-    ): SequenceRuntimeState {
-        val result =
-            transaction {
-                requireSequenceSession()
-                val loaded = loadSequenceRuntime()
-                val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
-                if (reconciled.execution.currentOccurrenceId != expectedOccurrenceId) {
-                    persistSequenceRuntime(loaded, reconciled)
-                    return@transaction null
-                }
-                val updated =
-                    sequenceEngine.completeCurrent(
-                        reconciled,
-                        expectedOccurrenceId,
-                        at,
-                        loaded.snapshot,
-                        loaded.activities,
-                    )
-                persistSequenceRuntime(loaded, updated)
-                updated
-            }
-        return requireNotNull(result) { "Stale current-occurrence command" }
-    }
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.completeCurrent(
+                reconciled,
+                expectedOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun goNow(
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.goNow(
+                reconciled,
+                targetOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun makeNext(
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.makeNext(
+                reconciled,
+                targetOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun doAgain(
+        occurrenceId: SequenceOccurrenceId,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.doAgain(
+                reconciled,
+                occurrenceId,
+                placement,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun endSequenceEarly(at: Instant): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.endEarly(reconciled, at, loaded.snapshot, loaded.activities)
+        }
 
     fun startNextSequenceStep(at: Instant): SequenceRuntimeState =
         transaction {
@@ -557,14 +594,47 @@ class LiveSessionRepository internal constructor(
                 )
             }
         }
-        if (after.execution.status == SequenceExecutionStatus.COMPLETED) {
-            fulfillSequencePlanIfLinked(after.execution.id)
-            check(database.activeSessionDao().clear() == 1)
-        } else if (before.execution != after.execution) {
-            val session = sequenceSession(after.execution)
-            check(database.activeSessionDao().updateState(session.state.name, session.updatedAt.toEpochMilli()) == 1)
+        when (after.execution.status) {
+            SequenceExecutionStatus.COMPLETED,
+            SequenceExecutionStatus.ENDED_EARLY,
+            -> {
+                fulfillSequencePlanIfLinked(after.execution.id)
+                check(database.activeSessionDao().clear() == 1)
+            }
+            SequenceExecutionStatus.RUNNING,
+            SequenceExecutionStatus.PAUSED,
+            ->
+                if (before.execution != after.execution) {
+                    val session = sequenceSession(after.execution)
+                    check(
+                        database.activeSessionDao().updateState(
+                            session.state.name,
+                            session.updatedAt.toEpochMilli(),
+                        ) == 1,
+                    )
+                }
         }
     }
+
+    private fun runSequenceCommand(
+        at: Instant,
+        command: (LoadedSequenceRuntime, SequenceRuntimeState) -> SequenceRuntimeState,
+    ): SequenceRuntimeState =
+        transaction {
+            requireSequenceSession()
+            val loaded = loadSequenceRuntime()
+            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
+            val result =
+                try {
+                    Result.success(command(loaded, reconciled))
+                } catch (failure: IllegalArgumentException) {
+                    Result.failure(failure)
+                } catch (failure: NoSuchElementException) {
+                    Result.failure(failure)
+                }
+            persistSequenceRuntime(loaded, result.getOrElse { reconciled })
+            result
+        }.getOrThrow()
 
     private fun loadSequenceRuntime(): LoadedSequenceRuntime {
         val session = requireSequenceSession()
@@ -918,7 +988,10 @@ class LiveSessionRepository internal constructor(
     private fun fulfillSequencePlanIfLinked(id: SequenceExecutionId) {
         val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id.value)).toDomain()
         val planId = execution.planEntryId ?: return
-        require(execution.status == SequenceExecutionStatus.COMPLETED) { "Only completed Sequence fulfills a Plan" }
+        require(
+            execution.status == SequenceExecutionStatus.COMPLETED ||
+                execution.status == SequenceExecutionStatus.ENDED_EARLY,
+        ) { "Only terminal Sequence fulfills a Plan" }
         val endedAt = requireNotNull(execution.endedAt)
         check(
             database.planEntryDao().fulfillSequence(
