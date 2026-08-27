@@ -926,7 +926,9 @@ class LiveSessionRepositoryTest {
             repository.doAgain(original.id, RuntimeInsertionPlacement.AFTER_CURRENT, instant(61))
         val repeatedOccurrence =
             repeated.execution.occurrences.single {
-                it.isRuntimeAdded && it.id != addedOccurrence.id
+                it.id != original.id &&
+                    it.id != addedOccurrence.id &&
+                    it.sourceSequenceSnapshotNodeId == original.sourceSequenceSnapshotNodeId
             }
         repository.completeCurrentSequenceStep(addedOccurrence.id, instant(70))
 
