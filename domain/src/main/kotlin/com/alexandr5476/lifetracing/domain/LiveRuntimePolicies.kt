@@ -5,6 +5,9 @@
     "ReturnCount",
     "TooManyFunctions",
     "CyclomaticComplexMethod",
+    "ComplexCondition",
+    "LargeClass",
+    "MaxLineLength",
 ) // The explicit state machine keeps every durable transition visible in one bounded engine.
 
 package com.alexandr5476.lifetracing.domain
@@ -46,6 +49,7 @@ class SequenceRuntimeEngine(
     private val activityExecutionFactory: ActivityExecutionFactory,
     private val nextPauseId: () -> ActivityExecutionPauseId,
     private val nextIntervalId: () -> SequenceIntervalId,
+    private val nextOccurrenceId: () -> SequenceOccurrenceId,
 ) {
     fun start(
         snapshot: SequenceConfigSnapshot,
@@ -109,6 +113,258 @@ class SequenceRuntimeEngine(
         val next = firstRemaining(execution)
         val transitionAt = persisted(at)
         return beginTransition(closeOpen(initial, transitionAt), next, transitionAt, snapshot, activitySnapshots)
+    }
+
+    fun goNow(
+        initial: SequenceRuntimeState,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
+        val commandAt = persisted(at)
+        var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
+        require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Go now requires a running Sequence" }
+        val target = occurrence(state.execution, targetOccurrenceId)
+        require(target.status == RuntimeOccurrenceStatus.NOT_STARTED) { "Go now target must be not started" }
+        requireNotNull(openInterval(state.execution)) { "Go now requires an active runtime interval" }
+        val current = current(state.execution)
+        if (current !=
+            null
+        ) {
+            state =
+                finalizeCurrent(state, current.id, commandAt, OccurrenceCompletionReason.JUMP, activitySnapshots)
+        }
+        val frontier = nextRemainingOccurrence(state.execution)
+        state =
+            state.copy(
+                execution =
+                    state.execution.copy(
+                        occurrences =
+                            state.execution.occurrences.map { occurrence ->
+                                if (frontier != null &&
+                                    occurrence.status == RuntimeOccurrenceStatus.NOT_STARTED &&
+                                    occurrence.runtimePosition >= frontier.runtimePosition &&
+                                    occurrence.runtimePosition < target.runtimePosition
+                                ) {
+                                    occurrence.copy(status = RuntimeOccurrenceStatus.SKIPPED)
+                                } else {
+                                    occurrence
+                                }
+                            },
+                    ),
+            )
+        return startOccurrence(
+            closeOpen(state, commandAt),
+            occurrence(state.execution, targetOccurrenceId),
+            commandAt,
+            snapshot,
+            activitySnapshots,
+        )
+    }
+
+    fun makeNext(
+        initial: SequenceRuntimeState,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
+        val state = reconcile(initial, snapshot, activitySnapshots, persisted(at))
+        require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Make next requires a running Sequence" }
+        val current = requireNotNull(current(state.execution)) { "Make next requires a current Step" }
+        val target = occurrence(state.execution, targetOccurrenceId)
+        require(target.status == RuntimeOccurrenceStatus.NOT_STARTED) { "Make next target must be not started" }
+        val future =
+            state.execution.occurrences
+                .filter {
+                    it.status == RuntimeOccurrenceStatus.NOT_STARTED
+                }.sortedBy { it.runtimePosition }
+        val reordered = listOf(target) + future.filterNot { it.id == target.id }
+        return state.copy(
+            execution =
+                state.execution.copy(
+                    occurrences = reorderFuture(state.execution.occurrences, current, reordered),
+                ),
+        )
+    }
+
+    fun addRuntimeOccurrence(
+        initial: SequenceRuntimeState,
+        activity: ActivityConfigSnapshot,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
+        ActivityConfigSnapshotValidator.requireValid(activity)
+        return insertOccurrence(initial, activity, placement, at, snapshot, activitySnapshots) { execution ->
+            RuntimeOccurrence(
+                nextOccurrenceId().also { id ->
+                    require(execution.occurrences.none { it.id == id }) {
+                        "Generated occurrence identity must be unique"
+                    }
+                },
+                null,
+                activity.id,
+                0,
+                null,
+                null,
+                RuntimeOccurrenceStatus.NOT_STARTED,
+                null,
+                null,
+                null,
+                isRuntimeAdded = true,
+                isDeletedFromHistory = false,
+            )
+        }
+    }
+
+    private fun insertOccurrence(
+        initial: SequenceRuntimeState,
+        activity: ActivityConfigSnapshot,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+        create: (SequenceExecution) -> RuntimeOccurrence,
+    ): SequenceRuntimeState {
+        val commandAt = persisted(at)
+        var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
+        require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Runtime Add requires a running Sequence" }
+        val current = current(state.execution)
+        require(placement != RuntimeInsertionPlacement.AFTER_CURRENT || current != null) {
+            "Add after current requires a current Step"
+        }
+        require(
+            placement != RuntimeInsertionPlacement.START_NOW ||
+                current == null &&
+                openInterval(state.execution)?.kind in
+                setOf(SequenceIntervalKind.IMPLICIT_IDLE, SequenceIntervalKind.TRANSITION_COUNTDOWN),
+        ) { "Start now requires a running Sequence without a current Step" }
+        val added = create(state.execution)
+        val ordered =
+            state.execution.occurrences
+                .sortedBy { it.runtimePosition }
+                .toMutableList()
+        val index =
+            when (placement) {
+                RuntimeInsertionPlacement.TO_END -> ordered.size
+                RuntimeInsertionPlacement.AFTER_CURRENT -> ordered.indexOfFirst { it.id == current!!.id } + 1
+                RuntimeInsertionPlacement.START_NOW ->
+                    ordered.indexOfFirst {
+                        it.status ==
+                            RuntimeOccurrenceStatus.NOT_STARTED
+                    }
+            }
+        ordered.add(index, added)
+        state =
+            state.copy(
+                execution =
+                    state.execution.copy(
+                        occurrences =
+                            ordered.mapIndexed {
+                                position,
+                                occurrence,
+                                ->
+                                occurrence.copy(runtimePosition = position)
+                            },
+                    ),
+            )
+        return if (placement == RuntimeInsertionPlacement.START_NOW) {
+            startOccurrence(
+                closeOpen(state, commandAt),
+                occurrence(state.execution, added.id),
+                commandAt,
+                snapshot,
+                activitySnapshots + (activity.id to activity),
+            )
+        } else {
+            state
+        }
+    }
+
+    fun doAgain(
+        initial: SequenceRuntimeState,
+        occurrenceId: SequenceOccurrenceId,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
+        val reconciled = reconcile(initial, snapshot, activitySnapshots, persisted(at))
+        val prior = occurrence(reconciled.execution, occurrenceId)
+        require(prior.status == RuntimeOccurrenceStatus.COMPLETED) { "Do again requires a completed occurrence" }
+        val activity = activitySnapshots.requireSnapshot(prior.activitySnapshotId)
+        return insertOccurrence(
+            reconciled,
+            activity,
+            placement,
+            at,
+            snapshot,
+            activitySnapshots,
+        ) { execution ->
+            prior.copy(
+                id =
+                    nextOccurrenceId().also { id ->
+                        require(execution.occurrences.none { it.id == id }) {
+                            "Generated occurrence identity must be unique"
+                        }
+                    },
+                runtimePosition = 0,
+                status = RuntimeOccurrenceStatus.NOT_STARTED,
+                enteredAt = null,
+                completedAt = null,
+                completionReason = null,
+                isDeletedFromHistory = false,
+            )
+        }
+    }
+
+    fun endEarly(
+        initial: SequenceRuntimeState,
+        at: Instant,
+        snapshot: SequenceConfigSnapshot,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
+        val commandAt = persisted(at)
+        var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
+        require(
+            state.execution.status == SequenceExecutionStatus.RUNNING ||
+                state.execution.status == SequenceExecutionStatus.PAUSED,
+        ) {
+            "End early requires an active Sequence"
+        }
+        requireNotNull(openInterval(state.execution)) { "End early requires an active runtime interval" }
+        current(state.execution)?.let { current ->
+            state =
+                finalizeCurrent(
+                    state,
+                    current.id,
+                    commandAt,
+                    OccurrenceCompletionReason.SEQUENCE_ENDED_EARLY,
+                    activitySnapshots,
+                )
+        }
+        val closed = closeOpen(state, commandAt)
+        val durations =
+            SequenceTimelineCalculator.calculate(
+                closed.execution.startedAt,
+                commandAt,
+                closed.execution.intervals,
+            )
+        return closed.copy(
+            execution =
+                closed.execution.copy(
+                    status = SequenceExecutionStatus.ENDED_EARLY,
+                    endedAt = commandAt,
+                    activeDuration = durations.active,
+                    pauseDuration = durations.pause,
+                    wallDuration = durations.wall,
+                    currentOccurrenceId = null,
+                    updatedAt = commandAt,
+                ),
+        )
     }
 
     fun pause(
@@ -227,7 +483,31 @@ class SequenceRuntimeEngine(
         snapshot: SequenceConfigSnapshot,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
     ): SequenceRuntimeState {
+        val completed = finalizeCurrent(state, occurrenceId, at, reason, activitySnapshots)
+        val next = nextRemainingOccurrence(completed.execution)
+        if (next == null) return finish(completed, at)
+        if (!snapshot.settings.autoAdvance) {
+            return completed.copy(
+                execution =
+                    completed.execution.copy(
+                        intervals =
+                            completed.execution.intervals +
+                                SequenceInterval(nextIntervalId(), SequenceIntervalKind.IMPLICIT_IDLE, at, null, null),
+                    ),
+            )
+        }
+        return beginTransition(completed, next, at, snapshot, activitySnapshots)
+    }
+
+    private fun finalizeCurrent(
+        state: SequenceRuntimeState,
+        occurrenceId: SequenceOccurrenceId,
+        at: Instant,
+        reason: OccurrenceCompletionReason,
+        activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+    ): SequenceRuntimeState {
         val current = occurrence(state.execution, occurrenceId)
+        require(current.status == RuntimeOccurrenceStatus.CURRENT) { "Only the current occurrence can finish" }
         val activity = activitySnapshots.requireSnapshot(current.activitySnapshotId)
         val child =
             when (activity.timeTrackingMode) {
@@ -244,42 +524,25 @@ class SequenceRuntimeEngine(
                 -> ActivityExecutionTransitions.complete(requireNotNull(state.currentChild), at)
             }
         val closed = closeOpen(state.withChild(occurrenceId, child), at)
-        val completed =
-            closed.copy(
-                execution =
-                    closed.execution.copy(
-                        currentOccurrenceId = null,
-                        updatedAt = at,
-                        occurrences =
-                            closed.execution.occurrences.map {
-                                if (it.id == occurrenceId) {
-                                    it.copy(
-                                        status = RuntimeOccurrenceStatus.COMPLETED,
-                                        completedAt = at,
-                                        completionReason = reason,
-                                    )
-                                } else {
-                                    it
-                                }
-                            },
-                    ),
-            )
-        val next =
-            completed.execution.occurrences.filter { it.status == RuntimeOccurrenceStatus.NOT_STARTED }.minByOrNull {
-                it.runtimePosition
-            }
-        if (next == null) return finish(completed, at)
-        if (!snapshot.settings.autoAdvance) {
-            return completed.copy(
-                execution =
-                    completed.execution.copy(
-                        intervals =
-                            completed.execution.intervals +
-                                SequenceInterval(nextIntervalId(), SequenceIntervalKind.IMPLICIT_IDLE, at, null, null),
-                    ),
-            )
-        }
-        return beginTransition(completed, next, at, snapshot, activitySnapshots)
+        return closed.copy(
+            execution =
+                closed.execution.copy(
+                    currentOccurrenceId = null,
+                    updatedAt = at,
+                    occurrences =
+                        closed.execution.occurrences.map {
+                            if (it.id == occurrenceId) {
+                                it.copy(
+                                    status = RuntimeOccurrenceStatus.COMPLETED,
+                                    completedAt = at,
+                                    completionReason = reason,
+                                )
+                            } else {
+                                it
+                            }
+                        },
+                ),
+        )
     }
 
     private fun beginTransition(
@@ -379,7 +642,8 @@ class SequenceRuntimeEngine(
         snapshot: SequenceConfigSnapshot,
         activity: ActivityConfigSnapshot,
     ): EffectiveSequenceStepSettings {
-        val stepId = requireNotNull(occurrence.sourceSequenceSnapshotNodeId) { "Runtime-added Steps are out of scope" }
+        val stepId = occurrence.sourceSequenceSnapshotNodeId
+        if (stepId == null) return EffectiveSequenceStepSettingsResolver.resolve(activity, snapshot.settings, false)
         val step =
             snapshot.nodes
                 .flatMap {
@@ -619,13 +883,12 @@ class SequenceRuntimeEngine(
 
         private fun settings(index: Int): EffectiveSequenceStepSettings {
             val occurrence = occurrences[index]
-            val stepId =
-                requireNotNull(occurrence.sourceSequenceSnapshotNodeId) {
-                    "Runtime-added Steps are out of scope"
-                }
+            val activity = activities.requireSnapshot(occurrence.activitySnapshotId)
+            val stepId = occurrence.sourceSequenceSnapshotNodeId
+            if (stepId == null) return EffectiveSequenceStepSettingsResolver.resolve(activity, snapshot.settings, false)
             return EffectiveSequenceStepSettingsResolver.resolve(
                 steps.getValue(stepId),
-                activities.requireSnapshot(occurrence.activitySnapshotId),
+                activity,
                 snapshot.settings,
                 false,
             )
@@ -692,6 +955,19 @@ fun nextRemainingOccurrence(execution: SequenceExecution): RuntimeOccurrence? =
         .asSequence()
         .filter { it.status == RuntimeOccurrenceStatus.NOT_STARTED }
         .minByOrNull(RuntimeOccurrence::runtimePosition)
+
+private fun reorderFuture(
+    occurrences: List<RuntimeOccurrence>,
+    current: RuntimeOccurrence,
+    future: List<RuntimeOccurrence>,
+): List<RuntimeOccurrence> {
+    val futureIds = future.mapTo(hashSetOf(), RuntimeOccurrence::id)
+    val ordered = occurrences.sortedBy(RuntimeOccurrence::runtimePosition).toMutableList()
+    val insertion = ordered.indexOfFirst { it.id == current.id } + 1
+    ordered.removeAll { it.id in futureIds }
+    ordered.addAll(insertion, future)
+    return ordered.mapIndexed { position, occurrence -> occurrence.copy(runtimePosition = position) }
+}
 
 private fun Map<ActivitySnapshotId, ActivityConfigSnapshot>.requireSnapshot(
     id: ActivitySnapshotId,

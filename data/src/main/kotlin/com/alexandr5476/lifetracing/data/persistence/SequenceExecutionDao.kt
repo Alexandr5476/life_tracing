@@ -123,6 +123,16 @@ internal abstract class SequenceExecutionDao {
     ): Int
 
     @Query(
+        "UPDATE sequence_occurrences SET runtime_position = :runtimePosition " +
+            "WHERE id = :id AND sequence_execution_id = :executionId",
+    )
+    protected abstract fun updateRuntimePositionUnchecked(
+        id: String,
+        executionId: String,
+        runtimePosition: Int,
+    ): Int
+
+    @Query(
         "UPDATE sequence_intervals SET ended_at_ms = :endedAtMs " +
             "WHERE id = :id AND sequence_execution_id = :executionId AND ended_at_ms IS NULL",
     )
@@ -183,13 +193,33 @@ internal abstract class SequenceExecutionDao {
             "Runtime root identity cannot change"
         }
         val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
-        require(beforeOccurrences.keys == after.occurrences.map(SequenceOccurrenceEntity::id).toSet()) {
-            "Runtime transitions cannot add or remove occurrences"
+        val afterOccurrences = after.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        require(afterOccurrences.keys.containsAll(beforeOccurrences.keys)) {
+            "Runtime transitions cannot remove occurrences"
         }
-        after.occurrences.sortedBy(SequenceOccurrenceEntity::runtimePosition).forEach { occurrence ->
-            val previous = beforeOccurrences.getValue(occurrence.id)
+        beforeOccurrences.forEach { (id, previous) ->
+            val occurrence = afterOccurrences.getValue(id)
             require(previous.identity() == occurrence.identity()) { "Runtime occurrence identity cannot change" }
-            if (previous != occurrence) {
+        }
+        val newOccurrences = after.occurrences.filter { it.id !in beforeOccurrences }
+        require(
+            newOccurrences.all {
+                if (it.isRuntimeAdded) {
+                    it.sourceSequenceSnapshotNodeId == null &&
+                        it.repeatSourceSnapshotNodeId == null &&
+                        it.repeatIteration == null
+                } else {
+                    it.sourceSequenceSnapshotNodeId != null
+                }
+            },
+        ) { "New runtime occurrences require valid runtime-added or frozen source identity" }
+
+        persistRuntimePositions(before.occurrences, afterOccurrences)
+        after.occurrences
+            .filter { occurrence ->
+                beforeOccurrences[occurrence.id]?.let { it.runtimeState() != occurrence.runtimeState() } == true
+            }.sortedBy { if (it.status == "CURRENT") 1 else 0 }
+            .forEach { occurrence ->
                 check(
                     updateRuntimeOccurrenceUnchecked(
                         occurrence.id,
@@ -201,7 +231,7 @@ internal abstract class SequenceExecutionDao {
                     ) == 1,
                 )
             }
-        }
+        if (newOccurrences.isNotEmpty()) insertOccurrencesUnchecked(newOccurrences)
         val beforeIntervals = before.intervals.associateBy(SequenceIntervalEntity::id)
         after.intervals.forEach { interval ->
             val previous = beforeIntervals[interval.id]
@@ -253,6 +283,66 @@ internal abstract class SequenceExecutionDao {
         }
     }
 
+    private fun persistRuntimePositions(
+        before: List<SequenceOccurrenceEntity>,
+        after: Map<String, SequenceOccurrenceEntity>,
+    ) {
+        val current = before.associate { it.id to it.runtimePosition }.toMutableMap()
+        val occupants = before.associate { it.runtimePosition to it.id }.toMutableMap()
+        val targets = before.associate { it.id to after.getValue(it.id).runtimePosition }
+        val targetOwners = targets.entries.associate { (id, position) -> position to id }
+        val remaining = current.keys.filterTo(linkedSetOf()) { current.getValue(it) != targets.getValue(it) }
+        if (remaining.isEmpty()) return
+
+        val usedPositions = (current.values + after.values.map(SequenceOccurrenceEntity::runtimePosition)).toHashSet()
+        var scratch = 0
+        while (scratch in usedPositions) {
+            require(scratch < Int.MAX_VALUE) { "No collision-free runtime position is available" }
+            scratch++
+        }
+
+        fun move(
+            id: String,
+            position: Int,
+        ) {
+            val old = current.getValue(id)
+            check(position !in occupants)
+            check(updateRuntimePositionUnchecked(id, after.getValue(id).sequenceExecutionId, position) == 1)
+            check(occupants.remove(old) == id)
+            occupants[position] = id
+            current[id] = position
+        }
+
+        val movable = java.util.ArrayDeque(remaining.filter { targets.getValue(it) !in occupants })
+        while (movable.isNotEmpty()) {
+            val id = movable.removeFirst()
+            if (id !in remaining || targets.getValue(id) in occupants) continue
+            val vacated = current.getValue(id)
+            move(id, targets.getValue(id))
+            remaining.remove(id)
+            targetOwners[vacated]?.takeIf(remaining::contains)?.let(movable::addLast)
+        }
+
+        while (remaining.isNotEmpty()) {
+            val start = remaining.first()
+            var vacant = current.getValue(start)
+            move(start, scratch)
+            while (true) {
+                val id = checkNotNull(targetOwners[vacant]) { "Invalid runtime-position cycle" }
+                if (id == start) {
+                    move(start, vacant)
+                    remaining.remove(start)
+                    break
+                }
+                check(id in remaining) { "Invalid runtime-position cycle" }
+                val nextVacant = current.getValue(id)
+                move(id, vacant)
+                remaining.remove(id)
+                vacant = nextVacant
+            }
+        }
+    }
+
     private fun requireValidAggregate(aggregate: SequenceExecutionAggregateEntity) {
         val id = aggregate.execution.id
         require(aggregate.occurrences.all { it.sequenceExecutionId == id }) { "Occurrence owner mismatch" }
@@ -278,13 +368,23 @@ internal abstract class SequenceExecutionDao {
             )
         val snapshot = snapshotAggregate.toDomain()
         val activitySnapshotIds =
-            snapshotAggregate.nodes.mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId).distinct()
+            (
+                snapshotAggregate.nodes.mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId) +
+                    aggregate.occurrences.map(SequenceOccurrenceEntity::activitySnapshotId)
+            ).distinct()
         val activitySnapshotModes =
-            activitySnapshotModes(activitySnapshotIds).associate { row ->
+            activitySnapshotIds.chunked(SQLITE_SAFE_BIND_COUNT).flatMap(::activitySnapshotModes).associate { row ->
                 ActivitySnapshotId(row.id) to TimeTrackingMode.valueOf(row.timeTrackingMode)
             }
+        require(activitySnapshotModes.keys == activitySnapshotIds.mapTo(hashSetOf(), ::ActivitySnapshotId)) {
+            "Sequence occurrence references missing Activity snapshot metadata"
+        }
         SequenceConfigSnapshotValidator.requireValid(snapshot, activitySnapshotModes)
         SequenceExecutionValidator.requireValid(aggregate.toDomain(), snapshot)
+    }
+
+    private companion object {
+        const val SQLITE_SAFE_BIND_COUNT = 900
     }
 }
 
@@ -307,12 +407,14 @@ private fun SequenceOccurrenceEntity.identity(): List<Any?> =
         sequenceExecutionId,
         sourceSequenceSnapshotNodeId,
         activitySnapshotId,
-        runtimePosition,
         repeatSourceSnapshotNodeId,
         repeatIteration,
         isRuntimeAdded,
         isDeletedFromHistory,
     )
+
+private fun SequenceOccurrenceEntity.runtimeState(): List<Any?> =
+    listOf(status, enteredAtMs, completedAtMs, completionReason)
 
 private fun SequenceIntervalEntity.identity(): List<Any?> =
     listOf(id, sequenceExecutionId, kind, startedAtMs, occurrenceId)

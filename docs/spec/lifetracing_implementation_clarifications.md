@@ -14,7 +14,7 @@ A `PLANNED` Activity Plan is derived in progress while a linked top-level standa
 
 While engaged, the Plan cannot be cancelled, rescheduled, updated from its Template, or started again. It remains stored `PLANNED` until actual completion. Execution completion and `PLANNED -> FULFILLED` commit atomically using the Execution's logical completion timestamp. No-live quick completion creates its completed Execution and fulfills the Plan in one transaction without an intermediate live interval.
 
-This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. Whether a future `SequenceExecution.status = ENDED_EARLY` fulfills a linked Plan remains deferred until early-end runtime is implemented.
+This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. An explicit `End sequence early` makes a linked `PLANNED` Sequence Plan `FULFILLED` atomically with its fulfilling `SequenceExecution`; `PlanEntry.fulfilledAt` equals that execution's `endedAt`. The runtime domain transition only produces terminal `ENDED_EARLY`; the later repository transaction owns the atomic Plan update.
 
 ## ActivitySnapshot StatisticsSeries foreign key
 

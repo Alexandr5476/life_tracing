@@ -44,6 +44,7 @@ internal class LiveRuntimeTestFixtures(
         autoAdvance: Boolean = true,
         countdownMs: Long = 0,
         noLiveAccounting: String = "ACTIVE",
+        timerZeroOverrides: Map<Int, String> = emptyMap(),
     ) {
         database.sequenceSnapshotDao().insertAggregate(
             SequenceSnapshotAggregateEntity(
@@ -64,6 +65,36 @@ internal class LiveRuntimeTestFixtures(
                     activityIds.mapIndexed { index, activityId ->
                         SequenceSnapshotNodeEntity("$id-step-$index", id, "STEP", null, index, activityId, null)
                     },
+                stepOverrides =
+                    timerZeroOverrides.map { (index, behavior) ->
+                        SequenceSnapshotStepOverrideEntity("$id-step-$index", null, behavior, null, null, null)
+                    },
+            ),
+        )
+    }
+
+    fun repeatSequence(
+        id: String,
+        activityId: String,
+        repeatCount: Int = 2,
+        autoAdvance: Boolean = false,
+        timerZeroBehavior: String? = null,
+    ) {
+        val repeatId = "$id-repeat"
+        val stepId = "$id-step"
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(id, id, null, null, null, "sequence-series", 0),
+                SequenceSnapshotSettingsEntity(id, autoAdvance, 5_000, 0, true, true, false, true, true, "ACTIVE"),
+                nodes =
+                    listOf(
+                        SequenceSnapshotNodeEntity(repeatId, id, "REPEAT", null, 0, null, repeatCount),
+                        SequenceSnapshotNodeEntity(stepId, id, "STEP", repeatId, 0, activityId, null),
+                    ),
+                stepOverrides =
+                    timerZeroBehavior?.let {
+                        listOf(SequenceSnapshotStepOverrideEntity(stepId, null, it, null, null, null))
+                    } ?: emptyList(),
             ),
         )
     }

@@ -432,7 +432,12 @@ class PlanRepository internal constructor(
                     require(
                         execution.planEntryId == plan.id &&
                             execution.snapshotId == snapshot.id &&
-                            execution.status == SequenceExecutionStatus.COMPLETED,
+                            execution.status in
+                            setOf(
+                                SequenceExecutionStatus.COMPLETED,
+                                SequenceExecutionStatus.ENDED_EARLY,
+                            ) &&
+                            plan.fulfilledAt == execution.endedAt,
                     ) { "Plan fulfillment SequenceExecution linkage is invalid" }
                 }
             }

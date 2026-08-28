@@ -463,6 +463,23 @@ object EffectiveSequenceStepSettingsResolver {
             isFirstStep,
         )
 
+    fun resolve(
+        activitySnapshot: ActivityConfigSnapshot,
+        sequenceSettings: SequenceSnapshotSettings,
+        isFirstStep: Boolean,
+    ): EffectiveSequenceStepSettings =
+        resolveOverrides(
+            activitySnapshot.id,
+            SequenceStepOverrides(),
+            activitySnapshot,
+            sequenceSettings.sequenceStartCountdown,
+            sequenceSettings.beforeEachStepCountdown,
+            sequenceSettings.transitionSound,
+            sequenceSettings.transitionVibration,
+            sequenceSettings.keepScreenAwake,
+            isFirstStep,
+        )
+
     @Suppress("LongParameterList") // These are the inherited setting values, kept unbundled to avoid a new abstraction.
     private fun resolveOverrides(
         activitySnapshotId: ActivitySnapshotId,

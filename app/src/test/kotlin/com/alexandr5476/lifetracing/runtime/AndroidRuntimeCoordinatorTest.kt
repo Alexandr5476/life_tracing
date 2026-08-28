@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceMaterializer
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
@@ -43,6 +44,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 
+@Suppress("LargeClass") // Existing coordinator boundary scenarios share one focused harness.
 class AndroidRuntimeCoordinatorTest {
     @Test
     fun coroutineDriverUsesMonotonicDeadlineAndReplacesPreviousOneShot() =
@@ -393,6 +395,117 @@ class AndroidRuntimeCoordinatorTest {
             coordinator.onDeadlineSignal(deadline)
 
             assertEquals(0, reconciliations)
+        }
+
+    @Test
+    @Suppress("LongMethod") // Two independent stale-signal regressions share the coordinator setup.
+    fun goNowAndDoAgainMakeCapturedDeadlineSignalsStale() =
+        runBlocking {
+            val jumped =
+                SequenceHarness(
+                    listOf(
+                        activity("first", TimeTrackingMode.TIMER, 60),
+                        activity("next", TimeTrackingMode.TIMER, 60),
+                    ),
+                )
+            val jumpDeadline =
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(jumped.runtime())))
+            val jumpTarget = jumped.state.execution.occurrences[1]
+            jumped.goNow(jumpTarget.id, instant(10))
+            val updatedJumpDeadline =
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(jumped.runtime())))
+            assertEquals(instant(70), updatedJumpDeadline.at)
+            var jumpReconciliations = 0
+            val jumpCoordinator =
+                coordinator(
+                    load = jumped::runtime,
+                    reconcile = { now ->
+                        jumpReconciliations++
+                        jumped.reconcile(now)
+                        RuntimeReconciliationResult(jumped.runtime()?.session, emptyList())
+                    },
+                    wallSeconds = 60,
+                )
+
+            jumpCoordinator.onDeadlineSignal(jumpDeadline)
+
+            assertEquals(0, jumpReconciliations)
+            assertEquals(jumpTarget.id, jumped.state.execution.currentOccurrenceId)
+
+            val repeated =
+                SequenceHarness(
+                    listOf(
+                        activity("repeat", TimeTrackingMode.TIMER, 60),
+                        activity("later", TimeTrackingMode.STOPWATCH),
+                    ),
+                    autoAdvance = false,
+                )
+            val repeatDeadline =
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(repeated.runtime())))
+            val original = repeated.state.execution.currentOccurrenceId!!
+            repeated.completeCurrent(original, instant(10))
+            repeated.doAgain(original, RuntimeInsertionPlacement.START_NOW, instant(20))
+            val updatedRepeatDeadline =
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(repeated.runtime())))
+            assertEquals(instant(80), updatedRepeatDeadline.at)
+            var repeatReconciliations = 0
+            val repeatCoordinator =
+                coordinator(
+                    load = repeated::runtime,
+                    reconcile = { now ->
+                        repeatReconciliations++
+                        repeated.reconcile(now)
+                        RuntimeReconciliationResult(repeated.runtime()?.session, emptyList())
+                    },
+                    wallSeconds = 60,
+                )
+
+            repeatCoordinator.onDeadlineSignal(repeatDeadline)
+
+            assertEquals(0, repeatReconciliations)
+            val repeatedOccurrence =
+                repeated.state.execution.occurrences
+                    .single { it.id != original && it.activitySnapshotId == ActivitySnapshotId("repeat") }
+            assertEquals(instant(20), repeatedOccurrence.enteredAt)
+        }
+
+    @Test
+    fun makeNextKeepsCurrentDeadlineAndReconcilesToReorderedFrontier() =
+        runBlocking {
+            val harness =
+                SequenceHarness(
+                    listOf(
+                        activity("current", TimeTrackingMode.TIMER, 60),
+                        activity("old-next", TimeTrackingMode.STOPWATCH),
+                        activity("made-next", TimeTrackingMode.TIMER, 20),
+                    ),
+                )
+            val deadline =
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(harness.runtime())))
+            val target = harness.state.execution.occurrences[2]
+            harness.makeNext(target.id, instant(10))
+
+            assertEquals(
+                deadline,
+                NextRuntimeDeadlineResolver.resolve(requireNotNull(harness.runtime())),
+            )
+            val coordinator =
+                coordinator(
+                    load = harness::runtime,
+                    reconcile = { now ->
+                        harness.reconcile(now)
+                        RuntimeReconciliationResult(harness.runtime()?.session, emptyList())
+                    },
+                    wallSeconds = 60,
+                )
+
+            coordinator.onDeadlineSignal(deadline)
+
+            assertEquals(target.id, harness.state.execution.currentOccurrenceId)
+            assertEquals(
+                instant(80),
+                requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(harness.runtime()))).at,
+            )
         }
 
     @Test
@@ -829,6 +942,7 @@ class AndroidRuntimeCoordinatorTest {
                         .ActivityExecutionPauseId("pause")
                 },
                 { SequenceIntervalId("interval-${++interval}") },
+                { SequenceOccurrenceId("occurrence-${++occurrence}") },
             )
         var state: SequenceRuntimeState =
             engine.start(
@@ -862,6 +976,35 @@ class AndroidRuntimeCoordinatorTest {
 
         fun reconcile(now: Instant) {
             state = engine.reconcile(state, snapshot, snapshots, now)
+        }
+
+        fun completeCurrent(
+            occurrenceId: SequenceOccurrenceId,
+            at: Instant,
+        ) {
+            state = engine.completeCurrent(state, occurrenceId, at, snapshot, snapshots)
+        }
+
+        fun goNow(
+            occurrenceId: SequenceOccurrenceId,
+            at: Instant,
+        ) {
+            state = engine.goNow(state, occurrenceId, at, snapshot, snapshots)
+        }
+
+        fun makeNext(
+            occurrenceId: SequenceOccurrenceId,
+            at: Instant,
+        ) {
+            state = engine.makeNext(state, occurrenceId, at, snapshot, snapshots)
+        }
+
+        fun doAgain(
+            occurrenceId: SequenceOccurrenceId,
+            placement: RuntimeInsertionPlacement,
+            at: Instant,
+        ) {
+            state = engine.doAgain(state, occurrenceId, placement, at, snapshot, snapshots)
         }
 
         fun runtime(): ActiveSequenceRuntime? {

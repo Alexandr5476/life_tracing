@@ -139,6 +139,218 @@ class SequenceExecutionDatabaseTest {
     }
 
     @Test
+    fun runtimeDeltaPersistsPositionCycleWithoutChangingOccurrenceIdentityOrClosedIntervals() {
+        val closed = interval("closed", "ACTIVE_STEP", 0, 1, "a")
+        val before =
+            SequenceExecutionAggregateEntity(
+                runningRoot(),
+                occurrences =
+                    listOf(
+                        occurrence("a", 0, "COMPLETED", 0, 1, "MANUAL_FINISH"),
+                        occurrence("b", 1),
+                        occurrence("c", 2).copy(
+                            sourceSequenceSnapshotNodeId = "repeat-child",
+                            repeatSourceSnapshotNodeId = "repeat",
+                            repeatIteration = 1,
+                        ),
+                    ),
+                intervals = listOf(closed),
+            )
+        executions.insertAggregate(before)
+        val after =
+            before.copy(
+                occurrences =
+                    listOf(
+                        before.occurrences[0].copy(runtimePosition = 2),
+                        before.occurrences[1].copy(runtimePosition = 0),
+                        before.occurrences[2].copy(runtimePosition = 1),
+                    ),
+            )
+
+        executions.persistRuntimeDelta(before, after)
+
+        val loaded = requireNotNull(executions.getAggregate("execution"))
+        assertEquals(listOf("b", "c", "a"), loaded.occurrences.map { it.id })
+        assertEquals(
+            after.occurrences.associate { it.id to it.copy(runtimePosition = 0) },
+            loaded.occurrences.associate { it.id to it.copy(runtimePosition = 0) },
+        )
+        assertEquals(listOf(closed), loaded.intervals)
+    }
+
+    @Test
+    fun runtimeDeltaInsertsCurrentRuntimeOccurrenceWhileShiftingExistingTopology() {
+        val before =
+            SequenceExecutionAggregateEntity(
+                runningRoot().copy(currentOccurrenceId = "a"),
+                occurrences = listOf(occurrence("a", 0, "CURRENT", 0), occurrence("b", 1)),
+                intervals = listOf(interval("open", "ACTIVE_STEP", 0, null, "a")),
+            )
+        executions.insertAggregate(before)
+        val added =
+            occurrence("runtime-added", 1, "CURRENT", 10).copy(
+                sourceSequenceSnapshotNodeId = null,
+                activitySnapshotId = "one-off",
+                isRuntimeAdded = true,
+            )
+        val after =
+            before.copy(
+                execution = before.execution.copy(currentOccurrenceId = added.id, updatedAtMs = 10),
+                occurrences =
+                    listOf(
+                        before.occurrences[0].copy(
+                            status = "COMPLETED",
+                            completedAtMs = 10,
+                            completionReason = "JUMP",
+                        ),
+                        added,
+                        before.occurrences[1].copy(runtimePosition = 2),
+                    ),
+                intervals =
+                    listOf(
+                        before.intervals.single().copy(endedAtMs = 10),
+                        interval("runtime-open", "ACTIVE_STEP", 10, null, added.id),
+                    ),
+            )
+
+        executions.persistRuntimeDelta(before, after)
+
+        assertEquals(after, requireNotNull(executions.getAggregate("execution")))
+    }
+
+    @Test
+    fun runtimeDeltaAcceptsValidSourceReplayAndRejectsMissingSourceOrIdentityMutation() {
+        val before =
+            SequenceExecutionAggregateEntity(
+                runningRoot(),
+                occurrences =
+                    listOf(
+                        occurrence("frozen", 0),
+                        occurrence("runtime", 1).copy(
+                            sourceSequenceSnapshotNodeId = null,
+                            activitySnapshotId = "one-off",
+                            isRuntimeAdded = true,
+                        ),
+                    ),
+            )
+        executions.insertAggregate(before)
+        val replay = occurrence("replay", 2)
+        executions.persistRuntimeDelta(before, before.copy(occurrences = before.occurrences + replay))
+        val withReplay = requireNotNull(executions.getAggregate("execution"))
+        assertEquals(replay, withReplay.occurrences.single { it.id == replay.id })
+        val missingSource =
+            occurrence("missing-source", 3).copy(
+                sourceSequenceSnapshotNodeId = null,
+                isRuntimeAdded = false,
+            )
+        val invalidSource = occurrence("invalid-source", 3).copy(sourceSequenceSnapshotNodeId = "missing")
+        val missingSnapshot =
+            occurrence("missing-snapshot", 3).copy(
+                sourceSequenceSnapshotNodeId = null,
+                activitySnapshotId = "missing",
+                isRuntimeAdded = true,
+            )
+        val changedRuntime = withReplay.occurrences.single { it.id == "runtime" }.copy(activitySnapshotId = "no-live")
+        val changedFrozenSource =
+            withReplay.occurrences.single { it.id == "frozen" }.copy(
+                sourceSequenceSnapshotNodeId = "repeat-child",
+                repeatSourceSnapshotNodeId = "repeat",
+                repeatIteration = 1,
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences + missingSource,
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences + missingSnapshot,
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(occurrences = withReplay.occurrences + invalidSource),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences.map {
+                            if (it.id ==
+                                changedRuntime.id
+                            ) {
+                                changedRuntime
+                            } else {
+                                it
+                            }
+                        },
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            executions.persistRuntimeDelta(
+                withReplay,
+                withReplay.copy(
+                    occurrences =
+                        withReplay.occurrences.map {
+                            if (it.id ==
+                                changedFrozenSource.id
+                            ) {
+                                changedFrozenSource
+                            } else {
+                                it
+                            }
+                        },
+                ),
+            )
+        }
+
+        assertEquals(withReplay, requireNotNull(executions.getAggregate("execution")))
+    }
+
+    @Test
+    fun runtimeDeltaFailureAfterTopologyWorkRollsBackExactAggregate() {
+        val before =
+            SequenceExecutionAggregateEntity(
+                runningRoot(),
+                occurrences = listOf(occurrence("a", 0), occurrence("b", 1)),
+            )
+        executions.insertAggregate(before)
+        executions.insertAggregate(
+            SequenceExecutionAggregateEntity(
+                runningRoot("other"),
+                intervals = listOf(interval("collision", "IMPLICIT_IDLE", 0, 1).copy(sequenceExecutionId = "other")),
+            ),
+        )
+        val after =
+            before.copy(
+                execution = before.execution.copy(updatedAtMs = 2),
+                occurrences =
+                    listOf(
+                        before.occurrences[0].copy(runtimePosition = 1),
+                        before.occurrences[1].copy(runtimePosition = 0),
+                    ),
+                intervals = listOf(interval("collision", "IMPLICIT_IDLE", 1, 2)),
+            )
+
+        assertThrows(RuntimeException::class.java) { executions.persistRuntimeDelta(before, after) }
+
+        assertEquals(before, requireNotNull(executions.getAggregate("execution")))
+    }
+
+    @Test
     fun composedSnapshotCorruptionIsRejectedOnExecutionReadAndInsertWithoutPartialRows() {
         executions.insertAggregate(SequenceExecutionAggregateEntity(runningRoot()))
         assertNotNull(executions.getAggregate("execution"))

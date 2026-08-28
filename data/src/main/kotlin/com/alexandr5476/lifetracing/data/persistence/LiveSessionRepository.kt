@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
@@ -27,6 +28,9 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValuePolicy
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -35,6 +39,7 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
@@ -65,6 +70,12 @@ class LiveSessionRepository internal constructor(
     nextSequenceExecutionId: () -> SequenceExecutionId,
     nextOccurrenceId: () -> SequenceOccurrenceId,
     nextIntervalId: () -> SequenceIntervalId,
+    private val activitySnapshotFactory: ActivitySnapshotFactory =
+        ActivitySnapshotFactory(
+            { ActivitySnapshotId(UUID.randomUUID().toString()) },
+            { ActivitySnapshotFieldId(UUID.randomUUID().toString()) },
+            { ActivitySnapshotCategoryOptionId(UUID.randomUUID().toString()) },
+        ),
 ) {
     private val activityFactory = ActivityExecutionFactory(nextActivityExecutionId)
     private val sequenceEngine =
@@ -77,6 +88,7 @@ class LiveSessionRepository internal constructor(
             activityFactory,
             nextActivityPauseId,
             nextIntervalId,
+            nextOccurrenceId,
         )
 
     fun getActiveSession(): ActiveSession? = transaction(::getActiveSessionLocked)
@@ -297,34 +309,126 @@ class LiveSessionRepository internal constructor(
             )
 
         private const val DATABASE_NAME = "lifetracing.db"
+        private const val SQLITE_SAFE_BIND_COUNT = 900
     }
 
     fun completeCurrentSequenceStep(
         expectedOccurrenceId: SequenceOccurrenceId,
         at: Instant,
-    ): SequenceRuntimeState {
-        val result =
-            transaction {
-                requireSequenceSession()
-                val loaded = loadSequenceRuntime()
-                val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
-                if (reconciled.execution.currentOccurrenceId != expectedOccurrenceId) {
-                    persistSequenceRuntime(loaded, reconciled)
-                    return@transaction null
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.completeCurrent(
+                reconciled,
+                expectedOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun goNow(
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.goNow(
+                reconciled,
+                targetOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun makeNext(
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.makeNext(
+                reconciled,
+                targetOccurrenceId,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    fun doAgain(
+        occurrenceId: SequenceOccurrenceId,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.doAgain(
+                reconciled,
+                occurrenceId,
+                placement,
+                at,
+                loaded.snapshot,
+                loaded.activities,
+            )
+        }
+
+    @Suppress("TooGenericExceptionCaught") // Any late Room failure must roll back the manual savepoint.
+    fun runtimeAdd(
+        source: ActivityEntrySource,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState =
+        transaction {
+            requireSequenceSession()
+            val loaded = loadSequenceRuntime()
+            val commandAt = persisted(at)
+            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, commandAt)
+            persistSequenceRuntime(loaded, reconciled)
+            val reconciledLoaded = loaded.copy(state = reconciled)
+            val preparedResult =
+                try {
+                    val prepared = prepareRuntimeAdd(source, commandAt)
+                    val activities = loaded.activities + (prepared.snapshot.id to prepared.snapshot)
+                    val preparedLoaded = reconciledLoaded.copy(activities = activities)
+                    val updated =
+                        sequenceEngine.addRuntimeOccurrence(
+                            reconciled,
+                            prepared.snapshot,
+                            placement,
+                            commandAt,
+                            loaded.snapshot,
+                            activities,
+                        )
+                    Result.success(RuntimeAddMutation(preparedLoaded, updated, prepared))
+                } catch (failure: IllegalArgumentException) {
+                    Result.failure(failure)
+                } catch (failure: IllegalStateException) {
+                    Result.failure(failure)
+                } catch (failure: NoSuchElementException) {
+                    Result.failure(failure)
                 }
-                val updated =
-                    sequenceEngine.completeCurrent(
-                        reconciled,
-                        expectedOccurrenceId,
-                        at,
-                        loaded.snapshot,
-                        loaded.activities,
-                    )
-                persistSequenceRuntime(loaded, updated)
-                updated
+            val prepared = preparedResult.getOrElse { return@transaction Result.failure(it) }
+            val sql = database.openHelper.writableDatabase
+            sql.execSQL("SAVEPOINT runtime_add")
+            try {
+                database.activitySnapshotDao().insertAggregate(prepared.source.snapshot.toEntityAggregate())
+                persistSequenceRuntime(prepared.loaded, prepared.updated)
+                prepared.source.templateId?.let { templateId ->
+                    check(database.libraryDao().touchActivity(templateId, commandAt.toEpochMilli()) == 1) {
+                        "ActivityTemplate is missing user state"
+                    }
+                }
+                sql.execSQL("RELEASE SAVEPOINT runtime_add")
+                Result.success(prepared.updated)
+            } catch (failure: RuntimeException) {
+                sql.execSQL("ROLLBACK TO SAVEPOINT runtime_add")
+                sql.execSQL("RELEASE SAVEPOINT runtime_add")
+                Result.failure(failure)
             }
-        return requireNotNull(result) { "Stale current-occurrence command" }
-    }
+        }.getOrThrow()
+
+    fun endSequenceEarly(at: Instant): SequenceRuntimeState =
+        runSequenceCommand(at) { loaded, reconciled ->
+            sequenceEngine.endEarly(reconciled, at, loaded.snapshot, loaded.activities)
+        }
 
     fun startNextSequenceStep(at: Instant): SequenceRuntimeState =
         transaction {
@@ -435,24 +539,36 @@ class LiveSessionRepository internal constructor(
                         is SequenceSnapshotRepeatBlock -> it.children
                     }
                 }.associateBy { it.id }
+        val countdownEntries =
+            after.intervals
+                .asSequence()
+                .filter { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.endedAt != null }
+                .map { requireNotNull(it.occurrenceId) to requireNotNull(it.endedAt) }
+                .toHashSet()
         return after.occurrences
             .flatMap { occurrence ->
                 val old = previous.getValue(occurrence.id)
+                val naturalTimerEnd =
+                    old.completedAt == null &&
+                        occurrence.completionReason ==
+                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.NATURAL_TIMER_END
+                val enteredAt = occurrence.enteredAt
+                val countdownEntry =
+                    old.enteredAt == null && enteredAt != null && (occurrence.id to enteredAt) in countdownEntries
+                if (!naturalTimerEnd && !countdownEntry) return@flatMap emptyList()
                 val source = occurrence.sourceSequenceSnapshotNodeId
+                val activity = activities.getValue(occurrence.activitySnapshotId)
                 val settings =
                     source?.let {
                         EffectiveSequenceStepSettingsResolver.resolve(
                             steps.getValue(it),
-                            activities.getValue(occurrence.activitySnapshotId),
+                            activity,
                             snapshot.settings,
                             false,
                         )
-                    }
+                    } ?: EffectiveSequenceStepSettingsResolver.resolve(activity, snapshot.settings, false)
                 buildList {
-                    if (old.completedAt == null &&
-                        occurrence.completionReason ==
-                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.NATURAL_TIMER_END
-                    ) {
+                    if (naturalTimerEnd) {
                         add(
                             RuntimeDeadlineFeedback(
                                 com.alexandr5476.lifetracing.domain.RuntimeDeadline(
@@ -462,20 +578,12 @@ class LiveSessionRepository internal constructor(
                                     after.id.value,
                                     occurrence.id,
                                 ),
-                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndSound,
                                 settings.timerEndVibration,
                             ),
                         )
                     }
-                    val enteredAt = occurrence.enteredAt
-                    if (old.enteredAt == null &&
-                        enteredAt != null &&
-                        after.intervals.any {
-                            it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                                it.occurrenceId == occurrence.id &&
-                                it.endedAt == enteredAt
-                        }
-                    ) {
+                    if (countdownEntry) {
                         add(
                             RuntimeDeadlineFeedback(
                                 com.alexandr5476.lifetracing.domain.RuntimeDeadline(
@@ -485,7 +593,7 @@ class LiveSessionRepository internal constructor(
                                     after.id.value,
                                     occurrence.id,
                                 ),
-                                requireNotNull(settings).timerEndSound,
+                                settings.timerEndSound,
                                 settings.timerEndVibration,
                             ),
                         )
@@ -554,21 +662,73 @@ class LiveSessionRepository internal constructor(
                 )
             }
         }
-        if (after.execution.status == SequenceExecutionStatus.COMPLETED) {
-            fulfillSequencePlanIfLinked(after.execution.id)
-            check(database.activeSessionDao().clear() == 1)
-        } else if (before.execution != after.execution) {
-            val session = sequenceSession(after.execution)
-            check(database.activeSessionDao().updateState(session.state.name, session.updatedAt.toEpochMilli()) == 1)
+        when (after.execution.status) {
+            SequenceExecutionStatus.COMPLETED,
+            SequenceExecutionStatus.ENDED_EARLY,
+            -> {
+                fulfillSequencePlanIfLinked(after.execution.id)
+                check(database.activeSessionDao().clear() == 1)
+            }
+            SequenceExecutionStatus.RUNNING,
+            SequenceExecutionStatus.PAUSED,
+            ->
+                if (before.execution != after.execution) {
+                    val session = sequenceSession(after.execution)
+                    check(
+                        database.activeSessionDao().updateState(
+                            session.state.name,
+                            session.updatedAt.toEpochMilli(),
+                        ) == 1,
+                    )
+                }
         }
     }
+
+    private fun runSequenceCommand(
+        at: Instant,
+        command: (LoadedSequenceRuntime, SequenceRuntimeState) -> SequenceRuntimeState,
+    ): SequenceRuntimeState =
+        transaction {
+            requireSequenceSession()
+            val loaded = loadSequenceRuntime()
+            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
+            val result =
+                try {
+                    Result.success(command(loaded, reconciled))
+                } catch (failure: IllegalArgumentException) {
+                    Result.failure(failure)
+                } catch (failure: NoSuchElementException) {
+                    Result.failure(failure)
+                }
+            persistSequenceRuntime(loaded, result.getOrElse { reconciled })
+            result
+        }.getOrThrow()
+
+    private fun prepareRuntimeAdd(
+        source: ActivityEntrySource,
+        commandAt: Instant,
+    ): RuntimeAddSource =
+        when (source) {
+            is ActivityEntrySource.Template -> {
+                val template =
+                    requireNotNull(database.activityTemplateDao().getAggregate(source.id.value)) {
+                        "Unknown ActivityTemplate: ${source.id.value}"
+                    }.toDomain()
+                require(template.deletedAt == null) { "Archived ActivityTemplate cannot be used directly" }
+                RuntimeAddSource(activitySnapshotFactory.fromTemplate(template, commandAt), source.id.value)
+            }
+            is ActivityEntrySource.OneOff ->
+                RuntimeAddSource(activitySnapshotFactory.fromOneOff(source.draft, commandAt).snapshot)
+            is ActivityEntrySource.Plan ->
+                throw IllegalArgumentException("Plan is not a Runtime Add source")
+        }
 
     private fun loadSequenceRuntime(): LoadedSequenceRuntime {
         val session = requireSequenceSession()
         val id = requireNotNull(session.sequenceExecutionId).value
         val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id)).toDomain()
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
-        val activities = loadActivitySnapshots(snapshot)
+        val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
         SequenceExecutionValidator.requireValid(execution, snapshot)
         val child =
             execution.currentOccurrenceId?.let { occurrenceId ->
@@ -640,7 +800,7 @@ class LiveSessionRepository internal constructor(
             requireNotNull(database.sequenceExecutionDao().getAggregate(id)) { "Active SequenceExecution is missing" }
                 .toDomain()
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
-        val activities = loadActivitySnapshots(snapshot)
+        val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
         SequenceExecutionValidator.requireValid(execution, snapshot)
         validateSequenceRuntimeShape(session.state, execution, snapshot, activities)
         val current =
@@ -751,7 +911,14 @@ class LiveSessionRepository internal constructor(
         snapshot: SequenceConfigSnapshot,
         activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
     ): Long {
-        val source = requireNotNull(occurrence.sourceSequenceSnapshotNodeId)
+        val activity = activities.getValue(occurrence.activitySnapshotId)
+        val source = occurrence.sourceSequenceSnapshotNodeId
+        if (source == null) {
+            return EffectiveSequenceStepSettingsResolver
+                .resolve(activity, snapshot.settings, false)
+                .startCountdown
+                .toMillis()
+        }
         val step =
             snapshot.nodes
                 .flatMap {
@@ -761,7 +928,7 @@ class LiveSessionRepository internal constructor(
                     }
                 }.single { it.id == source }
         return EffectiveSequenceStepSettingsResolver
-            .resolve(step, activities.getValue(occurrence.activitySnapshotId), snapshot.settings, false)
+            .resolve(step, activity, snapshot.settings, false)
             .startCountdown
             .toMillis()
     }
@@ -908,7 +1075,10 @@ class LiveSessionRepository internal constructor(
     private fun fulfillSequencePlanIfLinked(id: SequenceExecutionId) {
         val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id.value)).toDomain()
         val planId = execution.planEntryId ?: return
-        require(execution.status == SequenceExecutionStatus.COMPLETED) { "Only completed Sequence fulfills a Plan" }
+        require(
+            execution.status == SequenceExecutionStatus.COMPLETED ||
+                execution.status == SequenceExecutionStatus.ENDED_EARLY,
+        ) { "Only terminal Sequence fulfills a Plan" }
         val endedAt = requireNotNull(execution.endedAt)
         check(
             database.planEntryDao().fulfillSequence(
@@ -928,24 +1098,25 @@ class LiveSessionRepository internal constructor(
 
     private fun loadActivitySnapshots(
         snapshot: SequenceConfigSnapshot,
+        occurrenceSnapshotIds: Collection<ActivitySnapshotId> = emptyList(),
     ): Map<ActivitySnapshotId, ActivityConfigSnapshot> {
         val ids =
-            snapshot.nodes
-                .flatMap {
+            (
+                snapshot.nodes.flatMap {
                     when (it) {
                         is com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep ->
-                            listOf(
-                                it.activitySnapshotId,
-                            )
+                            listOf(it.activitySnapshotId)
                         is com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock ->
                             it.children.map(
                                 com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep::activitySnapshotId,
                             )
                     }
-                }.distinct()
-        return database
-            .activitySnapshotDao()
-            .getAggregates(ids.map(ActivitySnapshotId::value))
+                } + occurrenceSnapshotIds
+            ).distinct()
+        return ids
+            .map(ActivitySnapshotId::value)
+            .chunked(SQLITE_SAFE_BIND_COUNT)
+            .flatMap(database.activitySnapshotDao()::getAggregates)
             .associate {
                 val domain = it.toDomain()
                 domain.id to domain
@@ -965,6 +1136,17 @@ class LiveSessionRepository internal constructor(
     private data class PauseSequenceResult(
         val state: SequenceRuntimeState,
         val applied: Boolean,
+    )
+
+    private data class RuntimeAddSource(
+        val snapshot: ActivityConfigSnapshot,
+        val templateId: String? = null,
+    )
+
+    private data class RuntimeAddMutation(
+        val loaded: LoadedSequenceRuntime,
+        val updated: SequenceRuntimeState,
+        val source: RuntimeAddSource,
     )
 }
 

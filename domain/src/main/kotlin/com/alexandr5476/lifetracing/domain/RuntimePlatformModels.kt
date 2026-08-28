@@ -156,10 +156,11 @@ object NextRuntimeDeadlineResolver {
         runtime: ActiveSequenceRuntime,
         occurrence: RuntimeOccurrence,
     ): EffectiveSequenceStepSettings {
-        val sourceId =
-            requireNotNull(occurrence.sourceSequenceSnapshotNodeId) {
-                "Runtime-added Steps are out of scope"
-            }
+        val activity = runtime.activitySnapshots.getValue(occurrence.activitySnapshotId)
+        val sourceId = occurrence.sourceSequenceSnapshotNodeId
+        if (sourceId == null) {
+            return EffectiveSequenceStepSettingsResolver.resolve(activity, runtime.snapshot.settings, false)
+        }
         val step =
             runtime.snapshot.nodes
                 .flatMap { node ->
@@ -168,12 +169,7 @@ object NextRuntimeDeadlineResolver {
                         is SequenceSnapshotRepeatBlock -> node.children
                     }
                 }.single { it.id == sourceId }
-        return EffectiveSequenceStepSettingsResolver.resolve(
-            step,
-            runtime.activitySnapshots.getValue(occurrence.activitySnapshotId),
-            runtime.snapshot.settings,
-            false,
-        )
+        return EffectiveSequenceStepSettingsResolver.resolve(step, activity, runtime.snapshot.settings, false)
     }
 }
 

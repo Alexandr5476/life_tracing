@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
@@ -208,6 +209,103 @@ class PlanEntryDatabaseTest {
             started.execution.id.value,
             database.planEntryDao().getById("sequence-plan")?.fulfilledSequenceExecutionId,
         )
+    }
+
+    @Test
+    fun planLinkedEarlyEndFulfillsAtomicallyAndCannotStartAgain() {
+        database.planEntryDao().insert(plan("early-plan", sequence = "sequence"))
+        val plans = planRepository(ZoneId.of("UTC"))
+        val started =
+            live.startSequenceFromPlan(
+                PlanEntryId("early-plan"),
+                instant(0),
+                instant(0),
+                ZoneId.of("UTC"),
+            )
+
+        val ended = live.endSequenceEarly(instant(10))
+        val plan = requireNotNull(plans.getPlan(PlanEntryId("early-plan")))
+
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.execution.status)
+        assertEquals(PlanEntryStatus.FULFILLED, plan.status)
+        assertEquals(started.execution.id, plan.fulfilledSequenceExecutionId)
+        assertNull(plan.fulfilledActivityExecutionId)
+        assertEquals(ended.execution.endedAt, plan.fulfilledAt)
+        assertNull(plan.cancelledAt)
+        assertNull(database.activeSessionDao().get())
+        assertFalse(plans.isEngaged(plan.id))
+        assertThrows(IllegalArgumentException::class.java) {
+            live.startSequenceFromPlan(
+                PlanEntryId("early-plan"),
+                instant(20),
+                instant(20),
+                ZoneId.of("UTC"),
+            )
+        }
+    }
+
+    @Test
+    fun sequencePlanReadRejectsNonterminalFulfillmentAndTimestampMismatch() {
+        val plans = planRepository(ZoneId.of("UTC"))
+        database.planEntryDao().insert(plan("running-fulfilled", sequence = "sequence"))
+        val running =
+            live.startSequenceFromPlan(
+                PlanEntryId("running-fulfilled"),
+                instant(0),
+                instant(0),
+                ZoneId.of("UTC"),
+            )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET status = 'FULFILLED', fulfilled_sequence_execution_id = ?, " +
+                "fulfilled_at_ms = 1000 WHERE id = 'running-fulfilled'",
+            arrayOf(running.execution.id.value),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.getPlan(PlanEntryId("running-fulfilled"))
+        }
+
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET status = 'PLANNED', fulfilled_sequence_execution_id = NULL, " +
+                "fulfilled_at_ms = NULL WHERE id = 'running-fulfilled'",
+        )
+        live.endSequenceEarly(instant(10))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET fulfilled_at_ms = 11000 WHERE id = 'running-fulfilled'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.getPlan(PlanEntryId("running-fulfilled"))
+        }
+    }
+
+    @Test
+    fun failedPlanFulfillmentRollsBackEarlyEndChildTimelineCachesAndSession() {
+        database.planEntryDao().insert(plan("early-rollback", sequence = "sequence"))
+        val started =
+            live.startSequenceFromPlan(
+                PlanEntryId("early-rollback"),
+                instant(0),
+                instant(0),
+                ZoneId.of("UTC"),
+            )
+        val occurrenceId = started.execution.currentOccurrenceId!!.value
+        val executionBefore = database.sequenceExecutionDao().getAggregate(started.execution.id.value)
+        val childBefore = database.activityExecutionDao().getAggregateByOccurrence(occurrenceId)
+        val sessionBefore = database.activeSessionDao().get()
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_early_fulfillment BEFORE UPDATE ON plan_entries " +
+                "WHEN OLD.id = 'early-rollback' AND NEW.status = 'FULFILLED' " +
+                "BEGIN SELECT RAISE(ABORT, 'induced fulfillment failure'); END",
+        )
+
+        assertThrows(RuntimeException::class.java) { live.endSequenceEarly(instant(10)) }
+
+        assertEquals(executionBefore, database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+        assertEquals(childBefore, database.activityExecutionDao().getAggregateByOccurrence(occurrenceId))
+        assertEquals(sessionBefore, database.activeSessionDao().get())
+        val failedPlan = requireNotNull(database.planEntryDao().getById("early-rollback"))
+        assertEquals("PLANNED", failedPlan.status)
+        assertNull(failedPlan.fulfilledSequenceExecutionId)
+        assertNull(failedPlan.fulfilledAtMs)
     }
 
     @Test
