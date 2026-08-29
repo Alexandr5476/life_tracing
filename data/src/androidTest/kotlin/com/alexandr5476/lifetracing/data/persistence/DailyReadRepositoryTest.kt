@@ -185,7 +185,7 @@ class DailyReadRepositoryTest {
 
         observedSql.clear()
         read("2026-08-20")
-        val sql = observedSql.map(String::lowercase)
+        val sql = synchronized(observedSql) { observedSql.map(String::lowercase) }
         assertEquals(1, sql.count { "from activity_templates where id in" in it })
         assertEquals(1, sql.count { "from activity_snapshots where id in" in it })
         assertEquals(1, sql.count { "from activity_snapshot_settings where snapshot_id in" in it })
@@ -414,7 +414,7 @@ class DailyReadRepositoryTest {
         assertEquals(2, result.dayPlans.size)
         assertEquals(2, result.completedHistory.size)
         assertTrue(result.active is DailyActive.Activity)
-        val sql = observedSql.map(String::lowercase)
+        val sql = synchronized(observedSql) { observedSql.map(String::lowercase) }
         assertEquals(3, sql.count { "from plan_entries" in it && "status in ('planned', 'fulfilled')" in it })
         assertTrue(sql.any { "from activity_executions" in it && "limit ?" in it })
         assertTrue(sql.any { "from sequence_executions" in it && "limit ?" in it })
