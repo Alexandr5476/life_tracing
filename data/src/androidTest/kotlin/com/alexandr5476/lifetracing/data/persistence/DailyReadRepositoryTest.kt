@@ -51,6 +51,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class DailyReadRepositoryTest {
@@ -451,17 +452,18 @@ class DailyReadRepositoryTest {
         database.close()
         context.deleteDatabase(name)
         val historyReached = CountDownLatch(1)
-        val writerFinished = CountDownLatch(1)
-        var blockHistory = false
+        val releaseHistory = CountDownLatch(1)
+        val writerStarted = CountDownLatch(1)
+        val blockHistory = AtomicBoolean()
         database =
             LifeTracingDatabase
                 .builder(context, name)
                 .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                 .setQueryCallback(
                     { sql, _ ->
-                        if (blockHistory && "context_type = 'STANDALONE' AND status = 'COMPLETED'" in sql) {
+                        if (blockHistory.get() && "context_type = 'STANDALONE' AND status = 'COMPLETED'" in sql) {
                             historyReached.countDown()
-                            check(writerFinished.await(10, TimeUnit.SECONDS))
+                            check(releaseHistory.await(10, TimeUnit.SECONDS))
                         }
                     },
                     Executor { it.run() },
@@ -487,14 +489,23 @@ class DailyReadRepositoryTest {
                 .allowMainThreadQueries()
                 .build()
         val readerExecutor = Executors.newSingleThreadExecutor()
+        val writerExecutor = Executors.newSingleThreadExecutor()
         try {
-            blockHistory = true
+            blockHistory.set(true)
             val result = readerExecutor.submit<com.alexandr5476.lifetracing.domain.DailyRead> { read("2026-08-20") }
             assertTrue(historyReached.await(10, TimeUnit.SECONDS))
-            LiveSessionRepository.create(writerDatabase).completeActiveActivity(Instant.parse("2026-08-20T11:00:00Z"))
-            writerFinished.countDown()
+            val writer =
+                writerExecutor.submit {
+                    writerStarted.countDown()
+                    LiveSessionRepository
+                        .create(writerDatabase)
+                        .completeActiveActivity(Instant.parse("2026-08-20T11:00:00Z"))
+                }
+            assertTrue(writerStarted.await(10, TimeUnit.SECONDS))
+            releaseHistory.countDown()
 
             val coherentOldSide = result.get(10, TimeUnit.SECONDS)
+            writer.get(10, TimeUnit.SECONDS)
             assertEquals(
                 PlanEntryStatus.PLANNED,
                 coherentOldSide.dayPlans
@@ -505,7 +516,7 @@ class DailyReadRepositoryTest {
             assertTrue(coherentOldSide.active is DailyActive.Activity)
             assertTrue(coherentOldSide.completedHistory.isEmpty())
 
-            blockHistory = false
+            blockHistory.set(false)
             val committed = read("2026-08-20")
             assertEquals(
                 PlanEntryStatus.FULFILLED,
@@ -516,8 +527,9 @@ class DailyReadRepositoryTest {
             assertNull(committed.active)
             assertEquals(1, committed.completedHistory.size)
         } finally {
-            writerFinished.countDown()
+            releaseHistory.countDown()
             readerExecutor.shutdownNow()
+            writerExecutor.shutdownNow()
             writerDatabase.close()
         }
     }
