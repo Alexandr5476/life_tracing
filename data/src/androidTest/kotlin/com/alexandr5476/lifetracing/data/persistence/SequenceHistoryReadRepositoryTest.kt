@@ -413,6 +413,47 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(ActivityHistoryActualValue.Number(7), templateUnavailable.fields[0].actualValue)
     }
 
+    @Test
+    fun sequenceChildLocalOverridesWinOverSourceRenameAndUnavailability() {
+        insertSourceLinkedRuntimeTemplate()
+        insertOverrideHistory()
+        observedSql.clear()
+        val available =
+            sourceLinkedChild(
+                SequenceExecutionId("override-sequence-execution"),
+                SequenceOccurrenceId("override-occurrence"),
+            )
+        assertEquals("Local number", available.fields[0].name)
+        assertEquals("Local option", (available.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals(1, observedSql.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(1, observedSql.count { "from activity_template_category_options" in it.lowercase() })
+        assertFalse(
+            observedSql.any {
+                it.lowercase().startsWith("insert") ||
+                    it.lowercase().startsWith("update") ||
+                    it.lowercase().startsWith("delete")
+            },
+        )
+
+        database.activityTemplateDao().updateFieldDisplayName("source-number", "Renamed", 2)
+        database.activityTemplateDao().updateOptionDisplayLabel("source-option", "Renamed option")
+        database.activityTemplateDao().archiveOption("source-option")
+        database.activityTemplateDao().archive("source-linked-template", 3)
+        val unavailable =
+            sourceLinkedChild(
+                SequenceExecutionId("override-sequence-execution"),
+                SequenceOccurrenceId("override-occurrence"),
+            )
+        assertEquals("Local number", unavailable.fields[0].name)
+        assertEquals("Local option", (unavailable.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals(ActivityHistoryConfiguredValue.Number(7), unavailable.fields[0].configuredValue)
+        assertEquals(ActivityHistoryActualValue.Number(7), unavailable.fields[0].actualValue)
+        assertEquals(
+            "override-option",
+            (unavailable.fields[1].actualValue as ActivityHistoryActualValue.Category).optionId.value,
+        )
+    }
+
     private fun seedTerminalRun() {
         activitySnapshot("activity-one", "Frozen one")
         activitySnapshot("activity-two", "Runtime added")
@@ -674,6 +715,150 @@ class SequenceHistoryReadRepositoryTest {
                     ),
                 userState = ActivityTemplateUserStateEntity("source-linked-template", null, null),
             ),
+        )
+    }
+
+    private fun insertOverrideHistory() {
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "override-activity",
+                    "Override",
+                    null,
+                    "NO_LIVE_TRACKING",
+                    null,
+                    "source-linked-template",
+                    1,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("override-activity"),
+                fields =
+                    listOf(
+                        ActivitySnapshotFieldEntity(
+                            "override-number",
+                            "override-activity",
+                            "source-number",
+                            0,
+                            "Creation number",
+                            "Local number",
+                            "NUMBER",
+                            "km",
+                            1,
+                            7,
+                            null,
+                            null,
+                            false,
+                        ),
+                        ActivitySnapshotFieldEntity(
+                            "override-category",
+                            "override-activity",
+                            "source-category",
+                            1,
+                            "Creation category",
+                            null,
+                            "CATEGORY",
+                            null,
+                            null,
+                            null,
+                            "override-option",
+                            null,
+                            false,
+                        ),
+                    ),
+                options =
+                    listOf(
+                        ActivitySnapshotCategoryOptionEntity(
+                            "override-option",
+                            "override-category",
+                            "source-option",
+                            0,
+                            "Creation option",
+                            "Local option",
+                        ),
+                    ),
+            ),
+        )
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(
+                    "override-sequence-snapshot",
+                    "Override",
+                    null,
+                    null,
+                    null,
+                    "sequence-series",
+                    0,
+                ),
+                SequenceSnapshotSettingsEntity(
+                    "override-sequence-snapshot",
+                    false,
+                    0,
+                    0,
+                    true,
+                    true,
+                    false,
+                    false,
+                    false,
+                    "ACTIVE",
+                ),
+                nodes =
+                    listOf(
+                        SequenceSnapshotNodeEntity(
+                            "override-node",
+                            "override-sequence-snapshot",
+                            "STEP",
+                            null,
+                            0,
+                            "override-activity",
+                            null,
+                        ),
+                    ),
+            ),
+        )
+        val occurrence = SequenceOccurrenceId("override-occurrence")
+        val execution =
+            SequenceExecution(
+                SequenceExecutionId("override-sequence-execution"),
+                SequenceSnapshotId("override-sequence-snapshot"),
+                null,
+                SequenceExecutionStatus.COMPLETED,
+                Instant.EPOCH,
+                Instant.EPOCH,
+                Duration.ZERO,
+                Duration.ZERO,
+                Duration.ZERO,
+                ZoneOffset.UTC,
+                0,
+                LocalDate.of(1970, 1, 1),
+                null,
+                Instant.EPOCH,
+                Instant.EPOCH,
+                listOf(
+                    RuntimeOccurrence(
+                        occurrence,
+                        SequenceSnapshotNodeId("override-node"),
+                        ActivitySnapshotId("override-activity"),
+                        0,
+                        null,
+                        null,
+                        RuntimeOccurrenceStatus.COMPLETED,
+                        Instant.EPOCH,
+                        Instant.EPOCH,
+                        OccurrenceCompletionReason.MANUAL_FINISH,
+                        false,
+                        false,
+                    ),
+                ),
+            )
+        database.sequenceExecutionDao().insertAggregate(execution.toEntityAggregate())
+        insertNoLiveChild("override-child", "override-activity", execution.id, occurrence, Instant.EPOCH)
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity("override-child", "override-number", 7, null, null),
+        )
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity("override-child", "override-category", null, "override-option", null),
         )
     }
 
