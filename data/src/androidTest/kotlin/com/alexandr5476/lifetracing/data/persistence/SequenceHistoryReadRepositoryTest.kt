@@ -3,25 +3,36 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -39,6 +50,10 @@ class SequenceHistoryReadRepositoryTest {
     private lateinit var repository: HistoryReadRepository
     private val observedSql = Collections.synchronizedList(mutableListOf<String>())
     private val databaseName = "sequence-history-detail-test.db"
+    private var writerActivity = 0
+    private var writerSequence = 0
+    private var writerOccurrence = 0
+    private var writerInterval = 0
 
     @Before
     fun setUp() {
@@ -101,10 +116,157 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(ActivityExecutionId("child-runtime"), detail.occurrences[0].child?.executionId)
         assertNull(detail.occurrences[0].child?.activeDuration)
         assertEquals(2, detail.intervals.size)
+        assertEquals(SequenceHistoryConfiguredValue.Number(7), detail.fields[0].configuredValue)
+        assertEquals(SequenceHistoryActualValue.Number(0), detail.fields[0].actualValue)
+        assertEquals(
+            SequenceHistoryActualValue.Category(SequenceSnapshotCategoryOptionId("sequence-option"), "Option"),
+            detail.fields[1].actualValue,
+        )
         assertEquals(1, queries.count { "from activity_snapshots" in it && " in (" in it })
         assertEquals(1, queries.count { "from activity_execution_pauses" in it && " in (" in it })
         assertEquals(1, queries.count { "from activity_execution_field_values" in it && " in (" in it })
         assertFalse(queries.any { it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete") })
+    }
+
+    @Test
+    fun canonicalMakeNextAndGoNowTopologySurviveReloadIntoHistoryDetail() {
+        seedRuntimeSnapshots()
+        val live = liveRepository()
+        val reordered =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-navigation"),
+                Instant.EPOCH,
+                Instant.EPOCH,
+                ZoneOffset.UTC,
+            )
+        val makeNextTarget = reordered.execution.occurrences[2]
+        live.makeNext(makeNextTarget.id, Instant.ofEpochSecond(5))
+        val reorderedEnded = live.endSequenceEarly(Instant.ofEpochSecond(10))
+
+        reopen()
+        val reorderedDetail = requireNotNull(repository.getSequenceDetail(reorderedEnded.execution.id))
+        assertEquals(
+            listOf(
+                reordered.execution.occurrences[0].id,
+                makeNextTarget.id,
+                reordered.execution.occurrences[1].id,
+            ),
+            reorderedDetail.occurrences.map { it.occurrenceId },
+        )
+
+        val jumped =
+            liveRepository().startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-navigation"),
+                Instant.ofEpochSecond(20),
+                Instant.ofEpochSecond(20),
+                ZoneOffset.UTC,
+            )
+        val jumpTarget = jumped.execution.occurrences[2]
+        liveRepository().goNow(jumpTarget.id, Instant.ofEpochSecond(25))
+        val jumpedEnded = liveRepository().endSequenceEarly(Instant.ofEpochSecond(30))
+
+        reopen()
+        val jumpedDetail = requireNotNull(repository.getSequenceDetail(jumpedEnded.execution.id))
+        assertEquals(OccurrenceCompletionReason.JUMP, jumpedDetail.occurrences[0].completionReason)
+        assertEquals(RuntimeOccurrenceStatus.SKIPPED, jumpedDetail.occurrences[1].status)
+        assertNull(jumpedDetail.occurrences[1].child)
+        assertEquals(jumpTarget.id, jumpedDetail.occurrences[2].occurrenceId)
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, jumpedDetail.root.status)
+    }
+
+    @Test
+    fun canonicalRuntimeAddAndDoAgainKeepFreshHistoryIdentitiesAfterReload() {
+        seedRuntimeSnapshots()
+        val live = liveRepository()
+        val started =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-single"),
+                Instant.EPOCH,
+                Instant.EPOCH,
+                ZoneOffset.UTC,
+            )
+        val original = started.execution.occurrences.single()
+        live.completeCurrentSequenceStep(original.id, Instant.ofEpochSecond(5))
+        val repeated = live.doAgain(original.id, RuntimeInsertionPlacement.START_NOW, Instant.ofEpochSecond(10))
+        val replay = repeated.execution.occurrences.single { it.id != original.id }
+        live.completeCurrentSequenceStep(replay.id, Instant.ofEpochSecond(15))
+        val replayEnded = live.endSequenceEarly(Instant.ofEpochSecond(16))
+
+        reopen()
+        val replayDetail = requireNotNull(repository.getSequenceDetail(replayEnded.execution.id))
+        val replayed = replayDetail.occurrences.single { it.occurrenceId == replay.id }
+        assertEquals(original.activitySnapshotId, replayed.activitySnapshotId)
+        assertTrue(
+            replayed.child!!.executionId !=
+                replayDetail.occurrences
+                    .single { it.occurrenceId == original.id }
+                    .child!!
+                    .executionId,
+        )
+
+        val addLive = liveRepository()
+        addLive.startSequenceFromSnapshot(
+            SequenceSnapshotId("writer-navigation"),
+            Instant.ofEpochSecond(20),
+            Instant.ofEpochSecond(20),
+            ZoneOffset.UTC,
+        )
+        val added =
+            addLive.runtimeAdd(
+                ActivityEntrySource.OneOff(
+                    ActivitySnapshotDraft(
+                        "Runtime detail",
+                        null,
+                        com.alexandr5476.lifetracing.domain.TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivitySnapshotFieldDraft(
+                                    com.alexandr5476.lifetracing.domain.DraftIdentity
+                                        .New("zero"),
+                                    null,
+                                    0,
+                                    "Zero",
+                                    type = CustomFieldType.NUMBER,
+                                    defaultNumberScaled = 0,
+                                ),
+                            ),
+                    ),
+                ),
+                RuntimeInsertionPlacement.START_NOW,
+                Instant.ofEpochSecond(25),
+            )
+        val addedOccurrence = added.execution.occurrences.single { it.isRuntimeAdded }
+        addLive.completeCurrentSequenceStep(addedOccurrence.id, Instant.ofEpochSecond(30))
+        val addedEnded = addLive.endSequenceEarly(Instant.ofEpochSecond(35))
+
+        reopen()
+        val addedDetail = requireNotNull(repository.getSequenceDetail(addedEnded.execution.id))
+        val addedHistory = addedDetail.occurrences.single { it.occurrenceId == addedOccurrence.id }
+        assertTrue(addedHistory.isRuntimeAdded)
+        assertNull(addedHistory.sourceSequenceSnapshotNodeId)
+        assertNull(addedHistory.repeatSourceSnapshotNodeId)
+        val addedChild = requireNotNull(addedHistory.child)
+        assertTrue(addedChild.executionId.value.isNotBlank())
+        assertEquals(Duration.ofSeconds(5), addedChild.activeDuration)
+        assertEquals(ActivityHistoryActualValue.Number(0), addedChild.fields.single().actualValue)
+        assertFalse(
+            database.sequenceSnapshotDao().getAggregate(addedEnded.execution.snapshotId.value)!!.nodes.any {
+                it.activitySnapshotId == addedHistory.activitySnapshotId.value
+            },
+        )
+    }
+
+    @Test
+    fun mismatchedPersistedChildSnapshotIsRejected() {
+        seedTerminalRun()
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET snapshot_id = 'activity-one' WHERE id = 'child-runtime'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.getSequenceDetail(SequenceExecutionId("sequence-execution"))
+        }
     }
 
     private fun seedTerminalRun() {
@@ -125,6 +287,48 @@ class SequenceHistoryReadRepositoryTest {
                     false,
                     "ACTIVE",
                 ),
+                fields =
+                    listOf(
+                        SequenceSnapshotFieldEntity(
+                            "sequence-number",
+                            "sequence-snapshot",
+                            null,
+                            0,
+                            "Number",
+                            null,
+                            "NUMBER",
+                            "km",
+                            1,
+                            7,
+                            null,
+                            null,
+                        ),
+                        SequenceSnapshotFieldEntity(
+                            "sequence-category",
+                            "sequence-snapshot",
+                            null,
+                            1,
+                            "Category",
+                            null,
+                            "CATEGORY",
+                            null,
+                            null,
+                            null,
+                            "sequence-option",
+                            null,
+                        ),
+                    ),
+                options =
+                    listOf(
+                        SequenceSnapshotCategoryOptionEntity(
+                            "sequence-option",
+                            "sequence-category",
+                            null,
+                            0,
+                            "Option",
+                            null,
+                        ),
+                    ),
                 nodes =
                     listOf(
                         SequenceSnapshotNodeEntity(
@@ -228,10 +432,49 @@ class SequenceHistoryReadRepositoryTest {
                         repeatOne,
                     ),
                 ),
+                values =
+                    listOf(
+                        com.alexandr5476.lifetracing.domain.NumberSequenceExecutionValue(
+                            SequenceSnapshotFieldId("sequence-number"),
+                            0,
+                        ),
+                        com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue(
+                            SequenceSnapshotFieldId("sequence-category"),
+                            SequenceSnapshotCategoryOptionId("sequence-option"),
+                        ),
+                    ),
             )
         database.sequenceExecutionDao().insertAggregate(execution.toEntityAggregate())
         insertNoLiveChild("child-runtime", "activity-two", execution.id, runtimeAdded, Instant.ofEpochSecond(10))
         insertNoLiveChild("child-repeat", "activity-one", execution.id, repeatOne, Instant.ofEpochSecond(20))
+    }
+
+    private fun seedRuntimeSnapshots() {
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.seedSeries()
+        fixtures.activity("writer-stopwatch", "STOPWATCH")
+        fixtures.sequence("writer-navigation", listOf("writer-stopwatch", "writer-stopwatch", "writer-stopwatch"))
+        fixtures.sequence("writer-single", listOf("writer-stopwatch"), autoAdvance = false)
+    }
+
+    private fun liveRepository(): LiveSessionRepository =
+        LiveSessionRepository(
+            database,
+            { ActivityExecutionId("writer-child-${++writerActivity}") },
+            {
+                com.alexandr5476.lifetracing.domain
+                    .ActivityExecutionPauseId("writer-pause-${++writerActivity}")
+            },
+            { SequenceExecutionId("writer-sequence-${++writerSequence}") },
+            { SequenceOccurrenceId("writer-occurrence-${++writerOccurrence}") },
+            { SequenceIntervalId("writer-interval-${++writerInterval}") },
+        )
+
+    private fun reopen() {
+        database.close()
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        database = LifeTracingDatabase.builder(context, databaseName).allowMainThreadQueries().build()
+        repository = HistoryReadRepository(database)
     }
 
     private fun activitySnapshot(
