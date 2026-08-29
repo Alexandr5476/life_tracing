@@ -31,6 +31,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -837,7 +838,7 @@ class SequenceHistoryReadRepositoryTest {
             SequenceExecution(
                 SequenceExecutionId("override-sequence-execution"),
                 SequenceSnapshotId("override-sequence-snapshot"),
-                null,
+                StatisticsSeriesId("sequence-series"),
                 SequenceExecutionStatus.COMPLETED,
                 Instant.EPOCH,
                 Instant.EPOCH,
