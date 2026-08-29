@@ -44,7 +44,12 @@ class HistoryReadRepository internal constructor(
 ) {
     fun getCompletedRoots(query: CompletedHistoryQuery): List<CompletedHistoryRoot> {
         require(query.limit <= MAXIMUM_RESULT_LIMIT) { "History result limit exceeds $MAXIMUM_RESULT_LIMIT" }
-        return transaction {
+        return transaction { getCompletedRootsLocked(query) }
+    }
+
+    internal fun getCompletedRootsLocked(query: CompletedHistoryQuery): List<CompletedHistoryRoot> {
+        require(query.limit <= MAXIMUM_RESULT_LIMIT) { "History result limit exceeds $MAXIMUM_RESULT_LIMIT" }
+        return run {
             val startDate = query.dateRange.startDate.toString()
             val endDate = query.dateRange.endDate.toString()
             val activityRows =

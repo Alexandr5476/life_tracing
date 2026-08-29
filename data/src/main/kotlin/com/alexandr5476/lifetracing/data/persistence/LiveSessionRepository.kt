@@ -299,8 +299,11 @@ class LiveSessionRepository internal constructor(
 
     companion object {
         fun create(context: Context): LiveSessionRepository =
+            create(LifeTracingDatabase.builder(context.applicationContext, DATABASE_NAME).build())
+
+        internal fun create(database: LifeTracingDatabase): LiveSessionRepository =
             LiveSessionRepository(
-                LifeTracingDatabase.builder(context.applicationContext, DATABASE_NAME).build(),
+                database,
                 { ActivityExecutionId(UUID.randomUUID().toString()) },
                 { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
                 { SequenceExecutionId(UUID.randomUUID().toString()) },
@@ -753,7 +756,7 @@ class LiveSessionRepository internal constructor(
         return session
     }
 
-    private fun getActiveRuntimeLocked(): ActiveRuntime? {
+    internal fun getActiveRuntimeLocked(): ActiveRuntime? {
         val session = getActiveSessionLocked() ?: return null
         return when (session.kind) {
             ActiveSessionKind.ACTIVITY -> {
