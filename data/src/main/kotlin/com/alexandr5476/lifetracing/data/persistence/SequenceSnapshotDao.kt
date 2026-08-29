@@ -17,12 +17,21 @@ internal data class SequenceSnapshotAggregateEntity(
     val stepOverrides: List<SequenceSnapshotStepOverrideEntity> = emptyList(),
 )
 
+internal data class SequenceSnapshotSummaryEntity(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+)
+
 @Dao
 // One immutable aggregate has a small, bounded persistence surface.
 @Suppress("TooManyFunctions", "CyclomaticComplexMethod")
 internal abstract class SequenceSnapshotDao {
     @Query("SELECT * FROM sequence_snapshots WHERE id = :id")
     abstract fun getById(id: String): SequenceSnapshotEntity?
+
+    @Query("SELECT id, name, short_comment FROM sequence_snapshots WHERE id IN (:ids)")
+    abstract fun getSummaries(ids: List<String>): List<SequenceSnapshotSummaryEntity>
 
     @Query("SELECT * FROM sequence_snapshot_settings WHERE sequence_snapshot_id = :snapshotId")
     abstract fun getSettings(snapshotId: String): SequenceSnapshotSettingsEntity?

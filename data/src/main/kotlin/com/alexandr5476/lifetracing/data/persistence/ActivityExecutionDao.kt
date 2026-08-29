@@ -46,6 +46,16 @@ internal data class ActivitySnapshotOptionValueMetadataRow(
     @androidx.room.ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
 )
 
+internal data class ActivityHistoryRootEntity(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
+    @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
+    @androidx.room.ColumnInfo(name = "started_at_ms") val startedAtMs: Long?,
+    @androidx.room.ColumnInfo(name = "completed_at_ms") val completedAtMs: Long,
+    @androidx.room.ColumnInfo(name = "active_duration_ms") val activeDurationMs: Long?,
+    @androidx.room.ColumnInfo(name = "primary_local_date") val primaryLocalDate: String,
+)
+
 internal data class ExecutionPlanLinkRow(
     @androidx.room.ColumnInfo(name = "trackable_kind") val trackableKind: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
@@ -59,6 +69,19 @@ internal data class ExecutionPlanLinkRow(
 internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, started_at_ms, completed_at_ms, active_duration_ms, " +
+            "primary_local_date FROM activity_executions " +
+            "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "ORDER BY primary_local_date DESC, completed_at_ms DESC, id DESC LIMIT :limit",
+    )
+    abstract fun getCompletedStandaloneHistoryRoots(
+        startDate: String,
+        endDate: String,
+        limit: Int,
+    ): List<ActivityHistoryRootEntity>
 
     @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
     protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?

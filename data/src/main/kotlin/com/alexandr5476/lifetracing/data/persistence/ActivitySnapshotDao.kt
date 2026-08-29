@@ -13,11 +13,25 @@ internal data class ActivitySnapshotAggregateEntity(
     val options: List<ActivitySnapshotCategoryOptionEntity> = emptyList(),
 )
 
+internal data class ActivitySnapshotSummaryEntity(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
+    @androidx.room.ColumnInfo(name = "timer_target_ms") val timerTargetMs: Long?,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // Aggregate persistence stays in one focused transactional DAO.
 internal abstract class ActivitySnapshotDao {
     @Query("SELECT * FROM activity_snapshots WHERE id = :id")
     abstract fun getById(id: String): ActivitySnapshotEntity?
+
+    @Query(
+        "SELECT id, name, short_comment, time_tracking_mode, timer_target_ms " +
+            "FROM activity_snapshots WHERE id IN (:ids)",
+    )
+    abstract fun getSummaries(ids: List<String>): List<ActivitySnapshotSummaryEntity>
 
     @Query("SELECT * FROM activity_snapshots WHERE id IN (:ids)")
     protected abstract fun getByIds(ids: List<String>): List<ActivitySnapshotEntity>
