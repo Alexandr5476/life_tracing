@@ -75,7 +75,7 @@ internal abstract class ActivityExecutionDao {
             "primary_local_date FROM activity_executions " +
             "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
-            "ORDER BY primary_local_date DESC, completed_at_ms DESC, id DESC LIMIT :limit",
+            "ORDER BY primary_local_date DESC, completed_at_ms DESC, id ASC LIMIT :limit",
     )
     abstract fun getCompletedStandaloneHistoryRoots(
         startDate: String,

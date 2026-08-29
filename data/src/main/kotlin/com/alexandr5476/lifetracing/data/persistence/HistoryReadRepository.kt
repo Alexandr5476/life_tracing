@@ -28,6 +28,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.concurrent.Callable
 
+@Suppress("TooManyFunctions") // Immutable root/detail mapping keeps the read boundary self-contained.
 class HistoryReadRepository internal constructor(
     private val database: LifeTracingDatabase,
 ) {
@@ -95,6 +96,7 @@ class HistoryReadRepository internal constructor(
     ): List<ActivityHistoryField> {
         val sourceFieldNames =
             fields
+                .filter { it.localNameOverride == null }
                 .mapNotNull { it.sourceFieldId?.value }
                 .distinct()
                 .takeIf(List<String>::isNotEmpty)
@@ -103,8 +105,11 @@ class HistoryReadRepository internal constructor(
                 .associate { it.id to it.name }
         val sourceOptionLabels =
             fields
-                .flatMap { field -> field.categoryOptions.mapNotNull { it.sourceOptionId?.value } }
-                .distinct()
+                .flatMap { field ->
+                    field.categoryOptions
+                        .filter { it.localLabelOverride == null }
+                        .mapNotNull { it.sourceOptionId?.value }
+                }.distinct()
                 .takeIf(List<String>::isNotEmpty)
                 ?.let(database.activityTemplateDao()::getAvailableOptionDisplayMetadata)
                 .orEmpty()
@@ -209,12 +214,21 @@ class HistoryReadRepository internal constructor(
                 SequenceExecutionStatus.valueOf(status).also {
                     require(it == SequenceExecutionStatus.COMPLETED || it == SequenceExecutionStatus.ENDED_EARLY)
                 },
-            activeDuration = activeDurationMs?.let(Duration::ofMillis),
-            pauseDuration = pauseDurationMs?.let(Duration::ofMillis),
-            wallDuration = wallDurationMs?.let(Duration::ofMillis),
+            activeDuration = terminalDuration(activeDurationMs, "active"),
+            pauseDuration = terminalDuration(pauseDurationMs, "pause"),
+            wallDuration = terminalDuration(wallDurationMs, "wall"),
             planEntryId = planEntryId?.let(::PlanEntryId),
             title = snapshot.name,
             shortComment = snapshot.shortComment,
+        )
+
+    private fun terminalDuration(
+        milliseconds: Long?,
+        name: String,
+    ): Duration =
+        Duration.ofMillis(
+            requireNotNull(milliseconds) { "Terminal Sequence root is missing $name duration" }
+                .also { require(it >= 0) { "Terminal Sequence root has a negative $name duration" } },
         )
 
     private fun String.toTimeTrackingMode() =

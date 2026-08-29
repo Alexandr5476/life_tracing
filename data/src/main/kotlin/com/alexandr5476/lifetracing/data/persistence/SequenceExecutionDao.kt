@@ -48,7 +48,7 @@ internal abstract class SequenceExecutionDao {
             "pause_duration_ms, wall_duration_ms, primary_local_date FROM sequence_executions " +
             "WHERE status IN ('COMPLETED', 'ENDED_EARLY') " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
-            "ORDER BY primary_local_date DESC, ended_at_ms DESC, id DESC LIMIT :limit",
+            "ORDER BY primary_local_date DESC, ended_at_ms DESC, id ASC LIMIT :limit",
     )
     abstract fun getTerminalHistoryRoots(
         startDate: String,
