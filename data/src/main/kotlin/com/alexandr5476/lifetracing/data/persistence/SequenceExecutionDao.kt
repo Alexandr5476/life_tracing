@@ -201,13 +201,19 @@ internal abstract class SequenceExecutionDao {
     @Transaction
     open fun getAggregate(id: String): SequenceExecutionAggregateEntity? {
         val execution = getById(id) ?: return null
-        return SequenceExecutionAggregateEntity(
-            execution,
-            getOccurrences(id),
-            getIntervals(id),
-            getValues(id),
-        ).also(::requireValidAggregate)
+        return loadAggregate(execution).also(::requireValidAggregate)
     }
+
+    @Transaction
+    open fun getHistoryAggregate(id: String): SequenceExecutionAggregateEntity? = getById(id)?.let(::loadAggregate)
+
+    private fun loadAggregate(execution: SequenceExecutionEntity) =
+        SequenceExecutionAggregateEntity(
+            execution,
+            getOccurrences(execution.id),
+            getIntervals(execution.id),
+            getValues(execution.id),
+        )
 
     @Transaction
     open fun persistRuntimeDelta(

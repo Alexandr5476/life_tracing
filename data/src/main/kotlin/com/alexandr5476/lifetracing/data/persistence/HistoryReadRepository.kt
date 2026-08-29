@@ -19,8 +19,18 @@ import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
+import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryCategoryOption
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
+import com.alexandr5476.lifetracing.domain.SequenceHistoryField
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrenceActivity
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import java.time.Duration
@@ -91,36 +101,117 @@ class HistoryReadRepository internal constructor(
             )
         }
 
+    @Suppress("LongMethod") // Point detail intentionally composes one owned historical graph.
+    fun getSequenceDetail(id: SequenceExecutionId): SequenceHistoryDetail? =
+        transaction {
+            val execution =
+                database.sequenceExecutionDao().getHistoryAggregate(id.value)?.toDomain() ?: return@transaction null
+            require(
+                execution.status == SequenceExecutionStatus.COMPLETED ||
+                    execution.status == SequenceExecutionStatus.ENDED_EARLY,
+            ) { "Sequence detail is available only for terminal history" }
+            val snapshot =
+                requireNotNull(database.sequenceSnapshotDao().getAggregate(execution.snapshotId.value)) {
+                    "Sequence history references a missing snapshot: ${execution.snapshotId.value}"
+                }.toDomain()
+            SequenceExecutionValidator.requireValid(execution, snapshot)
+            val activitySnapshots =
+                execution.occurrences
+                    .map { it.activitySnapshotId.value }
+                    .distinct()
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.activitySnapshotDao()::getAggregates)
+                    .map(ActivitySnapshotAggregateEntity::toDomain)
+                    .associateBy(ActivityConfigSnapshot::id)
+            require(activitySnapshots.keys.containsAll(execution.occurrences.map { it.activitySnapshotId })) {
+                "Sequence occurrence references a missing Activity snapshot"
+            }
+            val childAggregates =
+                database
+                    .activityExecutionDao()
+                    .getSequenceChildAggregates(id.value)
+            val children =
+                childAggregates
+                    .map(ActivityExecutionAggregateEntity::toDomain)
+                    .associateBy { child ->
+                        require(child.context == ActivityExecutionContext.SEQUENCE_CHILD) {
+                            "Sequence child query returned a non-child execution"
+                        }
+                        require(child.sequenceExecutionId == id) {
+                            "Sequence child belongs to another Sequence execution"
+                        }
+                        requireNotNull(child.sequenceOccurrenceId) {
+                            "Sequence child is missing its occurrence linkage"
+                        }
+                    }
+            val occurrencesById = execution.occurrences.associateBy { it.id }
+            require(children.size == childAggregates.size) {
+                "Multiple children reference one Sequence occurrence"
+            }
+            children.forEach { (occurrenceId, child) ->
+                val occurrence =
+                    requireNotNull(occurrencesById[occurrenceId]) {
+                        "Sequence child references an occurrence outside its parent Sequence"
+                    }
+                require(child.snapshotId == occurrence.activitySnapshotId) {
+                    "Sequence child Activity snapshot does not match its occurrence"
+                }
+                require(child.status == ActivityExecutionStatus.COMPLETED) {
+                    "Terminal Sequence history cannot contain a live child Activity execution"
+                }
+                ActivityExecutionValidator.requireValid(child, activitySnapshots.getValue(child.snapshotId))
+            }
+            val displayMetadata = loadActivityDisplayMetadata(activitySnapshots.values)
+            SequenceHistoryDetail(
+                root = execution.toHistoryRoot(snapshot),
+                settings = snapshot.settings,
+                fields = snapshot.toHistoryFields(execution.values),
+                occurrences =
+                    execution.occurrences.sortedBy { it.runtimePosition }.map { occurrence ->
+                        val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
+                        SequenceHistoryOccurrence(
+                            occurrence.id,
+                            occurrence.runtimePosition,
+                            occurrence.activitySnapshotId,
+                            occurrence.sourceSequenceSnapshotNodeId,
+                            occurrence.repeatSourceSnapshotNodeId,
+                            occurrence.repeatIteration,
+                            occurrence.isRuntimeAdded,
+                            occurrence.isDeletedFromHistory,
+                            occurrence.status,
+                            occurrence.enteredAt,
+                            occurrence.completedAt,
+                            occurrence.completionReason,
+                            SequenceHistoryOccurrenceActivity(
+                                activity.id,
+                                activity.name,
+                                activity.shortComment,
+                                activity.timeTrackingMode,
+                                activity.timerTarget,
+                                activity.settings,
+                            ),
+                            children[occurrence.id]?.toHistoryChild(activity, displayMetadata),
+                        )
+                    },
+                intervals = execution.intervals,
+            )
+        }
+
     private fun ActivityConfigSnapshot.toHistoryFields(
         values: List<com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue>,
+    ): List<ActivityHistoryField> = toHistoryFields(values, loadActivityDisplayMetadata(listOf(this)))
+
+    private fun ActivityConfigSnapshot.toHistoryFields(
+        values: List<com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue>,
+        displayMetadata: ActivityDisplayMetadata,
     ): List<ActivityHistoryField> {
-        val sourceFieldNames =
-            fields
-                .filter { it.localNameOverride == null }
-                .mapNotNull { it.sourceFieldId?.value }
-                .distinct()
-                .takeIf(List<String>::isNotEmpty)
-                ?.let(database.activityTemplateDao()::getAvailableFieldDisplayMetadata)
-                .orEmpty()
-                .associate { it.id to it.name }
-        val sourceOptionLabels =
-            fields
-                .flatMap { field ->
-                    field.categoryOptions
-                        .filter { it.localLabelOverride == null }
-                        .mapNotNull { it.sourceOptionId?.value }
-                }.distinct()
-                .takeIf(List<String>::isNotEmpty)
-                ?.let(database.activityTemplateDao()::getAvailableOptionDisplayMetadata)
-                .orEmpty()
-                .associate { it.id to it.label }
         val valuesByField = values.associateBy { it.snapshotFieldId }
         return fields.map { field ->
             val options =
                 field.categoryOptions.map { option ->
                     ActivityHistoryCategoryOption(
                         option.id,
-                        option.localLabelOverride ?: sourceOptionLabels[option.sourceOptionId?.value]
+                        option.localLabelOverride ?: displayMetadata.optionLabels[option.sourceOptionId?.value]
                             ?: option.labelAtCreation,
                     )
                 }
@@ -128,7 +219,7 @@ class HistoryReadRepository internal constructor(
             ActivityHistoryField(
                 id = field.id,
                 name =
-                    field.localNameOverride ?: sourceFieldNames[field.sourceFieldId?.value]
+                    field.localNameOverride ?: displayMetadata.fieldNames[field.sourceFieldId?.value]
                         ?: field.nameAtCreation,
                 type = field.type,
                 unit = field.unit,
@@ -139,6 +230,126 @@ class HistoryReadRepository internal constructor(
             )
         }
     }
+
+    private fun loadActivityDisplayMetadata(snapshots: Collection<ActivityConfigSnapshot>): ActivityDisplayMetadata {
+        val sourceFieldIds =
+            snapshots
+                .flatMap(ActivityConfigSnapshot::fields)
+                .filter { it.localNameOverride == null }
+                .mapNotNull { it.sourceFieldId?.value }
+                .distinct()
+        val sourceOptionIds =
+            snapshots
+                .flatMap(ActivityConfigSnapshot::fields)
+                .flatMap { field -> field.categoryOptions }
+                .filter { it.localLabelOverride == null }
+                .mapNotNull { it.sourceOptionId?.value }
+                .distinct()
+        return ActivityDisplayMetadata(
+            sourceFieldIds
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(database.activityTemplateDao()::getAvailableFieldDisplayMetadata)
+                .associate { it.id to it.name },
+            sourceOptionIds
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(database.activityTemplateDao()::getAvailableOptionDisplayMetadata)
+                .associate { it.id to it.label },
+        )
+    }
+
+    private fun ActivityExecution.toHistoryChild(
+        snapshot: ActivityConfigSnapshot,
+        displayMetadata: ActivityDisplayMetadata,
+    ) = SequenceHistoryChildActivity(
+        id,
+        status,
+        startedAt,
+        completedAt,
+        activeDuration,
+        snapshot.toHistoryFields(values, displayMetadata),
+    )
+
+    private fun SequenceConfigSnapshot.toHistoryFields(
+        values: List<com.alexandr5476.lifetracing.domain.SequenceExecutionFieldValue>,
+    ): List<SequenceHistoryField> {
+        val valuesByField = values.associateBy { it.snapshotFieldId }
+        return fields.map { field ->
+            val options =
+                field.categoryOptions.map { option ->
+                    SequenceHistoryCategoryOption(option.id, option.localLabelOverride ?: option.labelAtCreation)
+                }
+            val optionLabels = options.associateBy(SequenceHistoryCategoryOption::id)
+            SequenceHistoryField(
+                field.id,
+                field.localNameOverride ?: field.nameAtCreation,
+                field.type,
+                field.unit,
+                field.displayPrecision,
+                field.configuredValue(),
+                valuesByField[field.id].toActualValue(optionLabels),
+                options,
+            )
+        }
+    }
+
+    private fun com.alexandr5476.lifetracing.domain.SequenceSnapshotField.configuredValue() =
+        when (type) {
+            CustomFieldType.NUMBER ->
+                defaultNumberScaled?.let(SequenceHistoryConfiguredValue::Number)
+                    ?: SequenceHistoryConfiguredValue.Missing
+            CustomFieldType.CATEGORY ->
+                defaultCategoryOptionId?.let(SequenceHistoryConfiguredValue::Category)
+                    ?: SequenceHistoryConfiguredValue.Missing
+            CustomFieldType.TEXT ->
+                defaultText?.let(SequenceHistoryConfiguredValue::Text)
+                    ?: SequenceHistoryConfiguredValue.Missing
+        }
+
+    private fun com.alexandr5476.lifetracing.domain.SequenceExecutionFieldValue?.toActualValue(
+        optionLabels: Map<
+            com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId,
+            SequenceHistoryCategoryOption,
+        >,
+    ): SequenceHistoryActualValue =
+        when (this) {
+            null -> SequenceHistoryActualValue.Missing
+            is com.alexandr5476.lifetracing.domain.NumberSequenceExecutionValue ->
+                SequenceHistoryActualValue.Number(scaledValue)
+            is com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue -> {
+                val option =
+                    requireNotNull(optionLabels[optionId]) {
+                        "Sequence Category value references a missing snapshot option"
+                    }
+                SequenceHistoryActualValue.Category(option.id, option.label)
+            }
+            is com.alexandr5476.lifetracing.domain.TextSequenceExecutionValue ->
+                SequenceHistoryActualValue.Text(value)
+        }
+
+    private fun com.alexandr5476.lifetracing.domain.SequenceExecution.toHistoryRoot(snapshot: SequenceConfigSnapshot) =
+        CompletedSequenceHistoryRoot(
+            id,
+            snapshotId,
+            primaryLocalDate,
+            requireNotNull(endedAt),
+            startedAt,
+            status.also {
+                require(it == SequenceExecutionStatus.COMPLETED || it == SequenceExecutionStatus.ENDED_EARLY)
+            },
+            requireTerminalDuration(activeDuration, "active"),
+            requireTerminalDuration(pauseDuration, "pause"),
+            requireTerminalDuration(wallDuration, "wall"),
+            planEntryId,
+            snapshot.name,
+            snapshot.shortComment,
+        )
+
+    private fun requireTerminalDuration(
+        duration: Duration?,
+        name: String,
+    ): Duration =
+        requireNotNull(duration) { "Terminal Sequence history is missing $name duration" }
+            .also { require(!it.isNegative) { "Terminal Sequence history has a negative $name duration" } }
 
     private fun com.alexandr5476.lifetracing.domain.ActivitySnapshotField.configuredValue() =
         when (type) {
@@ -241,8 +452,14 @@ class HistoryReadRepository internal constructor(
 
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
+    private data class ActivityDisplayMetadata(
+        val fieldNames: Map<String, String>,
+        val optionLabels: Map<String, String>,
+    )
+
     companion object {
         const val MAXIMUM_RESULT_LIMIT = 500
+        private const val SQLITE_BIND_CHUNK_SIZE = 900
 
         private val HISTORY_ORDER =
             compareByDescending<CompletedHistoryRoot> { it.primaryLocalDate }
