@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
@@ -349,6 +350,69 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(RuntimeOccurrenceStatus.COMPLETED, completed.execution.occurrences[0].status)
     }
 
+    @Test
+    fun sequenceChildUsesEffectiveSourceLabelsWithoutChangingFrozenFacts() {
+        seedRuntimeSnapshots()
+        insertSourceLinkedRuntimeTemplate()
+        val live = liveRepository()
+        live.startSequenceFromSnapshot(
+            SequenceSnapshotId("writer-navigation"),
+            Instant.EPOCH,
+            Instant.EPOCH,
+            ZoneOffset.UTC,
+        )
+        val added =
+            live.runtimeAdd(
+                ActivityEntrySource.Template(ActivityTemplateId("source-linked-template")),
+                RuntimeInsertionPlacement.START_NOW,
+                Instant.ofEpochSecond(1),
+            )
+        val occurrence = added.execution.occurrences.single { it.isRuntimeAdded }
+        live.completeCurrentSequenceStep(occurrence.id, Instant.ofEpochSecond(5))
+        val ended = live.endSequenceEarly(Instant.ofEpochSecond(6))
+
+        reopen()
+        database.activityTemplateDao().updateFieldDisplayName("source-number", "Current number", 2)
+        database.activityTemplateDao().updateOptionDisplayLabel("source-option", "Current option")
+        observedSql.clear()
+        val current = sourceLinkedChild(ended.execution.id, occurrence.id)
+        assertEquals("Current number", current.fields[0].name)
+        assertEquals("Current option", (current.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals(1, observedSql.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(1, observedSql.count { "from activity_template_category_options" in it.lowercase() })
+        assertFalse(observedSql.any { it.lowercase().startsWith("insert") || it.lowercase().startsWith("update") })
+
+        database.activityTemplateDao().archiveOption("source-option")
+        assertEquals(
+            "Creation option",
+            (
+                sourceLinkedChild(
+                    ended.execution.id,
+                    occurrence.id,
+                ).fields[1].actualValue as ActivityHistoryActualValue.Category
+            ).label,
+        )
+        database.activityTemplateDao().archiveField("source-number", 3)
+        val fieldUnavailable = sourceLinkedChild(ended.execution.id, occurrence.id)
+        assertEquals("Creation number", fieldUnavailable.fields[0].name)
+        database.activityTemplateDao().archiveField("source-category", 4)
+        val categoryFieldUnavailable = sourceLinkedChild(ended.execution.id, occurrence.id)
+        assertEquals("Creation category", categoryFieldUnavailable.fields[1].name)
+        assertEquals(
+            "Creation option",
+            (categoryFieldUnavailable.fields[1].actualValue as ActivityHistoryActualValue.Category).label,
+        )
+        database.activityTemplateDao().archive("source-linked-template", 5)
+        val templateUnavailable = sourceLinkedChild(ended.execution.id, occurrence.id)
+        assertEquals("Creation number", templateUnavailable.fields[0].name)
+        assertEquals(
+            "Creation option",
+            (templateUnavailable.fields[1].actualValue as ActivityHistoryActualValue.Category).label,
+        )
+        assertEquals(ActivityHistoryConfiguredValue.Number(7), templateUnavailable.fields[0].configuredValue)
+        assertEquals(ActivityHistoryActualValue.Number(7), templateUnavailable.fields[0].actualValue)
+    }
+
     private fun seedTerminalRun() {
         activitySnapshot("activity-one", "Frozen one")
         activitySnapshot("activity-two", "Runtime added")
@@ -544,6 +608,75 @@ class SequenceHistoryReadRepositoryTest {
         )
     }
 
+    private fun sourceLinkedChild(
+        sequenceId: SequenceExecutionId,
+        occurrenceId: SequenceOccurrenceId,
+    ) = requireNotNull(repository.getSequenceDetail(sequenceId))
+        .occurrences
+        .single { it.occurrenceId == occurrenceId }
+        .child!!
+
+    private fun insertSourceLinkedRuntimeTemplate() {
+        database.activityTemplateDao().insertAggregate(
+            ActivityTemplateAggregateEntity(
+                ActivityTemplateEntity(
+                    "source-linked-template",
+                    "Source",
+                    null,
+                    "STOPWATCH",
+                    null,
+                    "activity-series",
+                    1,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                ActivityTemplateSettingsEntity("source-linked-template"),
+                fields =
+                    listOf(
+                        ActivityTemplateFieldEntity(
+                            "source-number",
+                            "source-linked-template",
+                            0,
+                            "Creation number",
+                            "NUMBER",
+                            "km",
+                            1,
+                            7,
+                            null,
+                            null,
+                            false,
+                            0,
+                            0,
+                            null,
+                        ),
+                        ActivityTemplateFieldEntity(
+                            "source-category",
+                            "source-linked-template",
+                            1,
+                            "Creation category",
+                            "CATEGORY",
+                            null,
+                            null,
+                            null,
+                            "source-option",
+                            null,
+                            false,
+                            0,
+                            0,
+                            null,
+                        ),
+                    ),
+                options =
+                    listOf(
+                        ActivityTemplateCategoryOptionEntity("source-option", "source-category", 0, "Creation option"),
+                    ),
+                userState = ActivityTemplateUserStateEntity("source-linked-template", null, null),
+            ),
+        )
+    }
+
     private fun liveRepository(): LiveSessionRepository =
         LiveSessionRepository(
             database,
@@ -560,7 +693,12 @@ class SequenceHistoryReadRepositoryTest {
     private fun reopen() {
         database.close()
         val context = ApplicationProvider.getApplicationContext<Context>()
-        database = LifeTracingDatabase.builder(context, databaseName).allowMainThreadQueries().build()
+        database =
+            LifeTracingDatabase
+                .builder(context, databaseName)
+                .setQueryCallback({ sql, _ -> observedSql += sql }, Executor { it.run() })
+                .allowMainThreadQueries()
+                .build()
         repository = HistoryReadRepository(database)
     }
 
