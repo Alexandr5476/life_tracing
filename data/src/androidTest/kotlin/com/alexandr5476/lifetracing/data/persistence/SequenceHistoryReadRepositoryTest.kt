@@ -426,7 +426,7 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals("Local number", available.fields[0].name)
         assertEquals("Local option", (available.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
         assertEquals(1, observedSql.count { "from activity_template_fields" in it.lowercase() })
-        assertEquals(1, observedSql.count { "from activity_template_category_options" in it.lowercase() })
+        assertEquals(0, observedSql.count { "from activity_template_category_options" in it.lowercase() })
         assertFalse(
             observedSql.any {
                 it.lowercase().startsWith("insert") ||
