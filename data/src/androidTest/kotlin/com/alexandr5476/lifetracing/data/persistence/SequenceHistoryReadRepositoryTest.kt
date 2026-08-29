@@ -360,11 +360,16 @@ class SequenceHistoryReadRepositoryTest {
         seedRuntimeSnapshots()
         insertSourceLinkedRuntimeTemplate()
         val live = liveRepository()
-        live.startSequenceFromSnapshot(
-            SequenceSnapshotId("writer-navigation"),
-            Instant.EPOCH,
-            Instant.EPOCH,
-            ZoneOffset.UTC,
+        val started =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-two-waiting"),
+                Instant.EPOCH,
+                Instant.EPOCH,
+                ZoneOffset.UTC,
+            )
+        live.completeCurrentSequenceStep(
+            started.execution.currentOccurrenceId!!,
+            Instant.ofEpochSecond(1),
         )
         val added =
             live.runtimeAdd(
@@ -420,6 +425,7 @@ class SequenceHistoryReadRepositoryTest {
 
     @Test
     fun sequenceChildLocalOverridesWinOverSourceRenameAndUnavailability() {
+        LiveRuntimeTestFixtures(database).seedSeries()
         insertSourceLinkedRuntimeTemplate()
         insertOverrideHistory()
         observedSql.clear()
