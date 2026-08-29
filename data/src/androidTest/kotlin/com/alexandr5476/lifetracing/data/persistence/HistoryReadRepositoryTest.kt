@@ -8,6 +8,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
@@ -18,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -32,6 +34,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -321,10 +324,75 @@ class HistoryReadRepositoryTest {
         val archived = requireNotNull(repository.getActivityDetail(ActivityExecutionId("detail")))
         assertEquals("Creation number", archived.fields[0].name)
         assertEquals("Creation option", (archived.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals("Local text", archived.fields[2].name)
+        assertEquals(
+            "Local option",
+            archived.fields[1]
+                .categoryOptions
+                .single { it.id.value == "local-option" }
+                .label,
+        )
+        assertEquals(CustomFieldType.NUMBER, archived.fields[0].type)
+        assertEquals(ActivityHistoryConfiguredValue.Number(7), archived.fields[0].configuredValue)
+        assertEquals(ActivityHistoryActualValue.Number(0), archived.fields[0].actualValue)
+        assertEquals(
+            "option-snapshot",
+            (archived.fields[1].actualValue as ActivityHistoryActualValue.Category).optionId.value,
+        )
         assertEquals(123L, database.activityTemplateDao().getUserState("template")?.lastUsedAtMs)
         assertEquals(1L, database.activityTemplateDao().getById("template")?.revision)
         assertEquals(snapshotCountBefore, count("activity_snapshots"))
         assertEquals(executionBefore, database.activityExecutionDao().getById("detail"))
+    }
+
+    @Test
+    fun unavailableSourceOptionFallsBackWithoutChangingFrozenActivityFacts() {
+        val execution = insertSourceDisplayFixture()
+        database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
+
+        val current = requireNotNull(repository.getActivityDetail(execution.id))
+        assertEquals("Current option", categoryActual(current).label)
+
+        database.activityTemplateDao().archiveOption("display-option-source")
+        val unavailable = requireNotNull(repository.getActivityDetail(execution.id))
+        assertEquals("Creation option", categoryActual(unavailable).label)
+        assertFrozenDisplayFixtureFacts(unavailable)
+        assertEquals("Local field", unavailable.fields[2].name)
+        assertEquals(
+            "Local option",
+            unavailable.fields[1]
+                .categoryOptions
+                .single {
+                    it.id.value ==
+                        "display-local-option"
+                }.label,
+        )
+    }
+
+    @Test
+    fun unavailableSourceFieldsFallBackWithTheirCategoryOptions() {
+        val execution = insertSourceDisplayFixture()
+        database.activityTemplateDao().updateFieldDisplayName("display-number-source", "Current number", 2)
+        database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
+
+        database.activityTemplateDao().archiveField("display-number-source", 3)
+        val numberUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
+        assertEquals("Creation number", numberUnavailable.fields[0].name)
+        assertEquals("Current option", categoryActual(numberUnavailable).label)
+
+        database.activityTemplateDao().archiveField("display-category-source", 4)
+        val categoryUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
+        assertEquals("Creation category", categoryUnavailable.fields[1].name)
+        assertEquals("Creation option", categoryActual(categoryUnavailable).label)
+        assertFrozenDisplayFixtureFacts(categoryUnavailable)
+        assertEquals("Local field", categoryUnavailable.fields[2].name)
+        assertEquals(
+            "Local option",
+            categoryUnavailable.fields[1]
+                .categoryOptions
+                .single { it.id.value == "display-local-option" }
+                .label,
+        )
     }
 
     @Test
@@ -374,10 +442,9 @@ class HistoryReadRepositoryTest {
 
     @Test
     fun detailUsesOneBatchedSourceDisplayLookupPerMetadataKindAndDoesNotWrite() {
-        // The detail fixture also exercises source rename, local overrides, and archive fallback.
-        activityDetailUsesEffectiveLabelsButKeepsSnapshotConfigurationAndNoLiveMissingDuration()
+        val execution = insertSourceDisplayFixture()
         observedSql.clear()
-        repository.getActivityDetail(ActivityExecutionId("detail"))
+        repository.getActivityDetail(execution.id)
         val queries = observedSql.map(String::lowercase)
 
         assertEquals(1, queries.count { "from activity_template_fields" in it })
@@ -419,7 +486,12 @@ class HistoryReadRepositoryTest {
         assertEquals(original.id, root.executionId)
         assertEquals(replacementSnapshot, root.snapshotId)
         assertEquals("Corrected comment", root.shortComment)
-        assertTrue(database.activitySnapshotDao().getById(original.snapshotId.value) != null)
+        val detail = requireNotNull(repository.getActivityDetail(original.id))
+        assertEquals(replacementSnapshot, detail.root.snapshotId)
+        assertEquals("Corrected comment", detail.root.shortComment)
+        assertEquals("source", detail.root.title)
+        assertEquals(TimeTrackingMode.NO_LIVE_TRACKING, detail.root.timeTrackingMode)
+        assertNull(detail.root.activeDuration)
     }
 
     @Test
@@ -544,6 +616,195 @@ class HistoryReadRepositoryTest {
             com.alexandr5476.lifetracing.domain
                 .CurrentZoneIdProvider { ZoneOffset.UTC },
         )
+    }
+
+    private fun insertSourceDisplayFixture(): ActivityExecution {
+        database.statisticsSeriesDao().insert(StatisticsSeriesEntity("display-series", "ACTIVITY", "Display", 0, null))
+        database.activityTemplateDao().insertAggregate(
+            ActivityTemplateAggregateEntity(
+                ActivityTemplateEntity(
+                    "display-template",
+                    "Display",
+                    null,
+                    "NO_LIVE_TRACKING",
+                    null,
+                    "display-series",
+                    1,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                ActivityTemplateSettingsEntity("display-template"),
+                listOf(
+                    ActivityTemplateFieldEntity(
+                        "display-number-source",
+                        "display-template",
+                        0,
+                        "Creation number",
+                        "NUMBER",
+                        "km",
+                        1,
+                        7,
+                        null,
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                    ActivityTemplateFieldEntity(
+                        "display-category-source",
+                        "display-template",
+                        1,
+                        "Creation category",
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "display-option-source",
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                    ActivityTemplateFieldEntity(
+                        "display-text-source",
+                        "display-template",
+                        2,
+                        "Creation text",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                ),
+                listOf(
+                    ActivityTemplateCategoryOptionEntity(
+                        "display-option-source",
+                        "display-category-source",
+                        0,
+                        "Creation option",
+                    ),
+                ),
+            ),
+        )
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "display-snapshot",
+                    "Frozen Activity",
+                    "Frozen note",
+                    "NO_LIVE_TRACKING",
+                    null,
+                    "display-template",
+                    1,
+                    "display-series",
+                    false,
+                    1,
+                ),
+                ActivitySnapshotSettingsEntity("display-snapshot"),
+                listOf(
+                    ActivitySnapshotFieldEntity(
+                        "display-number-snapshot",
+                        "display-snapshot",
+                        "display-number-source",
+                        0,
+                        "Creation number",
+                        null,
+                        "NUMBER",
+                        "km",
+                        1,
+                        7,
+                        null,
+                        null,
+                        false,
+                    ),
+                    ActivitySnapshotFieldEntity(
+                        "display-category-snapshot",
+                        "display-snapshot",
+                        "display-category-source",
+                        1,
+                        "Creation category",
+                        null,
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "display-option-snapshot",
+                        null,
+                        false,
+                    ),
+                    ActivitySnapshotFieldEntity(
+                        "display-local-field-snapshot",
+                        "display-snapshot",
+                        "display-text-source",
+                        2,
+                        "Creation text",
+                        "Local field",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                    ),
+                ),
+                listOf(
+                    ActivitySnapshotCategoryOptionEntity(
+                        "display-option-snapshot",
+                        "display-category-snapshot",
+                        "display-option-source",
+                        0,
+                        "Creation option",
+                        null,
+                    ),
+                    ActivitySnapshotCategoryOptionEntity(
+                        "display-local-option",
+                        "display-category-snapshot",
+                        null,
+                        1,
+                        "Creation local option",
+                        "Local option",
+                    ),
+                ),
+            ),
+        )
+        val execution = insertActivity("display-execution", at(700), snapshotId = "display-snapshot")
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity(execution.id.value, "display-number-snapshot", 0, null, null),
+        )
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity(
+                execution.id.value,
+                "display-category-snapshot",
+                null,
+                "display-option-snapshot",
+                null,
+            ),
+        )
+        return execution
+    }
+
+    private fun categoryActual(
+        detail: com.alexandr5476.lifetracing.domain.ActivityHistoryDetail,
+    ): ActivityHistoryActualValue.Category = detail.fields[1].actualValue as ActivityHistoryActualValue.Category
+
+    private fun assertFrozenDisplayFixtureFacts(detail: com.alexandr5476.lifetracing.domain.ActivityHistoryDetail) {
+        assertEquals(CustomFieldType.NUMBER, detail.fields[0].type)
+        assertEquals("km", detail.fields[0].unit)
+        assertEquals(1, detail.fields[0].displayPrecision)
+        assertEquals(ActivityHistoryConfiguredValue.Number(7), detail.fields[0].configuredValue)
+        assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
+        assertEquals("display-option-snapshot", categoryActual(detail).optionId.value)
     }
 
     private fun query(
