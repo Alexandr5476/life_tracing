@@ -125,7 +125,7 @@ class SequenceHistoryReadRepositoryTest {
             SequenceHistoryActualValue.Category(SequenceSnapshotCategoryOptionId("sequence-option"), "Option"),
             detail.fields[1].actualValue,
         )
-        assertEquals(1, queries.count { "from activity_snapshots" in it && " in (" in it })
+        assertEquals(1, queries.count { it.startsWith("select * from activity_snapshots where id in") })
         assertEquals(1, queries.count { "from activity_execution_pauses" in it && " in (" in it })
         assertEquals(1, queries.count { "from activity_execution_field_values" in it && " in (" in it })
         assertFalse(queries.any { it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete") })
@@ -219,11 +219,16 @@ class SequenceHistoryReadRepositoryTest {
         )
 
         val addLive = liveRepository()
-        addLive.startSequenceFromSnapshot(
-            SequenceSnapshotId("writer-navigation"),
-            Instant.ofEpochSecond(20),
-            Instant.ofEpochSecond(20),
-            ZoneOffset.UTC,
+        val addStarted =
+            addLive.startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-two-waiting"),
+                Instant.ofEpochSecond(20),
+                Instant.ofEpochSecond(20),
+                ZoneOffset.UTC,
+            )
+        addLive.completeCurrentSequenceStep(
+            addStarted.execution.currentOccurrenceId!!,
+            Instant.ofEpochSecond(24),
         )
         val added =
             addLive.runtimeAdd(

@@ -310,7 +310,7 @@ class HistoryReadRepositoryTest {
         assertEquals("Current number", detail.fields[0].name)
         assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
         assertEquals("Current option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
-        assertEquals(ActivityHistoryActualValue.Missing, detail.fields[2].actualValue)
+        assertEquals(ActivityHistoryActualValue.Text("configured"), detail.fields[2].actualValue)
         assertEquals("Local text", detail.fields[2].name)
         val localOption = detail.fields[1].categoryOptions.single { it.id.value == "local-option" }
         assertEquals("Local option", localOption.label)
