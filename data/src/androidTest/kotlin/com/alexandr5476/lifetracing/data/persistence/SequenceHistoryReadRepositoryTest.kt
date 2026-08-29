@@ -7,6 +7,8 @@ import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -172,6 +174,10 @@ class SequenceHistoryReadRepositoryTest {
         assertNull(jumpedDetail.occurrences[1].child)
         assertEquals(jumpTarget.id, jumpedDetail.occurrences[2].occurrenceId)
         assertEquals(SequenceExecutionStatus.ENDED_EARLY, jumpedDetail.root.status)
+        assertEquals(Duration.ofSeconds(10), jumpedDetail.root.activeDuration)
+        assertEquals(OccurrenceCompletionReason.SEQUENCE_ENDED_EARLY, jumpedDetail.occurrences[2].completionReason)
+        assertEquals(Instant.ofEpochSecond(30), jumpedDetail.occurrences[2].completedAt)
+        assertTrue(jumpedDetail.occurrences[2].child != null)
     }
 
     @Test
@@ -180,22 +186,29 @@ class SequenceHistoryReadRepositoryTest {
         val live = liveRepository()
         val started =
             live.startSequenceFromSnapshot(
-                SequenceSnapshotId("writer-single"),
+                SequenceSnapshotId("writer-two-waiting"),
                 Instant.EPOCH,
                 Instant.EPOCH,
                 ZoneOffset.UTC,
             )
-        val original = started.execution.occurrences.single()
+        val original = started.execution.occurrences.first()
+        val originalChildId = requireNotNull(started.currentChild).id
         live.completeCurrentSequenceStep(original.id, Instant.ofEpochSecond(5))
         val repeated = live.doAgain(original.id, RuntimeInsertionPlacement.START_NOW, Instant.ofEpochSecond(10))
-        val replay = repeated.execution.occurrences.single { it.id != original.id }
+        val replay =
+            repeated.execution.occurrences.single {
+                it.id != original.id &&
+                    it.status == RuntimeOccurrenceStatus.CURRENT
+            }
         live.completeCurrentSequenceStep(replay.id, Instant.ofEpochSecond(15))
         val replayEnded = live.endSequenceEarly(Instant.ofEpochSecond(16))
 
         reopen()
         val replayDetail = requireNotNull(repository.getSequenceDetail(replayEnded.execution.id))
+        val originalHistory = replayDetail.occurrences.single { it.occurrenceId == original.id }
         val replayed = replayDetail.occurrences.single { it.occurrenceId == replay.id }
         assertEquals(original.activitySnapshotId, replayed.activitySnapshotId)
+        assertEquals(originalChildId, originalHistory.child?.executionId)
         assertTrue(
             replayed.child!!.executionId !=
                 replayDetail.occurrences
@@ -230,6 +243,36 @@ class SequenceHistoryReadRepositoryTest {
                                     type = CustomFieldType.NUMBER,
                                     defaultNumberScaled = 0,
                                 ),
+                                ActivitySnapshotFieldDraft(
+                                    com.alexandr5476.lifetracing.domain.DraftIdentity
+                                        .New("missing"),
+                                    null,
+                                    1,
+                                    "Missing",
+                                    type = CustomFieldType.TEXT,
+                                ),
+                                ActivitySnapshotFieldDraft(
+                                    com.alexandr5476.lifetracing.domain.DraftIdentity
+                                        .New("category"),
+                                    null,
+                                    2,
+                                    "Category",
+                                    type = CustomFieldType.CATEGORY,
+                                    defaultCategoryOption =
+                                        com.alexandr5476.lifetracing.domain.DraftIdentity
+                                            .New("category-option"),
+                                    categoryOptions =
+                                        listOf(
+                                            ActivitySnapshotCategoryOptionDraft(
+                                                com.alexandr5476.lifetracing.domain.DraftIdentity.New(
+                                                    "category-option",
+                                                ),
+                                                null,
+                                                0,
+                                                "Category creation",
+                                            ),
+                                        ),
+                                ),
                             ),
                     ),
                 ),
@@ -249,7 +292,18 @@ class SequenceHistoryReadRepositoryTest {
         val addedChild = requireNotNull(addedHistory.child)
         assertTrue(addedChild.executionId.value.isNotBlank())
         assertEquals(Duration.ofSeconds(5), addedChild.activeDuration)
-        assertEquals(ActivityHistoryActualValue.Number(0), addedChild.fields.single().actualValue)
+        val fields = addedChild.fields.associateBy { it.name }
+        assertEquals(ActivityHistoryActualValue.Number(0), fields.getValue("Zero").actualValue)
+        assertEquals(ActivityHistoryActualValue.Missing, fields.getValue("Missing").actualValue)
+        val category = fields.getValue("Category")
+        assertEquals(
+            ActivityHistoryConfiguredValue.Category(category.categoryOptions.single().id),
+            category.configuredValue,
+        )
+        assertEquals(
+            ActivityHistoryActualValue.Category(category.categoryOptions.single().id, "Category creation"),
+            category.actualValue,
+        )
         assertFalse(
             database.sequenceSnapshotDao().getAggregate(addedEnded.execution.snapshotId.value)!!.nodes.any {
                 it.activitySnapshotId == addedHistory.activitySnapshotId.value
@@ -267,6 +321,32 @@ class SequenceHistoryReadRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) {
             repository.getSequenceDetail(SequenceExecutionId("sequence-execution"))
         }
+    }
+
+    @Test
+    fun canonicalNoLiveChildRemainsDurationlessAfterReload() {
+        seedRuntimeSnapshots()
+        val live = liveRepository()
+        val started =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("writer-no-live"),
+                Instant.EPOCH,
+                Instant.EPOCH,
+                ZoneOffset.UTC,
+            )
+        val completed =
+            live.completeCurrentSequenceStep(
+                started.execution.currentOccurrenceId!!,
+                Instant.ofEpochSecond(5),
+            )
+        val ended = live.endSequenceEarly(Instant.ofEpochSecond(6))
+
+        reopen()
+        val detail = requireNotNull(repository.getSequenceDetail(ended.execution.id))
+        assertNull(detail.occurrences[0].child?.startedAt)
+        assertNull(detail.occurrences[0].child?.activeDuration)
+        assertNull(detail.occurrences[1].child)
+        assertEquals(RuntimeOccurrenceStatus.COMPLETED, completed.execution.occurrences[0].status)
     }
 
     private fun seedTerminalRun() {
@@ -453,8 +533,15 @@ class SequenceHistoryReadRepositoryTest {
         val fixtures = LiveRuntimeTestFixtures(database)
         fixtures.seedSeries()
         fixtures.activity("writer-stopwatch", "STOPWATCH")
+        fixtures.activity("writer-no-live-activity", "NO_LIVE_TRACKING")
         fixtures.sequence("writer-navigation", listOf("writer-stopwatch", "writer-stopwatch", "writer-stopwatch"))
         fixtures.sequence("writer-single", listOf("writer-stopwatch"), autoAdvance = false)
+        fixtures.sequence("writer-two-waiting", listOf("writer-stopwatch", "writer-stopwatch"), autoAdvance = false)
+        fixtures.sequence(
+            "writer-no-live",
+            listOf("writer-no-live-activity", "writer-no-live-activity"),
+            autoAdvance = false,
+        )
     }
 
     private fun liveRepository(): LiveSessionRepository =
