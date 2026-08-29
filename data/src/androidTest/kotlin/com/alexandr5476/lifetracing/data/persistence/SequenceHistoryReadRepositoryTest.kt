@@ -92,7 +92,7 @@ class SequenceHistoryReadRepositoryTest {
 
         observedSql.clear()
         val detail = requireNotNull(repository.getSequenceDetail(SequenceExecutionId("sequence-execution")))
-        val queries = observedSql.map(String::lowercase)
+        val queries = observedSqlSnapshot().map(String::lowercase)
 
         assertEquals(SequenceSnapshotId("sequence-snapshot"), detail.root.snapshotId)
         assertEquals(SequenceExecutionStatus.COMPLETED, detail.root.status)
@@ -386,11 +386,12 @@ class SequenceHistoryReadRepositoryTest {
         database.activityTemplateDao().updateOptionDisplayLabel("source-option", "Current option")
         observedSql.clear()
         val current = sourceLinkedChild(ended.execution.id, occurrence.id)
+        val queries = observedSqlSnapshot()
         assertEquals("Current number", current.fields[0].name)
         assertEquals("Current option", (current.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
-        assertEquals(1, observedSql.count { "from activity_template_fields" in it.lowercase() })
-        assertEquals(1, observedSql.count { "from activity_template_category_options" in it.lowercase() })
-        assertFalse(observedSql.any { it.lowercase().startsWith("insert") || it.lowercase().startsWith("update") })
+        assertEquals(1, queries.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(1, queries.count { "from activity_template_category_options" in it.lowercase() })
+        assertFalse(queries.any { it.lowercase().startsWith("insert") || it.lowercase().startsWith("update") })
 
         database.activityTemplateDao().archiveOption("source-option")
         assertEquals(
@@ -434,12 +435,13 @@ class SequenceHistoryReadRepositoryTest {
                 SequenceExecutionId("override-sequence-execution"),
                 SequenceOccurrenceId("override-occurrence"),
             )
+        val queries = observedSqlSnapshot()
         assertEquals("Local number", available.fields[0].name)
         assertEquals("Local option", (available.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
-        assertEquals(1, observedSql.count { "from activity_template_fields" in it.lowercase() })
-        assertEquals(0, observedSql.count { "from activity_template_category_options" in it.lowercase() })
+        assertEquals(1, queries.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(0, queries.count { "from activity_template_category_options" in it.lowercase() })
         assertFalse(
-            observedSql.any {
+            queries.any {
                 it.lowercase().startsWith("insert") ||
                     it.lowercase().startsWith("update") ||
                     it.lowercase().startsWith("delete")
@@ -667,6 +669,8 @@ class SequenceHistoryReadRepositoryTest {
         .occurrences
         .single { it.occurrenceId == occurrenceId }
         .child!!
+
+    private fun observedSqlSnapshot(): List<String> = synchronized(observedSql) { observedSql.toList() }
 
     private fun insertSourceLinkedRuntimeTemplate() {
         database.activityTemplateDao().insertAggregate(
