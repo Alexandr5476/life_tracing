@@ -46,6 +46,16 @@ internal data class ActivitySnapshotOptionValueMetadataRow(
     @androidx.room.ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
 )
 
+internal data class ActivityHistoryRootEntity(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
+    @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
+    @androidx.room.ColumnInfo(name = "started_at_ms") val startedAtMs: Long?,
+    @androidx.room.ColumnInfo(name = "completed_at_ms") val completedAtMs: Long,
+    @androidx.room.ColumnInfo(name = "active_duration_ms") val activeDurationMs: Long?,
+    @androidx.room.ColumnInfo(name = "primary_local_date") val primaryLocalDate: String,
+)
+
 internal data class ExecutionPlanLinkRow(
     @androidx.room.ColumnInfo(name = "trackable_kind") val trackableKind: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String?,
@@ -60,8 +70,27 @@ internal abstract class ActivityExecutionDao {
     @Query("SELECT * FROM activity_executions WHERE id = :id")
     abstract fun getById(id: String): ActivityExecutionEntity?
 
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, started_at_ms, completed_at_ms, active_duration_ms, " +
+            "primary_local_date FROM activity_executions " +
+            "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "ORDER BY primary_local_date DESC, completed_at_ms DESC, id ASC LIMIT :limit",
+    )
+    abstract fun getCompletedStandaloneHistoryRoots(
+        startDate: String,
+        endDate: String,
+        limit: Int,
+    ): List<ActivityHistoryRootEntity>
+
     @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
     protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?
+
+    @Query(
+        "SELECT * FROM activity_executions WHERE context_type = 'SEQUENCE_CHILD' " +
+            "AND sequence_execution_id = :sequenceExecutionId ORDER BY sequence_occurrence_id, id",
+    )
+    protected abstract fun getSequenceChildren(sequenceExecutionId: String): List<ActivityExecutionEntity>
 
     @Query(
         "SELECT * FROM activity_execution_pauses " +
@@ -74,6 +103,18 @@ internal abstract class ActivityExecutionDao {
             "WHERE activity_execution_id = :executionId ORDER BY snapshot_field_id",
     )
     abstract fun getValues(executionId: String): List<ActivityExecutionFieldValueEntity>
+
+    @Query(
+        "SELECT * FROM activity_execution_pauses WHERE activity_execution_id IN (:executionIds) " +
+            "ORDER BY activity_execution_id, started_at_ms, id",
+    )
+    protected abstract fun getPausesForExecutions(executionIds: List<String>): List<ActivityExecutionPauseEntity>
+
+    @Query(
+        "SELECT * FROM activity_execution_field_values WHERE activity_execution_id IN (:executionIds) " +
+            "ORDER BY activity_execution_id, snapshot_field_id",
+    )
+    protected abstract fun getValuesForExecutions(executionIds: List<String>): List<ActivityExecutionFieldValueEntity>
 
     @Query(
         "SELECT EXISTS(SELECT 1 FROM activity_executions " +
@@ -313,6 +354,26 @@ internal abstract class ActivityExecutionDao {
                 getValues(execution.id),
             ).also(::requireValidAggregate)
         }
+
+    @Transaction
+    open fun getSequenceChildAggregates(sequenceExecutionId: String): List<ActivityExecutionAggregateEntity> {
+        val executions = getSequenceChildren(sequenceExecutionId)
+        if (executions.isEmpty()) return emptyList()
+        val ids = executions.map(ActivityExecutionEntity::id)
+        val pauses =
+            ids
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(::getPausesForExecutions)
+                .groupBy(ActivityExecutionPauseEntity::activityExecutionId)
+        val values =
+            ids
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(::getValuesForExecutions)
+                .groupBy(ActivityExecutionFieldValueEntity::activityExecutionId)
+        return executions.map { execution ->
+            ActivityExecutionAggregateEntity(execution, pauses[execution.id].orEmpty(), values[execution.id].orEmpty())
+        }
+    }
 
     @Transaction
     open fun persistSequenceChildDelta(

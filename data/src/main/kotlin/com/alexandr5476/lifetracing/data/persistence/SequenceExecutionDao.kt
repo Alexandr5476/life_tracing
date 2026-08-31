@@ -24,11 +24,37 @@ internal data class SequenceExecutionAggregateEntity(
     val values: List<SequenceExecutionFieldValueEntity> = emptyList(),
 )
 
+internal data class SequenceHistoryRootEntity(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
+    @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
+    val status: String,
+    @androidx.room.ColumnInfo(name = "started_at_ms") val startedAtMs: Long,
+    @androidx.room.ColumnInfo(name = "ended_at_ms") val endedAtMs: Long,
+    @androidx.room.ColumnInfo(name = "active_duration_ms") val activeDurationMs: Long?,
+    @androidx.room.ColumnInfo(name = "pause_duration_ms") val pauseDurationMs: Long?,
+    @androidx.room.ColumnInfo(name = "wall_duration_ms") val wallDurationMs: Long?,
+    @androidx.room.ColumnInfo(name = "primary_local_date") val primaryLocalDate: String,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // One focused DAO owns one bounded aggregate and its validation metadata.
 internal abstract class SequenceExecutionDao {
     @Query("SELECT * FROM sequence_executions WHERE id = :id")
     abstract fun getById(id: String): SequenceExecutionEntity?
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, status, started_at_ms, ended_at_ms, active_duration_ms, " +
+            "pause_duration_ms, wall_duration_ms, primary_local_date FROM sequence_executions " +
+            "WHERE status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "ORDER BY primary_local_date DESC, ended_at_ms DESC, id ASC LIMIT :limit",
+    )
+    abstract fun getTerminalHistoryRoots(
+        startDate: String,
+        endDate: String,
+        limit: Int,
+    ): List<SequenceHistoryRootEntity>
 
     @Query(
         "SELECT * FROM sequence_occurrences WHERE sequence_execution_id = :executionId ORDER BY runtime_position, id",
@@ -175,13 +201,19 @@ internal abstract class SequenceExecutionDao {
     @Transaction
     open fun getAggregate(id: String): SequenceExecutionAggregateEntity? {
         val execution = getById(id) ?: return null
-        return SequenceExecutionAggregateEntity(
-            execution,
-            getOccurrences(id),
-            getIntervals(id),
-            getValues(id),
-        ).also(::requireValidAggregate)
+        return loadAggregate(execution).also(::requireValidAggregate)
     }
+
+    @Transaction
+    open fun getHistoryAggregate(id: String): SequenceExecutionAggregateEntity? = getById(id)?.let(::loadAggregate)
+
+    private fun loadAggregate(execution: SequenceExecutionEntity) =
+        SequenceExecutionAggregateEntity(
+            execution,
+            getOccurrences(execution.id),
+            getIntervals(execution.id),
+            getValues(execution.id),
+        )
 
     @Transaction
     open fun persistRuntimeDelta(

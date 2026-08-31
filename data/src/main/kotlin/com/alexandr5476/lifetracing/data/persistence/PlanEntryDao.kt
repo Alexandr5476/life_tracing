@@ -19,6 +19,22 @@ internal data class PlanSourceMetadataRow(
     @androidx.room.ColumnInfo(name = "deleted_at_ms") val deletedAtMs: Long?,
 )
 
+internal data class PlanActivityExecutionLinkRow(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
+    @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
+    @androidx.room.ColumnInfo(name = "context_type") val contextType: String,
+    val status: String,
+)
+
+internal data class PlanSequenceExecutionLinkRow(
+    val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
+    @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
+    val status: String,
+    @androidx.room.ColumnInfo(name = "ended_at_ms") val endedAtMs: Long?,
+)
+
 @Dao
 internal abstract class PlanEntryDao {
     @Query("SELECT * FROM plan_entries WHERE id = :id")
@@ -44,6 +60,28 @@ internal abstract class PlanEntryDao {
     ): List<PlanEntryEntity>
 
     @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms IS NULL AND planned_day = :date ORDER BY created_at_ms, id",
+    )
+    abstract fun getDailyFloatingDay(date: String): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms >= :startMs AND scheduled_instant_ms < :endMs " +
+            "ORDER BY scheduled_instant_ms, created_at_ms, id",
+    )
+    abstract fun getDailyExactDay(
+        startMs: Long,
+        endMs: Long,
+    ): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'WEEK' " +
+            "AND planned_week_start = :weekStart ORDER BY created_at_ms, id",
+    )
+    abstract fun getDailyWeek(weekStart: String): List<PlanEntryEntity>
+
+    @Query(
         "SELECT * FROM plan_entries WHERE status = 'PLANNED' AND precision = 'WEEK' AND planned_week_start = :weekStart ORDER BY created_at_ms, id",
     )
     abstract fun getWeek(weekStart: String): List<PlanEntryEntity>
@@ -65,6 +103,28 @@ internal abstract class PlanEntryDao {
         "SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE plan_entry_id = :id AND status IN ('RUNNING', 'PAUSED') LIMIT 1)",
     )
     abstract fun hasLiveSequence(id: String): Boolean
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, context_type, status FROM activity_executions " +
+            "WHERE plan_entry_id IN (:planIds) AND context_type = 'STANDALONE' AND status IN ('RUNNING', 'PAUSED')",
+    )
+    abstract fun liveActivityLinks(planIds: List<String>): List<PlanActivityExecutionLinkRow>
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, status, ended_at_ms FROM sequence_executions " +
+            "WHERE plan_entry_id IN (:planIds) AND status IN ('RUNNING', 'PAUSED')",
+    )
+    abstract fun liveSequenceLinks(planIds: List<String>): List<PlanSequenceExecutionLinkRow>
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, context_type, status FROM activity_executions WHERE id IN (:ids)",
+    )
+    abstract fun activityExecutionLinks(ids: List<String>): List<PlanActivityExecutionLinkRow>
+
+    @Query(
+        "SELECT id, snapshot_id, plan_entry_id, status, ended_at_ms FROM sequence_executions WHERE id IN (:ids)",
+    )
+    abstract fun sequenceExecutionLinks(ids: List<String>): List<PlanSequenceExecutionLinkRow>
 
     @Query(
         "UPDATE plan_entries SET status = 'CANCELLED', cancelled_at_ms = :atMs, fulfilled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED'",

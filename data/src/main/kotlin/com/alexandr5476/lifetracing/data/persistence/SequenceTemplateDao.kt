@@ -22,6 +22,16 @@ internal data class SequenceTemplateAggregateEntity(
     val stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
 )
 
+internal data class SequenceSourceFieldDisplayMetadataRow(
+    val id: String,
+    val name: String,
+)
+
+internal data class SequenceSourceOptionDisplayMetadataRow(
+    val id: String,
+    val label: String,
+)
+
 internal data class SequenceTemplateSemanticUpdate(
     val expectedRevision: Long,
     val template: SequenceTemplateEntity,
@@ -72,6 +82,22 @@ private const val BULK_SNAPSHOT_BIND_LIMIT = 900
 internal abstract class SequenceTemplateDao {
     @Query("SELECT * FROM sequence_templates WHERE id = :id")
     abstract fun getById(id: String): SequenceTemplateEntity?
+
+    @Query(
+        "SELECT fields.id, fields.name FROM sequence_template_fields AS fields " +
+            "INNER JOIN sequence_templates AS templates ON templates.id = fields.sequence_template_id " +
+            "WHERE fields.id IN (:ids) AND fields.deleted_at_ms IS NULL AND templates.deleted_at_ms IS NULL",
+    )
+    abstract fun getAvailableFieldDisplayMetadata(ids: List<String>): List<SequenceSourceFieldDisplayMetadataRow>
+
+    @Query(
+        "SELECT options.id, options.label FROM sequence_template_category_options AS options " +
+            "INNER JOIN sequence_template_fields AS fields ON fields.id = options.sequence_template_field_id " +
+            "INNER JOIN sequence_templates AS templates ON templates.id = fields.sequence_template_id " +
+            "WHERE options.id IN (:ids) AND options.is_archived = 0 AND fields.deleted_at_ms IS NULL " +
+            "AND templates.deleted_at_ms IS NULL",
+    )
+    abstract fun getAvailableOptionDisplayMetadata(ids: List<String>): List<SequenceSourceOptionDisplayMetadataRow>
 
     @Query("SELECT * FROM sequence_templates WHERE deleted_at_ms IS NULL ORDER BY name, id")
     abstract fun observeActive(): Flow<List<SequenceTemplateEntity>>

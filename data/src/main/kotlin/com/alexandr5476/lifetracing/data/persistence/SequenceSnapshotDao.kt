@@ -17,6 +17,12 @@ internal data class SequenceSnapshotAggregateEntity(
     val stepOverrides: List<SequenceSnapshotStepOverrideEntity> = emptyList(),
 )
 
+internal data class SequenceSnapshotSummaryEntity(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+)
+
 @Dao
 // One immutable aggregate has a small, bounded persistence surface.
 @Suppress("TooManyFunctions", "CyclomaticComplexMethod")
@@ -24,11 +30,26 @@ internal abstract class SequenceSnapshotDao {
     @Query("SELECT * FROM sequence_snapshots WHERE id = :id")
     abstract fun getById(id: String): SequenceSnapshotEntity?
 
+    @Query("SELECT * FROM sequence_snapshots WHERE id IN (:ids)")
+    protected abstract fun getByIds(ids: List<String>): List<SequenceSnapshotEntity>
+
+    @Query("SELECT id, name, short_comment FROM sequence_snapshots WHERE id IN (:ids)")
+    abstract fun getSummaries(ids: List<String>): List<SequenceSnapshotSummaryEntity>
+
     @Query("SELECT * FROM sequence_snapshot_settings WHERE sequence_snapshot_id = :snapshotId")
     abstract fun getSettings(snapshotId: String): SequenceSnapshotSettingsEntity?
 
+    @Query("SELECT * FROM sequence_snapshot_settings WHERE sequence_snapshot_id IN (:ids)")
+    protected abstract fun getSettingsByIds(ids: List<String>): List<SequenceSnapshotSettingsEntity>
+
     @Query("SELECT * FROM sequence_snapshot_fields WHERE sequence_snapshot_id = :snapshotId ORDER BY position, id")
     abstract fun getFields(snapshotId: String): List<SequenceSnapshotFieldEntity>
+
+    @Query(
+        "SELECT * FROM sequence_snapshot_fields WHERE sequence_snapshot_id IN (:ids) " +
+            "ORDER BY sequence_snapshot_id, position, id",
+    )
+    protected abstract fun getFieldsByIds(ids: List<String>): List<SequenceSnapshotFieldEntity>
 
     @Query(
         "SELECT options.* FROM sequence_snapshot_category_options AS options INNER JOIN sequence_snapshot_fields AS fields ON fields.id = options.sequence_snapshot_field_id WHERE fields.sequence_snapshot_id = :snapshotId ORDER BY fields.position, options.position, options.id",
@@ -36,14 +57,35 @@ internal abstract class SequenceSnapshotDao {
     abstract fun getOptions(snapshotId: String): List<SequenceSnapshotCategoryOptionEntity>
 
     @Query(
+        "SELECT options.* FROM sequence_snapshot_category_options AS options " +
+            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = options.sequence_snapshot_field_id " +
+            "WHERE fields.sequence_snapshot_id IN (:ids) " +
+            "ORDER BY fields.sequence_snapshot_id, fields.position, options.position, options.id",
+    )
+    protected abstract fun getOptionsByIds(ids: List<String>): List<SequenceSnapshotCategoryOptionEntity>
+
+    @Query(
         "SELECT * FROM sequence_snapshot_nodes WHERE sequence_snapshot_id = :snapshotId ORDER BY parent_repeat_node_id, position, id",
     )
     abstract fun getNodes(snapshotId: String): List<SequenceSnapshotNodeEntity>
 
     @Query(
+        "SELECT * FROM sequence_snapshot_nodes WHERE sequence_snapshot_id IN (:ids) " +
+            "ORDER BY sequence_snapshot_id, parent_repeat_node_id, position, id",
+    )
+    protected abstract fun getNodesByIds(ids: List<String>): List<SequenceSnapshotNodeEntity>
+
+    @Query(
         "SELECT overrides.* FROM sequence_snapshot_step_overrides AS overrides INNER JOIN sequence_snapshot_nodes AS nodes ON nodes.id = overrides.sequence_snapshot_node_id WHERE nodes.sequence_snapshot_id = :snapshotId ORDER BY overrides.sequence_snapshot_node_id",
     )
     abstract fun getStepOverrides(snapshotId: String): List<SequenceSnapshotStepOverrideEntity>
+
+    @Query(
+        "SELECT overrides.* FROM sequence_snapshot_step_overrides AS overrides " +
+            "INNER JOIN sequence_snapshot_nodes AS nodes ON nodes.id = overrides.sequence_snapshot_node_id " +
+            "WHERE nodes.sequence_snapshot_id IN (:ids) ORDER BY nodes.sequence_snapshot_id, overrides.sequence_snapshot_node_id",
+    )
+    protected abstract fun getStepOverridesByIds(ids: List<String>): List<SequenceSnapshotStepOverrideEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertSnapshotUnchecked(snapshot: SequenceSnapshotEntity)
@@ -133,6 +175,47 @@ internal abstract class SequenceSnapshotDao {
     }
 
     @Transaction
+    open fun getAggregates(ids: List<String>): List<SequenceSnapshotAggregateEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val settings = getSettingsByIds(ids).associateBy(SequenceSnapshotSettingsEntity::sequenceSnapshotId)
+        val fields = getFieldsByIds(ids).groupBy(SequenceSnapshotFieldEntity::sequenceSnapshotId)
+        val fieldOwners = fields.flatMap { (snapshotId, rows) -> rows.map { it.id to snapshotId } }.toMap()
+        val options = getOptionsByIds(ids).groupBy { fieldOwners[it.sequenceSnapshotFieldId] }
+        val nodes = getNodesByIds(ids).groupBy(SequenceSnapshotNodeEntity::sequenceSnapshotId)
+        val nodeOwners = nodes.flatMap { (snapshotId, rows) -> rows.map { it.id to snapshotId } }.toMap()
+        val overrides = getStepOverridesByIds(ids).groupBy { nodeOwners[it.sequenceSnapshotNodeId] }
+        val activityIds =
+            nodes.values
+                .flatten()
+                .mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId)
+                .distinct()
+        val existingActivities =
+            activityIds
+                .takeIf(List<String>::isNotEmpty)
+                ?.chunked(SQLITE_SAFE_BIND_COUNT)
+                ?.flatMap(::existingActivitySnapshots)
+                .orEmpty()
+                .toSet()
+        val activityModes =
+            activityIds
+                .takeIf(List<String>::isNotEmpty)
+                ?.chunked(SQLITE_SAFE_BIND_COUNT)
+                ?.flatMap(::activitySnapshotModes)
+                .orEmpty()
+                .associateBy(ActivitySnapshotModeRow::id)
+        return getByIds(ids).map { snapshot ->
+            SequenceSnapshotAggregateEntity(
+                snapshot,
+                checkNotNull(settings[snapshot.id]) { "Snapshot ${snapshot.id} is missing settings" },
+                fields[snapshot.id].orEmpty(),
+                options[snapshot.id].orEmpty(),
+                nodes[snapshot.id].orEmpty(),
+                overrides[snapshot.id].orEmpty(),
+            ).also { requireValidAggregate(it, existingActivities, activityModes) }
+        }
+    }
+
+    @Transaction
     open fun hardDeleteAndPruneOwnedActivitySnapshots(snapshotId: String) {
         require(!hasSequenceExecutionReference(snapshotId)) {
             "Sequence snapshot is retained by a SequenceExecution"
@@ -150,7 +233,11 @@ internal abstract class SequenceSnapshotDao {
         }
     }
 
-    private fun requireValidAggregate(aggregate: SequenceSnapshotAggregateEntity) {
+    private fun requireValidAggregate(
+        aggregate: SequenceSnapshotAggregateEntity,
+        knownActivityIds: Set<String>? = null,
+        knownActivityModes: Map<String, ActivitySnapshotModeRow>? = null,
+    ) {
         val id = aggregate.snapshot.id
         require(aggregate.settings.sequenceSnapshotId == id) { "Settings owner mismatch" }
         require(aggregate.fields.all { it.sequenceSnapshotId == id }) { "Field owner mismatch" }
@@ -189,10 +276,10 @@ internal abstract class SequenceSnapshotDao {
             ) { "Sibling node positions must be unique" }
         }
         val ids = aggregate.nodes.mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId).distinct()
-        require(existingActivitySnapshots(ids).toSet() == ids.toSet()) {
+        require((knownActivityIds ?: existingActivitySnapshots(ids).toSet()).containsAll(ids)) {
             "Every Step must reference an existing ActivitySnapshot"
         }
-        val modes = activitySnapshotModes(ids).associateBy(ActivitySnapshotModeRow::id)
+        val modes = knownActivityModes ?: activitySnapshotModes(ids).associateBy(ActivitySnapshotModeRow::id)
         aggregate.stepOverrides.forEach { override ->
             val owner = requireNotNull(nodes[override.sequenceSnapshotNodeId]) { "Step override owner must exist" }
             require(owner.nodeType == "STEP") { "Only a Step can own execution-setting overrides" }
@@ -216,4 +303,8 @@ internal abstract class SequenceSnapshotDao {
             timerEndSound == null &&
             timerEndVibration == null &&
             keepScreenAwake == null
+
+    private companion object {
+        const val SQLITE_SAFE_BIND_COUNT = 900
+    }
 }

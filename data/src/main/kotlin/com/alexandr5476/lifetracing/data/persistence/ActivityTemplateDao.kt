@@ -26,11 +26,37 @@ internal data class ActivityTemplateSemanticUpdate(
     val expectedRevision: Long = template.revision - 1,
 )
 
+internal data class ActivitySourceFieldDisplayMetadataRow(
+    val id: String,
+    val name: String,
+)
+
+internal data class ActivitySourceOptionDisplayMetadataRow(
+    val id: String,
+    val label: String,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // A single feature DAO keeps aggregate transaction boundaries explicit.
 internal abstract class ActivityTemplateDao {
     @Query("SELECT * FROM activity_templates WHERE id = :id")
     abstract fun getById(id: String): ActivityTemplateEntity?
+
+    @Query(
+        "SELECT fields.id, fields.name FROM activity_template_fields AS fields " +
+            "INNER JOIN activity_templates AS templates ON templates.id = fields.activity_template_id " +
+            "WHERE fields.id IN (:ids) AND fields.deleted_at_ms IS NULL AND templates.deleted_at_ms IS NULL",
+    )
+    abstract fun getAvailableFieldDisplayMetadata(ids: List<String>): List<ActivitySourceFieldDisplayMetadataRow>
+
+    @Query(
+        "SELECT options.id, options.label FROM activity_template_category_options AS options " +
+            "INNER JOIN activity_template_fields AS fields ON fields.id = options.activity_template_field_id " +
+            "INNER JOIN activity_templates AS templates ON templates.id = fields.activity_template_id " +
+            "WHERE options.id IN (:ids) AND options.is_archived = 0 AND fields.deleted_at_ms IS NULL " +
+            "AND templates.deleted_at_ms IS NULL",
+    )
+    abstract fun getAvailableOptionDisplayMetadata(ids: List<String>): List<ActivitySourceOptionDisplayMetadataRow>
 
     @Query("SELECT * FROM activity_templates WHERE deleted_at_ms IS NULL ORDER BY name, id")
     abstract fun observeActive(): Flow<List<ActivityTemplateEntity>>
