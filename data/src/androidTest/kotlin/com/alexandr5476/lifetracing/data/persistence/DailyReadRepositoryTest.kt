@@ -193,6 +193,62 @@ class DailyReadRepositoryTest {
     }
 
     @Test
+    fun dailySequenceSnapshotHydrationChunksDerivedActivitySnapshotValidationQueries() {
+        val activityIds = (0..900).map { "wide-activity-$it" }
+        activityIds.forEach { id ->
+            database.activitySnapshotDao().insertAggregate(
+                ActivitySnapshotAggregateEntity(
+                    ActivitySnapshotEntity(id, id, null, "NO_LIVE_TRACKING", null, null, null, null, false, 0),
+                    ActivitySnapshotSettingsEntity(id),
+                ),
+            )
+        }
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity("wide-sequence", "Wide", null, null, null, null, 0),
+                SequenceSnapshotSettingsEntity(
+                    "wide-sequence",
+                    true,
+                    0,
+                    0,
+                    true,
+                    true,
+                    false,
+                    true,
+                    true,
+                    "ACTIVE",
+                ),
+                nodes =
+                    activityIds.mapIndexed { index, id ->
+                        SequenceSnapshotNodeEntity("wide-node-$index", "wide-sequence", "STEP", null, index, id, null)
+                    },
+            ),
+        )
+        database.planEntryDao().insert(plan("wide-plan", sequence = "wide-sequence", day = "2026-08-20"))
+
+        observedSql.clear()
+        assertEquals(
+            "wide-plan",
+            read("2026-08-20")
+                .dayPlans
+                .single()
+                .plan
+                .id
+                .value,
+        )
+
+        val validationQueries =
+            synchronized(observedSql) {
+                observedSql.map(String::lowercase).filter {
+                    it.startsWith("select id from activity_snapshots where id in") ||
+                        it.startsWith("select id, time_tracking_mode from activity_snapshots where id in")
+                }
+            }
+        assertEquals(4, validationQueries.size)
+        assertTrue(validationQueries.all { query -> query.count { it == '?' } <= 900 })
+    }
+
+    @Test
     fun planLinkedActivityProjectsEngagementFulfillmentHistoryAndSoftDeleteWithoutReopening() {
         database.planEntryDao().insert(plan("activity-plan", activity = "stopwatch", day = "2026-08-20"))
         val started =

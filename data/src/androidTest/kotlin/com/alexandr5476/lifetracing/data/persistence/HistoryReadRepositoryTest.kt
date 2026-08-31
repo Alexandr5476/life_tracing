@@ -160,7 +160,7 @@ class HistoryReadRepositoryTest {
                         7,
                         null,
                         null,
-                        false,
+                        true,
                         0,
                         0,
                         null,
@@ -231,7 +231,7 @@ class HistoryReadRepositoryTest {
                         7,
                         null,
                         null,
-                        false,
+                        true,
                     ),
                     ActivitySnapshotFieldEntity(
                         "category-snapshot",
@@ -308,6 +308,8 @@ class HistoryReadRepositoryTest {
         assertEquals("Frozen Activity", detail.root.title)
         assertNull(detail.root.activeDuration)
         assertEquals("Current number", detail.fields[0].name)
+        assertTrue(detail.fields[0].isMainValue)
+        assertFalse(detail.fields[1].isMainValue)
         assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
         assertEquals("Current option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
         assertEquals(ActivityHistoryActualValue.Text("configured"), detail.fields[2].actualValue)
@@ -424,7 +426,7 @@ class HistoryReadRepositoryTest {
 
         observedSql.clear()
         repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 4))
-        val queries = observedSql.map(String::lowercase)
+        val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
 
         assertEquals(1, queries.count { "from activity_executions" in it && "limit" in it })
         assertEquals(1, queries.count { "from sequence_executions" in it && "limit" in it })

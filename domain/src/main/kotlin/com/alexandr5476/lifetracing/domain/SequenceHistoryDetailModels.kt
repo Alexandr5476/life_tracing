@@ -17,6 +17,7 @@ data class SequenceHistoryField(
     val type: CustomFieldType,
     val unit: String?,
     val displayPrecision: Int?,
+    val isMainValue: Boolean,
     val configuredValue: SequenceHistoryConfiguredValue,
     val actualValue: SequenceHistoryActualValue,
     val categoryOptions: List<SequenceHistoryCategoryOption>,
@@ -84,6 +85,7 @@ data class SequenceHistoryOccurrenceActivity(
     val timeTrackingMode: TimeTrackingMode,
     val timerTarget: Duration?,
     val settings: ActivityTemplateSettings,
+    val mainValue: ActivityHistoryField?,
 )
 
 data class SequenceHistoryChildActivity(

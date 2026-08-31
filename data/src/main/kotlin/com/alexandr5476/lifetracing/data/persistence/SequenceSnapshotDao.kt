@@ -192,13 +192,15 @@ internal abstract class SequenceSnapshotDao {
         val existingActivities =
             activityIds
                 .takeIf(List<String>::isNotEmpty)
-                ?.let(::existingActivitySnapshots)
+                ?.chunked(SQLITE_SAFE_BIND_COUNT)
+                ?.flatMap(::existingActivitySnapshots)
                 .orEmpty()
                 .toSet()
         val activityModes =
             activityIds
                 .takeIf(List<String>::isNotEmpty)
-                ?.let(::activitySnapshotModes)
+                ?.chunked(SQLITE_SAFE_BIND_COUNT)
+                ?.flatMap(::activitySnapshotModes)
                 .orEmpty()
                 .associateBy(ActivitySnapshotModeRow::id)
         return getByIds(ids).map { snapshot ->
@@ -301,4 +303,8 @@ internal abstract class SequenceSnapshotDao {
             timerEndSound == null &&
             timerEndVibration == null &&
             keepScreenAwake == null
+
+    private companion object {
+        const val SQLITE_SAFE_BIND_COUNT = 900
+    }
 }

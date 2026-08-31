@@ -68,6 +68,7 @@ data class ActivityHistoryField(
     val type: CustomFieldType,
     val unit: String?,
     val displayPrecision: Int?,
+    val isMainValue: Boolean,
     val configuredValue: ActivityHistoryConfiguredValue,
     val actualValue: ActivityHistoryActualValue,
     val categoryOptions: List<ActivityHistoryCategoryOption>,

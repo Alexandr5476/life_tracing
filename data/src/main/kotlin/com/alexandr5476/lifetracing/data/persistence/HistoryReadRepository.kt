@@ -167,10 +167,11 @@ class HistoryReadRepository internal constructor(
                 ActivityExecutionValidator.requireValid(child, activitySnapshots.getValue(child.snapshotId))
             }
             val displayMetadata = loadActivityDisplayMetadata(activitySnapshots.values)
+            val sequenceDisplayMetadata = loadSequenceDisplayMetadata(snapshot)
             SequenceHistoryDetail(
                 root = execution.toHistoryRoot(snapshot),
                 settings = snapshot.settings,
-                fields = snapshot.toHistoryFields(execution.values),
+                fields = snapshot.toHistoryFields(execution.values, sequenceDisplayMetadata),
                 occurrences =
                     execution.occurrences.sortedBy { it.runtimePosition }.map { occurrence ->
                         val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
@@ -194,6 +195,7 @@ class HistoryReadRepository internal constructor(
                                 activity.timeTrackingMode,
                                 activity.timerTarget,
                                 activity.settings,
+                                activity.toHistoryMainValue(displayMetadata),
                             ),
                             children[occurrence.id]?.toHistoryChild(activity, displayMetadata),
                         )
@@ -209,6 +211,7 @@ class HistoryReadRepository internal constructor(
     private fun ActivityConfigSnapshot.toHistoryFields(
         values: List<com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue>,
         displayMetadata: ActivityDisplayMetadata,
+        fields: List<com.alexandr5476.lifetracing.domain.ActivitySnapshotField> = this.fields,
     ): List<ActivityHistoryField> {
         val valuesByField = values.associateBy { it.snapshotFieldId }
         return fields.map { field ->
@@ -229,6 +232,7 @@ class HistoryReadRepository internal constructor(
                 type = field.type,
                 unit = field.unit,
                 displayPrecision = field.displayPrecision,
+                isMainValue = field.isMainValue,
                 configuredValue = field.configuredValue(),
                 actualValue = valuesByField[field.id].toActualValue(optionLabels),
                 categoryOptions = options,
@@ -274,27 +278,65 @@ class HistoryReadRepository internal constructor(
         snapshot.toHistoryFields(values, displayMetadata),
     )
 
+    private fun ActivityConfigSnapshot.toHistoryMainValue(
+        displayMetadata: ActivityDisplayMetadata,
+    ): ActivityHistoryField? =
+        fields.singleOrNull { it.isMainValue }?.let { field ->
+            toHistoryFields(emptyList(), displayMetadata, listOf(field)).single()
+        }
+
     private fun SequenceConfigSnapshot.toHistoryFields(
         values: List<com.alexandr5476.lifetracing.domain.SequenceExecutionFieldValue>,
+        displayMetadata: SequenceDisplayMetadata,
     ): List<SequenceHistoryField> {
         val valuesByField = values.associateBy { it.snapshotFieldId }
         return fields.map { field ->
             val options =
                 field.categoryOptions.map { option ->
-                    SequenceHistoryCategoryOption(option.id, option.localLabelOverride ?: option.labelAtCreation)
+                    SequenceHistoryCategoryOption(
+                        option.id,
+                        option.localLabelOverride ?: displayMetadata.optionLabels[option.sourceOptionId?.value]
+                            ?: option.labelAtCreation,
+                    )
                 }
             val optionLabels = options.associateBy(SequenceHistoryCategoryOption::id)
             SequenceHistoryField(
                 field.id,
-                field.localNameOverride ?: field.nameAtCreation,
+                field.localNameOverride ?: displayMetadata.fieldNames[field.sourceFieldId?.value]
+                    ?: field.nameAtCreation,
                 field.type,
                 field.unit,
                 field.displayPrecision,
+                field.isMainValue,
                 field.configuredValue(),
                 valuesByField[field.id].toActualValue(optionLabels),
                 options,
             )
         }
+    }
+
+    private fun loadSequenceDisplayMetadata(snapshot: SequenceConfigSnapshot): SequenceDisplayMetadata {
+        val sourceFieldIds =
+            snapshot.fields
+                .filter { it.localNameOverride == null }
+                .mapNotNull { it.sourceFieldId?.value }
+                .distinct()
+        val sourceOptionIds =
+            snapshot.fields
+                .flatMap { it.categoryOptions }
+                .filter { it.localLabelOverride == null }
+                .mapNotNull { it.sourceOptionId?.value }
+                .distinct()
+        return SequenceDisplayMetadata(
+            sourceFieldIds
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(database.sequenceTemplateDao()::getAvailableFieldDisplayMetadata)
+                .associate { it.id to it.name },
+            sourceOptionIds
+                .chunked(SQLITE_BIND_CHUNK_SIZE)
+                .flatMap(database.sequenceTemplateDao()::getAvailableOptionDisplayMetadata)
+                .associate { it.id to it.label },
+        )
     }
 
     private fun com.alexandr5476.lifetracing.domain.SequenceSnapshotField.configuredValue() =
@@ -458,6 +500,11 @@ class HistoryReadRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     private data class ActivityDisplayMetadata(
+        val fieldNames: Map<String, String>,
+        val optionLabels: Map<String, String>,
+    )
+
+    private data class SequenceDisplayMetadata(
         val fieldNames: Map<String, String>,
         val optionLabels: Map<String, String>,
     )
