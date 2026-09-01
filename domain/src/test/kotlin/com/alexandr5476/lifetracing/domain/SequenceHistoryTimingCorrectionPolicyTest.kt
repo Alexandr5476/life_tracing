@@ -78,7 +78,19 @@ class SequenceHistoryTimingCorrectionPolicyTest {
         val result =
             correct(
                 graph,
-                SequenceHistoryTimingCorrection(graph.execution.updatedAt, finalIntervals = overlapping),
+                SequenceHistoryTimingCorrection(
+                    graph.execution.updatedAt,
+                    occurrenceTimings =
+                        listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), minute(14), minute(20))),
+                    finalIntervals = overlapping,
+                    childTimings =
+                        listOf(
+                            SequenceChildTimingCorrection(
+                                ActivityExecutionId("child-b"),
+                                ActivityHistoryTimeCorrection.Timed(minute(14), minute(20)),
+                            ),
+                        ),
+                ),
             ).execution
         assertEquals(Duration.ofMinutes(10), result.activeDuration)
         assertEquals(Duration.ZERO, result.pauseDuration)
@@ -138,6 +150,117 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     }
 
     @Test
+    fun `child and occurrence timing edits require matching step intervals`() {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        val childOnly =
+            SequenceHistoryTimingCorrection(
+                graph.execution.updatedAt,
+                childTimings =
+                    listOf(
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-a"),
+                            ActivityHistoryTimeCorrection.Timed(minute(10), minute(18)),
+                        ),
+                    ),
+            )
+        assertThrows(IllegalArgumentException::class.java) { correct(graph, childOnly) }
+
+        val childAndOccurrence =
+            childOnly.copy(
+                occurrenceTimings =
+                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("a"), minute(10), minute(18))),
+            )
+        assertThrows(IllegalArgumentException::class.java) { correct(graph, childAndOccurrence) }
+        assertThrows(IllegalArgumentException::class.java) {
+            correct(graph, childAndOccurrence.copy(childTimings = emptyList()))
+        }
+    }
+
+    @Test
+    fun `step intervals require an occurrence while historical overlap remains valid`() {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        listOf(SequenceIntervalKind.ACTIVE_STEP, SequenceIntervalKind.STEP_PAUSE).forEach { kind ->
+            val missingOccurrence =
+                graph.execution.intervals.mapIndexed { index, interval ->
+                    if (index == 0) interval.copy(kind = kind, occurrenceId = null) else interval
+                }
+            assertThrows(IllegalArgumentException::class.java) {
+                correct(
+                    graph,
+                    SequenceHistoryTimingCorrection(graph.execution.updatedAt, finalIntervals = missingOccurrence),
+                )
+            }
+        }
+
+        val overlap =
+            SequenceHistoryTimingCorrection(
+                graph.execution.updatedAt,
+                occurrenceTimings =
+                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), minute(15), minute(30))),
+                finalIntervals =
+                    listOf(
+                        interval("a", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(20), "a"),
+                        interval("b", SequenceIntervalKind.ACTIVE_STEP, minute(15), minute(30), "b"),
+                    ),
+                childTimings =
+                    listOf(
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-b"),
+                            ActivityHistoryTimeCorrection.Timed(minute(15), minute(30)),
+                        ),
+                    ),
+            )
+        val corrected = correct(graph, overlap)
+        assertEquals(Duration.ofMinutes(20), corrected.execution.activeDuration)
+        assertEquals(
+            graph.children.single { it.execution.id.value == "child-a" }.execution,
+            corrected.children.single {
+                it.id.value ==
+                    "child-a"
+            },
+        )
+    }
+
+    @Test
+    fun `split active intervals match a corrected timed child with preserved pauses`() {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        val pause = ActivityExecutionPause(ActivityExecutionPauseId("pause"), minute(12), minute(14))
+        val intervals =
+            listOf(
+                interval("a-first", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(12), "a"),
+                interval("a-second", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(20), "a"),
+                interval("b", SequenceIntervalKind.ACTIVE_STEP, minute(20), minute(30), "b"),
+            )
+        val childA =
+            graph.children.first().execution.copy(
+                pauses = listOf(pause),
+                activeDuration = ActivityExecutionDurationCalculator.calculate(minute(10), minute(20), listOf(pause)),
+            )
+        val pausedGraph =
+            graph.copy(
+                execution =
+                    graph.execution.copy(
+                        intervals = intervals,
+                        activeDuration = SequenceTimelineCalculator.calculate(minute(10), minute(30), intervals).active,
+                        pauseDuration = SequenceTimelineCalculator.calculate(minute(10), minute(30), intervals).pause,
+                    ),
+                children =
+                    listOf(
+                        SequenceHistoryChildExecution(childA, graph.children.first().snapshot),
+                        graph.children[1],
+                    ),
+            )
+
+        val corrected =
+            correct(
+                pausedGraph,
+                childCorrection(pausedGraph, ActivityHistoryTimeCorrection.Timed(minute(10), minute(20))),
+            )
+        assertEquals(Duration.ofMinutes(8), corrected.children.first().activeDuration)
+        assertEquals(Duration.ofMinutes(18), corrected.execution.activeDuration)
+    }
+
+    @Test
     fun `child correction enforces parent snapshot state and time shape`() {
         val graph = graph()
         val child = graph.children.single { it.execution.id.value == "child-a" }
@@ -169,10 +292,29 @@ class SequenceHistoryTimingCorrectionPolicyTest {
         assertThrows(IllegalArgumentException::class.java) {
             correct(graph, childCorrection(graph, ActivityHistoryTimeCorrection.NoLive(minute(11))))
         }
-        val correctedNoLive =
+        assertThrows(IllegalArgumentException::class.java) {
             correct(noLive, childCorrection(noLive, ActivityHistoryTimeCorrection.NoLive(minute(14))))
-                .children
-                .single()
+        }
+        val correctedNoLive =
+            correct(
+                noLive,
+                SequenceHistoryTimingCorrection(
+                    noLive.execution.updatedAt,
+                    occurrenceTimings =
+                        listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("a"), minute(10), minute(14))),
+                    finalIntervals =
+                        noLive.execution.intervals.map { interval ->
+                            if (interval.occurrenceId?.value == "a") interval.copy(endedAt = minute(14)) else interval
+                        },
+                    childTimings =
+                        listOf(
+                            SequenceChildTimingCorrection(
+                                ActivityExecutionId("child-a"),
+                                ActivityHistoryTimeCorrection.NoLive(minute(14)),
+                            ),
+                        ),
+                ),
+            ).children.single()
         assertNull(correctedNoLive.startedAt)
         assertNull(correctedNoLive.activeDuration)
         assertEquals(emptyList<ActivityExecutionPause>(), correctedNoLive.pauses)
@@ -198,7 +340,7 @@ class SequenceHistoryTimingCorrectionPolicyTest {
                         listOf(
                             SequenceChildTimingCorrection(
                                 ActivityExecutionId("child-a"),
-                                ActivityHistoryTimeCorrection.Timed(minute(10), minute(19)),
+                                ActivityHistoryTimeCorrection.Timed(minute(10), minute(15)),
                             ),
                             SequenceChildTimingCorrection(
                                 ActivityExecutionId("child-b"),

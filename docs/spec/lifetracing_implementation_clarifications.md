@@ -16,7 +16,7 @@ While engaged, the Plan cannot be cancelled, rescheduled, updated from its Templ
 
 This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. An explicit `End sequence early` makes a linked `PLANNED` Sequence Plan `FULFILLED` atomically with its fulfilling `SequenceExecution`; `PlanEntry.fulfilledAt` equals that execution's `endedAt`. The runtime domain transition only produces terminal `ENDED_EARLY`; the later repository transaction owns the atomic Plan update.
 
-After an explicit successful historical timing correction of a fulfilled Plan-linked terminal `SequenceExecution`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The correction preserves the existing Plan identity, status, target, snapshot, and source semantics; it does not reopen, replace, or otherwise reinterpret the fulfilled Plan.
+After any successful historical correction of a fulfilled Plan-linked terminal `SequenceExecution`, including structural `Close gap`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The same Plan remains `FULFILLED`, and its same `fulfilledSequenceExecutionId` continues to identify this Sequence; after success, `PlanEntry.fulfilledAt == SequenceExecution.endedAt`. Plan ID, target, precision, snapshot, source linkage/revision, and cancellation semantics remain unchanged. The Plan is never reopened or replaced. This rule applies only to Plan-linked Sequence correction, not standalone Activity correction.
 
 ## ActivitySnapshot StatisticsSeries foreign key
 
