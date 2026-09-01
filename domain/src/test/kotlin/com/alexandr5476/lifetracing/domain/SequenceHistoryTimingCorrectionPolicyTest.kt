@@ -1,3 +1,5 @@
+@file:Suppress("LargeClass", "LongParameterList")
+
 package com.alexandr5476.lifetracing.domain
 
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -177,6 +179,73 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     }
 
     @Test
+    fun `moving an occurrence and intervals without its retained child is rejected`() {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        assertThrows(IllegalArgumentException::class.java) {
+            correct(
+                graph,
+                SequenceHistoryTimingCorrection(
+                    graph.execution.updatedAt,
+                    occurrenceTimings =
+                        listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("a"), minute(11), minute(19))),
+                    finalIntervals =
+                        listOf(
+                            interval("a", SequenceIntervalKind.ACTIVE_STEP, minute(11), minute(19), "a"),
+                            graph.execution.intervals[1],
+                        ),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `final intervals alone cannot contradict a retained timed child`() {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        listOf(
+            interval("a-short", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(18), "a"),
+            interval("a-pause", SequenceIntervalKind.STEP_PAUSE, minute(10), minute(20), "a"),
+        ).forEach { incompatible ->
+            assertThrows(IllegalArgumentException::class.java) {
+                correct(
+                    graph,
+                    SequenceHistoryTimingCorrection(
+                        graph.execution.updatedAt,
+                        finalIntervals = listOf(incompatible, graph.execution.intervals[1]),
+                    ),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `retained children require completed performed occurrences and completed occurrences require children`() {
+        val graph = graph()
+        listOf(
+            graph.execution.occurrences[0].copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION),
+            graph.execution.occurrences[0].copy(
+                status = RuntimeOccurrenceStatus.SKIPPED,
+                enteredAt = null,
+                completedAt = null,
+                completionReason = null,
+            ),
+            graph.execution.occurrences[0].copy(
+                status = RuntimeOccurrenceStatus.NOT_STARTED,
+                enteredAt = null,
+                completedAt = null,
+                completionReason = null,
+            ),
+        ).forEach { incompatibleOccurrence ->
+            val occurrences = listOf(incompatibleOccurrence, graph.execution.occurrences[1])
+            assertThrows(IllegalArgumentException::class.java) {
+                correct(graph.copy(execution = graph.execution.copy(occurrences = occurrences)))
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            correct(graph.copy(children = graph.children.drop(1)))
+        }
+    }
+
+    @Test
     fun `step intervals require an occurrence while historical overlap remains valid`() {
         val graph = graph(end = minute(30), middleAt = minute(20))
         listOf(SequenceIntervalKind.ACTIVE_STEP, SequenceIntervalKind.STEP_PAUSE).forEach { kind ->
@@ -222,42 +291,54 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     }
 
     @Test
-    fun `split active intervals match a corrected timed child with preserved pauses`() {
-        val graph = graph(end = minute(30), middleAt = minute(20))
-        val pause = ActivityExecutionPause(ActivityExecutionPauseId("pause"), minute(12), minute(14))
-        val intervals =
+    fun `normalized active ranges match a retained timed child with preserved pauses`() {
+        val validRepresentations =
             listOf(
-                interval("a-first", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(12), "a"),
-                interval("a-second", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(20), "a"),
-                interval("b", SequenceIntervalKind.ACTIVE_STEP, minute(20), minute(30), "b"),
+                listOf(
+                    interval("a-first", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(12), "a"),
+                    interval("a-second", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(20), "a"),
+                ),
+                listOf(
+                    interval("a-1", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(11), "a"),
+                    interval("a-2", SequenceIntervalKind.ACTIVE_STEP, minute(11), minute(12), "a"),
+                    interval("a-3", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(17), "a"),
+                    interval("a-4", SequenceIntervalKind.ACTIVE_STEP, minute(17), minute(20), "a"),
+                ),
+                listOf(
+                    interval("a-overlap-1", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(12), "a"),
+                    interval("a-overlap-2", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(11), "a"),
+                    interval("a-overlap-3", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(19), "a"),
+                    interval("a-overlap-4", SequenceIntervalKind.ACTIVE_STEP, minute(18), minute(20), "a"),
+                ),
             )
-        val childA =
-            graph.children.first().execution.copy(
-                pauses = listOf(pause),
-                activeDuration = ActivityExecutionDurationCalculator.calculate(minute(10), minute(20), listOf(pause)),
-            )
-        val pausedGraph =
-            graph.copy(
-                execution =
-                    graph.execution.copy(
-                        intervals = intervals,
-                        activeDuration = SequenceTimelineCalculator.calculate(minute(10), minute(30), intervals).active,
-                        pauseDuration = SequenceTimelineCalculator.calculate(minute(10), minute(30), intervals).pause,
-                    ),
-                children =
-                    listOf(
-                        SequenceHistoryChildExecution(childA, graph.children.first().snapshot),
-                        graph.children[1],
-                    ),
-            )
+        validRepresentations.forEach { activeIntervals ->
+            val corrected = correct(pausedGraph(activeIntervals))
+            assertEquals(Duration.ofMinutes(8), corrected.children.first().activeDuration)
+            assertEquals(Duration.ofMinutes(18), corrected.execution.activeDuration)
+        }
+    }
 
-        val corrected =
-            correct(
-                pausedGraph,
-                childCorrection(pausedGraph, ActivityHistoryTimeCorrection.Timed(minute(10), minute(20))),
+    @Test
+    fun `equal total but wrong active shape is rejected`() {
+        val wrongShape =
+            listOf(interval("a-wrong", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(18), "a"))
+        assertThrows(IllegalArgumentException::class.java) { correct(pausedGraph(wrongShape)) }
+    }
+
+    @Test
+    fun `no-live active and pause accounting retain immediate children`() {
+        listOf(SequenceIntervalKind.ACTIVE_STEP, SequenceIntervalKind.STEP_PAUSE).forEach { kind ->
+            val graph = noLiveGraph(kind)
+            val result = correct(graph)
+            val child = result.children.single { it.id.value == "child-a" }
+            assertNull(child.startedAt)
+            assertNull(child.activeDuration)
+            assertEquals(minute(15), child.completedAt)
+            assertEquals(
+                if (kind == SequenceIntervalKind.ACTIVE_STEP) Duration.ofMinutes(10) else Duration.ofMinutes(5),
+                result.execution.activeDuration,
             )
-        assertEquals(Duration.ofMinutes(8), corrected.children.first().activeDuration)
-        assertEquals(Duration.ofMinutes(18), corrected.execution.activeDuration)
+        }
     }
 
     @Test
@@ -314,7 +395,7 @@ class SequenceHistoryTimingCorrectionPolicyTest {
                             ),
                         ),
                 ),
-            ).children.single()
+            ).children.single { it.id.value == "child-a" }
         assertNull(correctedNoLive.startedAt)
         assertNull(correctedNoLive.activeDuration)
         assertEquals(emptyList<ActivityExecutionPause>(), correctedNoLive.pauses)
@@ -447,10 +528,42 @@ class SequenceHistoryTimingCorrectionPolicyTest {
         )
     }
 
-    private fun noLiveGraph(): Graph {
+    private fun pausedGraph(activeIntervals: List<SequenceInterval>): Graph {
+        val graph = graph(end = minute(30), middleAt = minute(20))
+        val pause = ActivityExecutionPause(ActivityExecutionPauseId("pause"), minute(12), minute(14))
+        val intervals =
+            activeIntervals + interval("b", SequenceIntervalKind.ACTIVE_STEP, minute(20), minute(30), "b")
+        val childA =
+            graph.children.first().execution.copy(
+                pauses = listOf(pause),
+                activeDuration = ActivityExecutionDurationCalculator.calculate(minute(10), minute(20), listOf(pause)),
+            )
+        val durations = SequenceTimelineCalculator.calculate(minute(10), minute(30), intervals)
+        return graph.copy(
+            execution =
+                graph.execution.copy(
+                    intervals = intervals,
+                    activeDuration = durations.active,
+                    pauseDuration = durations.pause,
+                ),
+            children =
+                listOf(
+                    SequenceHistoryChildExecution(childA, graph.children.first().snapshot),
+                    graph.children[1],
+                ),
+        )
+    }
+
+    private fun noLiveGraph(firstIntervalKind: SequenceIntervalKind = SequenceIntervalKind.ACTIVE_STEP): Graph {
         val snapshot = activitySnapshot("activity-a", TimeTrackingMode.NO_LIVE_TRACKING)
         val graph = graph()
-        val sequenceSnapshot = sequenceSnapshot(snapshot.id, ActivitySnapshotId("activity-b"))
+        val noLiveAccounting =
+            if (firstIntervalKind == SequenceIntervalKind.ACTIVE_STEP) {
+                NoLiveTimeAccounting.ACTIVE
+            } else {
+                NoLiveTimeAccounting.PAUSE
+            }
+        val sequenceSnapshot = sequenceSnapshot(snapshot.id, ActivitySnapshotId("activity-b"), noLiveAccounting)
         val noLive =
             graph.children.first().execution.copy(
                 snapshotId = snapshot.id,
@@ -461,9 +574,21 @@ class SequenceHistoryTimingCorrectionPolicyTest {
                 primaryLocalDate = minute(15).atZone(ZoneId.of("UTC")).toLocalDate(),
                 pauses = emptyList(),
             )
+        val intervals =
+            graph.execution.intervals.map {
+                if (it.occurrenceId?.value == "a") it.copy(kind = firstIntervalKind) else it
+            }
+        val durations =
+            SequenceTimelineCalculator.calculate(
+                graph.execution.startedAt,
+                requireNotNull(graph.execution.endedAt),
+                intervals,
+            )
         return graph.copy(
             execution =
                 graph.execution.copy(
+                    activeDuration = durations.active,
+                    pauseDuration = durations.pause,
                     occurrences =
                         graph.execution.occurrences.map {
                             if (it.id.value ==
@@ -474,9 +599,10 @@ class SequenceHistoryTimingCorrectionPolicyTest {
                                 it
                             }
                         },
+                    intervals = intervals,
                 ),
             snapshot = sequenceSnapshot,
-            children = listOf(SequenceHistoryChildExecution(noLive, snapshot)),
+            children = listOf(SequenceHistoryChildExecution(noLive, snapshot), graph.children[1]),
         )
     }
 
@@ -499,6 +625,7 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     private fun sequenceSnapshot(
         a: ActivitySnapshotId,
         b: ActivitySnapshotId,
+        noLiveTimeAccounting: NoLiveTimeAccounting = NoLiveTimeAccounting.ACTIVE,
     ) = SequenceConfigSnapshot(
         SequenceSnapshotId("snapshot"),
         "Sequence",
@@ -516,7 +643,7 @@ class SequenceHistoryTimingCorrectionPolicyTest {
             false,
             true,
             true,
-            NoLiveTimeAccounting.ACTIVE,
+            noLiveTimeAccounting,
         ),
         emptyList(),
         listOf(

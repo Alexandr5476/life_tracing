@@ -1,6 +1,5 @@
 package com.alexandr5476.lifetracing.domain
 
-import java.time.Duration
 import java.time.Instant
 
 object SequenceHistoryTimingCorrectionPolicy {
@@ -24,7 +23,12 @@ object SequenceHistoryTimingCorrectionPolicy {
         val childTimingById = correction.childTimings.associateBy(SequenceChildTimingCorrection::executionId)
         require(childTimingById.size == correction.childTimings.size) { "Child timing targets must be unique" }
         require(childTimingById.keys.all(childById::contains)) { "Child correction must target a supplied child" }
-        validateChildren(children, execution.id, occurrences, childTimingById.keys)
+        childTimingById.keys.forEach { childId ->
+            val child = childById.getValue(childId).execution
+            require(child.status == ActivityExecutionStatus.COMPLETED && child.deletedAt == null) {
+                "Only completed non-deleted Sequence children can be corrected"
+            }
+        }
         val correctedChildren = correctChildren(childById, childTimingById, correctionTime)
         val startedAt = correction.startedAt?.toPersistenceMillis() ?: execution.startedAt
         val endedAt = correction.endedAt?.toPersistenceMillis() ?: requireNotNull(execution.endedAt)
@@ -57,13 +61,9 @@ object SequenceHistoryTimingCorrectionPolicy {
                 intervals = intervals,
             )
         requireFactsWithinRoot(correctedExecution, correctedChildren.map(SequenceHistoryChildExecution::execution))
-        SequenceHistoricalTimingGraphValidator.requireValid(
-            correctedExecution,
-            correctedChildren,
-            childTimingById.keys,
-        )
         SequenceExecutionValidator.requireValid(correctedExecution, snapshot)
         correctedChildren.forEach { ActivityExecutionValidator.requireValid(it.execution, it.snapshot) }
+        SequenceHistoricalTimingGraphValidator.requireValid(correctedExecution, snapshot, correctedChildren)
         return SequenceHistoryTimingCorrectionResult(
             correctedExecution,
             correctedChildren.map(SequenceHistoryChildExecution::execution),
@@ -85,42 +85,6 @@ object SequenceHistoryTimingCorrectionPolicy {
                     completedAt = correction.completedAt?.toPersistenceMillis(),
                 )
             } ?: occurrence
-        }
-    }
-
-    private fun validateChildren(
-        children: List<SequenceHistoryChildExecution>,
-        sequenceExecutionId: SequenceExecutionId,
-        occurrences: List<RuntimeOccurrence>,
-        correctedChildIds: Set<ActivityExecutionId>,
-    ) {
-        val occurrenceById = occurrences.associateBy(RuntimeOccurrence::id)
-        require(children.map { it.execution.sequenceOccurrenceId }.distinct().size == children.size) {
-            "At most one child execution may belong to an occurrence"
-        }
-        children.forEach { child ->
-            val execution = child.execution
-            require(execution.context == ActivityExecutionContext.SEQUENCE_CHILD) {
-                "Corrected Activity must be a Sequence child"
-            }
-            require(execution.sequenceExecutionId == sequenceExecutionId) {
-                "Child execution must belong to the supplied Sequence"
-            }
-            val occurrence =
-                requireNotNull(occurrenceById[execution.sequenceOccurrenceId]) {
-                    "Child execution occurrence must belong to the supplied Sequence"
-                }
-            require(
-                execution.snapshotId == child.snapshot.id && execution.snapshotId == occurrence.activitySnapshotId,
-            ) {
-                "Child execution snapshot must match its occurrence"
-            }
-            if (execution.id in correctedChildIds) {
-                require(execution.status == ActivityExecutionStatus.COMPLETED && execution.deletedAt == null) {
-                    "Only completed non-deleted Sequence children can be corrected"
-                }
-            }
-            ActivityExecutionValidator.requireValid(execution, child.snapshot)
         }
     }
 
@@ -223,29 +187,103 @@ object SequenceHistoryTimingCorrectionPolicy {
 private object SequenceHistoricalTimingGraphValidator {
     fun requireValid(
         execution: SequenceExecution,
+        snapshot: SequenceConfigSnapshot,
         children: List<SequenceHistoryChildExecution>,
-        correctedChildIds: Set<ActivityExecutionId>,
     ) {
         val occurrences = execution.occurrences.associateBy(RuntimeOccurrence::id)
-        val activeIntervalsByOccurrence = hashMapOf<SequenceOccurrenceId, MutableList<SequenceInterval>>()
-        execution.intervals.forEach { interval ->
+        val retainedChildren = requireValidChildren(execution.id, children, occurrences)
+        requireCompletedOccurrencesHaveChildren(occurrences.values, retainedChildren)
+        val activeRangesByOccurrence =
+            requireValidIntervals(
+                execution.intervals,
+                occurrences,
+                retainedChildren,
+                snapshot.settings.noLiveTimeAccounting,
+            )
+        retainedChildren.forEach { (occurrenceId, child) ->
+            requireChildCoherence(
+                child.execution,
+                child.snapshot,
+                occurrences.getValue(occurrenceId),
+                activeRangesByOccurrence[occurrenceId],
+            )
+        }
+    }
+
+    private fun requireValidChildren(
+        sequenceExecutionId: SequenceExecutionId,
+        children: List<SequenceHistoryChildExecution>,
+        occurrences: Map<SequenceOccurrenceId, RuntimeOccurrence>,
+    ): Map<SequenceOccurrenceId, SequenceHistoryChildExecution> {
+        val retainedChildren = hashMapOf<SequenceOccurrenceId, SequenceHistoryChildExecution>()
+        val childOccurrenceIds = hashSetOf<SequenceOccurrenceId?>()
+        children.forEach { child ->
+            val childExecution = child.execution
+            require(childOccurrenceIds.add(childExecution.sequenceOccurrenceId)) {
+                "At most one child execution may belong to an occurrence"
+            }
+            require(childExecution.context == ActivityExecutionContext.SEQUENCE_CHILD) {
+                "Corrected Activity must be a Sequence child"
+            }
+            require(childExecution.sequenceExecutionId == sequenceExecutionId) {
+                "Child execution must belong to the supplied Sequence"
+            }
+            val occurrence =
+                requireNotNull(occurrences[childExecution.sequenceOccurrenceId]) {
+                    "Child execution occurrence must belong to the supplied Sequence"
+                }
+            require(
+                childExecution.snapshotId == child.snapshot.id &&
+                    childExecution.snapshotId == occurrence.activitySnapshotId,
+            ) {
+                "Child execution snapshot must match its occurrence"
+            }
+            if (childExecution.deletedAt == null) {
+                require(childExecution.status == ActivityExecutionStatus.COMPLETED) {
+                    "Retained Sequence child must be completed"
+                }
+                require(occurrence.status == RuntimeOccurrenceStatus.COMPLETED) {
+                    "Retained Sequence child requires a completed occurrence"
+                }
+                retainedChildren[occurrence.id] = child
+            }
+        }
+        return retainedChildren
+    }
+
+    private fun requireCompletedOccurrencesHaveChildren(
+        occurrences: Collection<RuntimeOccurrence>,
+        retainedChildren: Map<SequenceOccurrenceId, SequenceHistoryChildExecution>,
+    ) {
+        occurrences.forEach { occurrence ->
+            if (occurrence.status == RuntimeOccurrenceStatus.COMPLETED) {
+                require(occurrence.id in retainedChildren) {
+                    "Completed occurrence requires one retained child execution"
+                }
+            }
+        }
+    }
+
+    private fun requireValidIntervals(
+        intervals: List<SequenceInterval>,
+        occurrences: Map<SequenceOccurrenceId, RuntimeOccurrence>,
+        retainedChildren: Map<SequenceOccurrenceId, SequenceHistoryChildExecution>,
+        noLiveTimeAccounting: NoLiveTimeAccounting,
+    ): Map<SequenceOccurrenceId, List<Pair<Long, Long>>> {
+        val activeRangesByOccurrence = hashMapOf<SequenceOccurrenceId, MutableList<Pair<Long, Long>>>()
+        intervals.forEach { interval ->
             val occurrence = interval.occurrenceId?.let(occurrences::get)
             when (interval.kind) {
-                SequenceIntervalKind.ACTIVE_STEP,
-                SequenceIntervalKind.STEP_PAUSE,
-                -> {
-                    val performed = requireNotNull(occurrence) { "Step interval requires an execution occurrence" }
-                    val enteredAt =
-                        requireNotNull(performed.enteredAt) { "Step interval requires a performed occurrence" }
-                    val completedAt =
-                        requireNotNull(performed.completedAt) { "Step interval requires a completed occurrence" }
-                    val endedAt = requireNotNull(interval.endedAt) { "Historical interval must be closed" }
-                    require(interval.startedAt >= enteredAt && endedAt <= completedAt) {
-                        "Step interval must stay inside its occurrence span"
-                    }
-                    if (interval.kind == SequenceIntervalKind.ACTIVE_STEP) {
-                        activeIntervalsByOccurrence.getOrPut(performed.id) { ArrayList() }.add(interval)
-                    }
+                SequenceIntervalKind.ACTIVE_STEP -> {
+                    val (performed, endedAt) = requireValidStepInterval(interval, occurrence)
+                    requireExpectedStepKind(interval.kind, performed.id, retainedChildren, noLiveTimeAccounting)
+                    activeRangesByOccurrence
+                        .getOrPut(performed.id) { ArrayList() }
+                        .add(interval.startedAt.toEpochMilli() to endedAt.toEpochMilli())
+                }
+                SequenceIntervalKind.STEP_PAUSE -> {
+                    val performed = requireValidStepInterval(interval, occurrence).first
+                    requireExpectedStepKind(interval.kind, performed.id, retainedChildren, noLiveTimeAccounting)
                 }
                 SequenceIntervalKind.TRANSITION_COUNTDOWN ->
                     require(occurrence != null) { "Transition countdown requires an occurrence" }
@@ -254,26 +292,42 @@ private object SequenceHistoricalTimingGraphValidator {
                 -> Unit
             }
         }
-        children.forEach { child ->
-            if (child.execution.id !in correctedChildIds) return@forEach
-            val occurrence =
-                requireNotNull(occurrences[child.execution.sequenceOccurrenceId]) {
-                    "Corrected child occurrence must belong to the Sequence"
-                }
-            requireChildCoherence(
-                child.execution,
-                child.snapshot,
-                occurrence,
-                activeIntervalsByOccurrence[occurrence.id],
-            )
+        return activeRangesByOccurrence
+    }
+
+    private fun requireExpectedStepKind(
+        actual: SequenceIntervalKind,
+        occurrenceId: SequenceOccurrenceId,
+        retainedChildren: Map<SequenceOccurrenceId, SequenceHistoryChildExecution>,
+        noLiveTimeAccounting: NoLiveTimeAccounting,
+    ) {
+        retainedChildren[occurrenceId]?.let { child ->
+            require(actual == stepIntervalKind(child.snapshot, noLiveTimeAccounting)) {
+                "Step interval kind must match the frozen Sequence accounting settings"
+            }
         }
+    }
+
+    private fun requireValidStepInterval(
+        interval: SequenceInterval,
+        occurrence: RuntimeOccurrence?,
+    ): Pair<RuntimeOccurrence, Instant> {
+        val performed = requireNotNull(occurrence) { "Step interval requires an execution occurrence" }
+        val enteredAt = requireNotNull(performed.enteredAt) { "Step interval requires a performed occurrence" }
+        val completedAt =
+            requireNotNull(performed.completedAt) { "Step interval requires a completed occurrence" }
+        val endedAt = requireNotNull(interval.endedAt) { "Historical interval must be closed" }
+        require(interval.startedAt >= enteredAt && endedAt <= completedAt) {
+            "Step interval must stay inside its occurrence span"
+        }
+        return performed to endedAt
     }
 
     private fun requireChildCoherence(
         child: ActivityExecution,
         snapshot: ActivityConfigSnapshot,
         occurrence: RuntimeOccurrence,
-        activeIntervals: List<SequenceInterval>?,
+        activeRanges: List<Pair<Long, Long>>?,
     ) {
         val completedAt = requireNotNull(occurrence.completedAt) { "Corrected child requires a completed occurrence" }
         when (snapshot.timeTrackingMode) {
@@ -283,18 +337,17 @@ private object SequenceHistoricalTimingGraphValidator {
                 require(child.startedAt == occurrence.enteredAt && child.completedAt == completedAt) {
                     "Timed child boundaries must match its occurrence"
                 }
-                val activeMillis =
-                    activeIntervals.orEmpty().fold(0L) { total, interval ->
-                        Math.addExact(
-                            total,
-                            Math.subtractExact(
-                                requireNotNull(interval.endedAt).toEpochMilli(),
-                                interval.startedAt.toEpochMilli(),
-                            ),
-                        )
+                var rangeStart = requireNotNull(child.startedAt).toEpochMilli()
+                val expectedRanges =
+                    buildList {
+                        child.pauses.sortedBy { it.startedAt }.forEach { pause ->
+                            add(rangeStart to pause.startedAt.toEpochMilli())
+                            rangeStart = requireNotNull(pause.endedAt).toEpochMilli()
+                        }
+                        add(rangeStart to completedAt.toEpochMilli())
                     }
-                require(child.activeDuration == Duration.ofMillis(activeMillis)) {
-                    "Timed child active duration must match its active Sequence intervals"
+                require(normalize(expectedRanges) == normalize(activeRanges.orEmpty())) {
+                    "Timed child active ranges must match its active Sequence intervals"
                 }
             }
             TimeTrackingMode.NO_LIVE_TRACKING -> {
@@ -306,5 +359,22 @@ private object SequenceHistoricalTimingGraphValidator {
                 }
             }
         }
+    }
+
+    private fun normalize(ranges: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
+        val ordered = ranges.filter { it.first < it.second }.sortedBy { it.first }
+        if (ordered.isEmpty()) return emptyList()
+        val normalized = ArrayList<Pair<Long, Long>>()
+        var current = ordered.first()
+        ordered.drop(1).forEach { next ->
+            if (next.first <= current.second) {
+                current = current.first to maxOf(current.second, next.second)
+            } else {
+                normalized.add(current)
+                current = next
+            }
+        }
+        normalized.add(current)
+        return normalized
     }
 }
