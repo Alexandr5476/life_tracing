@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshotValidator
 import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import java.util.ConcurrentModificationException
 
 internal data class SequenceExecutionAggregateEntity(
     val execution: SequenceExecutionEntity,
@@ -169,6 +170,66 @@ internal abstract class SequenceExecutionDao {
     ): Int
 
     @Query(
+        "UPDATE sequence_executions SET started_at_ms = :startedAtMs, ended_at_ms = :endedAtMs, " +
+            "active_duration_ms = :activeDurationMs, pause_duration_ms = :pauseDurationMs, " +
+            "wall_duration_ms = :wallDurationMs, original_utc_offset_minutes = :originalUtcOffsetMinutes, " +
+            "primary_local_date = :primaryLocalDate, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND snapshot_id = :snapshotId AND plan_entry_id IS :planEntryId " +
+            "AND statistics_series_id IS :statisticsSeriesId AND status = :status " +
+            "AND status IN ('COMPLETED', 'ENDED_EARLY') AND original_zone_id = :originalZoneId " +
+            "AND created_at_ms = :createdAtMs AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    protected abstract fun correctHistoricalRootUnchecked(
+        id: String,
+        snapshotId: String,
+        planEntryId: String?,
+        statisticsSeriesId: String?,
+        status: String,
+        originalZoneId: String,
+        createdAtMs: Long,
+        expectedUpdatedAtMs: Long,
+        startedAtMs: Long,
+        endedAtMs: Long,
+        activeDurationMs: Long,
+        pauseDurationMs: Long,
+        wallDurationMs: Long,
+        originalUtcOffsetMinutes: Int,
+        primaryLocalDate: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE sequence_occurrences SET entered_at_ms = :enteredAtMs, completed_at_ms = :completedAtMs " +
+            "WHERE id = :id AND sequence_execution_id = :executionId " +
+            "AND source_sequence_snapshot_node_id IS :sourceNodeId AND activity_snapshot_id = :activitySnapshotId " +
+            "AND runtime_position = :runtimePosition AND repeat_source_snapshot_node_id IS :repeatSourceNodeId " +
+            "AND repeat_iteration IS :repeatIteration AND status = :status " +
+            "AND completion_reason IS :completionReason AND is_runtime_added = :isRuntimeAdded " +
+            "AND is_deleted_from_history = :isDeletedFromHistory " +
+            "AND entered_at_ms IS :expectedEnteredAtMs AND completed_at_ms IS :expectedCompletedAtMs",
+    )
+    protected abstract fun correctHistoricalOccurrenceUnchecked(
+        id: String,
+        executionId: String,
+        sourceNodeId: String?,
+        activitySnapshotId: String,
+        runtimePosition: Int,
+        repeatSourceNodeId: String?,
+        repeatIteration: Int?,
+        status: String,
+        completionReason: String?,
+        isRuntimeAdded: Boolean,
+        isDeletedFromHistory: Boolean,
+        expectedEnteredAtMs: Long?,
+        expectedCompletedAtMs: Long?,
+        enteredAtMs: Long?,
+        completedAtMs: Long?,
+    ): Int
+
+    @Query("DELETE FROM sequence_intervals WHERE sequence_execution_id = :executionId")
+    protected abstract fun deleteHistoricalIntervalsUnchecked(executionId: String): Int
+
+    @Query(
         "UPDATE sequence_executions SET current_occurrence_id = :occurrenceId WHERE id = :executionId AND current_occurrence_id IS NULL",
     )
     protected abstract fun setCurrentOccurrenceUnchecked(
@@ -315,6 +376,88 @@ internal abstract class SequenceExecutionDao {
         }
     }
 
+    @Transaction
+    open fun persistHistoricalTimingCorrection(
+        before: SequenceExecutionAggregateEntity,
+        after: SequenceExecutionAggregateEntity,
+    ) {
+        requireValidAggregate(after)
+        require(before.execution.historicalIdentity() == after.execution.historicalIdentity()) {
+            "Historical correction cannot change Sequence identity or frozen linkage"
+        }
+        require(before.values == after.values) { "Historical timing correction cannot change Sequence values" }
+        require(after.execution.updatedAtMs > before.execution.updatedAtMs) {
+            "Historical correction time must advance"
+        }
+        val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        val afterOccurrences = after.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        require(beforeOccurrences.keys == afterOccurrences.keys) {
+            "Historical timing correction cannot add or remove occurrences"
+        }
+        beforeOccurrences.forEach { (id, previous) ->
+            require(previous.historicalIdentity() == afterOccurrences.getValue(id).historicalIdentity()) {
+                "Historical timing correction cannot change occurrence identity or provenance"
+            }
+        }
+
+        val root = after.execution
+        requireHistoricalRows(
+            correctHistoricalRootUnchecked(
+                root.id,
+                root.snapshotId,
+                root.planEntryId,
+                root.statisticsSeriesId,
+                root.status,
+                root.originalZoneId,
+                root.createdAtMs,
+                before.execution.updatedAtMs,
+                root.startedAtMs,
+                requireNotNull(root.endedAtMs),
+                requireNotNull(root.activeDurationMs),
+                requireNotNull(root.pauseDurationMs),
+                requireNotNull(root.wallDurationMs),
+                requireNotNull(root.originalUtcOffsetMinutes),
+                root.primaryLocalDate,
+                root.updatedAtMs,
+            ),
+            message = "Sequence history changed concurrently",
+        )
+        after.occurrences.forEach { occurrence ->
+            val previous = beforeOccurrences.getValue(occurrence.id)
+            if (previous.enteredAtMs == occurrence.enteredAtMs && previous.completedAtMs == occurrence.completedAtMs) {
+                return@forEach
+            }
+            requireHistoricalRows(
+                correctHistoricalOccurrenceUnchecked(
+                    occurrence.id,
+                    occurrence.sequenceExecutionId,
+                    occurrence.sourceSequenceSnapshotNodeId,
+                    occurrence.activitySnapshotId,
+                    occurrence.runtimePosition,
+                    occurrence.repeatSourceSnapshotNodeId,
+                    occurrence.repeatIteration,
+                    occurrence.status,
+                    occurrence.completionReason,
+                    occurrence.isRuntimeAdded,
+                    occurrence.isDeletedFromHistory,
+                    previous.enteredAtMs,
+                    previous.completedAtMs,
+                    occurrence.enteredAtMs,
+                    occurrence.completedAtMs,
+                ),
+                message = "Sequence occurrence history changed concurrently",
+            )
+        }
+        if (before.intervals != after.intervals) {
+            requireHistoricalRows(
+                deleteHistoricalIntervalsUnchecked(root.id),
+                before.intervals.size,
+                "Sequence interval history changed concurrently",
+            )
+            if (after.intervals.isNotEmpty()) insertIntervalsUnchecked(after.intervals)
+        }
+    }
+
     private fun persistRuntimePositions(
         before: List<SequenceOccurrenceEntity>,
         after: Map<String, SequenceOccurrenceEntity>,
@@ -433,6 +576,9 @@ private fun SequenceExecutionEntity.stableIdentity(): List<Any?> =
         createdAtMs,
     )
 
+private fun SequenceExecutionEntity.historicalIdentity(): List<Any?> =
+    listOf(id, snapshotId, planEntryId, statisticsSeriesId, status, originalZoneId, currentOccurrenceId, createdAtMs)
+
 private fun SequenceOccurrenceEntity.identity(): List<Any?> =
     listOf(
         id,
@@ -445,8 +591,19 @@ private fun SequenceOccurrenceEntity.identity(): List<Any?> =
         isDeletedFromHistory,
     )
 
+private fun SequenceOccurrenceEntity.historicalIdentity(): List<Any?> =
+    identity() + listOf(runtimePosition, status, completionReason)
+
 private fun SequenceOccurrenceEntity.runtimeState(): List<Any?> =
     listOf(status, enteredAtMs, completedAtMs, completionReason)
+
+private fun requireHistoricalRows(
+    actual: Int,
+    expected: Int = 1,
+    message: String,
+) {
+    if (actual != expected) throw ConcurrentModificationException(message)
+}
 
 private fun SequenceIntervalEntity.identity(): List<Any?> =
     listOf(id, sequenceExecutionId, kind, startedAtMs, occurrenceId)

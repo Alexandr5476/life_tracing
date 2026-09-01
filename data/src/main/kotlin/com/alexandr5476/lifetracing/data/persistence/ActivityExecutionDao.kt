@@ -302,6 +302,36 @@ internal abstract class ActivityExecutionDao {
     ): Int
 
     @Query(
+        "UPDATE activity_executions SET started_at_ms = :startedAtMs, completed_at_ms = :completedAtMs, " +
+            "active_duration_ms = :activeDurationMs, original_utc_offset_minutes = :originalUtcOffsetMinutes, " +
+            "primary_local_date = :primaryLocalDate, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND context_type = 'SEQUENCE_CHILD' AND sequence_execution_id = :sequenceExecutionId " +
+            "AND sequence_occurrence_id = :sequenceOccurrenceId AND snapshot_id = :snapshotId " +
+            "AND statistics_series_id IS :statisticsSeriesId AND plan_entry_id IS :planEntryId " +
+            "AND status = 'COMPLETED' AND completion_reason IS :completionReason AND deleted_at_ms IS NULL " +
+            "AND original_zone_id = :originalZoneId AND created_at_ms = :createdAtMs " +
+            "AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    protected abstract fun correctSequenceChildTimingUnchecked(
+        id: String,
+        sequenceExecutionId: String,
+        sequenceOccurrenceId: String,
+        snapshotId: String,
+        statisticsSeriesId: String?,
+        planEntryId: String?,
+        completionReason: String?,
+        originalZoneId: String,
+        createdAtMs: Long,
+        expectedUpdatedAtMs: Long,
+        startedAtMs: Long?,
+        completedAtMs: Long,
+        activeDurationMs: Long?,
+        originalUtcOffsetMinutes: Int,
+        primaryLocalDate: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
         "UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs " +
             "WHERE id = :id AND context_type = 'STANDALONE' AND status = 'COMPLETED' " +
             "AND deleted_at_ms IS NULL AND updated_at_ms = :expectedUpdatedAtMs",
@@ -500,6 +530,45 @@ internal abstract class ActivityExecutionDao {
         if (after.values != current.values) {
             deleteValuesUnchecked(row.id)
             if (after.values.isNotEmpty()) insertValuesUnchecked(after.values)
+        }
+    }
+
+    @Transaction
+    open fun correctSequenceChildTiming(
+        before: ActivityExecutionAggregateEntity,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        requireValidAggregate(after)
+        require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
+            "Sequence history correction cannot change child identity or frozen linkage"
+        }
+        require(before.pauses == after.pauses) { "Sequence timing correction cannot edit child pauses" }
+        require(before.values == after.values) { "Sequence timing correction cannot edit child values" }
+        require(after.execution.updatedAtMs > before.execution.updatedAtMs) {
+            "Corrected child mutation time must advance"
+        }
+        val execution = after.execution
+        if (
+            correctSequenceChildTimingUnchecked(
+                execution.id,
+                requireNotNull(execution.sequenceExecutionId),
+                requireNotNull(execution.sequenceOccurrenceId),
+                execution.snapshotId,
+                execution.statisticsSeriesId,
+                execution.planEntryId,
+                execution.completionReason,
+                execution.originalZoneId,
+                execution.createdAtMs,
+                before.execution.updatedAtMs,
+                execution.startedAtMs,
+                requireNotNull(execution.completedAtMs),
+                execution.activeDurationMs,
+                requireNotNull(execution.originalUtcOffsetMinutes),
+                execution.primaryLocalDate,
+                execution.updatedAtMs,
+            ) != 1
+        ) {
+            throw ConcurrentModificationException("Sequence child history changed concurrently")
         }
     }
 
@@ -873,6 +942,22 @@ private fun ActivityExecutionEntity.correctionIdentity(): List<Any?> =
         planEntryId,
         statisticsSeriesId,
         status,
+        completionReason,
+        deletedAtMs,
+        createdAtMs,
+    )
+
+private fun ActivityExecutionEntity.sequenceHistoryIdentity(): List<Any?> =
+    listOf(
+        id,
+        snapshotId,
+        contextType,
+        sequenceExecutionId,
+        sequenceOccurrenceId,
+        planEntryId,
+        statisticsSeriesId,
+        status,
+        originalZoneId,
         completionReason,
         deletedAtMs,
         createdAtMs,

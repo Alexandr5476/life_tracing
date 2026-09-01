@@ -198,6 +198,22 @@ internal abstract class PlanEntryDao {
         atMs: Long,
     ): Int
 
+    @Query(
+        "UPDATE plan_entries SET fulfilled_at_ms = :fulfilledAtMs, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND trackable_kind = 'SEQUENCE' AND status = 'FULFILLED' " +
+            "AND sequence_plan_snapshot_id = :snapshotId AND fulfilled_sequence_execution_id = :executionId " +
+            "AND fulfilled_at_ms = :expectedFulfilledAtMs AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    abstract fun correctFulfilledSequenceHistory(
+        id: String,
+        snapshotId: String,
+        executionId: String,
+        expectedFulfilledAtMs: Long,
+        expectedUpdatedAtMs: Long,
+        fulfilledAtMs: Long,
+        updatedAtMs: Long,
+    ): Int
+
     @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = :id LIMIT 1)")
     abstract fun hasActivityPlanReference(id: String): Boolean
 
