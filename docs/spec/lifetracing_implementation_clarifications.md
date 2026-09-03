@@ -30,6 +30,12 @@ Deleting a performed child ActivityExecution from terminal Sequence history is l
 
 Canonical Sequence History retains the tombstone occurrence and its Activity configuration but omits the deleted child detail. Canonical Activity Statistics exclude the logically deleted child while Sequence and global root-derived statistics remain unchanged.
 
+## Sequence structural history removal
+
+Advanced structural removal preserves the durable occurrence and child rows. The target occurrence keeps its identity, provenance, runtime position, and historical event timestamps, becomes `DELETED_EXECUTION`, and sets `is_deleted_from_history = true`; its child remains the same logically deleted execution. Removing an existing child-deletion tombstone does not rewrite that child's earlier deletion metadata. Structurally removed occurrences are outside the effective Sequence timing graph, so no retained Sequence interval may reference them and their hidden timestamps do not constrain corrected root boundaries or duration caches.
+
+`Leave gap` preserves the root boundaries and every non-target occurrence, child, and interval exactly, while removing all target-owned intervals. The former contribution is therefore derived as non-active wall time by the existing interval-union calculator. `Close gap` requires a complete explicit final interval graph, final root end, and explicit timing/pause facts for the complete later performed occurrence suffix. The root end determines one earlier-only translation; every moved occurrence, owned interval, child execution, and child pause must use that same translation while preserving identity and duration. Ownerless intervals must be supplied explicitly and may only remain fixed or join that translation. The command validates the final graph and never infers a best-effort transform from overlap or crossing facts.
+
 ## Archived Category option cannot be a new-snapshot default
 
 Archived Template Category options are excluded when a new ActivitySnapshot is created. A Template Category default must therefore be null or reference a currently active option of that same Field at semantic commit time.

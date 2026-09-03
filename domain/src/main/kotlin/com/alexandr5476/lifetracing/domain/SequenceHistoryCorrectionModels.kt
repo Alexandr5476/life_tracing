@@ -42,3 +42,30 @@ data class SequenceChildHistoryDeletionResult(
     val execution: SequenceExecution,
     val child: ActivityExecution,
 )
+
+enum class SequenceHistoryStructuralRemovalMode {
+    LEAVE_GAP,
+    CLOSE_GAP,
+}
+
+data class SequenceHistoryStructuralRemovalCommand(
+    val expectedUpdatedAt: Instant,
+    val occurrenceId: SequenceOccurrenceId,
+    val childExecutionId: ActivityExecutionId,
+    val mode: SequenceHistoryStructuralRemovalMode,
+    val finalEndedAt: Instant,
+    val finalIntervals: List<SequenceInterval>,
+    val occurrenceTimings: List<SequenceOccurrenceTimingCorrection> = emptyList(),
+    val childTimings: List<SequenceStructuralChildTimingCorrection> = emptyList(),
+)
+
+data class SequenceStructuralChildTimingCorrection(
+    val executionId: ActivityExecutionId,
+    val time: ActivityHistoryTimeCorrection,
+    val pauses: List<ActivityExecutionPause>,
+)
+
+data class SequenceHistoryStructuralRemovalResult(
+    val execution: SequenceExecution,
+    val children: List<ActivityExecution>,
+)

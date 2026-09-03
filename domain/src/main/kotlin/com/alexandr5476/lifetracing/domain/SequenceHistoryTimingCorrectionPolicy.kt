@@ -60,14 +60,12 @@ object SequenceHistoryTimingCorrectionPolicy {
                 occurrences = occurrences,
                 intervals = intervals,
             )
-        requireFactsWithinRoot(correctedExecution, correctedChildren.map(SequenceHistoryChildExecution::execution))
+        val childExecutions = correctedChildren.map(SequenceHistoryChildExecution::execution)
+        SequenceHistoricalRootSpanValidator.requireFactsWithinRoot(correctedExecution, childExecutions)
         SequenceExecutionValidator.requireValid(correctedExecution, snapshot)
         correctedChildren.forEach { ActivityExecutionValidator.requireValid(it.execution, it.snapshot) }
         SequenceHistoricalTimingGraphValidator.requireValid(correctedExecution, snapshot, correctedChildren)
-        return SequenceHistoryTimingCorrectionResult(
-            correctedExecution,
-            correctedChildren.map(SequenceHistoryChildExecution::execution),
-        )
+        return SequenceHistoryTimingCorrectionResult(correctedExecution, childExecutions)
     }
 
     private fun correctOccurrences(
@@ -78,6 +76,9 @@ object SequenceHistoryTimingCorrectionPolicy {
         require(correctionById.size == corrections.size) { "Occurrence timing targets must be unique" }
         val occurrenceIds = occurrences.mapTo(hashSetOf(), RuntimeOccurrence::id)
         require(correctionById.keys.all(occurrenceIds::contains)) { "Occurrence correction must target this Sequence" }
+        require(occurrences.none { it.isDeletedFromHistory && it.id in correctionById }) {
+            "Structurally removed occurrences cannot be time-corrected"
+        }
         return occurrences.map { occurrence ->
             correctionById[occurrence.id]?.let { correction ->
                 occurrence.copy(
@@ -150,7 +151,17 @@ object SequenceHistoryTimingCorrectionPolicy {
         }
     }
 
-    private fun requireFactsWithinRoot(
+    private fun SequenceInterval.toPersistenceMillis() =
+        copy(startedAt = startedAt.toPersistenceMillis(), endedAt = endedAt?.toPersistenceMillis())
+
+    private fun Instant.toPersistenceMillis(): Instant = Instant.ofEpochMilli(toEpochMilli())
+
+    private val TERMINAL_STATUSES = setOf(SequenceExecutionStatus.COMPLETED, SequenceExecutionStatus.ENDED_EARLY)
+    private const val SECONDS_PER_MINUTE = 60
+}
+
+object SequenceHistoricalRootSpanValidator {
+    fun requireFactsWithinRoot(
         execution: SequenceExecution,
         children: List<ActivityExecution>,
     ) {
@@ -161,27 +172,26 @@ object SequenceHistoryTimingCorrectionPolicy {
             require(at.toEpochMilli() in start..end) {
                 "Historical fact must be inside the corrected Sequence span"
             }
+        val hiddenOccurrenceIds = hashSetOf<SequenceOccurrenceId>()
         execution.occurrences.forEach { occurrence ->
-            occurrence.enteredAt?.let(::requireInside)
-            occurrence.completedAt?.let(::requireInside)
+            if (occurrence.isDeletedFromHistory) {
+                hiddenOccurrenceIds.add(occurrence.id)
+            } else {
+                occurrence.enteredAt?.let(::requireInside)
+                occurrence.completedAt?.let(::requireInside)
+            }
         }
         execution.intervals.forEach { interval ->
             requireInside(interval.startedAt)
             requireInside(requireNotNull(interval.endedAt))
         }
         children.forEach { child ->
-            child.startedAt?.let(::requireInside)
-            child.completedAt?.let(::requireInside)
+            if (child.sequenceOccurrenceId !in hiddenOccurrenceIds) {
+                child.startedAt?.let(::requireInside)
+                child.completedAt?.let(::requireInside)
+            }
         }
     }
-
-    private fun SequenceInterval.toPersistenceMillis() =
-        copy(startedAt = startedAt.toPersistenceMillis(), endedAt = endedAt?.toPersistenceMillis())
-
-    private fun Instant.toPersistenceMillis(): Instant = Instant.ofEpochMilli(toEpochMilli())
-
-    private val TERMINAL_STATUSES = setOf(SequenceExecutionStatus.COMPLETED, SequenceExecutionStatus.ENDED_EARLY)
-    private const val SECONDS_PER_MINUTE = 60
 }
 
 object SequenceHistoricalTimingGraphValidator {
@@ -252,6 +262,12 @@ object SequenceHistoricalTimingGraphValidator {
     ) {
         occurrences.forEach { occurrence ->
             val child = children[occurrence.id]?.execution
+            if (occurrence.isDeletedFromHistory) {
+                require(occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION && child?.deletedAt != null) {
+                    "Structurally removed occurrence requires its logically deleted child"
+                }
+                return@forEach
+            }
             when (occurrence.status) {
                 RuntimeOccurrenceStatus.COMPLETED ->
                     require(child != null && child.deletedAt == null) {
@@ -281,6 +297,9 @@ object SequenceHistoricalTimingGraphValidator {
         val activeRangesByOccurrence = hashMapOf<SequenceOccurrenceId, MutableList<Pair<Long, Long>>>()
         intervals.forEach { interval ->
             val occurrence = interval.occurrenceId?.let(occurrences::get)
+            require(occurrence?.isDeletedFromHistory != true) {
+                "Sequence interval cannot reference a structurally removed occurrence"
+            }
             when (interval.kind) {
                 SequenceIntervalKind.ACTIVE_STEP -> {
                     val (performed, endedAt) = requireValidStepInterval(interval, occurrence)
@@ -345,6 +364,7 @@ object SequenceHistoricalTimingGraphValidator {
                 require(child.startedAt == occurrence.enteredAt && child.completedAt == completedAt) {
                     "Timed child boundaries must match its occurrence"
                 }
+                if (occurrence.isDeletedFromHistory) return
                 var rangeStart = requireNotNull(child.startedAt).toEpochMilli()
                 val expectedRanges =
                     buildList {
