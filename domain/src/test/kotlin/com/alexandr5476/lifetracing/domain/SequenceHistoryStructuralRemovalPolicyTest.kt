@@ -246,36 +246,120 @@ class SequenceHistoryStructuralRemovalPolicyTest {
     @Test
     fun `explicit coherent overlap is accepted but incomplete suffix movement is rejected`() {
         val graph = graph().withC(start = minute(28), end = minute(40))
-        val command =
-            closeGap(graph, "b").copy(
-                finalEndedAt = minute(35),
-                occurrenceTimings =
-                    listOf(
-                        SequenceOccurrenceTimingCorrection(graph.occurrence("c").id, minute(23), minute(35)),
-                    ),
-                finalIntervals =
-                    listOf(
-                        graph.execution.intervals.single { it.id.value == "a" },
-                        interval("c", minute(23), minute(35), "c"),
-                    ),
-                childTimings =
-                    listOf(
-                        SequenceStructuralChildTimingCorrection(
-                            graph.child("c").id,
-                            ActivityHistoryTimeCorrection.Timed(minute(23), minute(35)),
-                            emptyList(),
-                        ),
-                    ),
-            )
+        val command = closeGap(graph, "b")
 
         val result = remove(graph, command)
-        assertEquals(Duration.ofMinutes(25), result.execution.wallDuration)
+        val retained = result.execution.intervals.filter { it.kind == SequenceIntervalKind.ACTIVE_STEP }
+        assertTrue(requireNotNull(retained[0].endedAt) > retained[1].startedAt)
+        assertEquals(Duration.ofMinutes(20), result.execution.activeDuration)
+        assertEquals(Duration.ofMinutes(20), result.execution.wallDuration)
         assertThrows(IllegalArgumentException::class.java) {
             remove(graph, command.copy(occurrenceTimings = emptyList(), childTimings = emptyList()))
         }
         assertThrows(IllegalArgumentException::class.java) {
             remove(graph, command.copy(childTimings = emptyList()))
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            remove(
+                graph,
+                command.copy(
+                    finalIntervals =
+                        command.finalIntervals.map {
+                            if (it.occurrenceId?.value == "c") graph.execution.intervals.last() else it
+                        },
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `close gap shifts an ended-early countdown owned by a later not-started occurrence`() {
+        val graph = terminalCountdownGraph(skippedCountdownTarget = false)
+        val earlier = graph.execution.occurrences[0]
+        val target = graph.execution.occurrences[1]
+        val untouched = graph.execution.occurrences[2]
+        val countdown =
+            graph.execution.intervals.single {
+                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.occurrenceId == untouched.id
+            }
+        val shift = Duration.between(target.enteredAt, target.completedAt)
+        val command = closeFirstGap(graph)
+
+        val result = remove(graph, command)
+        val translated = result.execution.intervals.single { it.id == countdown.id }
+
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, graph.execution.status)
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, untouched.status)
+        assertNull(untouched.enteredAt)
+        assertNull(untouched.completedAt)
+        assertTrue(graph.children.none { it.execution.sequenceOccurrenceId == untouched.id })
+        assertEquals(earlier, result.execution.occurrences.single { it.id == earlier.id })
+        assertEquals(untouched, result.execution.occurrences.single { it.id == untouched.id })
+        assertEquals(
+            countdown.copy(startedAt = countdown.startedAt.minus(shift), endedAt = countdown.endedAt?.minus(shift)),
+            translated,
+        )
+        assertEquals(
+            Duration.between(countdown.startedAt, countdown.endedAt),
+            Duration.between(translated.startedAt, translated.endedAt),
+        )
+        assertTrue(result.execution.intervals.none { it.occurrenceId == target.id })
+        assertEquals(
+            graph.execution.intervals.single {
+                it.kind == SequenceIntervalKind.ACTIVE_STEP &&
+                    it.occurrenceId == earlier.id
+            },
+            result.execution.intervals.single {
+                it.kind == SequenceIntervalKind.ACTIVE_STEP &&
+                    it.occurrenceId == earlier.id
+            },
+        )
+        assertEquals(Duration.ofMinutes(10), result.execution.activeDuration)
+        assertEquals(Duration.ofMinutes(7), result.execution.pauseDuration)
+        assertEquals(Duration.ofMinutes(17), result.execution.wallDuration)
+        assertThrows(IllegalArgumentException::class.java) {
+            remove(
+                graph,
+                command.copy(
+                    finalIntervals = command.finalIntervals.map { if (it.id == countdown.id) countdown else it },
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `close gap shifts a jump countdown owned by a later skipped occurrence`() {
+        val graph = terminalCountdownGraph(skippedCountdownTarget = true)
+        val target = graph.execution.occurrences[1]
+        val skipped = graph.execution.occurrences[2]
+        val countdown =
+            graph.execution.intervals.single {
+                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.occurrenceId == skipped.id
+            }
+        val shift = Duration.between(target.enteredAt, target.completedAt)
+        val command = closeFirstGap(graph)
+
+        val result = remove(graph, command)
+        val translated = result.execution.intervals.single { it.id == countdown.id }
+
+        assertEquals(RuntimeOccurrenceStatus.SKIPPED, skipped.status)
+        assertNull(skipped.enteredAt)
+        assertNull(skipped.completedAt)
+        assertTrue(graph.children.none { it.execution.sequenceOccurrenceId == skipped.id })
+        assertEquals(skipped, result.execution.occurrences.single { it.id == skipped.id })
+        assertEquals(countdown.id, translated.id)
+        assertEquals(countdown.kind, translated.kind)
+        assertEquals(countdown.occurrenceId, translated.occurrenceId)
+        assertEquals(countdown.startedAt.minus(shift), translated.startedAt)
+        assertEquals(countdown.endedAt?.minus(shift), translated.endedAt)
+        assertEquals(
+            Duration.between(countdown.startedAt, countdown.endedAt),
+            Duration.between(translated.startedAt, translated.endedAt),
+        )
+        assertTrue(result.execution.intervals.none { it.occurrenceId == target.id })
+        assertEquals(Duration.ofMinutes(18), result.execution.activeDuration)
+        assertEquals(Duration.ofMinutes(7), result.execution.pauseDuration)
+        assertEquals(Duration.ofMinutes(25), result.execution.wallDuration)
     }
 
     @Test
@@ -416,6 +500,53 @@ class SequenceHistoryStructuralRemovalPolicyTest {
                         explicit.finalIntervals.map {
                             if (it.id == ownerless.id) {
                                 it.copy(startedAt = minute(1), endedAt = minute(2))
+                            } else {
+                                it
+                            }
+                        },
+                ),
+            )
+        }
+
+        val laterOwnerless =
+            SequenceInterval(
+                SequenceIntervalId("later-idle"),
+                SequenceIntervalKind.IMPLICIT_IDLE,
+                minute(31),
+                minute(32),
+                null,
+            )
+        val graphWithLaterOwnerless =
+            graph.copy(execution = graph.execution.copy(intervals = graph.execution.intervals + laterOwnerless))
+        val laterCommand = closeGap(graphWithLaterOwnerless, "b")
+        val explicitlyShifted =
+            laterCommand.copy(
+                finalIntervals =
+                    laterCommand.finalIntervals.map {
+                        if (it.id == laterOwnerless.id) {
+                            it.copy(startedAt = minute(21), endedAt = minute(22))
+                        } else {
+                            it
+                        }
+                    },
+            )
+        val shifted =
+            remove(graphWithLaterOwnerless, explicitlyShifted).execution.intervals.single {
+                it.id == laterOwnerless.id
+            }
+        assertEquals(laterOwnerless.id, shifted.id)
+        assertEquals(laterOwnerless.kind, shifted.kind)
+        assertEquals(Duration.ofMinutes(1), Duration.between(shifted.startedAt, shifted.endedAt))
+        assertThrows(IllegalArgumentException::class.java) {
+            remove(
+                graphWithLaterOwnerless,
+                explicitlyShifted.copy(
+                    finalIntervals =
+                        explicitlyShifted.finalIntervals.map {
+                            if (it.id ==
+                                laterOwnerless.id
+                            ) {
+                                it.copy(startedAt = minute(22), endedAt = minute(23))
                             } else {
                                 it
                             }
@@ -591,6 +722,126 @@ class SequenceHistoryStructuralRemovalPolicyTest {
                     },
                 ),
             ),
+        )
+    }
+
+    private fun closeFirstGap(graph: Graph): SequenceHistoryStructuralRemovalCommand {
+        val target = graph.execution.occurrences[1]
+        val shift = Duration.between(target.enteredAt, target.completedAt)
+        val occurrenceById = graph.execution.occurrences.associateBy(RuntimeOccurrence::id)
+        val laterPerformed =
+            graph.execution.occurrences.filter {
+                it.runtimePosition > target.runtimePosition &&
+                    it.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION)
+            }
+        val childrenByOccurrence = graph.children.associateBy { it.execution.sequenceOccurrenceId }
+        return SequenceHistoryStructuralRemovalCommand(
+            graph.execution.updatedAt,
+            target.id,
+            childrenByOccurrence.getValue(target.id).execution.id,
+            SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+            requireNotNull(graph.execution.endedAt).minus(shift),
+            graph.execution.intervals.filter { it.occurrenceId != target.id }.map { interval ->
+                val owner = interval.occurrenceId?.let(occurrenceById::getValue)
+                if (owner != null && owner.runtimePosition > target.runtimePosition) {
+                    interval.copy(startedAt = interval.startedAt.minus(shift), endedAt = interval.endedAt?.minus(shift))
+                } else {
+                    interval
+                }
+            },
+            laterPerformed.map {
+                SequenceOccurrenceTimingCorrection(
+                    it.id,
+                    requireNotNull(it.enteredAt).minus(shift),
+                    requireNotNull(it.completedAt).minus(shift),
+                )
+            },
+            laterPerformed.map { occurrence ->
+                val child = childrenByOccurrence.getValue(occurrence.id).execution
+                SequenceStructuralChildTimingCorrection(
+                    child.id,
+                    ActivityHistoryTimeCorrection.Timed(
+                        requireNotNull(child.startedAt).minus(shift),
+                        requireNotNull(child.completedAt).minus(shift),
+                    ),
+                    child.pauses.map {
+                        it.copy(startedAt = it.startedAt.minus(shift), endedAt = it.endedAt?.minus(shift))
+                    },
+                )
+            },
+        )
+    }
+
+    private fun terminalCountdownGraph(skippedCountdownTarget: Boolean): Graph {
+        val activities =
+            (if (skippedCountdownTarget) listOf("a", "b", "c", "d") else listOf("a", "b", "c"))
+                .map { activitySnapshot(it) }
+                .associateBy(ActivityConfigSnapshot::id)
+        val baseSnapshot = sequenceSnapshot(activities.values.toList())
+        val snapshot =
+            baseSnapshot.copy(
+                settings =
+                    baseSnapshot.settings.copy(
+                        beforeEachStepCountdown = Duration.ofMinutes(5),
+                    ),
+            )
+        val runtime = runtimeEngine()
+        val started = runtime.start(snapshot, activities, minute(10), minute(10), ZoneId.of("UTC"))
+        val firstCountdown =
+            runtime.completeCurrent(
+                started,
+                requireNotNull(started.execution.currentOccurrenceId),
+                minute(20),
+                snapshot,
+                activities,
+            )
+        val targetRunning = runtime.reconcile(firstCountdown, snapshot, activities, minute(25))
+        val laterCountdown =
+            runtime.completeCurrent(
+                targetRunning,
+                requireNotNull(targetRunning.execution.currentOccurrenceId),
+                minute(35),
+                snapshot,
+                activities,
+            )
+        val terminal =
+            if (skippedCountdownTarget) {
+                val jumped =
+                    runtime.goNow(
+                        laterCountdown,
+                        laterCountdown.execution.occurrences[3].id,
+                        minute(37),
+                        snapshot,
+                        activities,
+                    )
+                runtime.endEarly(jumped, minute(45), snapshot, activities)
+            } else {
+                runtime.endEarly(laterCountdown, minute(37), snapshot, activities)
+            }
+        return Graph(
+            terminal.execution,
+            snapshot,
+            terminal.children.values.map { child ->
+                SequenceHistoryChildExecution(child, activities.getValue(child.snapshotId))
+            },
+        )
+    }
+
+    private fun runtimeEngine(): SequenceRuntimeEngine {
+        var executionId = 0
+        var occurrenceId = 0
+        var childId = 0
+        var pauseId = 0
+        var intervalId = 0
+        return SequenceRuntimeEngine(
+            SequenceExecutionFactory(
+                { SequenceExecutionId("runtime-execution-${++executionId}") },
+                RuntimeOccurrenceMaterializer { SequenceOccurrenceId("runtime-occurrence-${++occurrenceId}") },
+            ),
+            ActivityExecutionFactory { ActivityExecutionId("runtime-child-${++childId}") },
+            { ActivityExecutionPauseId("runtime-pause-${++pauseId}") },
+            { SequenceIntervalId("runtime-interval-${++intervalId}") },
+            { SequenceOccurrenceId("runtime-occurrence-${++occurrenceId}") },
         )
     }
 

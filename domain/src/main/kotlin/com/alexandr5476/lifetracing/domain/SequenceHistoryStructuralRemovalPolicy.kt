@@ -98,10 +98,10 @@ object SequenceHistoryStructuralRemovalPolicy {
         val laterOccurrences =
             execution.occurrences.filter {
                 !it.isDeletedFromHistory &&
-                    it.runtimePosition > target.runtimePosition &&
-                    it.status in PERFORMED_STATUSES
+                    it.runtimePosition > target.runtimePosition
             }
-        require(occurrenceCorrections.keys == laterOccurrences.mapTo(hashSetOf(), RuntimeOccurrence::id)) {
+        val laterPerformedOccurrences = laterOccurrences.filter { it.status in PERFORMED_STATUSES }
+        require(occurrenceCorrections.keys == laterPerformedOccurrences.mapTo(hashSetOf(), RuntimeOccurrence::id)) {
             "Close gap requires the complete later performed occurrence suffix"
         }
         val correctedOccurrences =
@@ -121,7 +121,7 @@ object SequenceHistoryStructuralRemovalPolicy {
         require(finalIntervalById.keys == oldIntervals.mapTo(hashSetOf(), SequenceInterval::id)) {
             "Close gap must retain every non-target interval identity"
         }
-        val movedOccurrenceIds = laterOccurrences.mapTo(hashSetOf(), RuntimeOccurrence::id)
+        val laterIntervalOwnerIds = laterOccurrences.mapTo(hashSetOf(), RuntimeOccurrence::id)
         oldIntervals.forEach { old ->
             val final = finalIntervalById.getValue(old.id)
             require(old.kind == final.kind && old.occurrenceId == final.occurrenceId) {
@@ -131,7 +131,7 @@ object SequenceHistoryStructuralRemovalPolicy {
                 "Close gap must preserve retained interval duration"
             }
             when {
-                old.occurrenceId in movedOccurrenceIds -> require(final == old.translatedEarlier(shiftMillis))
+                old.occurrenceId in laterIntervalOwnerIds -> require(final == old.translatedEarlier(shiftMillis))
                 old.occurrenceId != null -> require(final == old) { "Earlier owned intervals must remain unchanged" }
                 else -> {
                     require(final == old || final == old.translatedEarlier(shiftMillis)) {
@@ -146,7 +146,8 @@ object SequenceHistoryStructuralRemovalPolicy {
 
         val childCorrections = command.childTimings.uniqueBy(SequenceStructuralChildTimingCorrection::executionId)
         val childrenByOccurrence = children.associateBy { requireNotNull(it.execution.sequenceOccurrenceId) }
-        val movedChildIds = laterOccurrences.mapTo(hashSetOf()) { childrenByOccurrence.getValue(it.id).execution.id }
+        val movedChildIds =
+            laterPerformedOccurrences.mapTo(hashSetOf()) { childrenByOccurrence.getValue(it.id).execution.id }
         require(childCorrections.keys == movedChildIds) {
             "Close gap requires an explicit timing and pause translation for every moved child"
         }
