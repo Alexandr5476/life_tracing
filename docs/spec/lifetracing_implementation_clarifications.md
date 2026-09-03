@@ -16,11 +16,25 @@ While engaged, the Plan cannot be cancelled, rescheduled, updated from its Templ
 
 This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. An explicit `End sequence early` makes a linked `PLANNED` Sequence Plan `FULFILLED` atomically with its fulfilling `SequenceExecution`; `PlanEntry.fulfilledAt` equals that execution's `endedAt`. The runtime domain transition only produces terminal `ENDED_EARLY`; the later repository transaction owns the atomic Plan update.
 
+After any successful historical correction of a fulfilled Plan-linked terminal `SequenceExecution`, including structural `Close gap`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The same Plan remains `FULFILLED`, and its same `fulfilledSequenceExecutionId` continues to identify this Sequence; after success, `PlanEntry.fulfilledAt == SequenceExecution.endedAt`. Plan ID, target, precision, snapshot, source linkage/revision, and cancellation semantics remain unchanged. The Plan is never reopened or replaced. This rule applies only to Plan-linked Sequence correction, not standalone Activity correction.
+
 ## ActivitySnapshot StatisticsSeries foreign key
 
 When non-null, `activity_snapshots.statistics_series_id` references `statistics_series.id` with `ON DELETE RESTRICT`. The column remains nullable for true one-off Sequence child snapshots without a per-Activity Statistics Series.
 
 A non-null StatisticsSeries ID is durable statistical identity. It must not dangle while an executable snapshot retains it, including after the source Template is archived or hard-purged.
+
+## Sequence child history deletion tombstone
+
+Deleting a performed child ActivityExecution from terminal Sequence history is logical deletion. The child row, pauses, values, frozen snapshot, event timestamps, duration, timezone attribution, and ownership links remain durable; only `deleted_at_ms` and the child `updated_at_ms` advance. The same occurrence changes from `COMPLETED` to `DELETED_EXECUTION` without changing provenance or timing, and the Sequence root advances only its `updated_at_ms` history-mutation token. Sequence intervals, boundaries, duration caches, values, and an already-coherent fulfilled Plan remain unchanged.
+
+Canonical Sequence History retains the tombstone occurrence and its Activity configuration but omits the deleted child detail. Canonical Activity Statistics exclude the logically deleted child while Sequence and global root-derived statistics remain unchanged.
+
+## Sequence structural history removal
+
+Advanced structural removal preserves the durable occurrence and child rows. The target occurrence keeps its identity, provenance, runtime position, and historical event timestamps, becomes `DELETED_EXECUTION`, and sets `is_deleted_from_history = true`; its child remains the same logically deleted execution. Removing an existing child-deletion tombstone does not rewrite that child's earlier deletion metadata. Structurally removed occurrences are outside the effective Sequence timing graph, so no retained Sequence interval may reference them and their hidden timestamps do not constrain corrected root boundaries or duration caches.
+
+`Leave gap` preserves the root boundaries and every non-target occurrence, child, and interval exactly, while removing all target-owned intervals. The former contribution is therefore derived as non-active wall time by the existing interval-union calculator. `Close gap` requires a complete explicit final interval graph, final root end, and explicit timing/pause facts for the complete later performed occurrence suffix. The root end determines one earlier-only translation. Every retained interval owned by a later visible occurrence uses that translation, including a closed transition countdown whose owner remains `NOT_STARTED` or `SKIPPED`; those unperformed owners gain no timestamps or child. Every moved performed occurrence, child execution, and child pause uses the same translation while preserving identity and duration. Ownerless intervals must be supplied explicitly and may only remain fixed or join that translation. The command validates the final graph and never infers a best-effort transform from overlap or crossing facts.
 
 ## Archived Category option cannot be a new-snapshot default
 

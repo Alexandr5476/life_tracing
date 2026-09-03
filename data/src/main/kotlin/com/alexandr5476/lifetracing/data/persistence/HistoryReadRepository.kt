@@ -23,9 +23,11 @@ import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
+import com.alexandr5476.lifetracing.domain.SequenceHistoricalTimingGraphValidator
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildExecution
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
@@ -149,57 +151,56 @@ class HistoryReadRepository internal constructor(
                             "Sequence child is missing its occurrence linkage"
                         }
                     }
-            val occurrencesById = execution.occurrences.associateBy { it.id }
             require(children.size == childAggregates.size) {
                 "Multiple children reference one Sequence occurrence"
             }
-            children.forEach { (occurrenceId, child) ->
-                val occurrence =
-                    requireNotNull(occurrencesById[occurrenceId]) {
-                        "Sequence child references an occurrence outside its parent Sequence"
+            val historyChildren =
+                children.values.map { child ->
+                    SequenceHistoryChildExecution(child, activitySnapshots.getValue(child.snapshotId)).also {
+                        ActivityExecutionValidator.requireValid(child, it.snapshot)
                     }
-                require(child.snapshotId == occurrence.activitySnapshotId) {
-                    "Sequence child Activity snapshot does not match its occurrence"
                 }
-                require(child.status == ActivityExecutionStatus.COMPLETED) {
-                    "Terminal Sequence history cannot contain a live child Activity execution"
-                }
-                ActivityExecutionValidator.requireValid(child, activitySnapshots.getValue(child.snapshotId))
-            }
+            SequenceHistoricalTimingGraphValidator.requireValid(execution, snapshot, historyChildren)
             val displayMetadata = loadActivityDisplayMetadata(activitySnapshots.values)
             val sequenceDisplayMetadata = loadSequenceDisplayMetadata(snapshot)
             SequenceHistoryDetail(
                 root = execution.toHistoryRoot(snapshot),
+                updatedAt = execution.updatedAt,
                 settings = snapshot.settings,
                 fields = snapshot.toHistoryFields(execution.values, sequenceDisplayMetadata),
                 occurrences =
-                    execution.occurrences.sortedBy { it.runtimePosition }.map { occurrence ->
-                        val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
-                        SequenceHistoryOccurrence(
-                            occurrence.id,
-                            occurrence.runtimePosition,
-                            occurrence.activitySnapshotId,
-                            occurrence.sourceSequenceSnapshotNodeId,
-                            occurrence.repeatSourceSnapshotNodeId,
-                            occurrence.repeatIteration,
-                            occurrence.isRuntimeAdded,
-                            occurrence.isDeletedFromHistory,
-                            occurrence.status,
-                            occurrence.enteredAt,
-                            occurrence.completedAt,
-                            occurrence.completionReason,
-                            SequenceHistoryOccurrenceActivity(
-                                activity.id,
-                                activity.name,
-                                activity.shortComment,
-                                activity.timeTrackingMode,
-                                activity.timerTarget,
-                                activity.settings,
-                                activity.toHistoryMainValue(displayMetadata),
-                            ),
-                            children[occurrence.id]?.toHistoryChild(activity, displayMetadata),
-                        )
-                    },
+                    execution.occurrences
+                        .filterNot { it.isDeletedFromHistory }
+                        .sortedBy { it.runtimePosition }
+                        .map { occurrence ->
+                            val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
+                            SequenceHistoryOccurrence(
+                                occurrence.id,
+                                occurrence.runtimePosition,
+                                occurrence.activitySnapshotId,
+                                occurrence.sourceSequenceSnapshotNodeId,
+                                occurrence.repeatSourceSnapshotNodeId,
+                                occurrence.repeatIteration,
+                                occurrence.isRuntimeAdded,
+                                occurrence.isDeletedFromHistory,
+                                occurrence.status,
+                                occurrence.enteredAt,
+                                occurrence.completedAt,
+                                occurrence.completionReason,
+                                SequenceHistoryOccurrenceActivity(
+                                    activity.id,
+                                    activity.name,
+                                    activity.shortComment,
+                                    activity.timeTrackingMode,
+                                    activity.timerTarget,
+                                    activity.settings,
+                                    activity.toHistoryMainValue(displayMetadata),
+                                ),
+                                children[occurrence.id]
+                                    ?.takeIf { it.deletedAt == null }
+                                    ?.toHistoryChild(activity, displayMetadata),
+                            )
+                        },
                 intervals = execution.intervals,
             )
         }
