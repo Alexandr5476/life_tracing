@@ -130,15 +130,19 @@ class SequenceHistoryCommandRepository internal constructor(
                 result.execution.toEntityAggregate(),
             )
             val childBeforeById = childEntities.associateBy { it.execution.id }
-            result.children
-                .map { it.toEntityAggregate() }
-                .filter { childBeforeById.getValue(it.execution.id) != it }
-                .forEach { after ->
-                    database.activityExecutionDao().correctSequenceChildTiming(
-                        childBeforeById.getValue(after.execution.id),
-                        after,
-                    )
-                }
+            val changedChildren =
+                result.children
+                    .map { it.toEntityAggregate() }
+                    .filter { childBeforeById.getValue(it.execution.id) != it }
+            val validationScope =
+                database.activityExecutionDao().historicalSequenceChildValidationScope(changedChildren)
+            changedChildren.forEach { after ->
+                database.activityExecutionDao().correctSequenceChildTiming(
+                    childBeforeById.getValue(after.execution.id),
+                    after,
+                    validationScope,
+                )
+            }
             synchronizePlan(plan, beforeEntity.execution, result.execution.endedAt, result.execution.updatedAt)
             result
         }
@@ -192,21 +196,27 @@ class SequenceHistoryCommandRepository internal constructor(
                 result.execution.toEntityAggregate(),
                 command.occurrenceId.value,
             )
-            val beforeChildrenById = childEntities.associateBy { it.execution.id }
-            result.children
-                .map { it.toEntityAggregate() }
-                .filter { beforeChildrenById.getValue(it.execution.id) != it }
-                .forEach { after ->
-                    val previous = beforeChildrenById.getValue(after.execution.id)
-                    if (previous.execution.deletedAtMs == null && after.execution.deletedAtMs != null) {
-                        database.activityExecutionDao().softDeleteCompletedSequenceChild(previous, after)
-                    } else {
-                        database.activityExecutionDao().correctSequenceChildStructuralTiming(previous, after)
-                    }
-                }
+            persistStructuralChildChanges(childEntities, result.children.map { it.toEntityAggregate() })
             synchronizePlan(plan, beforeEntity.execution, result.execution.endedAt, result.execution.updatedAt)
             result
         }
+
+    private fun persistStructuralChildChanges(
+        beforeChildren: List<ActivityExecutionAggregateEntity>,
+        afterChildren: List<ActivityExecutionAggregateEntity>,
+    ) {
+        val beforeById = beforeChildren.associateBy { it.execution.id }
+        val changed = afterChildren.filter { beforeById.getValue(it.execution.id) != it }
+        val validationScope = database.activityExecutionDao().historicalSequenceChildValidationScope(changed)
+        changed.forEach { after ->
+            val before = beforeById.getValue(after.execution.id)
+            if (before.execution.deletedAtMs == null && after.execution.deletedAtMs != null) {
+                database.activityExecutionDao().softDeleteCompletedSequenceChild(before, after, validationScope)
+            } else {
+                database.activityExecutionDao().correctSequenceChildStructuralTiming(before, after, validationScope)
+            }
+        }
+    }
 
     private fun loadChildSnapshots(children: List<ActivityExecutionAggregateEntity>) =
         children

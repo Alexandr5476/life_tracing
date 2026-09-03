@@ -215,6 +215,44 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     }
 
     @Test
+    fun `historical graph rejects invalid global and countdown interval ownership or order`() {
+        val graph = graph()
+        val target = graph.execution.occurrences.first()
+        listOf(
+            SequenceIntervalKind.EXPLICIT_PAUSE,
+            SequenceIntervalKind.IMPLICIT_IDLE,
+        ).forEach { kind ->
+            assertThrows(IllegalArgumentException::class.java) {
+                SequenceHistoricalTimingGraphValidator.requireValid(
+                    graph.execution.copy(
+                        intervals = listOf(interval("invalid-$kind", kind, minute(10), minute(11), "a")),
+                    ),
+                    graph.snapshot,
+                    graph.children,
+                )
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceHistoricalTimingGraphValidator.requireValid(
+                graph.execution.copy(
+                    intervals =
+                        listOf(
+                            interval(
+                                "late-countdown",
+                                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                                requireNotNull(target.enteredAt),
+                                requireNotNull(target.enteredAt).plusSeconds(1),
+                                "a",
+                            ),
+                        ),
+                ),
+                graph.snapshot,
+                graph.children,
+            )
+        }
+    }
+
+    @Test
     fun `accepts both terminal states and rejects live states`() {
         assertEquals(
             SequenceExecutionStatus.COMPLETED,

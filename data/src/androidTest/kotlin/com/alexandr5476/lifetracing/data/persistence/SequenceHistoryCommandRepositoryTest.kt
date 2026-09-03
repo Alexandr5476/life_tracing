@@ -497,6 +497,52 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
+    fun closeGapValidatesMultipleMovedChildrenWithBoundedReads() {
+        seedThreeChildCloseGapGraph()
+        observedSql.clear()
+
+        repository.removeOccurrenceHistory(
+            THREE_CHILD_SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(THREE_CHILD_SEQUENCE_ID),
+                SequenceOccurrenceId("three-a"),
+                ActivityExecutionId("three-child-a"),
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                second(30),
+                listOf(
+                    interval("three-b", 10, 20, SequenceOccurrenceId("three-b")),
+                    interval("three-c", 20, 30, SequenceOccurrenceId("three-c")),
+                ),
+                occurrenceTimings =
+                    listOf(
+                        SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("three-b"), second(10), second(20)),
+                        SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("three-c"), second(20), second(30)),
+                    ),
+                childTimings =
+                    listOf(
+                        SequenceStructuralChildTimingCorrection(
+                            ActivityExecutionId("three-child-b"),
+                            ActivityHistoryTimeCorrection.Timed(second(10), second(20)),
+                            emptyList(),
+                        ),
+                        SequenceStructuralChildTimingCorrection(
+                            ActivityExecutionId("three-child-c"),
+                            ActivityHistoryTimeCorrection.Timed(second(20), second(30)),
+                            emptyList(),
+                        ),
+                    ),
+            ),
+            second(50),
+        )
+
+        val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
+        assertTrue(queries.count { "from activity_execution_field_values" in it && " in (" in it } <= 2)
+        assertEquals(1, queries.count { "from sequence_occurrences where id in" in it })
+        assertFalse(queries.any { "from sequence_occurrences where id = ?" in it })
+        assertFalse(queries.any { "from activity_snapshots where id = ?" in it && "time_tracking_mode" in it })
+    }
+
+    @Test
     fun closeGapPersistsCountdownForLaterNotStartedOwnerWithoutFabricatingChildFacts() {
         database.openHelper.writableDatabase.execSQL(
             "UPDATE sequence_snapshot_settings SET before_each_step_countdown_ms = 5000 " +
@@ -1491,6 +1537,36 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
+    fun invalidFinalIntervalCorrectionFailsBeforeAnyDurableWrite() {
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.correctTiming(
+                SEQUENCE_ID,
+                SequenceHistoryTimingCorrection(
+                    detailToken(),
+                    finalIntervals =
+                        listOf(
+                            SequenceInterval(
+                                SequenceIntervalId("invalid-global-owner"),
+                                SequenceIntervalKind.EXPLICIT_PAUSE,
+                                second(10),
+                                second(20),
+                                SequenceOccurrenceId("a"),
+                            ),
+                            interval("b", 20, 30, SequenceOccurrenceId("b")),
+                        ),
+                ),
+                second(40),
+            )
+        }
+
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(beforeChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+    }
+
+    @Test
     fun guardedPlanFailureRollsBackEveryHistoricalWrite() {
         val plan = linkFulfilledPlan("rollback-plan")
         val rootBefore = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
@@ -1607,6 +1683,63 @@ class SequenceHistoryCommandRepositoryTest {
         database.activityExecutionDao().insertAggregate(
             child("child-b", "activity-b", occurrenceB.id, 20, 30).toEntityAggregate(),
         )
+    }
+
+    private fun seedThreeChildCloseGapGraph() {
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.activity("activity-c", "STOPWATCH")
+        fixtures.sequence(THREE_CHILD_SNAPSHOT_ID.value, listOf("activity-a", "activity-b", "activity-c"))
+        val occurrences =
+            listOf(
+                occurrence("three-a", "activity-a", 0, 10, 20, THREE_CHILD_SNAPSHOT_ID),
+                occurrence("three-b", "activity-b", 1, 20, 30, THREE_CHILD_SNAPSHOT_ID),
+                occurrence("three-c", "activity-c", 2, 30, 40, THREE_CHILD_SNAPSHOT_ID),
+            )
+        val intervals =
+            occurrences.map { occurrence ->
+                interval(
+                    occurrence.id.value,
+                    occurrence.enteredAt!!.epochSecond,
+                    occurrence.completedAt!!.epochSecond,
+                    occurrence.id,
+                )
+            }
+        val durations =
+            com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator
+                .calculate(second(10), second(40), intervals)
+        database.sequenceExecutionDao().insertAggregate(
+            SequenceExecution(
+                THREE_CHILD_SEQUENCE_ID,
+                THREE_CHILD_SNAPSHOT_ID,
+                StatisticsSeriesId("sequence-series"),
+                SequenceExecutionStatus.COMPLETED,
+                second(10),
+                second(40),
+                durations.active,
+                durations.pause,
+                durations.wall,
+                ZoneOffset.UTC,
+                0,
+                second(10).atZone(ZoneOffset.UTC).toLocalDate(),
+                null,
+                second(10),
+                second(40),
+                occurrences,
+                intervals,
+            ).toEntityAggregate(),
+        )
+        occurrences.forEach { occurrence ->
+            database.activityExecutionDao().insertAggregate(
+                child(
+                    "three-child-${occurrence.id.value.removePrefix("three-")}",
+                    occurrence.activitySnapshotId.value,
+                    occurrence.id,
+                    occurrence.enteredAt!!.epochSecond,
+                    occurrence.completedAt!!.epochSecond,
+                    THREE_CHILD_SEQUENCE_ID,
+                ).toEntityAggregate(),
+            )
+        }
     }
 
     private fun seedPausedGraph() {
@@ -2022,5 +2155,7 @@ class SequenceHistoryCommandRepositoryTest {
         val NO_LIVE_SNAPSHOT_ID = SequenceSnapshotId("no-live-snapshot")
         val SKIPPED_COUNTDOWN_SEQUENCE_ID = SequenceExecutionId("skipped-countdown-sequence")
         val SKIPPED_COUNTDOWN_SNAPSHOT_ID = SequenceSnapshotId("skipped-countdown-snapshot")
+        val THREE_CHILD_SEQUENCE_ID = SequenceExecutionId("three-child-sequence")
+        val THREE_CHILD_SNAPSHOT_ID = SequenceSnapshotId("three-child-snapshot")
     }
 }

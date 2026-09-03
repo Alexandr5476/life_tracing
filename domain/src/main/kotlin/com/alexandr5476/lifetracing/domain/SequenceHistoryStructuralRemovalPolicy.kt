@@ -93,6 +93,14 @@ object SequenceHistoryStructuralRemovalPolicy {
             "Close gap must explicitly shorten the terminal Sequence span"
         }
         val shiftMillis = Math.subtractExact(oldEnd.toEpochMilli(), finalEnd.toEpochMilli())
+        val removedSpanMillis =
+            Math.subtractExact(
+                requireNotNull(target.completedAt).toEpochMilli(),
+                requireNotNull(target.enteredAt).toEpochMilli(),
+            )
+        require(shiftMillis == removedSpanMillis) {
+            "Close gap must shorten the root by the removed performed occurrence span"
+        }
         val occurrenceCorrections = command.occurrenceTimings.uniqueBy(SequenceOccurrenceTimingCorrection::occurrenceId)
         require(target.id !in occurrenceCorrections) { "Removed occurrence timing must remain historical" }
         val laterOccurrences =

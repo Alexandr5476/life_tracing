@@ -313,13 +313,33 @@ object SequenceHistoricalTimingGraphValidator {
                     requireExpectedStepKind(interval.kind, performed.id, children, noLiveTimeAccounting)
                 }
                 SequenceIntervalKind.TRANSITION_COUNTDOWN ->
-                    require(occurrence != null) { "Transition countdown requires an occurrence" }
+                    requireValidTransitionCountdown(interval, occurrence)
                 SequenceIntervalKind.EXPLICIT_PAUSE,
                 SequenceIntervalKind.IMPLICIT_IDLE,
-                -> Unit
+                -> require(interval.occurrenceId == null) { "Global runtime interval must remain ownerless" }
             }
         }
         return activeRangesByOccurrence
+    }
+
+    private fun requireValidTransitionCountdown(
+        interval: SequenceInterval,
+        occurrence: RuntimeOccurrence?,
+    ) {
+        val target = requireNotNull(occurrence) { "Transition countdown requires an occurrence" }
+        when (target.status) {
+            RuntimeOccurrenceStatus.COMPLETED,
+            RuntimeOccurrenceStatus.DELETED_EXECUTION,
+            ->
+                require(
+                    requireNotNull(interval.endedAt) <= requireNotNull(target.enteredAt),
+                ) { "Transition countdown cannot survive after its target occurrence starts" }
+            RuntimeOccurrenceStatus.NOT_STARTED,
+            RuntimeOccurrenceStatus.SKIPPED,
+            -> Unit
+            RuntimeOccurrenceStatus.CURRENT ->
+                throw IllegalArgumentException("Terminal historical countdown cannot target a current occurrence")
+        }
     }
 
     private fun requireExpectedStepKind(

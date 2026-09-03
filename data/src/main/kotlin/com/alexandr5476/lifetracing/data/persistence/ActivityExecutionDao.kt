@@ -26,6 +26,7 @@ internal data class ActivityExecutionAggregateEntity(
 )
 
 internal data class SequenceOccurrenceLinkRow(
+    val id: String,
     @androidx.room.ColumnInfo(name = "sequence_execution_id") val sequenceExecutionId: String,
     @androidx.room.ColumnInfo(name = "activity_snapshot_id") val activitySnapshotId: String,
 )
@@ -38,12 +39,20 @@ internal data class ActivitySnapshotExecutionMetadataRow(
 
 internal data class ActivitySnapshotFieldValueMetadataRow(
     val id: String,
+    @androidx.room.ColumnInfo(name = "snapshot_id") val snapshotId: String,
     @androidx.room.ColumnInfo(name = "field_type") val fieldType: String,
 )
 
 internal data class ActivitySnapshotOptionValueMetadataRow(
     val id: String,
     @androidx.room.ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
+)
+
+internal data class HistoricalSequenceChildValidationScope(
+    val snapshots: Map<String, ActivitySnapshotExecutionMetadataRow>,
+    val occurrences: Map<String, SequenceOccurrenceLinkRow>,
+    val fields: Map<String, ActivitySnapshotFieldValueMetadataRow>,
+    val options: Map<String, ActivitySnapshotOptionValueMetadataRow>,
 )
 
 internal data class ActivityHistoryRootEntity(
@@ -148,7 +157,7 @@ internal abstract class ActivityExecutionDao {
     ): Boolean
 
     @Query(
-        "SELECT id, field_type FROM activity_snapshot_fields " +
+        "SELECT id, snapshot_id, field_type FROM activity_snapshot_fields " +
             "WHERE snapshot_id = :snapshotId AND id IN (:fieldIds)",
     )
     protected abstract fun getSnapshotFieldValueMetadata(
@@ -169,8 +178,26 @@ internal abstract class ActivityExecutionDao {
     @Query("SELECT id, time_tracking_mode, statistics_series_id FROM activity_snapshots WHERE id = :snapshotId")
     protected abstract fun getSnapshotExecutionMetadata(snapshotId: String): ActivitySnapshotExecutionMetadataRow?
 
-    @Query("SELECT sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
+    @Query("SELECT id, time_tracking_mode, statistics_series_id FROM activity_snapshots WHERE id IN (:snapshotIds)")
+    protected abstract fun getSnapshotExecutionMetadataForIds(
+        snapshotIds: List<String>,
+    ): List<ActivitySnapshotExecutionMetadataRow>
+
+    @Query("SELECT id, sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id = :id")
     protected abstract fun getSequenceOccurrenceLink(id: String): SequenceOccurrenceLinkRow?
+
+    @Query("SELECT id, sequence_execution_id, activity_snapshot_id FROM sequence_occurrences WHERE id IN (:ids)")
+    protected abstract fun getSequenceOccurrenceLinks(ids: List<String>): List<SequenceOccurrenceLinkRow>
+
+    @Query("SELECT id, snapshot_id, field_type FROM activity_snapshot_fields WHERE id IN (:ids)")
+    protected abstract fun getSnapshotFieldValueMetadataForIds(
+        ids: List<String>,
+    ): List<ActivitySnapshotFieldValueMetadataRow>
+
+    @Query("SELECT id, snapshot_field_id FROM activity_snapshot_category_options WHERE id IN (:ids)")
+    protected abstract fun getSnapshotOptionValueMetadataForIds(
+        ids: List<String>,
+    ): List<ActivitySnapshotOptionValueMetadataRow>
 
     @Query(
         "SELECT trackable_kind, activity_snapshot_id, sequence_plan_snapshot_id, status, " +
@@ -487,6 +514,43 @@ internal abstract class ActivityExecutionDao {
         }
     }
 
+    fun historicalSequenceChildValidationScope(
+        aggregates: List<ActivityExecutionAggregateEntity>,
+    ): HistoricalSequenceChildValidationScope {
+        val snapshotIds = aggregates.map { it.execution.snapshotId }.distinct()
+        val occurrenceIds = aggregates.mapNotNull { it.execution.sequenceOccurrenceId }.distinct()
+        val fieldIds =
+            aggregates
+                .flatMap { aggregate ->
+                    aggregate.values.map(ActivityExecutionFieldValueEntity::snapshotFieldId)
+                }.distinct()
+        val optionIds =
+            aggregates
+                .flatMap { aggregate ->
+                    aggregate.values.mapNotNull(ActivityExecutionFieldValueEntity::categoryOptionId)
+                }.distinct()
+        return HistoricalSequenceChildValidationScope(
+            snapshots =
+                snapshotIds.chunked(SQLITE_BIND_CHUNK_SIZE).flatMap(::getSnapshotExecutionMetadataForIds).associateBy {
+                    it.id
+                },
+            occurrences =
+                occurrenceIds
+                    .chunked(
+                        SQLITE_BIND_CHUNK_SIZE,
+                    ).flatMap(::getSequenceOccurrenceLinks)
+                    .associateBy { it.id },
+            fields =
+                fieldIds.chunked(SQLITE_BIND_CHUNK_SIZE).flatMap(::getSnapshotFieldValueMetadataForIds).associateBy {
+                    it.id
+                },
+            options =
+                optionIds.chunked(SQLITE_BIND_CHUNK_SIZE).flatMap(::getSnapshotOptionValueMetadataForIds).associateBy {
+                    it.id
+                },
+        )
+    }
+
     @Transaction
     open fun persistSequenceChildDelta(
         before: ActivityExecutionAggregateEntity,
@@ -619,8 +683,9 @@ internal abstract class ActivityExecutionDao {
     open fun correctSequenceChildTiming(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
     ) {
-        requireValidAggregate(after)
+        requireValidAggregate(after, validationScope)
         require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
             "Sequence history correction cannot change child identity or frozen linkage"
         }
@@ -658,8 +723,9 @@ internal abstract class ActivityExecutionDao {
     open fun correctSequenceChildStructuralTiming(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
     ) {
-        requireValidAggregate(after)
+        requireValidAggregate(after, validationScope)
         require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
             "Structural correction cannot change child identity or frozen linkage"
         }
@@ -768,8 +834,9 @@ internal abstract class ActivityExecutionDao {
     open fun softDeleteCompletedSequenceChild(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
     ) {
-        requireValidAggregate(after)
+        requireValidAggregate(after, validationScope)
         require(before.pauses == after.pauses && before.values == after.values) {
             "Sequence child deletion cannot change pauses or values"
         }
@@ -895,12 +962,18 @@ internal abstract class ActivityExecutionDao {
         check(markCompletedUnchecked(id, atMs, duration.toMillis()) == 1)
     }
 
-    private fun requireValidAggregate(aggregate: ActivityExecutionAggregateEntity) {
+    private fun requireValidAggregate(
+        aggregate: ActivityExecutionAggregateEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
+    ) {
         val execution = aggregate.execution
-        requireValidContext(execution)
-        requireValidOwnedRows(aggregate)
+        requireValidContext(execution, validationScope)
+        requireValidOwnedRows(aggregate, validationScope)
         val snapshot =
-            requireNotNull(getSnapshotExecutionMetadata(execution.snapshotId)) {
+            requireNotNull(
+                validationScope?.snapshots?.get(execution.snapshotId)
+                    ?: getSnapshotExecutionMetadata(execution.snapshotId),
+            ) {
                 "Unknown snapshot: ${execution.snapshotId}"
             }
         requireValidStatisticsSeries(execution, snapshot)
@@ -918,7 +991,10 @@ internal abstract class ActivityExecutionDao {
         }
     }
 
-    private fun requireValidContext(execution: ActivityExecutionEntity) {
+    private fun requireValidContext(
+        execution: ActivityExecutionEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
+    ) {
         when (execution.contextType) {
             "STANDALONE" -> {
                 require(execution.sequenceExecutionId == null && execution.sequenceOccurrenceId == null) {
@@ -942,7 +1018,7 @@ internal abstract class ActivityExecutionDao {
                 require(execution.planEntryId == null) { "Sequence child cannot link a Plan directly" }
                 val occurrence =
                     requireNotNull(
-                        getSequenceOccurrenceLink(occurrenceId),
+                        validationScope?.occurrences?.get(occurrenceId) ?: getSequenceOccurrenceLink(occurrenceId),
                     ) { "Unknown Sequence occurrence: $occurrenceId" }
                 require(
                     occurrence.sequenceExecutionId == sequenceExecutionId &&
@@ -993,7 +1069,10 @@ internal abstract class ActivityExecutionDao {
             getSnapshotOptionsForCorrectionValidation(id),
         ).toDomain()
 
-    private fun requireValidOwnedRows(aggregate: ActivityExecutionAggregateEntity) {
+    private fun requireValidOwnedRows(
+        aggregate: ActivityExecutionAggregateEntity,
+        validationScope: HistoricalSequenceChildValidationScope? = null,
+    ) {
         aggregate.pauses.forEach { pause ->
             require(pause.activityExecutionId == aggregate.execution.id) {
                 "Execution pause must belong to the inserted execution"
@@ -1009,21 +1088,26 @@ internal abstract class ActivityExecutionDao {
         require(fieldIds.distinct().size == fieldIds.size) { "Execution values must target unique snapshot Fields" }
         if (fieldIds.isEmpty()) return
         val fields =
-            fieldIds
-                .distinct()
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap { getSnapshotFieldValueMetadata(aggregate.execution.snapshotId, it) }
-                .associateBy(ActivitySnapshotFieldValueMetadataRow::id)
-        require(fields.size == fieldIds.distinct().size) {
+            validationScope?.fields
+                ?: fieldIds
+                    .distinct()
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap { getSnapshotFieldValueMetadata(aggregate.execution.snapshotId, it) }
+                    .associateBy(ActivitySnapshotFieldValueMetadataRow::id)
+        require(fieldIds.all(fields::contains)) {
             "Execution value field must belong to its execution snapshot"
         }
         val optionIds = values.mapNotNull(ActivityExecutionFieldValueEntity::categoryOptionId).distinct()
         val options =
-            optionIds
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap { getSnapshotOptionValueMetadata(aggregate.execution.snapshotId, it) }
-                .associateBy(ActivitySnapshotOptionValueMetadataRow::id)
+            validationScope?.options
+                ?: optionIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap { getSnapshotOptionValueMetadata(aggregate.execution.snapshotId, it) }
+                    .associateBy(ActivitySnapshotOptionValueMetadataRow::id)
         values.forEach { value ->
+            require(fields.getValue(value.snapshotFieldId).snapshotId == aggregate.execution.snapshotId) {
+                "Execution value field must belong to its execution snapshot"
+            }
             requireValidValue(
                 value,
                 fields.getValue(value.snapshotFieldId).fieldType,

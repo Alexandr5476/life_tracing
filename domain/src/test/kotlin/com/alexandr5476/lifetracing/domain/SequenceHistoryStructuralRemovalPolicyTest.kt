@@ -183,6 +183,34 @@ class SequenceHistoryStructuralRemovalPolicyTest {
     }
 
     @Test
+    fun `close gap rejects a root shortening that is not the removed middle span`() {
+        val graph = graph()
+        val command = closeGap(graph, "b")
+
+        listOf(Duration.ofMinutes(9), Duration.ofMinutes(11)).forEach { shift ->
+            assertThrows(IllegalArgumentException::class.java) {
+                remove(graph, command.copy(finalEndedAt = requireNotNull(graph.execution.endedAt).minus(shift)))
+            }
+        }
+    }
+
+    @Test
+    fun `close gap rejects partial closure when removing the last performed occurrence`() {
+        val graph = graph()
+        val command =
+            SequenceHistoryStructuralRemovalCommand(
+                graph.execution.updatedAt,
+                graph.occurrence("c").id,
+                graph.child("c").id,
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                minute(31),
+                graph.execution.intervals.filter { it.occurrenceId?.value != "c" },
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { remove(graph, command) }
+    }
+
+    @Test
     fun `close gap shifts child pauses only through explicit preserved pause identities`() {
         val graph = pausedLaterGraph()
         val command = closeGap(graph, "b", pausedChild = true)
