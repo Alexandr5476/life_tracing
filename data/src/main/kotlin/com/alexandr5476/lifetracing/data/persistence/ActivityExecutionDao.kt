@@ -332,6 +332,60 @@ internal abstract class ActivityExecutionDao {
     ): Int
 
     @Query(
+        "UPDATE activity_executions SET started_at_ms = :startedAtMs, completed_at_ms = :completedAtMs, " +
+            "active_duration_ms = :activeDurationMs, original_utc_offset_minutes = :originalUtcOffsetMinutes, " +
+            "primary_local_date = :primaryLocalDate, updated_at_ms = :updatedAtMs " +
+            "WHERE id = :id AND context_type = 'SEQUENCE_CHILD' AND sequence_execution_id = :sequenceExecutionId " +
+            "AND sequence_occurrence_id = :sequenceOccurrenceId AND snapshot_id = :snapshotId " +
+            "AND statistics_series_id IS :statisticsSeriesId AND plan_entry_id IS :planEntryId " +
+            "AND status = 'COMPLETED' AND completion_reason IS :completionReason " +
+            "AND deleted_at_ms IS :deletedAtMs AND original_zone_id = :originalZoneId " +
+            "AND started_at_ms IS :expectedStartedAtMs AND completed_at_ms = :expectedCompletedAtMs " +
+            "AND active_duration_ms IS :expectedActiveDurationMs " +
+            "AND original_utc_offset_minutes IS :expectedOriginalUtcOffsetMinutes " +
+            "AND primary_local_date = :expectedPrimaryLocalDate AND created_at_ms = :createdAtMs " +
+            "AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    protected abstract fun structurallyCorrectSequenceChildUnchecked(
+        id: String,
+        sequenceExecutionId: String,
+        sequenceOccurrenceId: String,
+        snapshotId: String,
+        statisticsSeriesId: String?,
+        planEntryId: String?,
+        completionReason: String?,
+        deletedAtMs: Long?,
+        originalZoneId: String,
+        expectedStartedAtMs: Long?,
+        expectedCompletedAtMs: Long,
+        expectedActiveDurationMs: Long?,
+        expectedOriginalUtcOffsetMinutes: Int?,
+        expectedPrimaryLocalDate: String,
+        createdAtMs: Long,
+        expectedUpdatedAtMs: Long,
+        startedAtMs: Long?,
+        completedAtMs: Long,
+        activeDurationMs: Long?,
+        originalUtcOffsetMinutes: Int?,
+        primaryLocalDate: String,
+        updatedAtMs: Long,
+    ): Int
+
+    @Query(
+        "UPDATE activity_execution_pauses SET started_at_ms = :startedAtMs, ended_at_ms = :endedAtMs " +
+            "WHERE id = :id AND activity_execution_id = :executionId " +
+            "AND started_at_ms = :expectedStartedAtMs AND ended_at_ms IS :expectedEndedAtMs",
+    )
+    protected abstract fun structurallyCorrectSequenceChildPauseUnchecked(
+        id: String,
+        executionId: String,
+        expectedStartedAtMs: Long,
+        expectedEndedAtMs: Long?,
+        startedAtMs: Long,
+        endedAtMs: Long?,
+    ): Int
+
+    @Query(
         "UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs " +
             "WHERE id = :id AND context_type = 'STANDALONE' AND status = 'COMPLETED' " +
             "AND deleted_at_ms IS NULL AND updated_at_ms = :expectedUpdatedAtMs",
@@ -597,6 +651,94 @@ internal abstract class ActivityExecutionDao {
             ) != 1
         ) {
             throw ConcurrentModificationException("Sequence child history changed concurrently")
+        }
+    }
+
+    @Transaction
+    open fun correctSequenceChildStructuralTiming(
+        before: ActivityExecutionAggregateEntity,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        requireValidAggregate(after)
+        require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
+            "Structural correction cannot change child identity or frozen linkage"
+        }
+        require(before.values == after.values) { "Structural correction cannot edit child values" }
+        require(
+            before.execution.copy(
+                startedAtMs = after.execution.startedAtMs,
+                completedAtMs = after.execution.completedAtMs,
+                activeDurationMs = after.execution.activeDurationMs,
+                originalUtcOffsetMinutes = after.execution.originalUtcOffsetMinutes,
+                primaryLocalDate = after.execution.primaryLocalDate,
+                updatedAtMs = after.execution.updatedAtMs,
+            ) == after.execution,
+        ) { "Structural correction changed a preserved child fact" }
+        require(after.execution.activeDurationMs == before.execution.activeDurationMs) {
+            "Structural correction cannot change child duration"
+        }
+        require(after.execution.updatedAtMs > before.execution.updatedAtMs) {
+            "Structural child mutation time must advance"
+        }
+        val beforePauses = before.pauses.associateBy(ActivityExecutionPauseEntity::id)
+        val afterPauses = after.pauses.associateBy(ActivityExecutionPauseEntity::id)
+        require(beforePauses.keys == afterPauses.keys && afterPauses.size == after.pauses.size) {
+            "Structural correction cannot add or remove child pauses"
+        }
+        beforePauses.forEach { (id, previous) ->
+            val final = afterPauses.getValue(id)
+            require(previous.activityExecutionId == final.activityExecutionId)
+            require(
+                requireNotNull(previous.endedAtMs) - previous.startedAtMs ==
+                    requireNotNull(final.endedAtMs) - final.startedAtMs,
+            ) { "Structural correction must preserve pause duration" }
+        }
+
+        val previous = before.execution
+        val final = after.execution
+        if (
+            structurallyCorrectSequenceChildUnchecked(
+                previous.id,
+                requireNotNull(previous.sequenceExecutionId),
+                requireNotNull(previous.sequenceOccurrenceId),
+                previous.snapshotId,
+                previous.statisticsSeriesId,
+                previous.planEntryId,
+                previous.completionReason,
+                previous.deletedAtMs,
+                previous.originalZoneId,
+                previous.startedAtMs,
+                requireNotNull(previous.completedAtMs),
+                previous.activeDurationMs,
+                previous.originalUtcOffsetMinutes,
+                previous.primaryLocalDate,
+                previous.createdAtMs,
+                previous.updatedAtMs,
+                final.startedAtMs,
+                requireNotNull(final.completedAtMs),
+                final.activeDurationMs,
+                final.originalUtcOffsetMinutes,
+                final.primaryLocalDate,
+                final.updatedAtMs,
+            ) != 1
+        ) {
+            throw ConcurrentModificationException("Sequence child history changed concurrently")
+        }
+        after.pauses.forEach { pause ->
+            val old = beforePauses.getValue(pause.id)
+            if (old == pause) return@forEach
+            if (
+                structurallyCorrectSequenceChildPauseUnchecked(
+                    old.id,
+                    old.activityExecutionId,
+                    old.startedAtMs,
+                    old.endedAtMs,
+                    pause.startedAtMs,
+                    pause.endedAtMs,
+                ) != 1
+            ) {
+                throw ConcurrentModificationException("Sequence child pause history changed concurrently")
+            }
         }
     }
 

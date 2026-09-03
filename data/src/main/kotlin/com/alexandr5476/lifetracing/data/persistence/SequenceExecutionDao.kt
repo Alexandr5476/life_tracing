@@ -1,4 +1,5 @@
 @file:Suppress(
+    "LargeClass",
     "LongMethod",
     "LongParameterList",
     "MaxLineLength",
@@ -274,6 +275,31 @@ internal abstract class SequenceExecutionDao {
         runtimePosition: Int,
         repeatSourceNodeId: String?,
         repeatIteration: Int?,
+        enteredAtMs: Long?,
+        completedAtMs: Long?,
+        completionReason: String?,
+        isRuntimeAdded: Boolean,
+    ): Int
+
+    @Query(
+        "UPDATE sequence_occurrences SET status = 'DELETED_EXECUTION', is_deleted_from_history = 1 " +
+            "WHERE id = :id AND sequence_execution_id = :executionId " +
+            "AND source_sequence_snapshot_node_id IS :sourceNodeId AND activity_snapshot_id = :activitySnapshotId " +
+            "AND runtime_position = :runtimePosition AND repeat_source_snapshot_node_id IS :repeatSourceNodeId " +
+            "AND repeat_iteration IS :repeatIteration AND status = :expectedStatus " +
+            "AND entered_at_ms IS :enteredAtMs AND completed_at_ms IS :completedAtMs " +
+            "AND completion_reason IS :completionReason AND is_runtime_added = :isRuntimeAdded " +
+            "AND is_deleted_from_history = 0",
+    )
+    protected abstract fun structurallyRemoveHistoricalOccurrenceUnchecked(
+        id: String,
+        executionId: String,
+        sourceNodeId: String?,
+        activitySnapshotId: String,
+        runtimePosition: Int,
+        repeatSourceNodeId: String?,
+        repeatIteration: Int?,
+        expectedStatus: String,
         enteredAtMs: Long?,
         completedAtMs: Long?,
         completionReason: String?,
@@ -576,6 +602,138 @@ internal abstract class SequenceExecutionDao {
             ),
             message = "Sequence occurrence history changed concurrently",
         )
+    }
+
+    @Transaction
+    open fun persistHistoricalStructuralRemoval(
+        before: SequenceExecutionAggregateEntity,
+        after: SequenceExecutionAggregateEntity,
+        occurrenceId: String,
+    ) {
+        requireValidAggregate(after)
+        require(
+            before.execution.copy(
+                endedAtMs = after.execution.endedAtMs,
+                activeDurationMs = after.execution.activeDurationMs,
+                pauseDurationMs = after.execution.pauseDurationMs,
+                wallDurationMs = after.execution.wallDurationMs,
+                updatedAtMs = after.execution.updatedAtMs,
+            ) == after.execution,
+        ) { "Structural removal changed a preserved Sequence fact" }
+        require(before.values == after.values) { "Structural removal cannot change Sequence values" }
+        require(after.execution.updatedAtMs > before.execution.updatedAtMs) {
+            "Structural mutation time must advance"
+        }
+
+        val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        val afterOccurrences = after.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        require(beforeOccurrences.keys == afterOccurrences.keys) { "Structural removal cannot change topology" }
+        val target = requireNotNull(beforeOccurrences[occurrenceId]) { "Unknown occurrence: $occurrenceId" }
+        require(!target.isDeletedFromHistory && target.status in setOf("COMPLETED", "DELETED_EXECUTION")) {
+            "Only a retained performed occurrence can be structurally removed"
+        }
+        require(
+            target.copy(status = "DELETED_EXECUTION", isDeletedFromHistory = true) ==
+                afterOccurrences.getValue(occurrenceId),
+        ) { "Structural removal must preserve the target history" }
+        beforeOccurrences.forEach { (id, previous) ->
+            if (id != occurrenceId) {
+                val final = afterOccurrences.getValue(id)
+                require(
+                    previous.copy(enteredAtMs = final.enteredAtMs, completedAtMs = final.completedAtMs) == final,
+                ) { "Structural removal changed occurrence identity, provenance, or state" }
+            }
+        }
+
+        val retainedBeforeIntervals = before.intervals.filter { it.occurrenceId != occurrenceId }
+        val retainedAfterById = after.intervals.associateBy(SequenceIntervalEntity::id)
+        require(retainedAfterById.size == after.intervals.size)
+        require(retainedBeforeIntervals.mapTo(hashSetOf(), SequenceIntervalEntity::id) == retainedAfterById.keys)
+        retainedBeforeIntervals.forEach { previous ->
+            val final = retainedAfterById.getValue(previous.id)
+            require(
+                previous.copy(startedAtMs = final.startedAtMs, endedAtMs = final.endedAtMs) == final &&
+                    requireNotNull(previous.endedAtMs) - previous.startedAtMs ==
+                    requireNotNull(final.endedAtMs) - final.startedAtMs,
+            ) { "Structural removal changed retained interval identity or duration" }
+        }
+
+        val root = after.execution
+        requireHistoricalRows(
+            correctHistoricalRootUnchecked(
+                root.id,
+                root.snapshotId,
+                root.planEntryId,
+                root.statisticsSeriesId,
+                root.status,
+                root.originalZoneId,
+                root.createdAtMs,
+                before.execution.updatedAtMs,
+                root.startedAtMs,
+                requireNotNull(root.endedAtMs),
+                requireNotNull(root.activeDurationMs),
+                requireNotNull(root.pauseDurationMs),
+                requireNotNull(root.wallDurationMs),
+                root.originalUtcOffsetMinutes,
+                root.primaryLocalDate,
+                root.updatedAtMs,
+            ),
+            message = "Sequence history changed concurrently",
+        )
+        requireHistoricalRows(
+            structurallyRemoveHistoricalOccurrenceUnchecked(
+                target.id,
+                target.sequenceExecutionId,
+                target.sourceSequenceSnapshotNodeId,
+                target.activitySnapshotId,
+                target.runtimePosition,
+                target.repeatSourceSnapshotNodeId,
+                target.repeatIteration,
+                target.status,
+                target.enteredAtMs,
+                target.completedAtMs,
+                target.completionReason,
+                target.isRuntimeAdded,
+            ),
+            message = "Sequence occurrence history changed concurrently",
+        )
+        after.occurrences.forEach { occurrence ->
+            val previous = beforeOccurrences.getValue(occurrence.id)
+            if (
+                occurrence.id == occurrenceId ||
+                (previous.enteredAtMs == occurrence.enteredAtMs && previous.completedAtMs == occurrence.completedAtMs)
+            ) {
+                return@forEach
+            }
+            requireHistoricalRows(
+                correctHistoricalOccurrenceUnchecked(
+                    occurrence.id,
+                    occurrence.sequenceExecutionId,
+                    occurrence.sourceSequenceSnapshotNodeId,
+                    occurrence.activitySnapshotId,
+                    occurrence.runtimePosition,
+                    occurrence.repeatSourceSnapshotNodeId,
+                    occurrence.repeatIteration,
+                    occurrence.status,
+                    occurrence.completionReason,
+                    occurrence.isRuntimeAdded,
+                    occurrence.isDeletedFromHistory,
+                    previous.enteredAtMs,
+                    previous.completedAtMs,
+                    occurrence.enteredAtMs,
+                    occurrence.completedAtMs,
+                ),
+                message = "Sequence occurrence history changed concurrently",
+            )
+        }
+        if (before.intervals != after.intervals) {
+            requireHistoricalRows(
+                deleteHistoricalIntervalsUnchecked(root.id),
+                before.intervals.size,
+                "Sequence interval history changed concurrently",
+            )
+            if (after.intervals.isNotEmpty()) insertIntervalsUnchecked(after.intervals)
+        }
     }
 
     private fun persistRuntimePositions(

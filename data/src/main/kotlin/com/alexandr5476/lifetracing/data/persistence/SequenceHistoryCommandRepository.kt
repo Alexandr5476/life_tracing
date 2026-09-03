@@ -9,6 +9,9 @@ import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionPolicy
 import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionResult
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildExecution
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalPolicy
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalResult
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrectionPolicy
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrectionResult
@@ -135,6 +138,71 @@ class SequenceHistoryCommandRepository internal constructor(
                         childBeforeById.getValue(after.execution.id),
                         after,
                     )
+                }
+            synchronizePlan(plan, beforeEntity.execution, result.execution.endedAt, result.execution.updatedAt)
+            result
+        }
+
+    fun removeOccurrenceHistory(
+        id: SequenceExecutionId,
+        command: SequenceHistoryStructuralRemovalCommand,
+        removedAt: Instant,
+    ): SequenceHistoryStructuralRemovalResult =
+        transaction {
+            val beforeEntity =
+                requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(id.value)) {
+                    "Unknown Sequence history: ${id.value}"
+                }
+            require(database.activeSessionDao().get()?.sequenceExecutionId != id) {
+                "Active Sequence history cannot be changed"
+            }
+            val before = beforeEntity.toDomain()
+            val expectedUpdatedAt = Instant.ofEpochMilli(command.expectedUpdatedAt.toEpochMilli())
+            if (before.updatedAt != expectedUpdatedAt) {
+                throw ConcurrentModificationException("Sequence history changed concurrently")
+            }
+            val snapshot =
+                requireNotNull(database.sequenceSnapshotDao().getAggregate(before.snapshotId.value)) {
+                    "Unknown SequenceSnapshot: ${before.snapshotId.value}"
+                }.toDomain()
+            val childEntities = database.activityExecutionDao().getSequenceChildAggregates(id.value)
+            val childSnapshots = loadChildSnapshots(childEntities)
+            val children =
+                childEntities.map { child ->
+                    val execution = child.toDomain()
+                    SequenceHistoryChildExecution(
+                        execution,
+                        requireNotNull(childSnapshots[execution.snapshotId]) {
+                            "Unknown child ActivitySnapshot: ${execution.snapshotId.value}"
+                        },
+                    )
+                }
+            val plan = before.planEntryId?.let { requireCoherentPlan(beforeEntity.execution, it.value) }
+            val result =
+                SequenceHistoryStructuralRemovalPolicy.remove(
+                    before,
+                    snapshot,
+                    children,
+                    command.copy(expectedUpdatedAt = expectedUpdatedAt),
+                    removedAt,
+                )
+
+            database.sequenceExecutionDao().persistHistoricalStructuralRemoval(
+                beforeEntity,
+                result.execution.toEntityAggregate(),
+                command.occurrenceId.value,
+            )
+            val beforeChildrenById = childEntities.associateBy { it.execution.id }
+            result.children
+                .map { it.toEntityAggregate() }
+                .filter { beforeChildrenById.getValue(it.execution.id) != it }
+                .forEach { after ->
+                    val previous = beforeChildrenById.getValue(after.execution.id)
+                    if (previous.execution.deletedAtMs == null && after.execution.deletedAtMs != null) {
+                        database.activityExecutionDao().softDeleteCompletedSequenceChild(previous, after)
+                    } else {
+                        database.activityExecutionDao().correctSequenceChildStructuralTiming(previous, after)
+                    }
                 }
             synchronizePlan(plan, beforeEntity.execution, result.execution.endedAt, result.execution.updatedAt)
             result

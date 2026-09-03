@@ -169,35 +169,38 @@ class HistoryReadRepository internal constructor(
                 settings = snapshot.settings,
                 fields = snapshot.toHistoryFields(execution.values, sequenceDisplayMetadata),
                 occurrences =
-                    execution.occurrences.sortedBy { it.runtimePosition }.map { occurrence ->
-                        val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
-                        SequenceHistoryOccurrence(
-                            occurrence.id,
-                            occurrence.runtimePosition,
-                            occurrence.activitySnapshotId,
-                            occurrence.sourceSequenceSnapshotNodeId,
-                            occurrence.repeatSourceSnapshotNodeId,
-                            occurrence.repeatIteration,
-                            occurrence.isRuntimeAdded,
-                            occurrence.isDeletedFromHistory,
-                            occurrence.status,
-                            occurrence.enteredAt,
-                            occurrence.completedAt,
-                            occurrence.completionReason,
-                            SequenceHistoryOccurrenceActivity(
-                                activity.id,
-                                activity.name,
-                                activity.shortComment,
-                                activity.timeTrackingMode,
-                                activity.timerTarget,
-                                activity.settings,
-                                activity.toHistoryMainValue(displayMetadata),
-                            ),
-                            children[occurrence.id]
-                                ?.takeIf { it.deletedAt == null }
-                                ?.toHistoryChild(activity, displayMetadata),
-                        )
-                    },
+                    execution.occurrences
+                        .filterNot { it.isDeletedFromHistory }
+                        .sortedBy { it.runtimePosition }
+                        .map { occurrence ->
+                            val activity = activitySnapshots.getValue(occurrence.activitySnapshotId)
+                            SequenceHistoryOccurrence(
+                                occurrence.id,
+                                occurrence.runtimePosition,
+                                occurrence.activitySnapshotId,
+                                occurrence.sourceSequenceSnapshotNodeId,
+                                occurrence.repeatSourceSnapshotNodeId,
+                                occurrence.repeatIteration,
+                                occurrence.isRuntimeAdded,
+                                occurrence.isDeletedFromHistory,
+                                occurrence.status,
+                                occurrence.enteredAt,
+                                occurrence.completedAt,
+                                occurrence.completionReason,
+                                SequenceHistoryOccurrenceActivity(
+                                    activity.id,
+                                    activity.name,
+                                    activity.shortComment,
+                                    activity.timeTrackingMode,
+                                    activity.timerTarget,
+                                    activity.settings,
+                                    activity.toHistoryMainValue(displayMetadata),
+                                ),
+                                children[occurrence.id]
+                                    ?.takeIf { it.deletedAt == null }
+                                    ?.toHistoryChild(activity, displayMetadata),
+                            )
+                        },
                 intervals = execution.intervals,
             )
         }

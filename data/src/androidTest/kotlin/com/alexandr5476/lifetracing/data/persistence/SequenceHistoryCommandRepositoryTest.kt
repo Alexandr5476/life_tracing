@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
@@ -28,6 +29,8 @@ import com.alexandr5476.lifetracing.domain.SequenceChildTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
@@ -36,6 +39,7 @@ import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.SequenceStructuralChildTimingCorrection
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import org.junit.After
@@ -76,6 +80,548 @@ class SequenceHistoryCommandRepositoryTest {
 
     @After
     fun tearDown() = database.close()
+
+    @Test
+    fun leaveGapPersistsHiddenOccurrenceAndCanonicalHistoryOmitsIt() {
+        val plan = linkFulfilledPlan("structural-leave-plan")
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val beforeChild = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+        val result =
+            repository.removeOccurrenceHistory(
+                SEQUENCE_ID,
+                SequenceHistoryStructuralRemovalCommand(
+                    detailToken(),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                    SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                    second(30),
+                    listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
+                ),
+                second(40).plusNanos(999_999),
+            )
+
+        val durable = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val hidden = durable.occurrences.single { it.id == "a" }
+        assertEquals("DELETED_EXECUTION", hidden.status)
+        assertTrue(hidden.isDeletedFromHistory)
+        assertEquals(
+            beforeRoot.occurrences
+                .single {
+                    it.id == "a"
+                }.copy(status = hidden.status, isDeletedFromHistory = true),
+            hidden,
+        )
+        assertEquals(listOf("b"), durable.intervals.map { it.id })
+        assertEquals(beforeRoot.execution.startedAtMs, durable.execution.startedAtMs)
+        assertEquals(beforeRoot.execution.endedAtMs, durable.execution.endedAtMs)
+        assertEquals(20_000L, durable.execution.wallDurationMs)
+        assertEquals(10_000L, durable.execution.activeDurationMs)
+        assertEquals(10_000L, durable.execution.pauseDurationMs)
+        assertEquals(40_000L, durable.execution.updatedAtMs)
+        val deletedChild = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+        assertEquals(beforeChild.execution.copy(deletedAtMs = 40_000, updatedAtMs = 40_000), deletedChild.execution)
+        assertEquals(beforeChild.pauses, deletedChild.pauses)
+        assertEquals(beforeChild.values, deletedChild.values)
+        assertEquals(plan, database.planEntryDao().getById(plan.id))
+
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+        assertEquals(listOf("b"), detail.occurrences.map { it.occurrenceId.value })
+        assertEquals(second(40), detail.updatedAt)
+        assertEquals(result.execution, durable.toDomain())
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        assertEquals(
+            Duration.ofSeconds(10),
+            statistics
+                .sequenceSeries(
+                    StatisticsSeriesId("sequence-series"),
+                    StatisticsPeriod.AllTime,
+                ).activeDurations.total,
+        )
+        assertEquals(Duration.ofSeconds(10), statistics.global(StatisticsPeriod.AllTime).totalTrackedDuration)
+        assertEquals(
+            1L,
+            statistics.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime).executionCount,
+        )
+
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(detail.updatedAt, startedAt = second(9)),
+            second(50),
+        )
+        val corrected = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertTrue(corrected.occurrences.single { it.id == "a" }.isDeletedFromHistory)
+        assertEquals(40_000L, database.activityExecutionDao().getById("child-a")?.deletedAtMs)
+        assertEquals(
+            listOf(
+                "b",
+            ),
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID)).occurrences.map {
+                it.occurrenceId.value
+            },
+        )
+    }
+
+    @Test
+    fun closeGapPersistsTranslatedSuffixAndSynchronizesFulfilledPlan() {
+        val plan = linkFulfilledPlan("structural-close-plan")
+        val result =
+            repository.removeOccurrenceHistory(
+                SEQUENCE_ID,
+                SequenceHistoryStructuralRemovalCommand(
+                    detailToken(),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                    SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                    second(20),
+                    listOf(interval("b", 10, 20, SequenceOccurrenceId("b"))),
+                    occurrenceTimings =
+                        listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(10), second(20))),
+                    childTimings =
+                        listOf(
+                            SequenceStructuralChildTimingCorrection(
+                                ActivityExecutionId("child-b"),
+                                ActivityHistoryTimeCorrection.Timed(second(10), second(20)),
+                                emptyList(),
+                            ),
+                        ),
+                ),
+                second(40),
+            )
+
+        val durable = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(20_000L, durable.execution.endedAtMs)
+        assertEquals(10_000L, durable.execution.activeDurationMs)
+        assertEquals(0L, durable.execution.pauseDurationMs)
+        assertEquals(10_000L, durable.execution.wallDurationMs)
+        assertEquals(10_000L, durable.occurrences.single { it.id == "b" }.enteredAtMs)
+        assertEquals(20_000L, durable.occurrences.single { it.id == "b" }.completedAtMs)
+        assertEquals(
+            SequenceIntervalEntity("b", SEQUENCE_ID.value, "ACTIVE_STEP", 10_000, 20_000, "b"),
+            durable.intervals.single(),
+        )
+        val child = requireNotNull(database.activityExecutionDao().getAggregate("child-b"))
+        assertEquals(10_000L, child.execution.startedAtMs)
+        assertEquals(20_000L, child.execution.completedAtMs)
+        assertEquals(10_000L, child.execution.activeDurationMs)
+        assertEquals(40_000L, child.execution.updatedAtMs)
+        assertEquals(plan.copy(fulfilledAtMs = 20_000, updatedAtMs = 40_000), database.planEntryDao().getById(plan.id))
+        assertEquals(result.execution, durable.toDomain())
+        assertEquals(
+            listOf(
+                "b",
+            ),
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID)).occurrences.map {
+                it.occurrenceId.value
+            },
+        )
+    }
+
+    @Test
+    fun leaveGapOnVisibleTombstonePreservesOriginalChildDeletionMetadata() {
+        repository.deleteChildHistory(
+            SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+            ),
+            second(40),
+        )
+        repository.removeOccurrenceHistory(
+            SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                second(30),
+                listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
+            ),
+            second(50),
+        )
+
+        val child = requireNotNull(database.activityExecutionDao().getById("child-a"))
+        assertEquals(40_000L, child.deletedAtMs)
+        assertEquals(40_000L, child.updatedAtMs)
+        val root = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertTrue(root.occurrences.single { it.id == "a" }.isDeletedFromHistory)
+        assertEquals(50_000L, root.execution.updatedAtMs)
+    }
+
+    @Test
+    fun closeGapMovesExistingPauseRowsInPlaceAndRollsBackAtPauseFailure() {
+        seedPausedLaterChildGraph()
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(PAUSED_SEQUENCE_ID.value))
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(PAUSED_SEQUENCE_ID.value)
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_structural_pause BEFORE UPDATE ON activity_execution_pauses " +
+                "WHEN OLD.id = 'paused-b-pause' BEGIN SELECT RAISE(ABORT, 'forced pause failure'); END",
+        )
+        val command = closePausedLaterChildCommand()
+        assertThrows(android.database.sqlite.SQLiteException::class.java) {
+            repository.removeOccurrenceHistory(PAUSED_SEQUENCE_ID, command, second(40))
+        }
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(PAUSED_SEQUENCE_ID.value))
+        assertEquals(
+            beforeChildren,
+            database.activityExecutionDao().getSequenceChildAggregates(PAUSED_SEQUENCE_ID.value),
+        )
+
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_structural_pause")
+        repository.removeOccurrenceHistory(PAUSED_SEQUENCE_ID, command, second(40))
+        val child = requireNotNull(database.activityExecutionDao().getAggregate("paused-child-b"))
+        assertEquals(10_000L, child.execution.startedAtMs)
+        assertEquals(20_000L, child.execution.completedAtMs)
+        assertEquals(8_000L, child.execution.activeDurationMs)
+        assertEquals(
+            ActivityExecutionPauseEntity("paused-b-pause", "paused-child-b", 12_000, 14_000),
+            child.pauses.single(),
+        )
+        val root = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(PAUSED_SEQUENCE_ID.value))
+        assertEquals(8_000L, root.execution.activeDurationMs)
+        assertEquals(2_000L, root.execution.pauseDurationMs)
+        assertEquals(10_000L, root.execution.wallDurationMs)
+    }
+
+    @Test
+    fun canonicalHistoryFiltersOnlyAfterValidatingHiddenRowsAndKeepsVisibleTombstones() {
+        repository.deleteChildHistory(
+            SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(
+                detailToken(),
+                SequenceOccurrenceId("b"),
+                ActivityExecutionId("child-b"),
+            ),
+            second(40),
+        )
+        repository.removeOccurrenceHistory(
+            SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                second(30),
+                listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
+            ),
+            second(50),
+        )
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+        assertEquals(1, detail.occurrences.size)
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, detail.occurrences.single().status)
+        assertNull(detail.occurrences.single().child)
+
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_occurrences SET activity_snapshot_id = 'activity-b' WHERE id = 'a'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID)
+        }
+    }
+
+    @Test
+    fun structuralRemovalRejectsStaleTokenAndActiveSessionWithoutWrites() {
+        val valid =
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                second(30),
+                listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
+            )
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.removeOccurrenceHistory(
+                SEQUENCE_ID,
+                valid.copy(expectedUpdatedAt = second(29)),
+                second(40),
+            )
+        }
+        assertEquals(before, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+
+        database.activeSessionDao().insert(
+            ActiveSession(ActiveSessionKind.SEQUENCE, ActiveSessionState.RUNNING, null, SEQUENCE_ID, second(30)),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.removeOccurrenceHistory(SEQUENCE_ID, valid, second(40))
+        }
+        assertEquals(before, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertNull(database.activityExecutionDao().getById("child-a")?.deletedAtMs)
+    }
+
+    @Test
+    fun closeGapMovesChildStatisticsDateWhileRootDailyDateStaysFixed() {
+        val start = Instant.parse("2024-01-01T23:59:55Z")
+        shiftBaseGraph(start, ZoneOffset.UTC)
+        val oldChildDate = LocalDate.parse("2024-01-02")
+        val rootDate = LocalDate.parse("2024-01-01")
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        assertEquals(
+            1L,
+            statistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.Day(oldChildDate),
+                ).executionCount,
+        )
+
+        repository.removeOccurrenceHistory(
+            SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                start.plusSeconds(10),
+                listOf(
+                    SequenceInterval(
+                        SequenceIntervalId("b"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        start,
+                        start.plusSeconds(10),
+                        SequenceOccurrenceId("b"),
+                    ),
+                ),
+                occurrenceTimings =
+                    listOf(
+                        SequenceOccurrenceTimingCorrection(
+                            SequenceOccurrenceId("b"),
+                            start,
+                            start.plusSeconds(10),
+                        ),
+                    ),
+                childTimings =
+                    listOf(
+                        SequenceStructuralChildTimingCorrection(
+                            ActivityExecutionId("child-b"),
+                            ActivityHistoryTimeCorrection.Timed(start, start.plusSeconds(10)),
+                            emptyList(),
+                        ),
+                    ),
+            ),
+            start.plusSeconds(30),
+        )
+
+        assertEquals(
+            0L,
+            statistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.Day(oldChildDate),
+                ).executionCount,
+        )
+        assertEquals(
+            1L,
+            statistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.Day(rootDate),
+                ).executionCount,
+        )
+        assertEquals(rootDate.toString(), database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.primaryLocalDate)
+        assertTrue(
+            HistoryReadRepository(database).roots(rootDate).any {
+                it is CompletedSequenceHistoryRoot && it.executionId == SEQUENCE_ID
+            },
+        )
+        assertFalse(
+            HistoryReadRepository(database).roots(oldChildDate).any {
+                it is CompletedSequenceHistoryRoot && it.executionId == SEQUENCE_ID
+            },
+        )
+    }
+
+    @Test
+    fun structuralPlanFailureRollsBackRootOccurrenceChildAndIntervals() {
+        val plan = linkFulfilledPlan("structural-rollback-plan")
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_structural_plan BEFORE UPDATE OF fulfilled_at_ms ON plan_entries " +
+                "BEGIN SELECT RAISE(ABORT, 'forced plan failure'); END",
+        )
+        assertThrows(android.database.sqlite.SQLiteException::class.java) {
+            repository.removeOccurrenceHistory(
+                SEQUENCE_ID,
+                SequenceHistoryStructuralRemovalCommand(
+                    detailToken(),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                    SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                    second(20),
+                    listOf(interval("b", 10, 20, SequenceOccurrenceId("b"))),
+                    occurrenceTimings =
+                        listOf(
+                            SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(10), second(20)),
+                        ),
+                    childTimings =
+                        listOf(
+                            SequenceStructuralChildTimingCorrection(
+                                ActivityExecutionId("child-b"),
+                                ActivityHistoryTimeCorrection.Timed(second(10), second(20)),
+                                emptyList(),
+                            ),
+                        ),
+                ),
+                second(40),
+            )
+        }
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(beforeChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+        assertEquals(plan, database.planEntryDao().getById(plan.id))
+    }
+
+    @Test
+    fun structuralGraphLoadingUsesBatchedOwnerAndSnapshotQueries() {
+        val token = detailToken()
+        observedSql.clear()
+        repository.removeOccurrenceHistory(
+            SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                token,
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                second(30),
+                listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
+            ),
+            second(40),
+        )
+        val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
+        assertEquals(1, queries.count { "from activity_executions" in it && "sequence_execution_id = ?" in it })
+        assertEquals(1, queries.count { "from activity_execution_pauses" in it && " in (" in it })
+        assertEquals(1, queries.count { "from activity_execution_field_values" in it && " in (" in it })
+        assertEquals(1, queries.count { it.startsWith("select * from activity_snapshots where id in") })
+        assertFalse(queries.any { it.startsWith("select * from activity_snapshots where id =") })
+    }
+
+    @Test
+    fun closeGapPersistsCountdownForLaterNotStartedOwnerWithoutFabricatingChildFacts() {
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_snapshot_settings SET before_each_step_countdown_ms = 5000 " +
+                "WHERE sequence_snapshot_id = ?",
+            arrayOf(SNAPSHOT_ID.value),
+        )
+        database.openHelper.writableDatabase.execSQL("DELETE FROM activity_executions WHERE id = 'child-b'")
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_occurrences SET status = 'NOT_STARTED', entered_at_ms = NULL, " +
+                "completed_at_ms = NULL, completion_reason = NULL WHERE id = 'b'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_intervals SET kind = 'TRANSITION_COUNTDOWN', ended_at_ms = 25000 WHERE id = 'b'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'ENDED_EARLY', ended_at_ms = 25000, active_duration_ms = 10000, " +
+                "pause_duration_ms = 5000, wall_duration_ms = 15000 WHERE id = ?",
+            arrayOf(SEQUENCE_ID.value),
+        )
+
+        repository.removeOccurrenceHistory(
+            SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(),
+                SequenceOccurrenceId("a"),
+                ActivityExecutionId("child-a"),
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                second(15),
+                listOf(
+                    SequenceInterval(
+                        SequenceIntervalId("b"),
+                        SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                        second(10),
+                        second(15),
+                        SequenceOccurrenceId("b"),
+                    ),
+                ),
+            ),
+            second(40),
+        )
+
+        val durable = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val notStarted = durable.occurrences.single { it.id == "b" }
+        assertEquals("NOT_STARTED", notStarted.status)
+        assertNull(notStarted.enteredAtMs)
+        assertNull(notStarted.completedAtMs)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence("b"))
+        assertEquals(
+            SequenceIntervalEntity("b", SEQUENCE_ID.value, "TRANSITION_COUNTDOWN", 10_000, 15_000, "b"),
+            durable.intervals.single(),
+        )
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, detail.occurrences.single().status)
+        assertNull(detail.occurrences.single().child)
+    }
+
+    @Test
+    fun closeGapPersistsJumpCountdownForLaterSkippedOwnerWithoutFabricatingChildFacts() {
+        seedSkippedCountdownGraph()
+        repository.removeOccurrenceHistory(
+            SKIPPED_COUNTDOWN_SEQUENCE_ID,
+            SequenceHistoryStructuralRemovalCommand(
+                detailToken(SKIPPED_COUNTDOWN_SEQUENCE_ID),
+                SequenceOccurrenceId("jump-a"),
+                ActivityExecutionId("jump-child-a"),
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                second(20),
+                listOf(
+                    SequenceInterval(
+                        SequenceIntervalId("jump-countdown-b"),
+                        SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                        second(10),
+                        second(12),
+                        SequenceOccurrenceId("jump-b"),
+                    ),
+                    interval("jump-c", 12, 20, SequenceOccurrenceId("jump-c")),
+                ),
+                occurrenceTimings =
+                    listOf(
+                        SequenceOccurrenceTimingCorrection(
+                            SequenceOccurrenceId("jump-c"),
+                            second(12),
+                            second(20),
+                        ),
+                    ),
+                childTimings =
+                    listOf(
+                        SequenceStructuralChildTimingCorrection(
+                            ActivityExecutionId("jump-child-c"),
+                            ActivityHistoryTimeCorrection.Timed(second(12), second(20)),
+                            emptyList(),
+                        ),
+                    ),
+            ),
+            second(40),
+        )
+
+        val durable =
+            requireNotNull(
+                database.sequenceExecutionDao().getHistoryAggregate(SKIPPED_COUNTDOWN_SEQUENCE_ID.value),
+            )
+        val skipped = durable.occurrences.single { it.id == "jump-b" }
+        assertEquals("SKIPPED", skipped.status)
+        assertNull(skipped.enteredAtMs)
+        assertNull(skipped.completedAtMs)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence("jump-b"))
+        assertEquals(
+            SequenceIntervalEntity(
+                "jump-countdown-b",
+                SKIPPED_COUNTDOWN_SEQUENCE_ID.value,
+                "TRANSITION_COUNTDOWN",
+                10_000,
+                12_000,
+                "jump-b",
+            ),
+            durable.intervals.single { it.id == "jump-countdown-b" },
+        )
+        val detail =
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SKIPPED_COUNTDOWN_SEQUENCE_ID))
+        assertEquals(
+            RuntimeOccurrenceStatus.SKIPPED,
+            detail.occurrences.single { it.occurrenceId.value == "jump-b" }.status,
+        )
+        assertNull(detail.occurrences.single { it.occurrenceId.value == "jump-b" }.child)
+    }
 
     @Test
     fun deleteChildHistoryPersistsCanonicalTombstoneWithoutChangingSequenceOrPlanFacts() {
@@ -1094,6 +1640,58 @@ class SequenceHistoryCommandRepositoryTest {
         )
     }
 
+    private fun seedPausedLaterChildGraph() {
+        seedPausedGraph()
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM sequence_intervals WHERE id = 'paused-b'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO sequence_intervals " +
+                "(id, sequence_execution_id, kind, started_at_ms, ended_at_ms, occurrence_id) VALUES " +
+                "('paused-b-1', 'paused-sequence', 'ACTIVE_STEP', 20000, 22000, 'paused-b'), " +
+                "('paused-b-2', 'paused-sequence', 'ACTIVE_STEP', 24000, 30000, 'paused-b')",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_execution_pauses " +
+                "(id, activity_execution_id, started_at_ms, ended_at_ms) " +
+                "VALUES ('paused-b-pause', 'paused-child-b', 22000, 24000)",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET active_duration_ms = 8000 WHERE id = 'paused-child-b'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET active_duration_ms = 16000, pause_duration_ms = 4000 " +
+                "WHERE id = 'paused-sequence'",
+        )
+    }
+
+    private fun closePausedLaterChildCommand() =
+        SequenceHistoryStructuralRemovalCommand(
+            detailToken(PAUSED_SEQUENCE_ID),
+            SequenceOccurrenceId("paused-a"),
+            ActivityExecutionId("paused-child-a"),
+            SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+            second(20),
+            listOf(
+                interval("paused-b-1", 10, 12, SequenceOccurrenceId("paused-b")),
+                interval("paused-b-2", 14, 20, SequenceOccurrenceId("paused-b")),
+            ),
+            occurrenceTimings =
+                listOf(
+                    SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("paused-b"), second(10), second(20)),
+                ),
+            childTimings =
+                listOf(
+                    SequenceStructuralChildTimingCorrection(
+                        ActivityExecutionId("paused-child-b"),
+                        ActivityHistoryTimeCorrection.Timed(second(10), second(20)),
+                        listOf(
+                            ActivityExecutionPause(ActivityExecutionPauseId("paused-b-pause"), second(12), second(14)),
+                        ),
+                    ),
+                ),
+        )
+
     private fun seedNoLiveGraph() {
         val fixtures = LiveRuntimeTestFixtures(database)
         fixtures.activity("no-live-activity", "NO_LIVE_TRACKING")
@@ -1142,6 +1740,84 @@ class SequenceHistoryCommandRepositoryTest {
                 NO_LIVE_SEQUENCE_ID,
                 occurrence.id,
                 null,
+            ).toEntityAggregate(),
+        )
+    }
+
+    private fun seedSkippedCountdownGraph() {
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.activity("activity-c", "STOPWATCH")
+        fixtures.sequence(
+            SKIPPED_COUNTDOWN_SNAPSHOT_ID.value,
+            listOf("activity-a", "activity-b", "activity-c"),
+            countdownMs = 5_000,
+        )
+        val occurrenceA = occurrence("jump-a", "activity-a", 0, 10, 20, SKIPPED_COUNTDOWN_SNAPSHOT_ID)
+        val occurrenceB =
+            occurrence("jump-b", "activity-b", 1, 20, 22, SKIPPED_COUNTDOWN_SNAPSHOT_ID).copy(
+                status = RuntimeOccurrenceStatus.SKIPPED,
+                enteredAt = null,
+                completedAt = null,
+                completionReason = null,
+            )
+        val occurrenceC = occurrence("jump-c", "activity-c", 2, 22, 30, SKIPPED_COUNTDOWN_SNAPSHOT_ID)
+        val intervals =
+            listOf(
+                interval("jump-a", 10, 20, occurrenceA.id),
+                SequenceInterval(
+                    SequenceIntervalId("jump-countdown-b"),
+                    SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                    second(20),
+                    second(22),
+                    occurrenceB.id,
+                ),
+                interval("jump-c", 22, 30, occurrenceC.id),
+            )
+        val durations =
+            com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator.calculate(
+                second(10),
+                second(30),
+                intervals,
+            )
+        database.sequenceExecutionDao().insertAggregate(
+            SequenceExecution(
+                SKIPPED_COUNTDOWN_SEQUENCE_ID,
+                SKIPPED_COUNTDOWN_SNAPSHOT_ID,
+                StatisticsSeriesId("sequence-series"),
+                SequenceExecutionStatus.COMPLETED,
+                second(10),
+                second(30),
+                durations.active,
+                durations.pause,
+                durations.wall,
+                ZoneOffset.UTC,
+                0,
+                LocalDate.ofEpochDay(0),
+                null,
+                second(10),
+                second(30),
+                listOf(occurrenceA, occurrenceB, occurrenceC),
+                intervals,
+            ).toEntityAggregate(),
+        )
+        database.activityExecutionDao().insertAggregate(
+            child(
+                "jump-child-a",
+                "activity-a",
+                occurrenceA.id,
+                10,
+                20,
+                SKIPPED_COUNTDOWN_SEQUENCE_ID,
+            ).toEntityAggregate(),
+        )
+        database.activityExecutionDao().insertAggregate(
+            child(
+                "jump-child-c",
+                "activity-c",
+                occurrenceC.id,
+                22,
+                30,
+                SKIPPED_COUNTDOWN_SEQUENCE_ID,
             ).toEntityAggregate(),
         )
     }
@@ -1344,5 +2020,7 @@ class SequenceHistoryCommandRepositoryTest {
         val PAUSED_SEQUENCE_ID = SequenceExecutionId("paused-sequence")
         val NO_LIVE_SEQUENCE_ID = SequenceExecutionId("no-live-sequence")
         val NO_LIVE_SNAPSHOT_ID = SequenceSnapshotId("no-live-snapshot")
+        val SKIPPED_COUNTDOWN_SEQUENCE_ID = SequenceExecutionId("skipped-countdown-sequence")
+        val SKIPPED_COUNTDOWN_SNAPSHOT_ID = SequenceSnapshotId("skipped-countdown-snapshot")
     }
 }
