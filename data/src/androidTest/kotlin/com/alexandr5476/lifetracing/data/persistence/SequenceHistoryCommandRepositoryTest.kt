@@ -82,7 +82,7 @@ class SequenceHistoryCommandRepositoryTest {
 
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(before.root.completedAt, startedAt = second(9), endedAt = second(31)),
+            SequenceHistoryTimingCorrection(before.updatedAt, startedAt = second(9), endedAt = second(31)),
             second(40),
         )
 
@@ -97,6 +97,50 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
+    fun nullableOffsetAndCanonicalDetailTokenSupportConsecutiveCorrections() {
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET original_zone_id = 'Europe/Berlin', " +
+                "original_utc_offset_minutes = NULL WHERE id = ?",
+            arrayOf(SEQUENCE_ID.value),
+        )
+        val history = HistoryReadRepository(database)
+        val first = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        assertEquals(
+            Instant.ofEpochMilli(
+                requireNotNull(database.sequenceExecutionDao().getById(SEQUENCE_ID.value)).updatedAtMs,
+            ),
+            first.updatedAt,
+        )
+
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(first.updatedAt, endedAt = second(31)),
+            second(40),
+        )
+        val second = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        assertEquals(second(40), second.updatedAt)
+        assertNull(database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.originalUtcOffsetMinutes)
+
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(second.updatedAt, startedAt = second(9), endedAt = second(30)),
+            second(50),
+        )
+        val third = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        assertEquals(second(30), third.root.completedAt)
+        assertEquals(second(50), third.updatedAt)
+        assertTrue(third.updatedAt > second.updatedAt)
+        assertEquals(60, database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.originalUtcOffsetMinutes)
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.correctTiming(
+                SEQUENCE_ID,
+                SequenceHistoryTimingCorrection(first.updatedAt, endedAt = second(31)),
+                second(60),
+            )
+        }
+    }
+
+    @Test
     fun localDateAndDstCorrectionMovesCanonicalHistoryAndDailyBuckets() {
         val zone = ZoneId.of("Europe/Berlin")
         val oldStart = Instant.parse("2026-10-25T02:30:00Z")
@@ -106,12 +150,13 @@ class SequenceHistoryCommandRepositoryTest {
         val newDate = LocalDate.parse("2026-10-24")
         val history = HistoryReadRepository(database)
         val daily = DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+        val token = detailToken()
 
         assertEquals(1, history.roots(oldDate).size)
         assertEquals(1, daily.getDaily(DailyQuery(oldDate, oldStart.plusSeconds(30), 10)).completedHistory.size)
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(oldStart.plusSeconds(20), startedAt = newStart),
+            SequenceHistoryTimingCorrection(token, startedAt = newStart),
             oldStart.plusSeconds(30),
         )
 
@@ -122,6 +167,119 @@ class SequenceHistoryCommandRepositoryTest {
         assertEquals(1, history.roots(newDate).size)
         assertTrue(daily.getDaily(DailyQuery(oldDate, oldStart.plusSeconds(30), 10)).completedHistory.isEmpty())
         assertEquals(1, daily.getDaily(DailyQuery(newDate, oldStart.plusSeconds(30), 10)).completedHistory.size)
+    }
+
+    @Test
+    fun correctedRootAndChildrenMoveStatisticsDayBucketsWithoutDoubleCounting() {
+        val zone = ZoneId.of("America/New_York")
+        val oldStart = Instant.parse("2026-01-02T04:59:30Z")
+        val newStart = Instant.parse("2026-01-02T05:00:10Z")
+        val oldDate = LocalDate.parse("2026-01-01")
+        val newDate = LocalDate.parse("2026-01-02")
+        shiftBaseGraph(oldStart, zone)
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+
+        assertEquals(
+            1,
+            statistics
+                .sequenceSeries(
+                    StatisticsSeriesId("sequence-series"),
+                    StatisticsPeriod.Day(oldDate),
+                ).executionCount,
+        )
+        assertEquals(
+            2,
+            statistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.Day(oldDate),
+                ).executionCount,
+        )
+        assertEquals(Duration.ofSeconds(20), statistics.global(StatisticsPeriod.Day(oldDate)).totalTrackedDuration)
+        assertEquals(
+            0,
+            statistics
+                .sequenceSeries(
+                    StatisticsSeriesId("sequence-series"),
+                    StatisticsPeriod.Day(newDate),
+                ).executionCount,
+        )
+
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(
+                expectedUpdatedAt = detailToken(),
+                startedAt = newStart,
+                endedAt = newStart.plusSeconds(20),
+                occurrenceTimings =
+                    listOf(
+                        SequenceOccurrenceTimingCorrection(
+                            SequenceOccurrenceId("a"),
+                            newStart,
+                            newStart.plusSeconds(10),
+                        ),
+                        SequenceOccurrenceTimingCorrection(
+                            SequenceOccurrenceId("b"),
+                            newStart.plusSeconds(10),
+                            newStart.plusSeconds(20),
+                        ),
+                    ),
+                finalIntervals =
+                    listOf(
+                        interval(
+                            "a",
+                            newStart.epochSecond,
+                            newStart.plusSeconds(10).epochSecond,
+                            SequenceOccurrenceId("a"),
+                        ),
+                        interval(
+                            "b",
+                            newStart.plusSeconds(10).epochSecond,
+                            newStart.plusSeconds(20).epochSecond,
+                            SequenceOccurrenceId("b"),
+                        ),
+                    ),
+                childTimings =
+                    listOf(
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-a"),
+                            ActivityHistoryTimeCorrection.Timed(newStart, newStart.plusSeconds(10)),
+                        ),
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-b"),
+                            ActivityHistoryTimeCorrection.Timed(newStart.plusSeconds(10), newStart.plusSeconds(20)),
+                        ),
+                    ),
+            ),
+            newStart.plusSeconds(30),
+        )
+
+        assertEquals(
+            0,
+            statistics
+                .sequenceSeries(
+                    StatisticsSeriesId("sequence-series"),
+                    StatisticsPeriod.Day(oldDate),
+                ).executionCount,
+        )
+        assertEquals(
+            0,
+            statistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.Day(oldDate),
+                ).executionCount,
+        )
+        assertEquals(Duration.ZERO, statistics.global(StatisticsPeriod.Day(oldDate)).totalTrackedDuration)
+        val sequence = statistics.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.Day(newDate))
+        val activity = statistics.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.Day(newDate))
+        val global = statistics.global(StatisticsPeriod.Day(newDate))
+        assertEquals(1, sequence.executionCount)
+        assertEquals(Duration.ofSeconds(20), sequence.activeDurations.total)
+        assertEquals(2, activity.executionCount)
+        assertEquals(Duration.ofSeconds(20), activity.durations.total)
+        assertEquals(Duration.ofSeconds(20), global.totalTrackedDuration)
+        assertEquals(1, global.topLevelExecutionCount)
     }
 
     @Test
@@ -136,7 +294,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                expectedUpdatedAt = second(30),
+                expectedUpdatedAt = before.updatedAt,
                 occurrenceTimings =
                     listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("a"), second(11), second(19))),
                 finalIntervals = intervals,
@@ -172,7 +330,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                second(30),
+                detailToken(),
                 occurrenceTimings =
                     listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(15), second(30))),
                 finalIntervals = overlapping,
@@ -194,7 +352,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             PAUSED_SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                second(30),
+                detailToken(PAUSED_SEQUENCE_ID),
                 occurrenceTimings =
                     listOf(
                         SequenceOccurrenceTimingCorrection(
@@ -237,7 +395,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             NO_LIVE_SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                second(20),
+                detailToken(NO_LIVE_SEQUENCE_ID),
                 occurrenceTimings =
                     listOf(
                         SequenceOccurrenceTimingCorrection(
@@ -302,7 +460,7 @@ class SequenceHistoryCommandRepositoryTest {
             repository.correctTiming(
                 SEQUENCE_ID,
                 SequenceHistoryTimingCorrection(
-                    second(30),
+                    detailToken(),
                     endedAt = second(29),
                     occurrenceTimings =
                         listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(20), second(29))),
@@ -327,27 +485,29 @@ class SequenceHistoryCommandRepositoryTest {
 
     @Test
     fun staleAndWrongIdentityCorrectionsFailWithoutPartialWrites() {
+        val initialToken = detailToken()
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(second(30), startedAt = second(9)),
+            SequenceHistoryTimingCorrection(initialToken, startedAt = second(9)),
             second(40),
         )
         val persisted = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
         assertThrows(ConcurrentModificationException::class.java) {
             repository.correctTiming(
                 SEQUENCE_ID,
-                SequenceHistoryTimingCorrection(second(30), endedAt = second(31)),
+                SequenceHistoryTimingCorrection(initialToken, endedAt = second(31)),
                 second(50),
             )
         }
+        val currentToken = detailToken()
         listOf(
             SequenceHistoryTimingCorrection(
-                second(40),
+                currentToken,
                 occurrenceTimings =
                     listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("foreign"), second(10), second(20))),
             ),
             SequenceHistoryTimingCorrection(
-                second(40),
+                currentToken,
                 childTimings =
                     listOf(
                         SequenceChildTimingCorrection(
@@ -364,7 +524,7 @@ class SequenceHistoryCommandRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) {
             repository.correctTiming(
                 SequenceExecutionId("foreign"),
-                SequenceHistoryTimingCorrection(second(40)),
+                SequenceHistoryTimingCorrection(currentToken),
                 second(50),
             )
         }
@@ -376,7 +536,7 @@ class SequenceHistoryCommandRepositoryTest {
         val unrelated = insertPlannedSequencePlan("unrelated-plan")
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(second(30), endedAt = second(31)),
+            SequenceHistoryTimingCorrection(detailToken(), endedAt = second(31)),
             second(40),
         )
         assertEquals(unrelated, database.planEntryDao().getById(unrelated.id))
@@ -384,7 +544,7 @@ class SequenceHistoryCommandRepositoryTest {
         val linked = linkFulfilledPlan("linked-unchanged")
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(second(40), startedAt = second(8)),
+            SequenceHistoryTimingCorrection(detailToken(), startedAt = second(8)),
             second(50),
         )
         assertEquals(linked, database.planEntryDao().getById(linked.id))
@@ -396,7 +556,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                second(30),
+                detailToken(),
                 endedAt = second(29),
                 occurrenceTimings =
                     listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(20), second(29))),
@@ -435,7 +595,7 @@ class SequenceHistoryCommandRepositoryTest {
         assertThrows(android.database.sqlite.SQLiteException::class.java) {
             repository.correctTiming(
                 SEQUENCE_ID,
-                SequenceHistoryTimingCorrection(second(30), endedAt = second(31)),
+                SequenceHistoryTimingCorrection(detailToken(), endedAt = second(31)),
                 second(40),
             )
         }
@@ -449,7 +609,7 @@ class SequenceHistoryCommandRepositoryTest {
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
-                second(30),
+                detailToken(),
                 occurrenceTimings =
                     listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("a"), second(10), second(18))),
                 finalIntervals =
@@ -479,10 +639,11 @@ class SequenceHistoryCommandRepositoryTest {
 
     @Test
     fun graphLoadingUsesBatchedOwnerAndSnapshotQueries() {
+        val token = detailToken()
         observedSql.clear()
         repository.correctTiming(
             SEQUENCE_ID,
-            SequenceHistoryTimingCorrection(second(30), startedAt = second(9)),
+            SequenceHistoryTimingCorrection(token, startedAt = second(9)),
             second(40),
         )
         val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
@@ -747,6 +908,9 @@ class SequenceHistoryCommandRepositoryTest {
 
     private fun HistoryReadRepository.roots(date: LocalDate) =
         getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(date, date), 10))
+
+    private fun detailToken(id: SequenceExecutionId = SEQUENCE_ID) =
+        requireNotNull(HistoryReadRepository(database).getSequenceDetail(id)).updatedAt
 
     private fun occurrence(
         id: String,

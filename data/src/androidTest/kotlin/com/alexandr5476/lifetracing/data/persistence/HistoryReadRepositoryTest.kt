@@ -317,7 +317,7 @@ class HistoryReadRepositoryTest {
         val localOption = detail.fields[1].categoryOptions.single { it.id.value == "local-option" }
         assertEquals("Local option", localOption.label)
         assertFalse(
-            observedSql.map(String::lowercase).any {
+            synchronized(observedSql) { observedSql.map(String::lowercase) }.any {
                 it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete")
             },
         )
@@ -447,7 +447,7 @@ class HistoryReadRepositoryTest {
         val execution = insertSourceDisplayFixture()
         observedSql.clear()
         repository.getActivityDetail(execution.id)
-        val queries = observedSql.map(String::lowercase)
+        val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
 
         assertEquals(1, queries.count { "from activity_template_fields" in it })
         assertEquals(1, queries.count { "from activity_template_category_options" in it })

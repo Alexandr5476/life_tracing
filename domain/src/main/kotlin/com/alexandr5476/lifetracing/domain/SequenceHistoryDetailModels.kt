@@ -5,6 +5,7 @@ import java.time.Instant
 
 data class SequenceHistoryDetail(
     val root: CompletedSequenceHistoryRoot,
+    val updatedAt: Instant,
     val settings: SequenceSnapshotSettings,
     val fields: List<SequenceHistoryField>,
     val occurrences: List<SequenceHistoryOccurrence>,

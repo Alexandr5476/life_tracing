@@ -193,7 +193,7 @@ internal abstract class SequenceExecutionDao {
         activeDurationMs: Long,
         pauseDurationMs: Long,
         wallDurationMs: Long,
-        originalUtcOffsetMinutes: Int,
+        originalUtcOffsetMinutes: Int?,
         primaryLocalDate: String,
         updatedAtMs: Long,
     ): Int
@@ -416,7 +416,7 @@ internal abstract class SequenceExecutionDao {
                 requireNotNull(root.activeDurationMs),
                 requireNotNull(root.pauseDurationMs),
                 requireNotNull(root.wallDurationMs),
-                requireNotNull(root.originalUtcOffsetMinutes),
+                root.originalUtcOffsetMinutes,
                 root.primaryLocalDate,
                 root.updatedAtMs,
             ),

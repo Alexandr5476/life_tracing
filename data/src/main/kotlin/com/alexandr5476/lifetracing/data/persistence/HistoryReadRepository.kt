@@ -170,6 +170,7 @@ class HistoryReadRepository internal constructor(
             val sequenceDisplayMetadata = loadSequenceDisplayMetadata(snapshot)
             SequenceHistoryDetail(
                 root = execution.toHistoryRoot(snapshot),
+                updatedAt = execution.updatedAt,
                 settings = snapshot.settings,
                 fields = snapshot.toHistoryFields(execution.values, sequenceDisplayMetadata),
                 occurrences =
