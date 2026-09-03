@@ -31,3 +31,14 @@ data class SequenceHistoryTimingCorrectionResult(
     val execution: SequenceExecution,
     val children: List<ActivityExecution>,
 )
+
+data class SequenceChildHistoryDeletionCommand(
+    val expectedUpdatedAt: Instant,
+    val occurrenceId: SequenceOccurrenceId,
+    val childExecutionId: ActivityExecutionId,
+)
+
+data class SequenceChildHistoryDeletionResult(
+    val execution: SequenceExecution,
+    val child: ActivityExecution,
+)

@@ -289,14 +289,15 @@ object SequenceExecutionValidator {
                         occurrence.completedAt == null &&
                         occurrence.completionReason == null,
                 ) { "Current occurrence requires entry and no completion" }
-            RuntimeOccurrenceStatus.COMPLETED -> {
-                val entered = requireNotNull(occurrence.enteredAt) { "Completed occurrence requires entry" }
-                val completed = requireNotNull(occurrence.completedAt) { "Completed occurrence requires completion" }
+            RuntimeOccurrenceStatus.COMPLETED,
+            RuntimeOccurrenceStatus.DELETED_EXECUTION,
+            -> {
+                val entered = requireNotNull(occurrence.enteredAt) { "Performed occurrence requires entry" }
+                val completed = requireNotNull(occurrence.completedAt) { "Performed occurrence requires completion" }
                 require(completed.toEpochMilli() >= entered.toEpochMilli()) {
                     "Occurrence completion must not precede entry"
                 }
             }
-            RuntimeOccurrenceStatus.DELETED_EXECUTION -> Unit
         }
     }
 

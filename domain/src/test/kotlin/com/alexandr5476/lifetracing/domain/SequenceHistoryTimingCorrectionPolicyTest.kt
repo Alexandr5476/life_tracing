@@ -5,12 +5,215 @@ package com.alexandr5476.lifetracing.domain
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
 class SequenceHistoryTimingCorrectionPolicyTest {
+    @Test
+    fun `child deletion preserves history facts and creates a millisecond tombstone`() {
+        val graph =
+            pausedGraph(
+                listOf(
+                    interval("a-first", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(12), "a"),
+                    interval("a-second", SequenceIntervalKind.ACTIVE_STEP, minute(14), minute(20), "a"),
+                ),
+            )
+        val occurrence = graph.execution.occurrences.first()
+        val child = graph.children.first().execution
+        val deletedAt = minute(31).plusNanos(999_999)
+
+        val result =
+            SequenceChildHistoryDeletionPolicy.delete(
+                graph.execution,
+                graph.snapshot,
+                graph.children,
+                SequenceChildHistoryDeletionCommand(
+                    graph.execution.updatedAt.plusNanos(999_999),
+                    occurrence.id,
+                    child.id,
+                ),
+                deletedAt,
+            )
+
+        val persistedDeletion = Instant.ofEpochMilli(deletedAt.toEpochMilli())
+        assertEquals(
+            graph.execution.copy(
+                updatedAt = persistedDeletion,
+                occurrences =
+                    graph.execution.occurrences.map {
+                        if (it.id == occurrence.id) it.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION) else it
+                    },
+            ),
+            result.execution,
+        )
+        assertEquals(child.copy(deletedAt = persistedDeletion, updatedAt = persistedDeletion), result.child)
+        assertEquals(child.pauses, result.child.pauses)
+        assertEquals(graph.execution.intervals, result.execution.intervals)
+        assertEquals(graph.execution.activeDuration, result.execution.activeDuration)
+        assertEquals(graph.execution.pauseDuration, result.execution.pauseDuration)
+        assertEquals(graph.execution.wallDuration, result.execution.wallDuration)
+    }
+
+    @Test
+    fun `timing correction accepts tombstones but cannot edit their deleted children`() {
+        val graph = graph()
+        val deleted =
+            SequenceChildHistoryDeletionPolicy.delete(
+                graph.execution,
+                graph.snapshot,
+                graph.children,
+                SequenceChildHistoryDeletionCommand(
+                    graph.execution.updatedAt,
+                    graph.execution.occurrences
+                        .first()
+                        .id,
+                    graph.children
+                        .first()
+                        .execution.id,
+                ),
+                minute(21),
+            )
+        val children =
+            graph.children.map {
+                if (it.execution.id == deleted.child.id) it.copy(execution = deleted.child) else it
+            }
+
+        val corrected =
+            SequenceHistoryTimingCorrectionPolicy.correct(
+                deleted.execution,
+                graph.snapshot,
+                children,
+                SequenceHistoryTimingCorrection(deleted.execution.updatedAt, startedAt = minute(9)),
+                minute(22),
+            )
+        assertEquals(
+            RuntimeOccurrenceStatus.DELETED_EXECUTION,
+            corrected.execution.occurrences
+                .first()
+                .status,
+        )
+        assertEquals(deleted.child, corrected.children.first())
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceHistoryTimingCorrectionPolicy.correct(
+                deleted.execution,
+                graph.snapshot,
+                children,
+                SequenceHistoryTimingCorrection(
+                    deleted.execution.updatedAt,
+                    childTimings =
+                        listOf(
+                            SequenceChildTimingCorrection(
+                                deleted.child.id,
+                                ActivityHistoryTimeCorrection.Timed(minute(10), minute(15)),
+                            ),
+                        ),
+                ),
+                minute(22),
+            )
+        }
+    }
+
+    @Test
+    fun `child deletion rejects stale live and wrong targets`() {
+        val graph = graph()
+        val command =
+            SequenceChildHistoryDeletionCommand(
+                graph.execution.updatedAt,
+                graph.execution.occurrences
+                    .first()
+                    .id,
+                graph.children
+                    .first()
+                    .execution.id,
+            )
+        listOf(
+            command.copy(expectedUpdatedAt = minute(19)),
+            command.copy(occurrenceId = SequenceOccurrenceId("missing")),
+            command.copy(childExecutionId = ActivityExecutionId("missing")),
+        ).forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) {
+                SequenceChildHistoryDeletionPolicy.delete(
+                    graph.execution,
+                    graph.snapshot,
+                    graph.children,
+                    invalid,
+                    minute(21),
+                )
+            }
+        }
+        listOf(SequenceExecutionStatus.RUNNING, SequenceExecutionStatus.PAUSED).forEach { status ->
+            assertThrows(IllegalArgumentException::class.java) {
+                SequenceChildHistoryDeletionPolicy.delete(
+                    graph.execution.copy(
+                        status = status,
+                        endedAt = null,
+                        activeDuration = null,
+                        pauseDuration = null,
+                        wallDuration = null,
+                    ),
+                    graph.snapshot,
+                    graph.children,
+                    command,
+                    minute(21),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `historical graph rejects mismatched retained and deleted child states`() {
+        val graph = graph()
+        val deletedChild =
+            graph.children.first().copy(
+                execution =
+                    graph.children
+                        .first()
+                        .execution
+                        .copy(deletedAt = minute(21)),
+            )
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceHistoricalTimingGraphValidator.requireValid(
+                graph.execution,
+                graph.snapshot,
+                listOf(deletedChild, graph.children[1]),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceHistoricalTimingGraphValidator.requireValid(
+                graph.execution.copy(
+                    occurrences =
+                        graph.execution.occurrences.mapIndexed { index, occurrence ->
+                            if (index == 0) {
+                                occurrence.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION)
+                            } else {
+                                occurrence
+                            }
+                        },
+                ),
+                graph.snapshot,
+                graph.children,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SequenceHistoricalTimingGraphValidator.requireValid(
+                graph.execution,
+                graph.snapshot,
+                graph.children +
+                    graph.children.first().copy(
+                        execution =
+                            graph.children
+                                .first()
+                                .execution
+                                .copy(id = ActivityExecutionId("duplicate")),
+                    ),
+            )
+        }
+        assertTrue(graph.execution.occurrences.all { !it.isDeletedFromHistory })
+    }
+
     @Test
     fun `accepts both terminal states and rejects live states`() {
         assertEquals(

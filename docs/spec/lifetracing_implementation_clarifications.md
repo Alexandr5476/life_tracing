@@ -24,6 +24,12 @@ When non-null, `activity_snapshots.statistics_series_id` references `statistics_
 
 A non-null StatisticsSeries ID is durable statistical identity. It must not dangle while an executable snapshot retains it, including after the source Template is archived or hard-purged.
 
+## Sequence child history deletion tombstone
+
+Deleting a performed child ActivityExecution from terminal Sequence history is logical deletion. The child row, pauses, values, frozen snapshot, event timestamps, duration, timezone attribution, and ownership links remain durable; only `deleted_at_ms` and the child `updated_at_ms` advance. The same occurrence changes from `COMPLETED` to `DELETED_EXECUTION` without changing provenance or timing, and the Sequence root advances only its `updated_at_ms` history-mutation token. Sequence intervals, boundaries, duration caches, values, and an already-coherent fulfilled Plan remain unchanged.
+
+Canonical Sequence History retains the tombstone occurrence and its Activity configuration but omits the deleted child detail. Canonical Activity Statistics exclude the logically deleted child while Sequence and global root-derived statistics remain unchanged.
+
 ## Archived Category option cannot be a new-snapshot default
 
 Archived Template Category options are excluded when a new ActivitySnapshot is created. A Template Category default must therefore be null or reference a currently active option of that same Field at semantic commit time.

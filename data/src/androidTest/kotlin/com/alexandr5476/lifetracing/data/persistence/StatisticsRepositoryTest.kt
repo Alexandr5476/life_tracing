@@ -13,6 +13,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
@@ -165,6 +166,90 @@ class StatisticsRepositoryTest {
         )
         assertEquals(Duration.ofMinutes(130), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
         assertEquals(1L, repository.global(StatisticsPeriod.AllTime).oneOffActivityExecutionCount)
+    }
+
+    @Test
+    fun deletedSequenceChildLeavesDurableValuesButExitsActivityStatisticsOnly() {
+        series("activity-series", "ACTIVITY", "Activity")
+        series("sequence-series", "SEQUENCE", "Sequence")
+        activityTemplateWithFields()
+        activitySnapshot("child-history", "activity-series", fields = true)
+        val (sequenceId, occurrenceId) =
+            completedSequence(
+                "sequence-history",
+                "sequence-series",
+                "child-history",
+                10 * MINUTE,
+                0,
+                AUG_20,
+            )
+        completedActivity(
+            "sequence-child",
+            "child-history",
+            "activity-series",
+            10 * MINUTE,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = sequenceId,
+            occurrenceId = occurrenceId,
+            values =
+                listOf(
+                    numberValue("sequence-child", "child-history-number", 12),
+                    categoryValue("sequence-child", "child-history-category", "child-history-tempo"),
+                ),
+        )
+        val root = requireNotNull(database.sequenceExecutionDao().getById(sequenceId))
+        val sequenceBefore = repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
+        val globalBefore = repository.global(StatisticsPeriod.AllTime)
+        assertEquals(
+            1L,
+            repository.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime).executionCount,
+        )
+        assertEquals(
+            1L,
+            repository
+                .numberFieldStatistics(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+                    StatisticsPeriod.AllTime,
+                ).recordedCount,
+        )
+
+        SequenceHistoryCommandRepository(database).deleteChildHistory(
+            SequenceExecutionId(sequenceId),
+            SequenceChildHistoryDeletionCommand(
+                Instant.ofEpochMilli(root.updatedAtMs),
+                SequenceOccurrenceId(occurrenceId),
+                ActivityExecutionId("sequence-child"),
+            ),
+            Instant.ofEpochMilli(root.updatedAtMs + 1),
+        )
+
+        val activity = repository.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        val number =
+            repository.numberFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+                StatisticsPeriod.AllTime,
+            )
+        val category =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(0L, activity.executionCount)
+        assertEquals(0L, activity.durations.sampleCount)
+        assertEquals(0L, number.relevantExecutionCount)
+        assertEquals(0L, number.recordedCount)
+        assertEquals(0L, category.relevantExecutionCount)
+        assertEquals(0L, category.recordedCount)
+        assertEquals(2, database.activityExecutionDao().getValues("sequence-child").size)
+        assertEquals(
+            sequenceBefore,
+            repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+        )
+        assertEquals(globalBefore, repository.global(StatisticsPeriod.AllTime))
     }
 
     @Test

@@ -342,6 +342,34 @@ internal abstract class ActivityExecutionDao {
         deletedAtMs: Long,
     ): Int
 
+    @Query(
+        "UPDATE activity_executions SET deleted_at_ms = :deletedAtMs, updated_at_ms = :deletedAtMs " +
+            "WHERE id = :id AND snapshot_id = :snapshotId AND context_type = 'SEQUENCE_CHILD' " +
+            "AND sequence_execution_id = :sequenceExecutionId AND sequence_occurrence_id = :sequenceOccurrenceId " +
+            "AND plan_entry_id IS NULL AND statistics_series_id IS :statisticsSeriesId AND status = 'COMPLETED' " +
+            "AND started_at_ms IS :startedAtMs AND completed_at_ms = :completedAtMs " +
+            "AND active_duration_ms IS :activeDurationMs AND original_zone_id = :originalZoneId " +
+            "AND original_utc_offset_minutes IS :originalUtcOffsetMinutes AND primary_local_date = :primaryLocalDate " +
+            "AND completion_reason IS NULL AND deleted_at_ms IS NULL AND created_at_ms = :createdAtMs " +
+            "AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    protected abstract fun softDeleteCompletedSequenceChildUnchecked(
+        id: String,
+        snapshotId: String,
+        sequenceExecutionId: String,
+        sequenceOccurrenceId: String,
+        statisticsSeriesId: String?,
+        startedAtMs: Long?,
+        completedAtMs: Long,
+        activeDurationMs: Long?,
+        originalZoneId: String,
+        originalUtcOffsetMinutes: Int?,
+        primaryLocalDate: String,
+        createdAtMs: Long,
+        expectedUpdatedAtMs: Long,
+        deletedAtMs: Long,
+    ): Int
+
     @Query("UPDATE activity_executions SET deleted_at_ms = NULL, updated_at_ms = :restoredAtMs WHERE id = :id")
     protected abstract fun restoreUnchecked(
         id: String,
@@ -591,6 +619,49 @@ internal abstract class ActivityExecutionDao {
         require(deletedAtMs > current.updatedAtMs) { "Historical deletion time must advance" }
         if (softDeleteCompletedStandaloneUnchecked(id, expectedUpdatedAtMs, deletedAtMs) != 1) {
             throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+    }
+
+    @Transaction
+    open fun softDeleteCompletedSequenceChild(
+        before: ActivityExecutionAggregateEntity,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        requireValidAggregate(after)
+        require(before.pauses == after.pauses && before.values == after.values) {
+            "Sequence child deletion cannot change pauses or values"
+        }
+        require(
+            before.execution.copy(
+                deletedAtMs = after.execution.deletedAtMs,
+                updatedAtMs = after.execution.updatedAtMs,
+            ) ==
+                after.execution,
+        ) { "Sequence child deletion may only set deletion metadata" }
+        val deletedAtMs = requireNotNull(after.execution.deletedAtMs)
+        require(deletedAtMs == after.execution.updatedAtMs && deletedAtMs > before.execution.updatedAtMs) {
+            "Sequence child deletion time must advance"
+        }
+        val row = before.execution
+        if (
+            softDeleteCompletedSequenceChildUnchecked(
+                row.id,
+                row.snapshotId,
+                requireNotNull(row.sequenceExecutionId),
+                requireNotNull(row.sequenceOccurrenceId),
+                row.statisticsSeriesId,
+                row.startedAtMs,
+                requireNotNull(row.completedAtMs),
+                row.activeDurationMs,
+                row.originalZoneId,
+                row.originalUtcOffsetMinutes,
+                row.primaryLocalDate,
+                row.createdAtMs,
+                row.updatedAtMs,
+                deletedAtMs,
+            ) != 1
+        ) {
+            throw ConcurrentModificationException("Sequence child history changed concurrently")
         }
     }
 

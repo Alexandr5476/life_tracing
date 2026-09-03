@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand
 import com.alexandr5476.lifetracing.domain.SequenceChildTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
@@ -75,6 +76,366 @@ class SequenceHistoryCommandRepositoryTest {
 
     @After
     fun tearDown() = database.close()
+
+    @Test
+    fun deleteChildHistoryPersistsCanonicalTombstoneWithoutChangingSequenceOrPlanFacts() {
+        val plan = linkFulfilledPlan("deletion-plan")
+        val history = HistoryReadRepository(database)
+        val beforeDetail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val beforeChild = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+        val beforeStatistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        assertEquals(
+            2L,
+            beforeStatistics
+                .activitySeries(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.AllTime,
+                ).executionCount,
+        )
+
+        val result =
+            repository.deleteChildHistory(
+                SEQUENCE_ID,
+                SequenceChildHistoryDeletionCommand(
+                    beforeDetail.updatedAt.plusNanos(999_999),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                ),
+                second(40).plusNanos(999_999),
+            )
+
+        val afterRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val afterChild = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+        assertEquals(beforeRoot.execution.copy(updatedAtMs = 40_000), afterRoot.execution)
+        assertEquals(
+            beforeRoot.occurrences.map {
+                if (it.id == "a") it.copy(status = "DELETED_EXECUTION") else it
+            },
+            afterRoot.occurrences,
+        )
+        assertEquals(beforeRoot.intervals, afterRoot.intervals)
+        assertEquals(beforeRoot.values, afterRoot.values)
+        assertEquals(
+            beforeChild.execution.copy(deletedAtMs = 40_000, updatedAtMs = 40_000),
+            afterChild.execution,
+        )
+        assertEquals(beforeChild.pauses, afterChild.pauses)
+        assertEquals(beforeChild.values, afterChild.values)
+        assertEquals(plan, database.planEntryDao().getById(plan.id))
+        assertEquals(second(40), result.execution.updatedAt)
+        assertEquals(second(40), result.child.deletedAt)
+
+        val detail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        val tombstone = detail.occurrences.single { it.occurrenceId.value == "a" }
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, tombstone.status)
+        assertNull(tombstone.child)
+        assertEquals(beforeDetail.occurrences.first().activity, tombstone.activity)
+        assertTrue(detail.occurrences.single { it.occurrenceId.value == "b" }.child != null)
+        assertEquals(beforeDetail.intervals, detail.intervals)
+        assertEquals(beforeDetail.root, detail.root)
+
+        val activity = beforeStatistics.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        val sequence = beforeStatistics.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
+        val global = beforeStatistics.global(StatisticsPeriod.AllTime)
+        assertEquals(1L, activity.executionCount)
+        assertEquals(Duration.ofSeconds(10), activity.durations.total)
+        assertEquals(1L, sequence.executionCount)
+        assertEquals(Duration.ofSeconds(20), sequence.activeDurations.total)
+        assertEquals(Duration.ofSeconds(20), global.totalTrackedDuration)
+        assertEquals(1L, global.topLevelExecutionCount)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(
+                SEQUENCE_ID,
+                SequenceChildHistoryDeletionCommand(
+                    detail.updatedAt,
+                    tombstone.occurrenceId,
+                    ActivityExecutionId("child-a"),
+                ),
+                second(50),
+            )
+        }
+    }
+
+    @Test
+    fun deletionPreservesChildPausesAndValuesAndSequenceTimeline() {
+        seedPausedGraph()
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_snapshot_fields " +
+                "(id, snapshot_id, source_field_id, position, name_at_creation, local_name_override, " +
+                "field_type, unit, " +
+                "display_precision, default_number_scaled, default_category_option_id, default_text, is_main_value) " +
+                "VALUES ('paused-value-field', 'activity-a', NULL, 0, 'Value', NULL, 'NUMBER', NULL, " +
+                "0, NULL, NULL, NULL, 0)",
+        )
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity("paused-child-a", "paused-value-field", 7, null, null),
+        )
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(PAUSED_SEQUENCE_ID.value))
+        val beforeChild = requireNotNull(database.activityExecutionDao().getAggregate("paused-child-a"))
+
+        repository.deleteChildHistory(
+            PAUSED_SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(
+                Instant.ofEpochMilli(beforeRoot.execution.updatedAtMs),
+                SequenceOccurrenceId("paused-a"),
+                ActivityExecutionId("paused-child-a"),
+            ),
+            second(40),
+        )
+
+        val afterRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(PAUSED_SEQUENCE_ID.value))
+        val afterChild = requireNotNull(database.activityExecutionDao().getAggregate("paused-child-a"))
+        assertEquals(beforeRoot.intervals, afterRoot.intervals)
+        assertEquals(beforeRoot.execution.activeDurationMs, afterRoot.execution.activeDurationMs)
+        assertEquals(beforeRoot.execution.pauseDurationMs, afterRoot.execution.pauseDurationMs)
+        assertEquals(beforeRoot.execution.wallDurationMs, afterRoot.execution.wallDurationMs)
+        assertEquals(beforeChild.pauses, afterChild.pauses)
+        assertEquals(beforeChild.values, afterChild.values)
+        assertEquals(40_000L, afterChild.execution.deletedAtMs)
+    }
+
+    @Test
+    fun endedEarlyNoLiveChildDeletionKeepsDurationMissing() {
+        seedNoLiveGraph()
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'ENDED_EARLY' WHERE id = ?",
+            arrayOf(NO_LIVE_SEQUENCE_ID.value),
+        )
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(NO_LIVE_SEQUENCE_ID.value))
+
+        repository.deleteChildHistory(
+            NO_LIVE_SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(
+                Instant.ofEpochMilli(before.execution.updatedAtMs),
+                SequenceOccurrenceId("no-live-occurrence"),
+                ActivityExecutionId("no-live-child"),
+            ),
+            second(40),
+        )
+
+        val child = requireNotNull(database.activityExecutionDao().getById("no-live-child"))
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(NO_LIVE_SEQUENCE_ID))
+        assertNull(child.startedAtMs)
+        assertNull(child.activeDurationMs)
+        assertEquals(20_000L, child.completedAtMs)
+        assertEquals(40_000L, child.deletedAtMs)
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, detail.occurrences.single().status)
+        assertNull(detail.occurrences.single().child)
+    }
+
+    @Test
+    fun invalidChildDeletionTargetsAndStatesFailWithoutWrites() {
+        val beforeRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        val valid =
+            SequenceChildHistoryDeletionCommand(second(30), SequenceOccurrenceId("a"), ActivityExecutionId("child-a"))
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.deleteChildHistory(SEQUENCE_ID, valid.copy(expectedUpdatedAt = second(29)), second(40))
+        }
+        listOf(
+            valid.copy(occurrenceId = SequenceOccurrenceId("missing")),
+            valid.copy(childExecutionId = ActivityExecutionId("missing")),
+            valid.copy(occurrenceId = SequenceOccurrenceId("b")),
+        ).forEach { command ->
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.deleteChildHistory(SEQUENCE_ID, command, second(40))
+            }
+        }
+
+        seedPausedGraph()
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(
+                SEQUENCE_ID,
+                valid.copy(childExecutionId = ActivityExecutionId("paused-child-a")),
+                second(40),
+            )
+        }
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(beforeChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+    }
+
+    @Test
+    fun persistedTargetIntegrityMismatchesFailWithoutFurtherWrites() {
+        val command =
+            SequenceChildHistoryDeletionCommand(second(30), SequenceOccurrenceId("a"), ActivityExecutionId("child-a"))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET snapshot_id = 'activity-b' WHERE id = 'child-a'",
+        )
+        val mismatchedSnapshot = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(SEQUENCE_ID, command, second(40))
+        }
+        assertEquals(mismatchedSnapshot, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET snapshot_id = 'activity-a' WHERE id = 'child-a'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_occurrences SET status = 'SKIPPED', entered_at_ms = NULL, completed_at_ms = NULL, " +
+                "completion_reason = NULL WHERE id = 'a'",
+        )
+        val nonCompleted = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(SEQUENCE_ID, command, second(40))
+        }
+        assertEquals(nonCompleted, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertNull(database.activityExecutionDao().getById("child-a")?.deletedAtMs)
+    }
+
+    @Test
+    fun liveAndActiveSessionOwnedRootsRejectChildDeletionWithoutWrites() {
+        val command =
+            SequenceChildHistoryDeletionCommand(second(30), SequenceOccurrenceId("a"), ActivityExecutionId("child-a"))
+        listOf("RUNNING", "PAUSED").forEach { status ->
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET status = ?, ended_at_ms = NULL, active_duration_ms = NULL, " +
+                    "pause_duration_ms = NULL, wall_duration_ms = NULL WHERE id = ?",
+                arrayOf(status, SEQUENCE_ID.value),
+            )
+            val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.deleteChildHistory(SEQUENCE_ID, command, second(40))
+            }
+            assertEquals(before, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        }
+        restoreBaseTerminalRoot()
+        database.activeSessionDao().insert(
+            ActiveSession(ActiveSessionKind.SEQUENCE, ActiveSessionState.RUNNING, null, SEQUENCE_ID, second(30)),
+        )
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(SEQUENCE_ID, command, second(40))
+        }
+        assertEquals(before, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+    }
+
+    @Test
+    fun childDeletionRollsBackRootAndOccurrenceWhenChildWriteFails() {
+        val rootBefore = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val childBefore = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_child_history_delete BEFORE UPDATE OF deleted_at_ms ON activity_executions " +
+                "BEGIN SELECT RAISE(ABORT, 'forced child deletion failure'); END",
+        )
+
+        assertThrows(android.database.sqlite.SQLiteException::class.java) {
+            repository.deleteChildHistory(
+                SEQUENCE_ID,
+                SequenceChildHistoryDeletionCommand(
+                    second(30),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                ),
+                second(40),
+            )
+        }
+
+        assertEquals(rootBefore, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(childBefore, database.activityExecutionDao().getAggregate("child-a"))
+    }
+
+    @Test
+    fun incoherentFulfilledPlanRejectsChildDeletionWithoutWrites() {
+        val plan = linkFulfilledPlan("incoherent-deletion-plan")
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET fulfilled_at_ms = 29000 WHERE id = ?",
+            arrayOf(plan.id),
+        )
+        val rootBefore = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val childBefore = requireNotNull(database.activityExecutionDao().getAggregate("child-a"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteChildHistory(
+                SEQUENCE_ID,
+                SequenceChildHistoryDeletionCommand(
+                    second(30),
+                    SequenceOccurrenceId("a"),
+                    ActivityExecutionId("child-a"),
+                ),
+                second(40),
+            )
+        }
+
+        assertEquals(rootBefore, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(childBefore, database.activityExecutionDao().getAggregate("child-a"))
+    }
+
+    @Test
+    fun rootTimingCorrectionAfterDeletionRetainsTombstoneAndChildTimingCorrectionRejectsIt() {
+        repository.deleteChildHistory(
+            SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(second(30), SequenceOccurrenceId("a"), ActivityExecutionId("child-a")),
+            second(40),
+        )
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(second(40), startedAt = second(9)),
+            second(50),
+        )
+        val afterRootCorrection = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+        val deletedChild = requireNotNull(database.activityExecutionDao().getById("child-a"))
+        assertEquals(second(50), afterRootCorrection.updatedAt)
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, afterRootCorrection.occurrences.first().status)
+        assertNull(afterRootCorrection.occurrences.first().child)
+        assertEquals(40_000L, deletedChild.deletedAtMs)
+        assertEquals(40_000L, deletedChild.updatedAtMs)
+
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.correctTiming(
+                SEQUENCE_ID,
+                SequenceHistoryTimingCorrection(
+                    afterRootCorrection.updatedAt,
+                    childTimings =
+                        listOf(
+                            SequenceChildTimingCorrection(
+                                ActivityExecutionId("child-a"),
+                                ActivityHistoryTimeCorrection.Timed(second(10), second(20)),
+                            ),
+                        ),
+                ),
+                second(60),
+            )
+        }
+        assertEquals(before, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+    }
+
+    @Test
+    fun readerRejectsMismatchedCompletedAndTombstoneChildStates() {
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET deleted_at_ms = 40000, updated_at_ms = 40000 WHERE id = 'child-a'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID)
+        }
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET deleted_at_ms = NULL, updated_at_ms = 20000 WHERE id = 'child-a'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_occurrences SET status = 'DELETED_EXECUTION' WHERE id = 'a'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID)
+        }
+    }
+
+    @Test
+    fun deletionGraphLoadingRemainsBatched() {
+        observedSql.clear()
+        repository.deleteChildHistory(
+            SEQUENCE_ID,
+            SequenceChildHistoryDeletionCommand(second(30), SequenceOccurrenceId("a"), ActivityExecutionId("child-a")),
+            second(40),
+        )
+        val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
+        assertEquals(1, queries.count { "from activity_executions" in it && "sequence_execution_id = ?" in it })
+        assertEquals(1, queries.count { "from activity_execution_pauses" in it && " in (" in it })
+        assertEquals(1, queries.count { "from activity_execution_field_values" in it && " in (" in it })
+        assertEquals(1, queries.count { it.startsWith("select * from activity_snapshots where id in") })
+        assertFalse(queries.any { it.startsWith("select * from activity_snapshots where id =") })
+    }
 
     @Test
     fun rootTimingCorrectionPersistsAndReloadsWithDerivedCaches() {

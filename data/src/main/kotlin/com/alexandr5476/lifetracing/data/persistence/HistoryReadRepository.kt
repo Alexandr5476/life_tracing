@@ -23,9 +23,11 @@ import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionValidator
+import com.alexandr5476.lifetracing.domain.SequenceHistoricalTimingGraphValidator
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildExecution
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
@@ -149,23 +151,16 @@ class HistoryReadRepository internal constructor(
                             "Sequence child is missing its occurrence linkage"
                         }
                     }
-            val occurrencesById = execution.occurrences.associateBy { it.id }
             require(children.size == childAggregates.size) {
                 "Multiple children reference one Sequence occurrence"
             }
-            children.forEach { (occurrenceId, child) ->
-                val occurrence =
-                    requireNotNull(occurrencesById[occurrenceId]) {
-                        "Sequence child references an occurrence outside its parent Sequence"
+            val historyChildren =
+                children.values.map { child ->
+                    SequenceHistoryChildExecution(child, activitySnapshots.getValue(child.snapshotId)).also {
+                        ActivityExecutionValidator.requireValid(child, it.snapshot)
                     }
-                require(child.snapshotId == occurrence.activitySnapshotId) {
-                    "Sequence child Activity snapshot does not match its occurrence"
                 }
-                require(child.status == ActivityExecutionStatus.COMPLETED) {
-                    "Terminal Sequence history cannot contain a live child Activity execution"
-                }
-                ActivityExecutionValidator.requireValid(child, activitySnapshots.getValue(child.snapshotId))
-            }
+            SequenceHistoricalTimingGraphValidator.requireValid(execution, snapshot, historyChildren)
             val displayMetadata = loadActivityDisplayMetadata(activitySnapshots.values)
             val sequenceDisplayMetadata = loadSequenceDisplayMetadata(snapshot)
             SequenceHistoryDetail(
@@ -198,7 +193,9 @@ class HistoryReadRepository internal constructor(
                                 activity.settings,
                                 activity.toHistoryMainValue(displayMetadata),
                             ),
-                            children[occurrence.id]?.toHistoryChild(activity, displayMetadata),
+                            children[occurrence.id]
+                                ?.takeIf { it.deletedAt == null }
+                                ?.toHistoryChild(activity, displayMetadata),
                         )
                     },
                 intervals = execution.intervals,

@@ -4,6 +4,9 @@ import android.content.Context
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionPolicy
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionResult
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildExecution
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
@@ -16,6 +19,65 @@ import java.util.concurrent.Callable
 class SequenceHistoryCommandRepository internal constructor(
     private val database: LifeTracingDatabase,
 ) {
+    fun deleteChildHistory(
+        id: SequenceExecutionId,
+        command: SequenceChildHistoryDeletionCommand,
+        deletedAt: Instant,
+    ): SequenceChildHistoryDeletionResult =
+        transaction {
+            val beforeEntity =
+                requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(id.value)) {
+                    "Unknown Sequence history: ${id.value}"
+                }
+            require(database.activeSessionDao().get()?.sequenceExecutionId != id) {
+                "Active Sequence history cannot be changed"
+            }
+            val before = beforeEntity.toDomain()
+            val expectedUpdatedAt = Instant.ofEpochMilli(command.expectedUpdatedAt.toEpochMilli())
+            if (before.updatedAt != expectedUpdatedAt) {
+                throw ConcurrentModificationException("Sequence history changed concurrently")
+            }
+            val snapshot =
+                requireNotNull(database.sequenceSnapshotDao().getAggregate(before.snapshotId.value)) {
+                    "Unknown SequenceSnapshot: ${before.snapshotId.value}"
+                }.toDomain()
+            val childEntities = database.activityExecutionDao().getSequenceChildAggregates(id.value)
+            val childSnapshots = loadChildSnapshots(childEntities)
+            val children =
+                childEntities.map { child ->
+                    val execution = child.toDomain()
+                    SequenceHistoryChildExecution(
+                        execution,
+                        requireNotNull(childSnapshots[execution.snapshotId]) {
+                            "Unknown child ActivitySnapshot: ${execution.snapshotId.value}"
+                        },
+                    )
+                }
+            before.planEntryId?.let { requireCoherentPlan(beforeEntity.execution, it.value) }
+            val result =
+                SequenceChildHistoryDeletionPolicy.delete(
+                    before,
+                    snapshot,
+                    children,
+                    command.copy(expectedUpdatedAt = expectedUpdatedAt),
+                    deletedAt,
+                )
+            database.sequenceExecutionDao().persistHistoricalChildDeletion(
+                beforeEntity,
+                result.execution.toEntityAggregate(),
+                command.occurrenceId.value,
+            )
+            val beforeChild =
+                requireNotNull(childEntities.singleOrNull { it.execution.id == command.childExecutionId.value }) {
+                    "Unknown Sequence child: ${command.childExecutionId.value}"
+                }
+            database.activityExecutionDao().softDeleteCompletedSequenceChild(
+                beforeChild,
+                result.child.toEntityAggregate(),
+            )
+            result
+        }
+
     fun correctTiming(
         id: SequenceExecutionId,
         correction: SequenceHistoryTimingCorrection,
