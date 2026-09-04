@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSessionState
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
@@ -29,6 +30,7 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -1128,6 +1130,219 @@ class LiveSessionRepositoryTest {
         assertTrue(waitingEnded.execution.intervals.none { it.endedAt == null })
         assertNull(database.activityExecutionDao().getAggregateByOccurrence(untouched.id.value))
         assertNull(repository.getActiveSession())
+    }
+
+    @Test
+    fun pausedTimedCurrentEarlyEndRetainsAndFinalizesTheSameDurableChild() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val current = started.execution.occurrences.single { it.id == started.execution.currentOccurrenceId }
+        val childId = requireNotNull(started.currentChild).id
+
+        repository.pauseActiveSequence(instant(10))
+
+        val paused = repositorySequence(started.execution.id.value)
+        val pausedChild = repositoryExecution(childId.value)
+        val childPause = pausedChild.pauses.single()
+        assertEquals(SequenceExecutionStatus.PAUSED, paused.status)
+        assertEquals(
+            started.execution.id,
+            database.activeSessionDao().get()?.sequenceExecutionId,
+        )
+        assertEquals(ActiveSessionState.PAUSED, database.activeSessionDao().get()?.state)
+        assertEquals(current.id, paused.currentOccurrenceId)
+        assertEquals(RuntimeOccurrenceStatus.CURRENT, paused.occurrences.single { it.id == current.id }.status)
+        assertEquals(current.activitySnapshotId, paused.occurrences.single { it.id == current.id }.activitySnapshotId)
+        assertEquals(
+            current.sourceSequenceSnapshotNodeId,
+            paused.occurrences.single { it.id == current.id }.sourceSequenceSnapshotNodeId,
+        )
+        assertEquals(
+            current.repeatSourceSnapshotNodeId,
+            paused.occurrences.single { it.id == current.id }.repeatSourceSnapshotNodeId,
+        )
+        assertEquals(current.repeatIteration, paused.occurrences.single { it.id == current.id }.repeatIteration)
+        assertEquals(current.runtimePosition, paused.occurrences.single { it.id == current.id }.runtimePosition)
+        assertEquals(ActivityExecutionStatus.PAUSED, pausedChild.status)
+        assertEquals(started.execution.id, pausedChild.sequenceExecutionId)
+        assertEquals(current.id, pausedChild.sequenceOccurrenceId)
+        assertNull(childPause.endedAt)
+        assertEquals(instant(10), childPause.startedAt)
+        assertEquals(
+            SequenceIntervalKind.ACTIVE_STEP,
+            paused.intervals.single { it.kind == SequenceIntervalKind.ACTIVE_STEP }.kind,
+        )
+        assertEquals(instant(10), paused.intervals.single { it.kind == SequenceIntervalKind.ACTIVE_STEP }.endedAt)
+        assertEquals(current.id, paused.intervals.single { it.kind == SequenceIntervalKind.ACTIVE_STEP }.occurrenceId)
+        val openPause = paused.intervals.single { it.endedAt == null }
+        assertEquals(SequenceIntervalKind.EXPLICIT_PAUSE, openPause.kind)
+        assertNull(openPause.occurrenceId)
+        val later = started.execution.occurrences.filter { it.id != current.id }
+        later.forEach { assertNull(database.activityExecutionDao().getAggregateByOccurrence(it.id.value)) }
+
+        repository.endSequenceEarly(instant(30))
+
+        repository = repository(database, 100)
+        val durable = requireNotNull(database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+        val durableCurrent = durable.occurrences.single { it.id == current.id.value }
+        val durableChild = requireNotNull(database.activityExecutionDao().getAggregate(childId.value))
+        val durablePause = durableChild.pauses.single()
+        val ended = durable.toDomain()
+        val endedCurrent = ended.occurrences.single { it.id == current.id }
+        val endedChild = repositoryExecution(childId.value)
+        val endedPause = endedChild.pauses.single()
+        val durations =
+            SequenceTimelineCalculator.calculate(
+                ended.startedAt,
+                requireNotNull(ended.endedAt),
+                ended.intervals,
+            )
+        assertEquals("ENDED_EARLY", durable.execution.status)
+        assertEquals(30_000L, durable.execution.endedAtMs)
+        assertNull(durable.execution.currentOccurrenceId)
+        assertEquals("COMPLETED", durableCurrent.status)
+        assertEquals("SEQUENCE_ENDED_EARLY", durableCurrent.completionReason)
+        assertEquals(30_000L, durableCurrent.completedAtMs)
+        assertTrue(durable.intervals.none { it.endedAtMs == null })
+        assertEquals("COMPLETED", durableChild.execution.status)
+        assertEquals(30_000L, durableChild.execution.completedAtMs)
+        assertEquals(childPause.id.value, durablePause.id)
+        assertEquals(10_000L, durablePause.startedAtMs)
+        assertEquals(30_000L, durablePause.endedAtMs)
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.status)
+        assertEquals(instant(30), ended.endedAt)
+        assertNull(ended.currentOccurrenceId)
+        assertEquals(RuntimeOccurrenceStatus.COMPLETED, endedCurrent.status)
+        assertEquals(OccurrenceCompletionReason.SEQUENCE_ENDED_EARLY, endedCurrent.completionReason)
+        assertEquals(instant(30), endedCurrent.completedAt)
+        assertEquals(current.activitySnapshotId, endedCurrent.activitySnapshotId)
+        assertEquals(current.sourceSequenceSnapshotNodeId, endedCurrent.sourceSequenceSnapshotNodeId)
+        assertEquals(current.repeatSourceSnapshotNodeId, endedCurrent.repeatSourceSnapshotNodeId)
+        assertEquals(current.repeatIteration, endedCurrent.repeatIteration)
+        assertEquals(current.runtimePosition, endedCurrent.runtimePosition)
+        assertEquals(ActivityExecutionStatus.COMPLETED, endedChild.status)
+        assertEquals(childId, endedChild.id)
+        assertEquals(started.execution.id, endedChild.sequenceExecutionId)
+        assertEquals(current.id, endedChild.sequenceOccurrenceId)
+        assertEquals(instant(30), endedChild.completedAt)
+        assertEquals(Duration.ofSeconds(10), endedChild.activeDuration)
+        assertEquals(pausedChild.values, endedChild.values)
+        assertEquals(childPause.id, endedPause.id)
+        assertEquals(instant(10), endedPause.startedAt)
+        assertEquals(instant(30), endedPause.endedAt)
+        assertTrue(ended.intervals.none { it.endedAt == null })
+        assertEquals(durations.active, ended.activeDuration)
+        assertEquals(durations.pause, ended.pauseDuration)
+        assertEquals(durations.wall, ended.wallDuration)
+        assertEquals(Duration.ofSeconds(10), ended.activeDuration)
+        assertEquals(Duration.ofSeconds(20), ended.pauseDuration)
+        assertEquals(Duration.ofSeconds(30), ended.wallDuration)
+        assertNull(database.activeSessionDao().get())
+        later.forEach { assertNull(database.activityExecutionDao().getAggregateByOccurrence(it.id.value)) }
+
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(started.execution.id))
+        val historyCurrent = detail.occurrences.single { it.occurrenceId == current.id }
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, detail.root.status)
+        assertEquals(instant(30), detail.root.completedAt)
+        assertEquals(current.activitySnapshotId, historyCurrent.activitySnapshotId)
+        assertEquals(childId, historyCurrent.child?.executionId)
+        assertEquals(instant(30), historyCurrent.child?.completedAt)
+        assertEquals(Duration.ofSeconds(10), historyCurrent.child?.activeDuration)
+    }
+
+    @Test
+    fun pausedTransitionCountdownEarlyEndKeepsTargetUnperformedWithoutChild() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val first = started.execution.currentOccurrenceId!!
+        val target = started.execution.occurrences.single { it.id != first }
+        repository.completeCurrentSequenceStep(first, instant(5))
+        repository.pauseActiveSequence(instant(10))
+
+        val paused = repositorySequence(started.execution.id.value)
+        val countdown = paused.intervals.single { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }
+        val pausedTarget = paused.occurrences.single { it.id == target.id }
+        assertEquals(SequenceExecutionStatus.PAUSED, paused.status)
+        assertEquals(
+            started.execution.id,
+            database.activeSessionDao().get()?.sequenceExecutionId,
+        )
+        assertEquals(ActiveSessionState.PAUSED, database.activeSessionDao().get()?.state)
+        assertNull(paused.currentOccurrenceId)
+        assertTrue(paused.occurrences.none { it.status == RuntimeOccurrenceStatus.CURRENT })
+        assertEquals(target.id, countdown.occurrenceId)
+        assertEquals(instant(5), countdown.startedAt)
+        assertEquals(instant(10), countdown.endedAt)
+        val openPause = paused.intervals.single { it.endedAt == null }
+        assertEquals(SequenceIntervalKind.EXPLICIT_PAUSE, openPause.kind)
+        assertNull(openPause.occurrenceId)
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, pausedTarget.status)
+        assertNull(pausedTarget.enteredAt)
+        assertNull(pausedTarget.completedAt)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(target.id.value))
+
+        repository.endSequenceEarly(instant(20))
+
+        repository = repository(database, 100)
+        val durable = requireNotNull(database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+        val durableTarget = durable.occurrences.single { it.id == target.id.value }
+        val ended = durable.toDomain()
+        val endedTarget = ended.occurrences.single { it.id == target.id }
+        val durations =
+            SequenceTimelineCalculator.calculate(
+                ended.startedAt,
+                requireNotNull(ended.endedAt),
+                ended.intervals,
+            )
+        assertEquals("ENDED_EARLY", durable.execution.status)
+        assertEquals(20_000L, durable.execution.endedAtMs)
+        assertNull(durable.execution.currentOccurrenceId)
+        assertEquals("NOT_STARTED", durableTarget.status)
+        assertNull(durableTarget.enteredAtMs)
+        assertNull(durableTarget.completedAtMs)
+        assertNull(durableTarget.completionReason)
+        assertTrue(durable.intervals.none { it.endedAtMs == null })
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.status)
+        assertEquals(instant(20), ended.endedAt)
+        assertNull(ended.currentOccurrenceId)
+        assertTrue(ended.intervals.none { it.endedAt == null })
+        assertEquals(target.id, endedTarget.id)
+        assertEquals(target.activitySnapshotId, endedTarget.activitySnapshotId)
+        assertEquals(target.sourceSequenceSnapshotNodeId, endedTarget.sourceSequenceSnapshotNodeId)
+        assertEquals(target.repeatSourceSnapshotNodeId, endedTarget.repeatSourceSnapshotNodeId)
+        assertEquals(target.repeatIteration, endedTarget.repeatIteration)
+        assertEquals(target.runtimePosition, endedTarget.runtimePosition)
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, endedTarget.status)
+        assertNull(endedTarget.enteredAt)
+        assertNull(endedTarget.completedAt)
+        assertNull(endedTarget.completionReason)
+        assertNull(database.activityExecutionDao().getAggregateByOccurrence(target.id.value))
+        assertEquals(durations.active, ended.activeDuration)
+        assertEquals(durations.pause, ended.pauseDuration)
+        assertEquals(durations.wall, ended.wallDuration)
+        assertEquals(Duration.ofSeconds(5), ended.activeDuration)
+        assertEquals(Duration.ofSeconds(15), ended.pauseDuration)
+        assertEquals(Duration.ofSeconds(20), ended.wallDuration)
+        assertNull(database.activeSessionDao().get())
+
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(started.execution.id))
+        val historyTarget = detail.occurrences.single { it.occurrenceId == target.id }
+        assertEquals(SequenceExecutionStatus.ENDED_EARLY, detail.root.status)
+        assertEquals(instant(20), detail.root.completedAt)
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, historyTarget.status)
+        assertNull(historyTarget.enteredAt)
+        assertNull(historyTarget.completedAt)
+        assertNull(historyTarget.child)
     }
 
     @Test

@@ -29,6 +29,7 @@ import com.alexandr5476.lifetracing.domain.SequenceChildTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
@@ -214,6 +215,231 @@ class SequenceHistoryCommandRepositoryTest {
                 it.occurrenceId.value
             },
         )
+    }
+
+    @Test
+    fun leaveGapPreservesFrozenRepeatAndRuntimeAddedProvenanceAfterReload() {
+        val graph = seedMixedRepeatAndRuntimeAddedGraph("leave-provenance", closeGap = false)
+        val history = HistoryReadRepository(database)
+        val beforeDetail = requireNotNull(history.getSequenceDetail(graph.executionId))
+        assertEquals(graph.occurrenceIds, beforeDetail.occurrences.map { it.occurrenceId.value })
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(graph.executionId.value))
+        val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        val beforeChildren =
+            database.activityExecutionDao().getSequenceChildAggregates(graph.executionId.value).associateBy {
+                it.execution.id
+            }
+        val beforeSnapshots =
+            database
+                .activitySnapshotDao()
+                .getAggregates(
+                    before.occurrences.map(SequenceOccurrenceEntity::activitySnapshotId),
+                ).associateBy(ActivitySnapshotAggregateEntity::snapshot)
+
+        repository.removeOccurrenceHistory(
+            graph.executionId,
+            SequenceHistoryStructuralRemovalCommand(
+                beforeDetail.updatedAt,
+                SequenceOccurrenceId(graph.targetOccurrenceId),
+                ActivityExecutionId(graph.targetChildId),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                second(40),
+                before.toDomain().intervals.filter { it.occurrenceId?.value != graph.targetOccurrenceId },
+            ),
+            second(60),
+        )
+
+        val after = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(graph.executionId.value))
+        val afterOccurrences = after.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        assertEquals(
+            beforeOccurrences.getValue(graph.targetOccurrenceId).copy(
+                status = "DELETED_EXECUTION",
+                isDeletedFromHistory = true,
+            ),
+            afterOccurrences.getValue(graph.targetOccurrenceId),
+        )
+        graph.visibleOccurrenceIds.forEach { id ->
+            assertEquals(beforeOccurrences.getValue(id), afterOccurrences.getValue(id))
+        }
+        assertRuntimeAddedSourceLess(afterOccurrences.getValue(graph.runtimeAddedOccurrenceIds.single()))
+        assertEquals(1, afterOccurrences.getValue(graph.retainedRepeatOccurrenceId).repeatIteration)
+        assertEquals(
+            beforeChildren.getValue(graph.targetChildId).execution.copy(deletedAtMs = 60_000, updatedAtMs = 60_000),
+            requireNotNull(database.activityExecutionDao().getAggregate(graph.targetChildId)).execution,
+        )
+        assertEquals(
+            beforeChildren.getValue(graph.targetChildId).copy(
+                execution =
+                    beforeChildren
+                        .getValue(
+                            graph.targetChildId,
+                        ).execution
+                        .copy(deletedAtMs = 60_000, updatedAtMs = 60_000),
+            ),
+            database.activityExecutionDao().getAggregate(graph.targetChildId),
+        )
+        assertEquals(
+            beforeSnapshots,
+            database
+                .activitySnapshotDao()
+                .getAggregates(
+                    before.occurrences.map(SequenceOccurrenceEntity::activitySnapshotId),
+                ).associateBy(ActivitySnapshotAggregateEntity::snapshot),
+        )
+
+        val detail = requireNotNull(history.getSequenceDetail(graph.executionId))
+        assertEquals(graph.visibleOccurrenceIds, detail.occurrences.map { it.occurrenceId.value })
+        detail.occurrences.forEach { assertCanonicalProvenance(afterOccurrences.getValue(it.occurrenceId.value), it) }
+        assertEquals(after.toDomain().intervals, detail.intervals)
+    }
+
+    @Test
+    fun closeGapPreservesFrozenRepeatAndRuntimeAddedProvenanceAfterReload() {
+        val graph = seedMixedRepeatAndRuntimeAddedGraph("close-provenance", closeGap = true)
+        val history = HistoryReadRepository(database)
+        val beforeDetail = requireNotNull(history.getSequenceDetail(graph.executionId))
+        assertEquals(graph.occurrenceIds, beforeDetail.occurrences.map { it.occurrenceId.value })
+        val before = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(graph.executionId.value))
+        val beforeOccurrences = before.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        val beforeChildren =
+            database.activityExecutionDao().getSequenceChildAggregates(graph.executionId.value).associateBy {
+                it.execution.id
+            }
+        val beforeSnapshots =
+            database
+                .activitySnapshotDao()
+                .getAggregates(
+                    before.occurrences.map(SequenceOccurrenceEntity::activitySnapshotId),
+                ).associateBy(ActivitySnapshotAggregateEntity::snapshot)
+        val shiftMs = 10_000L
+
+        repository.removeOccurrenceHistory(
+            graph.executionId,
+            SequenceHistoryStructuralRemovalCommand(
+                beforeDetail.updatedAt,
+                SequenceOccurrenceId(graph.targetOccurrenceId),
+                ActivityExecutionId(graph.targetChildId),
+                SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                second(40),
+                before.toDomain().intervals.filter { it.occurrenceId?.value != graph.targetOccurrenceId }.map {
+                    it.copy(
+                        startedAt = it.startedAt.minusMillis(shiftMs),
+                        endedAt = it.endedAt?.minusMillis(shiftMs),
+                    )
+                },
+                occurrenceTimings =
+                    graph.visibleOccurrenceIds.map { id ->
+                        val occurrence = beforeOccurrences.getValue(id)
+                        SequenceOccurrenceTimingCorrection(
+                            SequenceOccurrenceId(id),
+                            Instant.ofEpochMilli(requireNotNull(occurrence.enteredAtMs) - shiftMs),
+                            Instant.ofEpochMilli(requireNotNull(occurrence.completedAtMs) - shiftMs),
+                        )
+                    },
+                childTimings =
+                    graph.visibleChildIds.map { id ->
+                        val child = beforeChildren.getValue(id)
+                        SequenceStructuralChildTimingCorrection(
+                            ActivityExecutionId(id),
+                            ActivityHistoryTimeCorrection.Timed(
+                                Instant.ofEpochMilli(requireNotNull(child.execution.startedAtMs) - shiftMs),
+                                Instant.ofEpochMilli(requireNotNull(child.execution.completedAtMs) - shiftMs),
+                            ),
+                            child.pauses.map {
+                                ActivityExecutionPause(
+                                    ActivityExecutionPauseId(it.id),
+                                    Instant.ofEpochMilli(it.startedAtMs - shiftMs),
+                                    it.endedAtMs?.let { end -> Instant.ofEpochMilli(end - shiftMs) },
+                                )
+                            },
+                        )
+                    },
+            ),
+            second(60),
+        )
+
+        val after = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(graph.executionId.value))
+        val afterOccurrences = after.occurrences.associateBy(SequenceOccurrenceEntity::id)
+        assertEquals(
+            beforeOccurrences.getValue(graph.targetOccurrenceId).copy(
+                status = "DELETED_EXECUTION",
+                isDeletedFromHistory = true,
+            ),
+            afterOccurrences.getValue(graph.targetOccurrenceId),
+        )
+        assertRuntimeAddedSourceLess(afterOccurrences.getValue(graph.targetOccurrenceId))
+        graph.visibleOccurrenceIds.forEach { id ->
+            val expected = beforeOccurrences.getValue(id)
+            assertEquals(
+                expected.copy(
+                    enteredAtMs = expected.enteredAtMs!! - shiftMs,
+                    completedAtMs =
+                        expected.completedAtMs!! - shiftMs,
+                ),
+                afterOccurrences.getValue(id),
+            )
+        }
+        assertEquals(2, afterOccurrences.getValue(graph.retainedRepeatOccurrenceId).repeatIteration)
+        graph.runtimeAddedOccurrenceIds.filter { it != graph.targetOccurrenceId }.forEach {
+            assertRuntimeAddedSourceLess(afterOccurrences.getValue(it))
+        }
+        graph.visibleChildIds.forEach { id ->
+            val beforeChild = beforeChildren.getValue(id)
+            val afterChild = requireNotNull(database.activityExecutionDao().getAggregate(id))
+            assertEquals(
+                beforeChild.execution.copy(
+                    startedAtMs = beforeChild.execution.startedAtMs!! - shiftMs,
+                    completedAtMs = beforeChild.execution.completedAtMs!! - shiftMs,
+                    updatedAtMs = 60_000,
+                ),
+                afterChild.execution,
+            )
+            assertEquals(
+                beforeChild.pauses.map {
+                    it.copy(startedAtMs = it.startedAtMs - shiftMs, endedAtMs = it.endedAtMs?.minus(shiftMs))
+                },
+                afterChild.pauses,
+            )
+            assertEquals(beforeChild.values, afterChild.values)
+        }
+        assertEquals(
+            beforeChildren.getValue(graph.targetChildId).copy(
+                execution =
+                    beforeChildren
+                        .getValue(
+                            graph.targetChildId,
+                        ).execution
+                        .copy(deletedAtMs = 60_000, updatedAtMs = 60_000),
+            ),
+            database.activityExecutionDao().getAggregate(graph.targetChildId),
+        )
+        assertEquals(
+            beforeSnapshots,
+            database
+                .activitySnapshotDao()
+                .getAggregates(
+                    before.occurrences.map(SequenceOccurrenceEntity::activitySnapshotId),
+                ).associateBy(ActivitySnapshotAggregateEntity::snapshot),
+        )
+        assertEquals(
+            before.intervals
+                .filter {
+                    it.occurrenceId != graph.targetOccurrenceId
+                }.associateBy(SequenceIntervalEntity::id)
+                .mapValues { (_, interval) ->
+                    interval.copy(
+                        startedAtMs = interval.startedAtMs - shiftMs,
+                        endedAtMs = interval.endedAtMs?.minus(shiftMs),
+                    )
+                },
+            after.intervals.associateBy(SequenceIntervalEntity::id),
+        )
+
+        val detail = requireNotNull(history.getSequenceDetail(graph.executionId))
+        assertEquals(graph.visibleOccurrenceIds, detail.occurrences.map { it.occurrenceId.value })
+        detail.occurrences.forEach { assertCanonicalProvenance(afterOccurrences.getValue(it.occurrenceId.value), it) }
+        assertEquals(second(40), detail.root.completedAt)
+        assertEquals(after.toDomain().intervals, detail.intervals)
     }
 
     @Test
@@ -1567,6 +1793,68 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
+    fun ownedExplicitPauseCorrectionRollsBackValidOwnerlessHistory() {
+        assertOwnedGlobalIntervalCorrectionRollsBack(SequenceIntervalKind.EXPLICIT_PAUSE)
+    }
+
+    @Test
+    fun ownedImplicitIdleCorrectionRollsBackValidOwnerlessHistory() {
+        assertOwnedGlobalIntervalCorrectionRollsBack(SequenceIntervalKind.IMPLICIT_IDLE)
+    }
+
+    @Test
+    fun countdownAtPerformedTargetEntryPersistsAndLaterEndRollsBack() {
+        val history = HistoryReadRepository(database)
+        val exactIntervals =
+            interstepIntervals(SequenceIntervalKind.TRANSITION_COUNTDOWN, second(21), SequenceOccurrenceId("b"))
+        persistInterstepGraph(exactIntervals)
+
+        val durable = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val detail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        val target = durable.occurrences.single { it.id == "b" }
+        val targetChild = requireNotNull(database.activityExecutionDao().getAggregate("child-b"))
+        val countdown = durable.intervals.single { it.id == "interstep" }
+        assertEquals(21_000L, target.enteredAtMs)
+        assertEquals(21_000L, targetChild.execution.startedAtMs)
+        assertEquals(
+            SequenceIntervalEntity("b", SEQUENCE_ID.value, "ACTIVE_STEP", 21_000, 30_000, "b"),
+            durable.intervals.single { it.id == "b" },
+        )
+        assertEquals(21_000L, countdown.endedAtMs)
+        assertEquals("b", countdown.occurrenceId)
+        assertEquals(exactIntervals, detail.intervals)
+
+        val beforeRoot = durable
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        val beforeDetail = detail
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.correctTiming(
+                    SEQUENCE_ID,
+                    SequenceHistoryTimingCorrection(
+                        detail.updatedAt,
+                        finalIntervals =
+                            interstepIntervals(
+                                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                                second(21).plusMillis(1),
+                                SequenceOccurrenceId("b"),
+                            ),
+                    ),
+                    second(50),
+                )
+            }
+
+        assertEquals("Transition countdown cannot survive after its target occurrence starts", failure.message)
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(
+            beforeRoot.execution.updatedAtMs,
+            database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.updatedAtMs,
+        )
+        assertEquals(beforeChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+        assertEquals(beforeDetail, history.getSequenceDetail(SEQUENCE_ID))
+    }
+
+    @Test
     fun guardedPlanFailureRollsBackEveryHistoricalWrite() {
         val plan = linkFulfilledPlan("rollback-plan")
         val rootBefore = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
@@ -2082,6 +2370,294 @@ class SequenceHistoryCommandRepositoryTest {
     private fun detailToken(id: SequenceExecutionId = SEQUENCE_ID) =
         requireNotNull(HistoryReadRepository(database).getSequenceDetail(id)).updatedAt
 
+    private fun assertOwnedGlobalIntervalCorrectionRollsBack(kind: SequenceIntervalKind) {
+        val history = HistoryReadRepository(database)
+        val ownerlessIntervals = interstepIntervals(kind, second(21), null)
+        persistInterstepGraph(ownerlessIntervals)
+
+        val validRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val validChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        val validDetail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        assertEquals(ownerlessIntervals, validDetail.intervals)
+        assertNull(validRoot.intervals.single { it.id == "interstep" }.occurrenceId)
+        assertEquals(19_000L, validRoot.execution.activeDurationMs)
+        assertEquals(1_000L, validRoot.execution.pauseDurationMs)
+        assertEquals(20_000L, validRoot.execution.wallDurationMs)
+
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.correctTiming(
+                    SEQUENCE_ID,
+                    SequenceHistoryTimingCorrection(
+                        validDetail.updatedAt,
+                        finalIntervals = interstepIntervals(kind, second(21), SequenceOccurrenceId("a")),
+                    ),
+                    second(50),
+                )
+            }
+
+        assertEquals("Global runtime interval must remain ownerless", failure.message)
+        assertEquals(validRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(
+            validRoot.execution.updatedAtMs,
+            database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.updatedAtMs,
+        )
+        assertEquals(validChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+        assertEquals(validDetail, history.getSequenceDetail(SEQUENCE_ID))
+    }
+
+    private fun persistInterstepGraph(intervals: List<SequenceInterval>) {
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(
+                detailToken(),
+                occurrenceTimings =
+                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(21), second(30))),
+                finalIntervals = intervals,
+                childTimings =
+                    listOf(
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-b"),
+                            ActivityHistoryTimeCorrection.Timed(second(21), second(30)),
+                        ),
+                    ),
+            ),
+            second(40),
+        )
+    }
+
+    private fun interstepIntervals(
+        kind: SequenceIntervalKind,
+        interstepEndedAt: Instant,
+        occurrenceId: SequenceOccurrenceId?,
+    ) = listOf(
+        interval("a", 10, 20, SequenceOccurrenceId("a")),
+        SequenceInterval(
+            SequenceIntervalId("interstep"),
+            kind,
+            second(20),
+            interstepEndedAt,
+            occurrenceId,
+        ),
+        interval("b", 21, 30, SequenceOccurrenceId("b")),
+    )
+
+    private fun seedMixedRepeatAndRuntimeAddedGraph(
+        name: String,
+        closeGap: Boolean,
+    ): MixedProvenanceGraph {
+        val executionId = SequenceExecutionId("$name-sequence")
+        val snapshotId = SequenceSnapshotId("$name-snapshot")
+        val repeatActivityId = "$name-repeat-activity"
+        val runtimeActivityId = "$name-runtime-activity"
+        LiveRuntimeTestFixtures(database).apply {
+            activity(repeatActivityId, "STOPWATCH")
+            activity(runtimeActivityId, "STOPWATCH")
+            repeatSequence(snapshotId.value, repeatActivityId)
+        }
+        database.activitySnapshotDao().insertFields(
+            listOf(
+                ActivitySnapshotFieldEntity(
+                    "$name-repeat-value",
+                    repeatActivityId,
+                    null,
+                    0,
+                    "Repeat value",
+                    null,
+                    "NUMBER",
+                    null,
+                    0,
+                    null,
+                    null,
+                    null,
+                ),
+                ActivitySnapshotFieldEntity(
+                    "$name-runtime-value",
+                    runtimeActivityId,
+                    null,
+                    0,
+                    "Runtime value",
+                    null,
+                    "NUMBER",
+                    null,
+                    0,
+                    null,
+                    null,
+                    null,
+                ),
+            ),
+        )
+        val repeat =
+            fun(
+                id: String,
+                position: Int,
+                iteration: Int,
+                start: Long,
+            ) = RuntimeOccurrence(
+                SequenceOccurrenceId(id),
+                SequenceSnapshotNodeId("${snapshotId.value}-step"),
+                ActivitySnapshotId(repeatActivityId),
+                position,
+                SequenceSnapshotNodeId("${snapshotId.value}-repeat"),
+                iteration,
+                RuntimeOccurrenceStatus.COMPLETED,
+                second(start),
+                second(start + 10),
+                OccurrenceCompletionReason.MANUAL_FINISH,
+                false,
+                false,
+            )
+        val runtimeAdded =
+            fun(
+                id: String,
+                position: Int,
+                start: Long,
+            ) = RuntimeOccurrence(
+                SequenceOccurrenceId(id),
+                null,
+                ActivitySnapshotId(runtimeActivityId),
+                position,
+                null,
+                null,
+                RuntimeOccurrenceStatus.COMPLETED,
+                second(start),
+                second(start + 10),
+                OccurrenceCompletionReason.MANUAL_FINISH,
+                true,
+                false,
+            )
+        val occurrences =
+            if (closeGap) {
+                listOf(
+                    runtimeAdded("$name-target", 5, 10),
+                    repeat("$name-repeat-1", 9, 1, 20),
+                    repeat("$name-repeat-2", 13, 2, 30),
+                    runtimeAdded("$name-runtime-suffix", 17, 40),
+                )
+            } else {
+                listOf(
+                    repeat("$name-repeat-1", 4, 1, 10),
+                    repeat("$name-target", 8, 2, 20),
+                    runtimeAdded("$name-runtime-suffix", 12, 30),
+                )
+            }
+        val target = occurrences.single { it.id.value == "$name-target" }
+        val intervals =
+            occurrences.flatMap { occurrence ->
+                if (closeGap && occurrence.id.value == "$name-repeat-2") {
+                    listOf(
+                        interval("$name-repeat-2-a", 30, 32, occurrence.id),
+                        interval("$name-repeat-2-b", 34, 40, occurrence.id),
+                    )
+                } else {
+                    listOf(
+                        interval(
+                            "$name-${occurrence.id.value.removePrefix("$name-")}",
+                            occurrence.enteredAt!!.epochSecond,
+                            occurrence.completedAt!!.epochSecond,
+                            occurrence.id,
+                        ),
+                    )
+                }
+            }
+        val end = occurrences.maxOf { requireNotNull(it.completedAt) }
+        val durations =
+            com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator.calculate(
+                second(10),
+                end,
+                intervals,
+            )
+        database.sequenceExecutionDao().insertAggregate(
+            SequenceExecution(
+                executionId,
+                snapshotId,
+                StatisticsSeriesId("sequence-series"),
+                SequenceExecutionStatus.COMPLETED,
+                second(10),
+                end,
+                durations.active,
+                durations.pause,
+                durations.wall,
+                ZoneOffset.UTC,
+                0,
+                second(10).atZone(ZoneOffset.UTC).toLocalDate(),
+                null,
+                second(10),
+                end,
+                occurrences,
+                intervals,
+            ).toEntityAggregate(),
+        )
+        occurrences.forEach { occurrence ->
+            val pause =
+                if (closeGap && occurrence.id.value == "$name-repeat-2") {
+                    listOf(
+                        ActivityExecutionPause(ActivityExecutionPauseId("$name-repeat-pause"), second(32), second(34)),
+                    )
+                } else {
+                    emptyList()
+                }
+            val childId = "$name-child-${occurrence.id.value.removePrefix("$name-")}"
+            database.activityExecutionDao().insertAggregate(
+                child(
+                    childId,
+                    occurrence.activitySnapshotId.value,
+                    occurrence.id,
+                    occurrence.enteredAt!!.epochSecond,
+                    occurrence.completedAt!!.epochSecond,
+                    executionId,
+                ).copy(
+                    activeDuration =
+                        Duration.ofSeconds(
+                            10 - pause.sumOf { Duration.between(it.startedAt, requireNotNull(it.endedAt)).seconds },
+                        ),
+                    pauses = pause,
+                ).toEntityAggregate(),
+            )
+            database.activityExecutionDao().upsertValue(
+                ActivityExecutionFieldValueEntity(
+                    childId,
+                    if (occurrence.isRuntimeAdded) "$name-runtime-value" else "$name-repeat-value",
+                    occurrence.runtimePosition.toLong(),
+                    null,
+                    null,
+                ),
+            )
+        }
+        return MixedProvenanceGraph(
+            executionId,
+            target.id.value,
+            "$name-child-target",
+            occurrences.map { it.id.value },
+            occurrences.filterNot { it.id == target.id }.map { it.id.value },
+            occurrences.filter { it.isRuntimeAdded }.map { it.id.value },
+            occurrences.single { it.repeatIteration == if (closeGap) 2 else 1 }.id.value,
+            occurrences.filterNot { it.id == target.id }.map { "$name-child-${it.id.value.removePrefix("$name-")}" },
+        )
+    }
+
+    private fun assertRuntimeAddedSourceLess(occurrence: SequenceOccurrenceEntity) {
+        assertTrue(occurrence.isRuntimeAdded)
+        assertNull(occurrence.sourceSequenceSnapshotNodeId)
+        assertNull(occurrence.repeatSourceSnapshotNodeId)
+        assertNull(occurrence.repeatIteration)
+    }
+
+    private fun assertCanonicalProvenance(
+        row: SequenceOccurrenceEntity,
+        occurrence: SequenceHistoryOccurrence,
+    ) {
+        assertEquals(row.id, occurrence.occurrenceId.value)
+        assertEquals(row.runtimePosition, occurrence.runtimePosition)
+        assertEquals(row.activitySnapshotId, occurrence.activitySnapshotId.value)
+        assertEquals(row.sourceSequenceSnapshotNodeId, occurrence.sourceSequenceSnapshotNodeId?.value)
+        assertEquals(row.repeatSourceSnapshotNodeId, occurrence.repeatSourceSnapshotNodeId?.value)
+        assertEquals(row.repeatIteration, occurrence.repeatIteration)
+        assertEquals(row.isRuntimeAdded, occurrence.isRuntimeAdded)
+        assertEquals(row.enteredAtMs?.let(Instant::ofEpochMilli), occurrence.enteredAt)
+        assertEquals(row.completedAtMs?.let(Instant::ofEpochMilli), occurrence.completedAt)
+    }
+
     private fun occurrence(
         id: String,
         activityId: String,
@@ -2146,6 +2722,17 @@ class SequenceHistoryCommandRepositoryTest {
     )
 
     private fun second(value: Long) = Instant.ofEpochSecond(value)
+
+    private data class MixedProvenanceGraph(
+        val executionId: SequenceExecutionId,
+        val targetOccurrenceId: String,
+        val targetChildId: String,
+        val occurrenceIds: List<String>,
+        val visibleOccurrenceIds: List<String>,
+        val runtimeAddedOccurrenceIds: List<String>,
+        val retainedRepeatOccurrenceId: String,
+        val visibleChildIds: List<String>,
+    )
 
     private companion object {
         val SEQUENCE_ID = SequenceExecutionId("sequence")
