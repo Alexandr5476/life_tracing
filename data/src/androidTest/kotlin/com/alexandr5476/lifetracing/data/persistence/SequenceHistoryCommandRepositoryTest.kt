@@ -1567,6 +1567,64 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
+    fun ownedExplicitPauseCorrectionRollsBackValidOwnerlessHistory() {
+        assertOwnedGlobalIntervalCorrectionRollsBack(SequenceIntervalKind.EXPLICIT_PAUSE)
+    }
+
+    @Test
+    fun ownedImplicitIdleCorrectionRollsBackValidOwnerlessHistory() {
+        assertOwnedGlobalIntervalCorrectionRollsBack(SequenceIntervalKind.IMPLICIT_IDLE)
+    }
+
+    @Test
+    fun countdownAtPerformedTargetEntryPersistsAndLaterEndRollsBack() {
+        val history = HistoryReadRepository(database)
+        val exactIntervals = interstepIntervals(SequenceIntervalKind.TRANSITION_COUNTDOWN, second(21), SequenceOccurrenceId("b"))
+        persistInterstepGraph(exactIntervals)
+
+        val durable = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val detail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        val target = durable.occurrences.single { it.id == "b" }
+        val targetChild = requireNotNull(database.activityExecutionDao().getAggregate("child-b"))
+        val countdown = durable.intervals.single { it.id == "interstep" }
+        assertEquals(21_000L, target.enteredAtMs)
+        assertEquals(21_000L, targetChild.execution.startedAtMs)
+        assertEquals(
+            SequenceIntervalEntity("b", SEQUENCE_ID.value, "ACTIVE_STEP", 21_000, 30_000, "b"),
+            durable.intervals.single { it.id == "b" },
+        )
+        assertEquals(21_000L, countdown.endedAtMs)
+        assertEquals("b", countdown.occurrenceId)
+        assertEquals(exactIntervals, detail.intervals)
+
+        val beforeRoot = durable
+        val beforeChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        val beforeDetail = detail
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.correctTiming(
+                    SEQUENCE_ID,
+                    SequenceHistoryTimingCorrection(
+                        detail.updatedAt,
+                        finalIntervals =
+                            interstepIntervals(
+                                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                                second(21).plusMillis(1),
+                                SequenceOccurrenceId("b"),
+                            ),
+                    ),
+                    second(50),
+                )
+            }
+
+        assertEquals("Transition countdown cannot survive after its target occurrence starts", failure.message)
+        assertEquals(beforeRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(beforeRoot.execution.updatedAtMs, database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.updatedAtMs)
+        assertEquals(beforeChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+        assertEquals(beforeDetail, history.getSequenceDetail(SEQUENCE_ID))
+    }
+
+    @Test
     fun guardedPlanFailureRollsBackEveryHistoricalWrite() {
         val plan = linkFulfilledPlan("rollback-plan")
         val rootBefore = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
@@ -2081,6 +2139,76 @@ class SequenceHistoryCommandRepositoryTest {
 
     private fun detailToken(id: SequenceExecutionId = SEQUENCE_ID) =
         requireNotNull(HistoryReadRepository(database).getSequenceDetail(id)).updatedAt
+
+    private fun assertOwnedGlobalIntervalCorrectionRollsBack(kind: SequenceIntervalKind) {
+        val history = HistoryReadRepository(database)
+        val ownerlessIntervals = interstepIntervals(kind, second(21), null)
+        persistInterstepGraph(ownerlessIntervals)
+
+        val validRoot = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        val validChildren = database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value)
+        val validDetail = requireNotNull(history.getSequenceDetail(SEQUENCE_ID))
+        assertEquals(ownerlessIntervals, validDetail.intervals)
+        assertNull(validRoot.intervals.single { it.id == "interstep" }.occurrenceId)
+        assertEquals(19_000L, validRoot.execution.activeDurationMs)
+        assertEquals(1_000L, validRoot.execution.pauseDurationMs)
+        assertEquals(20_000L, validRoot.execution.wallDurationMs)
+
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.correctTiming(
+                    SEQUENCE_ID,
+                    SequenceHistoryTimingCorrection(
+                        validDetail.updatedAt,
+                        finalIntervals = interstepIntervals(kind, second(21), SequenceOccurrenceId("a")),
+                    ),
+                    second(50),
+                )
+            }
+
+        assertEquals("Global runtime interval must remain ownerless", failure.message)
+        assertEquals(validRoot, database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
+        assertEquals(validRoot.execution.updatedAtMs, database.sequenceExecutionDao().getById(SEQUENCE_ID.value)?.updatedAtMs)
+        assertEquals(validChildren, database.activityExecutionDao().getSequenceChildAggregates(SEQUENCE_ID.value))
+        assertEquals(validDetail, history.getSequenceDetail(SEQUENCE_ID))
+    }
+
+    private fun persistInterstepGraph(intervals: List<SequenceInterval>) {
+        repository.correctTiming(
+            SEQUENCE_ID,
+            SequenceHistoryTimingCorrection(
+                detailToken(),
+                occurrenceTimings =
+                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(21), second(30))),
+                finalIntervals = intervals,
+                childTimings =
+                    listOf(
+                        SequenceChildTimingCorrection(
+                            ActivityExecutionId("child-b"),
+                            ActivityHistoryTimeCorrection.Timed(second(21), second(30)),
+                        ),
+                    ),
+            ),
+            second(40),
+        )
+    }
+
+    private fun interstepIntervals(
+        kind: SequenceIntervalKind,
+        interstepEndedAt: Instant,
+        occurrenceId: SequenceOccurrenceId?,
+    ) =
+        listOf(
+            interval("a", 10, 20, SequenceOccurrenceId("a")),
+            SequenceInterval(
+                SequenceIntervalId("interstep"),
+                kind,
+                second(20),
+                interstepEndedAt,
+                occurrenceId,
+            ),
+            interval("b", 21, 30, SequenceOccurrenceId("b")),
+        )
 
     private fun occurrence(
         id: String,
