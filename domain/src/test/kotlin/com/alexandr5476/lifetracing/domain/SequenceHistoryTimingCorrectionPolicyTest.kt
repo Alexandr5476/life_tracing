@@ -215,41 +215,71 @@ class SequenceHistoryTimingCorrectionPolicyTest {
     }
 
     @Test
-    fun `historical graph rejects invalid global and countdown interval ownership or order`() {
-        val graph = graph()
-        val target = graph.execution.occurrences.first()
-        listOf(
-            SequenceIntervalKind.EXPLICIT_PAUSE,
-            SequenceIntervalKind.IMPLICIT_IDLE,
-        ).forEach { kind ->
+    fun `ownerless explicit pause is valid but owned pause is rejected`() {
+        val graph = terminalGraphWithInterstepInterval(SequenceIntervalKind.EXPLICIT_PAUSE)
+        requireValidHistoricalCorrectionPrerequisites(graph)
+        correct(graph)
+        val invalid = graph.withInterstepOwner("a")
+        requireValidHistoricalCorrectionPrerequisites(invalid)
+
+        val failure =
             assertThrows(IllegalArgumentException::class.java) {
-                SequenceHistoricalTimingGraphValidator.requireValid(
-                    graph.execution.copy(
-                        intervals = listOf(interval("invalid-$kind", kind, minute(10), minute(11), "a")),
-                    ),
-                    graph.snapshot,
-                    graph.children,
-                )
+                correct(invalid)
             }
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            SequenceHistoricalTimingGraphValidator.requireValid(
-                graph.execution.copy(
-                    intervals =
-                        listOf(
-                            interval(
-                                "late-countdown",
-                                SequenceIntervalKind.TRANSITION_COUNTDOWN,
-                                requireNotNull(target.enteredAt),
-                                requireNotNull(target.enteredAt).plusSeconds(1),
-                                "a",
-                            ),
-                        ),
-                ),
-                graph.snapshot,
-                graph.children,
+
+        assertEquals("Global runtime interval must remain ownerless", failure.message)
+    }
+
+    @Test
+    fun `ownerless implicit idle is valid but owned idle is rejected`() {
+        val graph = terminalGraphWithInterstepInterval(SequenceIntervalKind.IMPLICIT_IDLE)
+        requireValidHistoricalCorrectionPrerequisites(graph)
+        correct(graph)
+        val invalid = graph.withInterstepOwner("a")
+        requireValidHistoricalCorrectionPrerequisites(invalid)
+
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                correct(invalid)
+            }
+
+        assertEquals("Global runtime interval must remain ownerless", failure.message)
+    }
+
+    @Test
+    fun `transition countdown ending before or at its performed target entry is valid`() {
+        val endingBeforeTarget =
+            terminalGraphWithInterstepInterval(
+                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                minute(16).minusMillis(1),
+                "b",
             )
-        }
+        val endingAtTarget =
+            terminalGraphWithInterstepInterval(
+                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                minute(16),
+                "b",
+            )
+
+        requireValidHistoricalCorrectionPrerequisites(endingBeforeTarget)
+        correct(endingBeforeTarget)
+        requireValidHistoricalCorrectionPrerequisites(endingAtTarget)
+        correct(endingAtTarget)
+    }
+
+    @Test
+    fun `transition countdown ending after its performed target entry is rejected`() {
+        val graph =
+            terminalGraphWithInterstepInterval(
+                SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                minute(16).plusMillis(1),
+                "b",
+            )
+        requireValidHistoricalCorrectionPrerequisites(graph)
+
+        val failure = assertThrows(IllegalArgumentException::class.java) { correct(graph) }
+
+        assertEquals("Transition countdown cannot survive after its target occurrence starts", failure.message)
     }
 
     @Test
@@ -711,6 +741,17 @@ class SequenceHistoryTimingCorrectionPolicyTest {
         correctedAt,
     )
 
+    private fun requireValidHistoricalCorrectionPrerequisites(graph: Graph) {
+        SequenceHistoricalRootSpanValidator.requireFactsWithinRoot(
+            graph.execution,
+            graph.children.map(SequenceHistoryChildExecution::execution),
+        )
+        SequenceExecutionValidator.requireValid(graph.execution, graph.snapshot)
+        graph.children.forEach { child ->
+            ActivityExecutionValidator.requireValid(child.execution, child.snapshot)
+        }
+    }
+
     private fun childCorrection(
         graph: Graph,
         time: ActivityHistoryTimeCorrection = ActivityHistoryTimeCorrection.Timed(minute(10), minute(19)),
@@ -768,6 +809,59 @@ class SequenceHistoryTimingCorrectionPolicyTest {
             listOf(SequenceHistoryChildExecution(childA, a), SequenceHistoryChildExecution(childB, b)),
         )
     }
+
+    private fun terminalGraphWithInterstepInterval(
+        kind: SequenceIntervalKind,
+        interstepEndedAt: Instant = minute(16),
+        occurrenceId: String? = null,
+    ): Graph {
+        val graph = graph(end = minute(21), middleAt = minute(15))
+        val targetStart = minute(16)
+        val target = graph.execution.occurrences[1].copy(enteredAt = targetStart)
+        val targetChild =
+            graph.children[1].execution.copy(
+                startedAt = targetStart,
+                activeDuration =
+                    ActivityExecutionDurationCalculator.calculate(targetStart, minute(21), emptyList()),
+            )
+        val intervals =
+            listOf(
+                interval("a", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(15), "a"),
+                interval("interstep", kind, minute(15), interstepEndedAt, occurrenceId),
+                interval("b", SequenceIntervalKind.ACTIVE_STEP, targetStart, minute(21), "b"),
+            )
+        val durations = SequenceTimelineCalculator.calculate(minute(10), minute(21), intervals)
+        return graph.copy(
+            execution =
+                graph.execution.copy(
+                    activeDuration = durations.active,
+                    pauseDuration = durations.pause,
+                    wallDuration = durations.wall,
+                    occurrences = listOf(graph.execution.occurrences.first(), target),
+                    intervals = intervals,
+                ),
+            children =
+                listOf(
+                    graph.children.first(),
+                    SequenceHistoryChildExecution(targetChild, graph.children[1].snapshot),
+                ),
+        )
+    }
+
+    private fun Graph.withInterstepOwner(occurrenceId: String) =
+        copy(
+            execution =
+                execution.copy(
+                    intervals =
+                        execution.intervals.map { interval ->
+                            if (interval.id.value == "interstep") {
+                                interval.copy(occurrenceId = SequenceOccurrenceId(occurrenceId))
+                            } else {
+                                interval
+                            }
+                        },
+                ),
+        )
 
     private fun pausedGraph(activeIntervals: List<SequenceInterval>): Graph {
         val graph = graph(end = minute(30), middleAt = minute(20))
@@ -947,8 +1041,8 @@ class SequenceHistoryTimingCorrectionPolicyTest {
         kind: SequenceIntervalKind,
         start: Instant,
         end: Instant?,
-        occurrenceId: String,
-    ) = SequenceInterval(SequenceIntervalId(id), kind, start, end, SequenceOccurrenceId(occurrenceId))
+        occurrenceId: String?,
+    ) = SequenceInterval(SequenceIntervalId(id), kind, start, end, occurrenceId?.let(::SequenceOccurrenceId))
 
     private fun minute(value: Long): Instant = Instant.ofEpochSecond(value * 60)
 
