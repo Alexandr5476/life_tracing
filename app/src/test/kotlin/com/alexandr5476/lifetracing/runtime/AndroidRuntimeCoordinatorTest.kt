@@ -48,6 +48,44 @@ import java.time.ZoneOffset
 @Suppress("LargeClass") // Existing coordinator boundary scenarios share one focused harness.
 class AndroidRuntimeCoordinatorTest {
     @Test
+    fun semanticGenerationAdvancesForForegroundRuntimeAndTimeCoordination() =
+        runBlocking {
+            val coordinator =
+                coordinator(
+                    load = { null },
+                    reconcile = { RuntimeReconciliationResult(null, emptyList()) },
+                )
+
+            coordinator.onForeground()
+            coordinator.onRuntimeStateChanged()
+            coordinator.onSystemTimeChanged()
+
+            assertEquals(3L, coordinator.semanticGeneration.value)
+        }
+
+    @Test
+    fun onlyAcceptedDeadlineSignalAdvancesSemanticGeneration() =
+        runBlocking {
+            var current: ActiveRuntime? = runningTimer(timerTargetSeconds = 10)
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(current)))
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        current = null
+                        RuntimeReconciliationResult(null, emptyList())
+                    },
+                    wallSeconds = 10,
+                )
+
+            coordinator.onDeadlineSignal(deadline.copy(at = deadline.at.plusSeconds(1)))
+            assertEquals(0L, coordinator.semanticGeneration.value)
+
+            coordinator.onDeadlineSignal(deadline)
+            assertEquals(1L, coordinator.semanticGeneration.value)
+        }
+
+    @Test
     fun coroutineDriverUsesMonotonicDeadlineAndReplacesPreviousOneShot() =
         runBlocking {
             val monotonic = MutableMonotonicClock(6_000)
