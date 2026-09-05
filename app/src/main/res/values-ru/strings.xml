@@ -43,7 +43,7 @@
     <string name="daily_overtime">Сверх времени: %1$s</string>
     <string name="daily_timer_complete">Таймер завершён</string>
     <string name="daily_sequence_total">Активное время последовательности: %1$s</string>
-    <string name="daily_no_live_current_step">Текущий шаг — без учёта времени</string>
+    <string name="daily_no_live_current_step">Текущий шаг: без учёта времени</string>
     <string name="daily_waiting">Ожидание следующего шага</string>
     <string name="daily_transition_countdown">Отсчёт до следующего шага</string>
     <string name="daily_next_step">Далее: %1$s</string>
@@ -55,7 +55,6 @@
     <string name="daily_exact_time_unavailable">Точное время недоступно</string>
     <string name="daily_floating_day">В любое время этого дня</string>
     <string name="daily_week_of">Неделя с %1$s</string>
-    <string name="daily_month_plan">План на месяц</string>
     <string name="daily_plan_planned">Запланировано</string>
     <string name="daily_plan_fulfilled">Выполнено</string>
     <string name="daily_plan_cancelled">Отменено</string>

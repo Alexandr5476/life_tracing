@@ -43,7 +43,7 @@
     <string name="daily_overtime">Overtime %1$s</string>
     <string name="daily_timer_complete">Timer complete</string>
     <string name="daily_sequence_total">Sequence active: %1$s</string>
-    <string name="daily_no_live_current_step">Current step — no live time</string>
+    <string name="daily_no_live_current_step">Current step: no live time</string>
     <string name="daily_waiting">Waiting for the next step</string>
     <string name="daily_transition_countdown">Next-step countdown</string>
     <string name="daily_next_step">Next: %1$s</string>
@@ -55,7 +55,6 @@
     <string name="daily_exact_time_unavailable">Exact time unavailable</string>
     <string name="daily_floating_day">Any time on this day</string>
     <string name="daily_week_of">Week of %1$s</string>
-    <string name="daily_month_plan">Month plan</string>
     <string name="daily_plan_planned">Planned</string>
     <string name="daily_plan_fulfilled">Fulfilled</string>
     <string name="daily_plan_cancelled">Cancelled</string>

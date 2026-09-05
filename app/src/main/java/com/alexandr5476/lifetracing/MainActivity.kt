@@ -3,6 +3,11 @@ package com.alexandr5476.lifetracing
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -17,6 +22,7 @@ import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
+import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.serialization.Serializable
 
@@ -61,7 +67,16 @@ fun LifeTracingApp(
                     entryProvider {
                         entry<DailyRoot> { DailyRoute(controller) }
                     },
+                transitionSpec = { lifeTracingNavigationTransition() },
+                popTransitionSpec = { lifeTracingNavigationTransition() },
+                predictivePopTransitionSpec = { _ -> lifeTracingNavigationTransition() },
             )
         }
     }
 }
+
+internal val dailyNavigationTransitionDurationMillis = LifeTracingMotion.standardDurationMillis
+
+private fun lifeTracingNavigationTransition(): ContentTransform =
+    fadeIn(animationSpec = tween(dailyNavigationTransitionDurationMillis)) togetherWith
+        fadeOut(animationSpec = tween(dailyNavigationTransitionDurationMillis))

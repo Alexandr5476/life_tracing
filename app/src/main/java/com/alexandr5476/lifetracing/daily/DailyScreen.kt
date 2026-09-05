@@ -76,6 +76,7 @@ fun DailyRoute(controller: DailyController) {
 internal fun DailyScreen(
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
+    displayElapsedRealtimeMs: Long? = null,
 ) {
     val scrollState = rememberScrollState()
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -92,8 +93,8 @@ internal fun DailyScreen(
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
                 is DailyLoadState.Failure -> FailureContent(onAction)
-                is DailyLoadState.Empty -> DailyContent(state, load.daily, onAction)
-                is DailyLoadState.Content -> DailyContent(state, load.daily, onAction)
+                is DailyLoadState.Empty -> DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs)
+                is DailyLoadState.Content -> DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs)
             }
         }
     }
@@ -115,7 +116,7 @@ private fun DateHeader(
         TextButton(
             onClick = { onAction(DailyAction.PreviousDay) },
             modifier = Modifier.semantics { contentDescription = previous },
-        ) { Text("‹") }
+        ) { Text("\u2039") }
         Column(modifier = Modifier.weight(1f)) {
             Text(text = stringResource(R.string.daily_title), style = MaterialTheme.typography.labelLarge)
             Text(
@@ -132,7 +133,7 @@ private fun DateHeader(
         TextButton(
             onClick = { onAction(DailyAction.NextDay) },
             modifier = Modifier.semantics { contentDescription = next },
-        ) { Text("›") }
+        ) { Text("\u203A") }
     }
 }
 
@@ -189,11 +190,12 @@ private fun DailyContent(
     state: DailyPresentationState,
     daily: com.alexandr5476.lifetracing.domain.DailyRead,
     onAction: (DailyAction) -> Unit,
+    displayElapsedRealtimeMs: Long?,
 ) {
     val plans = daily.dayPlans + daily.weekPlans
     val active: @Composable () -> Unit = {
         if (state.dateRelation == DailyDateRelation.TODAY) {
-            daily.active?.let { ActiveSection(it, state, onAction) }
+            daily.active?.let { ActiveSection(it, state, onAction, displayElapsedRealtimeMs) }
         }
     }
     val planned: @Composable () -> Unit = { PlannedSection(plans, state.dateRelation) }
@@ -220,11 +222,12 @@ private fun ActiveSection(
     active: DailyActive,
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
+    displayElapsedRealtimeMs: Long?,
 ) {
     SectionTitle(R.string.daily_active)
     when (active) {
-        is DailyActive.Activity -> ActiveActivityCard(active, state, onAction)
-        is DailyActive.Sequence -> ActiveSequenceCard(active, state, onAction)
+        is DailyActive.Activity -> ActiveActivityCard(active, state, onAction, displayElapsedRealtimeMs)
+        is DailyActive.Sequence -> ActiveSequenceCard(active, state, onAction, displayElapsedRealtimeMs)
     }
 }
 
@@ -233,6 +236,7 @@ private fun ActiveActivityCard(
     active: DailyActive.Activity,
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
+    displayElapsedRealtimeMs: Long?,
 ) {
     val runtime = active.runtime
     val paused = runtime.session.state == ActiveSessionState.PAUSED
@@ -250,7 +254,11 @@ private fun ActiveActivityCard(
             color = MaterialTheme.colorScheme.onPrimaryContainer,
             style = MaterialTheme.typography.labelLarge,
         )
-        LiveActivityValue(runtime.snapshot.timeTrackingMode, state.runtimeDisplayBaseline)
+        LiveActivityValue(
+            runtime.snapshot.timeTrackingMode,
+            state.runtimeDisplayBaseline,
+            displayElapsedRealtimeMs,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             LifeTracingSecondaryButton(
                 onClick = { onAction(if (paused) DailyAction.ResumeActivity else DailyAction.PauseActivity) },
@@ -268,8 +276,9 @@ private fun ActiveActivityCard(
 private fun LiveActivityValue(
     mode: TimeTrackingMode,
     baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?,
+    displayElapsedRealtimeMs: Long?,
 ) {
-    val elapsedNow = displayTick(baseline)
+    val elapsedNow = displayTick(baseline, displayElapsedRealtimeMs)
     val value =
         when {
             baseline == null -> stringResource(R.string.daily_timing_unavailable)
@@ -284,8 +293,9 @@ private fun ActiveSequenceCard(
     active: DailyActive.Sequence,
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
+    displayElapsedRealtimeMs: Long?,
 ) {
-    val elapsedNow = displayTick(state.runtimeDisplayBaseline)
+    val elapsedNow = displayTick(state.runtimeDisplayBaseline, displayElapsedRealtimeMs)
     val runtime = active.runtime
     DailyCard(container = MaterialTheme.colorScheme.primaryContainer) {
         Text(
@@ -467,7 +477,7 @@ private fun planContext(plan: DailyPlan): String =
                 ?: stringResource(R.string.daily_exact_time_unavailable)
         is PlanTarget.FloatingDay -> stringResource(R.string.daily_floating_day)
         is PlanTarget.Week -> stringResource(R.string.daily_week_of, localizedDate(target.weekStart))
-        is PlanTarget.Month -> stringResource(R.string.daily_month_plan)
+        is PlanTarget.Month -> error("Month Plans are not rendered on Daily")
     }
 
 @Composable
@@ -582,7 +592,11 @@ private fun DailyCard(
 }
 
 @Composable
-private fun displayTick(baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?): Long {
+private fun displayTick(
+    baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?,
+    displayElapsedRealtimeMs: Long?,
+): Long {
+    if (displayElapsedRealtimeMs != null) return displayElapsedRealtimeMs
     var now by remember(baseline) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(baseline) {
         if (baseline != null) {
