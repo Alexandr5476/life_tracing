@@ -23,6 +23,14 @@ internal data class SequenceSnapshotSummaryEntity(
     @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
 )
 
+internal data class DailySequencePlanMetadataEntity(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
+    @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
+)
+
 @Dao
 // One immutable aggregate has a small, bounded persistence surface.
 @Suppress("TooManyFunctions", "CyclomaticComplexMethod")
@@ -35,6 +43,11 @@ internal abstract class SequenceSnapshotDao {
 
     @Query("SELECT id, name, short_comment FROM sequence_snapshots WHERE id IN (:ids)")
     abstract fun getSummaries(ids: List<String>): List<SequenceSnapshotSummaryEntity>
+
+    @Query(
+        "SELECT id, name, short_comment, source_template_id, source_revision FROM sequence_snapshots WHERE id IN (:ids)",
+    )
+    abstract fun getDailyPlanMetadata(ids: List<String>): List<DailySequencePlanMetadataEntity>
 
     @Query("SELECT * FROM sequence_snapshot_settings WHERE sequence_snapshot_id = :snapshotId")
     abstract fun getSettings(snapshotId: String): SequenceSnapshotSettingsEntity?
