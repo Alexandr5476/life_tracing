@@ -21,6 +21,7 @@ import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyQuery
+import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -369,9 +370,10 @@ class DailyReadRepositoryTest {
         val beforeSession = database.activeSessionDao().get()
 
         val past = read("2026-08-19", now)
+        val pastPlan = past.dayPlans.single()
 
-        assertEquals(PlanEntryStatus.PLANNED, past.dayPlans.single().plan.status)
-        assertTrue(past.dayPlans.single().engaged)
+        assertEquals(PlanEntryStatus.PLANNED, pastPlan.plan.status)
+        assertTrue(pastPlan.engaged)
         assertNull(past.active)
         assertEquals(beforePlan, database.planEntryDao().getById("past-plan"))
         assertEquals(beforeExecution, database.activityExecutionDao().getAggregate(started.id.value))
@@ -675,8 +677,13 @@ class DailyReadRepositoryTest {
 
     private fun read(
         date: String,
-        now: Instant = LocalDate.parse(date).atTime(12, 0).atZone(currentZone).toInstant(),
-    ) =
+        now: Instant =
+            LocalDate
+                .parse(date)
+                .atTime(12, 0)
+                .atZone(currentZone)
+                .toInstant(),
+    ): DailyRead =
         daily.getDaily(
             DailyQuery(
                 LocalDate.parse(date),
