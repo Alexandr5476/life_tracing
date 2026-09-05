@@ -74,6 +74,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 instance ?: create(context.applicationContext).also { instance = it }
             }
 
+        @Suppress("LongMethod") // Runtime graph wiring is intentionally kept at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
             val scope =
                 kotlinx.coroutines.CoroutineScope(
