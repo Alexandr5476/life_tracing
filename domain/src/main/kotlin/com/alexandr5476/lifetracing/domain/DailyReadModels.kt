@@ -43,12 +43,20 @@ sealed interface DailyPlanSnapshot {
     }
 
     data class Sequence(
-        val value: SequenceConfigSnapshot,
+        val value: DailySequencePlanMetadata,
     ) : DailyPlanSnapshot {
         override val title = value.name
         override val shortComment = value.shortComment
     }
 }
+
+data class DailySequencePlanMetadata(
+    val id: SequenceSnapshotId,
+    val name: String,
+    val shortComment: String?,
+    val sourceTemplateId: SequenceTemplateId?,
+    val sourceRevision: Long?,
+)
 
 sealed interface DailyActive {
     val runtime: ActiveRuntime

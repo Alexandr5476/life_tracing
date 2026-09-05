@@ -20,6 +20,7 @@ import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
+import com.alexandr5476.lifetracing.domain.DailyPlanSnapshot
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DraftIdentity
@@ -32,6 +33,7 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -239,7 +241,61 @@ class DailyReadRepositoryTest {
     }
 
     @Test
-    fun dailySequenceSnapshotHydrationChunksDerivedActivitySnapshotValidationQueries() {
+    fun dailySequencePlanMetadataProjectionIsNestedSizeIndependentAndKeepsCanonicalLinks() {
+        database.sequenceTemplateDao().insertAggregate(
+            SequenceTemplateAggregateEntity(
+                SequenceTemplateEntity(
+                    "sequence-source",
+                    "Current source",
+                    null,
+                    "sequence-series",
+                    2,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                SequenceTemplateSettingsEntity("sequence-source"),
+                SequenceTemplateUserStateEntity("sequence-source", null, null),
+            ),
+        )
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(
+                    "small-sequence",
+                    "Frozen small",
+                    "Small note",
+                    "sequence-source",
+                    1,
+                    "sequence-series",
+                    0,
+                ),
+                SequenceSnapshotSettingsEntity(
+                    "small-sequence",
+                    true,
+                    0,
+                    0,
+                    true,
+                    true,
+                    false,
+                    true,
+                    true,
+                    "ACTIVE",
+                ),
+                nodes =
+                    listOf(
+                        SequenceSnapshotNodeEntity(
+                            "small-node",
+                            "small-sequence",
+                            "STEP",
+                            null,
+                            0,
+                            "stopwatch",
+                            null,
+                        ),
+                    ),
+            ),
+        )
         val activityIds = (0..900).map { "wide-activity-$it" }
         activityIds.forEach { id ->
             database.activitySnapshotDao().insertAggregate(
@@ -251,7 +307,15 @@ class DailyReadRepositoryTest {
         }
         database.sequenceSnapshotDao().insertAggregate(
             SequenceSnapshotAggregateEntity(
-                SequenceSnapshotEntity("wide-sequence", "Wide", null, null, null, null, 0),
+                SequenceSnapshotEntity(
+                    "wide-sequence",
+                    "Frozen wide",
+                    "Wide note",
+                    "sequence-source",
+                    1,
+                    "sequence-series",
+                    0,
+                ),
                 SequenceSnapshotSettingsEntity(
                     "wide-sequence",
                     true,
@@ -270,28 +334,82 @@ class DailyReadRepositoryTest {
                     },
             ),
         )
-        database.planEntryDao().insert(plan("wide-plan", sequence = "wide-sequence", day = "2026-08-20"))
+        database.planEntryDao().insert(
+            plan(
+                "small-plan",
+                sequence = "small-sequence",
+                day = "2026-08-20",
+                source = "sequence-source",
+                revision = 1,
+            ),
+        )
+        database.planEntryDao().insert(
+            plan(
+                "wide-plan",
+                sequence = "wide-sequence",
+                day = "2026-08-21",
+                source = "sequence-source",
+                revision = 1,
+            ),
+        )
+        val started =
+            live.startSequenceFromPlan(
+                PlanEntryId("small-plan"),
+                Instant.parse("2026-08-19T08:00:00Z"),
+                Instant.parse("2026-08-19T08:00:00Z"),
+                ZoneOffset.UTC,
+            )
+        val engaged = read("2026-08-20", Instant.parse("2026-08-20T12:00:00Z")).dayPlans.single()
+        val engagedSnapshot = (engaged.snapshot as DailyPlanSnapshot.Sequence).value
+        assertTrue(engaged.engaged)
+        assertEquals(SequenceSnapshotId("small-sequence"), engagedSnapshot.id)
+        assertEquals("Frozen small", engaged.snapshot.title)
+        assertEquals("Small note", engaged.snapshot.shortComment)
+        assertEquals(SequenceTemplateId("sequence-source"), engagedSnapshot.sourceTemplateId)
+        assertEquals(1L, engagedSnapshot.sourceRevision)
+        assertEquals(PlanSourceState.CHANGED, engaged.sourceState)
+        live.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, Instant.parse("2026-08-19T09:00:00Z"))
 
         observedSql.clear()
-        assertEquals(
-            "wide-plan",
-            read("2026-08-20")
-                .dayPlans
-                .single()
-                .plan
-                .id
-                .value,
-        )
+        val small = read("2026-08-20", Instant.parse("2026-08-20T12:00:00Z")).dayPlans.single()
+        val smallSql = nestedSequenceProjectionSql()
+        val smallSnapshot = (small.snapshot as DailyPlanSnapshot.Sequence).value
+        assertEquals("small-plan", small.plan.id.value)
+        assertEquals(PlanEntryStatus.FULFILLED, small.plan.status)
+        assertEquals(started.execution.id, small.plan.fulfilledSequenceExecutionId)
+        assertEquals("Frozen small", small.snapshot.title)
+        assertEquals("Small note", small.snapshot.shortComment)
+        assertEquals(SequenceSnapshotId("small-sequence"), smallSnapshot.id)
+        assertEquals(SequenceTemplateId("sequence-source"), smallSnapshot.sourceTemplateId)
+        assertEquals(1L, smallSnapshot.sourceRevision)
+        assertEquals(PlanSourceState.CHANGED, small.sourceState)
 
-        val validationQueries =
-            synchronized(observedSql) {
-                observedSql.map(String::lowercase).filter {
-                    it.startsWith("select id from activity_snapshots where id in") ||
-                        it.startsWith("select id, time_tracking_mode from activity_snapshots where id in")
-                }
-            }
-        assertEquals(4, validationQueries.size)
-        assertTrue(validationQueries.all { query -> query.count { it == '?' } <= 900 })
+        observedSql.clear()
+        val wide = read("2026-08-21", Instant.parse("2026-08-21T12:00:00Z")).dayPlans.single()
+        val wideSql = nestedSequenceProjectionSql()
+        val wideSnapshot = (wide.snapshot as DailyPlanSnapshot.Sequence).value
+        assertEquals("wide-plan", wide.plan.id.value)
+        assertEquals("Frozen wide", wide.snapshot.title)
+        assertEquals("Wide note", wide.snapshot.shortComment)
+        assertEquals(SequenceSnapshotId("wide-sequence"), wideSnapshot.id)
+        assertEquals(SequenceTemplateId("sequence-source"), wideSnapshot.sourceTemplateId)
+        assertEquals(1L, wideSnapshot.sourceRevision)
+        assertEquals(PlanSourceState.CHANGED, wide.sourceState)
+        assertEquals(smallSql, wideSql)
+        assertEquals(1, smallSql.count { "from sequence_snapshots" in it })
+        assertTrue(
+            smallSql.none { query ->
+                listOf(
+                    "sequence_snapshot_settings",
+                    "sequence_snapshot_fields",
+                    "sequence_snapshot_category_options",
+                    "sequence_snapshot_nodes",
+                    "sequence_snapshot_step_overrides",
+                    "select id from activity_snapshots where id in",
+                    "select id, time_tracking_mode from activity_snapshots where id in",
+                ).any(query::contains)
+            },
+        )
     }
 
     @Test
@@ -693,6 +811,20 @@ class DailyReadRepositoryTest {
         )
 
     private fun readSequence() = read("2026-08-20").active as DailyActive.Sequence
+
+    private fun nestedSequenceProjectionSql() =
+        synchronized(observedSql) {
+            observedSql.map(String::lowercase).filter {
+                "from sequence_snapshots" in it ||
+                    "sequence_snapshot_settings" in it ||
+                    "sequence_snapshot_fields" in it ||
+                    "sequence_snapshot_category_options" in it ||
+                    "sequence_snapshot_nodes" in it ||
+                    "sequence_snapshot_step_overrides" in it ||
+                    it.startsWith("select id from activity_snapshots where id in") ||
+                    it.startsWith("select id, time_tracking_mode from activity_snapshots where id in")
+            }
+        }
 
     private fun plan(
         id: String,

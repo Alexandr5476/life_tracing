@@ -24,6 +24,7 @@ import com.alexandr5476.lifetracing.domain.DailyPlanSnapshot
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DailySequenceOccurrence
+import com.alexandr5476.lifetracing.domain.DailySequencePlanMetadata
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -36,8 +37,8 @@ import com.alexandr5476.lifetracing.domain.PlanSourceStateResolver
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
-import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -129,9 +130,9 @@ class DailyReadRepository internal constructor(
         val sequenceSnapshots =
             sequenceSnapshotIds
                 .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap(database.sequenceSnapshotDao()::getAggregates)
-                .map(SequenceSnapshotAggregateEntity::toDomain)
-                .associateBy(SequenceConfigSnapshot::id)
+                .flatMap(database.sequenceSnapshotDao()::getDailyPlanMetadata)
+                .map { it.toDailyPlanMetadata() }
+                .associateBy(DailySequencePlanMetadata::id)
         require(sequenceSnapshots.keys.map(SequenceSnapshotId::value).toSet() == sequenceSnapshotIds.toSet()) {
             "Daily Plan references a missing Sequence snapshot"
         }
@@ -186,7 +187,7 @@ class DailyReadRepository internal constructor(
     private fun validatePlanSnapshotsAndFulfillment(
         plans: List<PlanEntry>,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
-        sequenceSnapshots: Map<SequenceSnapshotId, SequenceConfigSnapshot>,
+        sequenceSnapshots: Map<SequenceSnapshotId, DailySequencePlanMetadata>,
         activityLinks: Map<String, PlanActivityExecutionLinkRow>,
         sequenceLinks: Map<String, PlanSequenceExecutionLinkRow>,
     ) {
@@ -246,6 +247,15 @@ class DailyReadRepository internal constructor(
             }
         }
     }
+
+    private fun DailySequencePlanMetadataEntity.toDailyPlanMetadata() =
+        DailySequencePlanMetadata(
+            SequenceSnapshotId(id),
+            name,
+            shortComment,
+            sourceTemplateId?.let(::SequenceTemplateId),
+            sourceRevision,
+        )
 
     private fun loadSourceStates(plans: List<PlanEntry>): Map<PlanEntryId, PlanSourceState> {
         val activitySources =
