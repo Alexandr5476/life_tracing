@@ -18,6 +18,14 @@ This prevents replacement of a Plan snapshot, target, or source revision beneath
 
 After any successful historical correction of a fulfilled Plan-linked terminal `SequenceExecution`, including structural `Close gap`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The same Plan remains `FULFILLED`, and its same `fulfilledSequenceExecutionId` continues to identify this Sequence; after success, `PlanEntry.fulfilledAt == SequenceExecution.endedAt`. Plan ID, target, precision, snapshot, source linkage/revision, and cancellation semantics remain unchanged. The Plan is never reopened or replaced. This rule applies only to Plan-linked Sequence correction, not standalone Activity correction.
 
+## Past overdue Plans
+
+The v1 resolution for the deferred Past-day question in product spec §14.6 is that passing time never reschedules, copies, cancels, fulfills, or otherwise replaces a Plan. An unfulfilled passed Plan remains its original `PlanEntry`, with the same `PlanEntryId`, target, snapshot/source linkage, and stored `PLANNED` status. `overdue` is derived read/presentation metadata only; v1 adds neither `MISSED` nor persisted `OVERDUE`, an overdue cache, nor any new Plan lifecycle state.
+
+A passed `FloatingDay` Plan remains in the ordinary Daily projection for its stored `date`, where it is overdue while still `PLANNED`; reading a later Today does not synthesize a copy. A passed `Week` Plan retains its original Monday `weekStart`, remains available through the existing Daily Week projection for dates in that week, and is overdue once that week has passed; a later Today outside that week does not receive a copy. An `ExactDay` Plan retains its absolute `scheduledAt` Instant. Current-zone Daily placement may move that same Instant to another local-day bucket after a timezone change; this is placement, never Plan rescheduling.
+
+Fulfilled Plans remain their original Plans in their original planned context and are never overdue. Existing cancellation behavior is unchanged. These rules require no schema, DAO selector, migration, or durable-state change.
+
 ## ActivitySnapshot StatisticsSeries foreign key
 
 When non-null, `activity_snapshots.statistics_series_id` references `statistics_series.id` with `ON DELETE RESTRICT`. The column remains nullable for true one-off Sequence child snapshots without a per-Activity Statistics Series.
