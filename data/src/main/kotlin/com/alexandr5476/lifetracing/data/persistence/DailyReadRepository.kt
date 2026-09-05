@@ -56,6 +56,7 @@ class DailyReadRepository internal constructor(
         database.runInTransaction(
             Callable {
                 val zone = zoneIdProvider.currentZoneId()
+                val today = query.now.atZone(zone).toLocalDate()
                 val activeRuntime = liveSessionRepository.getActiveRuntimeLocked()
                 val plans = loadPlans(query.selectedDate, query.now, zone, activeRuntime)
                 DailyRead(
@@ -76,7 +77,7 @@ class DailyReadRepository internal constructor(
                                 query.completedHistoryLimit,
                             ),
                         ),
-                    active = activeRuntime?.toDailyActive(),
+                    active = activeRuntime?.takeIf { query.selectedDate == today }?.toDailyActive(),
                 )
             },
         )

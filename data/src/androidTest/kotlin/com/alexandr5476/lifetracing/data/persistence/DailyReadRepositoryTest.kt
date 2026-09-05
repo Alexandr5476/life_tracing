@@ -90,6 +90,51 @@ class DailyReadRepositoryTest {
     }
 
     @Test
+    fun activeActivityIsProjectedOnlyForToday() {
+        live.startStandaloneTimedActivityFromSnapshot(
+            ActivitySnapshotId("stopwatch"),
+            Instant.parse("2026-08-20T10:00:00Z"),
+            Instant.parse("2026-08-20T10:00:00Z"),
+            ZoneOffset.UTC,
+        )
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+
+        assertTrue(daily.getDaily(DailyQuery(LocalDate.parse("2026-08-20"), now, 20)).active is DailyActive.Activity)
+        assertNull(daily.getDaily(DailyQuery(LocalDate.parse("2026-08-19"), now, 20)).active)
+        assertNull(daily.getDaily(DailyQuery(LocalDate.parse("2026-08-21"), now, 20)).active)
+    }
+
+    @Test
+    fun overnightActivityProjectsOnTodayNotItsStartDate() {
+        live.startStandaloneTimedActivityFromSnapshot(
+            ActivitySnapshotId("stopwatch"),
+            Instant.parse("2026-08-19T23:30:00Z"),
+            Instant.parse("2026-08-19T23:30:00Z"),
+            ZoneOffset.UTC,
+        )
+        val now = Instant.parse("2026-08-20T00:30:00Z")
+
+        assertTrue(read("2026-08-20", now).active is DailyActive.Activity)
+        assertNull(read("2026-08-19", now).active)
+    }
+
+    @Test
+    fun activeEligibilityUsesCurrentZoneForTheSameQueryInstant() {
+        live.startStandaloneTimedActivityFromSnapshot(
+            ActivitySnapshotId("stopwatch"),
+            Instant.parse("2026-08-19T23:00:00Z"),
+            Instant.parse("2026-08-19T23:00:00Z"),
+            ZoneOffset.UTC,
+        )
+        val now = Instant.parse("2026-08-20T00:30:00Z")
+
+        assertTrue(read("2026-08-20", now).active is DailyActive.Activity)
+        currentZone = ZoneId.of("America/Los_Angeles")
+        assertNull(read("2026-08-20", now).active)
+        assertTrue(read("2026-08-19", now).active is DailyActive.Activity)
+    }
+
+    @Test
     fun oneReadCombinesPlansBoundedHistoryAndCanonicalActiveWithZoneCorrectPlacement() {
         database.planEntryDao().insert(plan("floating", activity = "no-live", day = "2026-08-20"))
         database.planEntryDao().insert(
@@ -309,6 +354,32 @@ class DailyReadRepositoryTest {
     }
 
     @Test
+    fun nonTodayPlanRemainsEngagedWhileItsActiveProjectionIsSuppressed() {
+        database.planEntryDao().insert(plan("past-plan", activity = "stopwatch", day = "2026-08-19"))
+        val started =
+            live.startActivityFromPlan(
+                PlanEntryId("past-plan"),
+                Instant.parse("2026-08-20T10:00:00Z"),
+                Instant.parse("2026-08-20T10:00:00Z"),
+                ZoneOffset.UTC,
+            )
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+        val beforePlan = database.planEntryDao().getById("past-plan")
+        val beforeExecution = database.activityExecutionDao().getAggregate(started.id.value)
+        val beforeSession = database.activeSessionDao().get()
+
+        val past = read("2026-08-19", now)
+
+        assertEquals(PlanEntryStatus.PLANNED, past.dayPlans.single().plan.status)
+        assertTrue(past.dayPlans.single().engaged)
+        assertNull(past.active)
+        assertEquals(beforePlan, database.planEntryDao().getById("past-plan"))
+        assertEquals(beforeExecution, database.activityExecutionDao().getAggregate(started.id.value))
+        assertEquals(beforeSession, database.activeSessionDao().get())
+        assertTrue(read("2026-08-20", now).active is DailyActive.Activity)
+    }
+
+    @Test
     fun naturalAndEarlySequenceCompletionRemainFulfilledTerminalHistoryFacts() {
         database.planEntryDao().insert(plan("natural", sequence = "sequence-one", day = "2026-08-20"))
         val natural =
@@ -401,11 +472,13 @@ class DailyReadRepositoryTest {
                 .single { it.isRuntimeAdded }
 
         val projected = readSequence()
+        assertEquals(DailyActiveSequenceState.RUNNING_CURRENT, projected.state)
         assertEquals(added.id, projected.current?.occurrence?.id)
         assertEquals("Runtime one-off", projected.current?.activity?.name)
         assertTrue(requireNotNull(projected.current).occurrence.isRuntimeAdded)
         assertNull(projected.current?.occurrence?.sourceSequenceSnapshotNodeId)
         assertEquals(Duration.ZERO, projected.current?.effectiveSettings?.startCountdown)
+        assertNull(read("2026-08-19", Instant.parse("2026-08-20T12:00:00Z")).active)
     }
 
     @Test
@@ -423,7 +496,7 @@ class DailyReadRepositoryTest {
         val running =
             daily
                 .getDaily(
-                    DailyQuery(LocalDate.parse("2026-08-20"), Instant.parse("2026-08-21T00:00:00Z"), 10),
+                    DailyQuery(LocalDate.parse("2026-08-20"), Instant.parse("2026-08-20T10:02:00Z"), 10),
                 ).active as DailyActive.Sequence
         assertEquals(DailyActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN, running.state)
         assertNull(running.current)
@@ -483,6 +556,16 @@ class DailyReadRepositoryTest {
                     statement.trimStart().startsWith("update ") ||
                     statement.trimStart().startsWith("delete ")
             },
+        )
+        observedSql.clear()
+        assertNull(read("2026-08-19", Instant.parse("2026-08-20T12:00:00Z")).active)
+        assertFalse(
+            synchronized(observedSql) { observedSql.map(String::lowercase) }
+                .any { statement ->
+                    statement.trimStart().startsWith("insert ") ||
+                        statement.trimStart().startsWith("update ") ||
+                        statement.trimStart().startsWith("delete ")
+                },
         )
     }
 
@@ -590,15 +673,14 @@ class DailyReadRepositoryTest {
         }
     }
 
-    private fun read(date: String) =
+    private fun read(
+        date: String,
+        now: Instant = LocalDate.parse(date).atTime(12, 0).atZone(currentZone).toInstant(),
+    ) =
         daily.getDaily(
             DailyQuery(
                 LocalDate.parse(date),
-                LocalDate
-                    .parse(date)
-                    .plusDays(1)
-                    .atStartOfDay(ZoneOffset.UTC)
-                    .toInstant(),
+                now,
                 20,
             ),
         )
