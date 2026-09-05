@@ -65,7 +65,7 @@ import java.util.Locale
 @Composable
 fun DailyRoute(controller: DailyController) {
     DisposableEffect(controller) {
-        controller.dispatch(DailyAction.Visible)
+        controller.onRouteEntered()
         onDispose { controller.dispatch(DailyAction.Hidden) }
     }
     val state by controller.state.collectAsState()
@@ -552,9 +552,16 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                if (root.status == SequenceExecutionStatus.ENDED_EARLY) {
-                    Text(stringResource(R.string.daily_ended_early), style = MaterialTheme.typography.labelLarge)
-                }
+                Text(
+                    stringResource(
+                        if (root.status == SequenceExecutionStatus.ENDED_EARLY) {
+                            R.string.daily_ended_early
+                        } else {
+                            R.string.daily_completed
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                )
             }
         }
     }

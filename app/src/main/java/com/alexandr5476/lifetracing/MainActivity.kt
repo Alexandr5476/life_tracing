@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
 @Serializable
 data object DailyRoot : NavKey
 
+internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
+
 @Composable
 @Suppress("FunctionNaming")
 fun LifeTracingApp(
@@ -60,7 +62,7 @@ fun LifeTracingApp(
                 remember(context.applicationContext) {
                     LifeTracingRuntimeGraph.from(context.applicationContext).dailyController
                 }
-            val backStack = rememberNavBackStack(DailyRoot)
+            val backStack = rememberNavBackStack(dailyInitialBackStack.single())
             NavDisplay(
                 backStack = backStack,
                 entryProvider =

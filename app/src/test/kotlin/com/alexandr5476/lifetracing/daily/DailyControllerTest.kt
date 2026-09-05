@@ -73,6 +73,27 @@ class DailyControllerTest {
         }
 
     @Test
+    fun routeEntryReusesInitialReadButRefreshesOnceAfterBeingHidden() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            harness.awaitReadCount(1)
+
+            controller.onRouteEntered()
+            controller.onRouteEntered()
+            assertEquals(1, harness.queries.size)
+
+            controller.dispatch(DailyAction.Hidden)
+            assertEquals(1, harness.boundary.cancels)
+            controller.onRouteEntered()
+            harness.awaitReadCount(2)
+            controller.onRouteEntered()
+
+            assertEquals(2, harness.queries.size)
+            controller.close()
+        }
+
+    @Test
     fun dateActionsReadOnlyRequestedDates() =
         runBlocking {
             val harness = Harness()
@@ -510,6 +531,7 @@ class DailyControllerTest {
         )
 
         val arms = mutableListOf<Arm>()
+        var cancels = 0
 
         override fun arm(
             now: Instant,
@@ -517,6 +539,10 @@ class DailyControllerTest {
             onBoundary: () -> Unit,
         ) {
             arms += Arm(now, zoneId, onBoundary)
+        }
+
+        override fun cancel() {
+            cancels++
         }
 
         fun fire() = arms.last().callback()

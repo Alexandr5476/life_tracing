@@ -249,6 +249,10 @@ class DailyController internal constructor(
         refresh()
     }
 
+    internal fun onRouteEntered() {
+        if (!visible) onVisible()
+    }
+
     fun onHidden() {
         visible = false
         dateBoundaryScheduler.cancel()
