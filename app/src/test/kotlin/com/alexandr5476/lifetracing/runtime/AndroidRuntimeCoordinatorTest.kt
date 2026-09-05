@@ -35,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -1032,6 +1033,11 @@ class AndroidRuntimeCoordinatorTest {
                 snapshot,
                 snapshots,
                 state.currentChild,
+                if (sessionState == ActiveSessionState.WAITING_NEXT) {
+                    null
+                } else {
+                    state.execution.currentOccurrenceId?.let { null } ?: nextRemainingOccurrence(state.execution)?.id
+                },
             )
         }
     }

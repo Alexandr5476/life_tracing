@@ -1,8 +1,10 @@
 package com.alexandr5476.lifetracing.domain
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
@@ -73,8 +75,10 @@ class RuntimePlatformModelsTest {
                 ZoneOffset.UTC,
             )
         val countdown = engine.reconcile(started, snapshot, mapOf(first.id to first, second.id to second), instant(10))
-        val paused = engine.pause(countdown, instant(12), snapshot, mapOf(first.id to first, second.id to second))
-        val resumed = engine.resume(paused, instant(20), snapshot, mapOf(first.id to first, second.id to second))
+        val initiallyPaused =
+            engine.pause(countdown, instant(12), snapshot, mapOf(first.id to first, second.id to second))
+        val resumed =
+            engine.resume(initiallyPaused, instant(20), snapshot, mapOf(first.id to first, second.id to second))
         val runtime = sequenceRuntime(resumed, snapshot, mapOf(first.id to first, second.id to second))
 
         val deadline = NextRuntimeDeadlineResolver.resolve(runtime)
@@ -83,6 +87,20 @@ class RuntimePlatformModelsTest {
         assertEquals(instant(23), deadline?.at)
         val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(20), 1_000), 1_000)
         assertEquals(Duration.ofSeconds(3), baseline.transitionCountdownRemaining(1_000))
+        assertEquals(Duration.ZERO, baseline.transitionCountdownRemaining(4_000))
+
+        val paused = engine.pause(resumed, instant(21), snapshot, mapOf(first.id to first, second.id to second))
+        val pausedRuntime = sequenceRuntime(paused, snapshot, mapOf(first.id to first, second.id to second))
+        val pausedBaseline =
+            RuntimeDisplayBaseline.capture(pausedRuntime, WallMonotonicAnchor(instant(21), 2_000), 2_000)
+        assertEquals(
+            pausedRuntime.transitionCountdownTargetId,
+            pausedBaseline.identity.let {
+                (it as RuntimeDisplayIdentity.Sequence).transitionCountdownTargetId
+            },
+        )
+        assertEquals(Duration.ofSeconds(2), pausedBaseline.transitionCountdownRemaining(2_000))
+        assertEquals(Duration.ofSeconds(2), pausedBaseline.transitionCountdownRemaining(2_000_000))
     }
 
     @Test
@@ -151,8 +169,117 @@ class RuntimePlatformModelsTest {
         assertEquals(Duration.ofSeconds(10), baseline.activeElapsed(10_000))
         assertEquals(Duration.ofSeconds(11), baseline.activeElapsed(11_000))
         assertEquals(Duration.ofSeconds(15), baseline.activeElapsed(15_000))
+        assertEquals(Duration.ZERO, baseline.currentStepStopwatchElapsed(10_000))
+        assertEquals(Duration.ofSeconds(5), baseline.currentStepStopwatchElapsed(15_000))
         assertNull(baseline.timerRemaining(15_000))
         assertNull(baseline.timerOvertime(15_000))
+    }
+
+    @Test
+    fun pausedCurrentStopwatchKeepsChildElapsedDistinctFromSequenceTotal() {
+        val first = activity("first", TimeTrackingMode.TIMER, 10)
+        val second = activity("second", TimeTrackingMode.STOPWATCH)
+        val snapshot = sequence(listOf(first.id, second.id), countdownSeconds = 0)
+        val engine = engine()
+        val started =
+            engine.start(
+                snapshot,
+                mapOf(first.id to first, second.id to second),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val running = engine.reconcile(started, snapshot, mapOf(first.id to first, second.id to second), instant(10))
+        val paused = engine.pause(running, instant(12), snapshot, mapOf(first.id to first, second.id to second))
+        val runtime = sequenceRuntime(paused, snapshot, mapOf(first.id to first, second.id to second))
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(12), 1_000), 1_000)
+
+        assertEquals(running.execution.currentOccurrenceId, paused.execution.currentOccurrenceId)
+        assertEquals(running.currentChild?.id, paused.currentChild?.id)
+        assertEquals(Duration.ofSeconds(12), baseline.activeElapsed(1_000))
+        assertEquals(Duration.ofSeconds(2), baseline.currentStepStopwatchElapsed(1_000))
+        assertEquals(Duration.ofSeconds(12), baseline.activeElapsed(1_000_000))
+        assertEquals(Duration.ofSeconds(2), baseline.currentStepStopwatchElapsed(1_000_000))
+    }
+
+    @Test
+    fun currentTimerUsesChildRemainingAndNoLiveAndWaitingHaveNoTimedDisplay() {
+        val first = activity("first", TimeTrackingMode.TIMER, 5)
+        val second = activity("second", TimeTrackingMode.TIMER, 10, TimerZeroBehavior.OVERTIME)
+        val activities = mapOf(first.id to first, second.id to second)
+        val snapshot = sequence(listOf(first.id, second.id), countdownSeconds = 0)
+        val engine = engine()
+        val started = engine.start(snapshot, activities, instant(0), instant(0), ZoneOffset.UTC)
+        val timerRuntime =
+            sequenceRuntime(engine.reconcile(started, snapshot, activities, instant(5)), snapshot, activities)
+        val timer = RuntimeDisplayBaseline.capture(timerRuntime, WallMonotonicAnchor(instant(7), 1_000), 1_000)
+
+        assertEquals(Duration.ofSeconds(7), timer.activeElapsed(1_000))
+        assertEquals(Duration.ofSeconds(8), timer.timerRemaining(1_000))
+        assertEquals(Duration.ZERO, timer.timerOvertime(1_000))
+        assertEquals(Duration.ZERO, timer.timerRemaining(11_000))
+        assertEquals(Duration.ofSeconds(2), timer.timerOvertime(11_000))
+
+        val noLive = activity("no-live", TimeTrackingMode.NO_LIVE_TRACKING)
+        val noLiveSnapshot = sequence(listOf(noLive.id), countdownSeconds = 0)
+        val noLiveState =
+            engine().start(
+                noLiveSnapshot,
+                mapOf(noLive.id to noLive),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val noLiveBaseline =
+            RuntimeDisplayBaseline.capture(
+                sequenceRuntime(noLiveState, noLiveSnapshot, mapOf(noLive.id to noLive)),
+                WallMonotonicAnchor(instant(3), 1_000),
+                1_000,
+            )
+        assertNull(noLiveBaseline.currentStepStopwatchElapsed(1_000))
+        assertNull(noLiveBaseline.timerRemaining(1_000))
+        assertNull(noLiveBaseline.timerOvertime(1_000))
+
+        val waitingSnapshot = sequence(listOf(first.id, second.id), countdownSeconds = 0, autoAdvance = false)
+        val waitingStarted = engine().start(waitingSnapshot, activities, instant(0), instant(0), ZoneOffset.UTC)
+        val waiting =
+            engine().completeCurrent(
+                waitingStarted,
+                requireNotNull(waitingStarted.execution.currentOccurrenceId),
+                instant(1),
+                waitingSnapshot,
+                activities,
+            )
+        val waitingBaseline =
+            RuntimeDisplayBaseline.capture(
+                sequenceRuntime(waiting, waitingSnapshot, activities),
+                WallMonotonicAnchor(instant(1), 1_000),
+                1_000,
+            )
+        assertNull(waitingBaseline.currentStepStopwatchElapsed(2_000))
+        assertNull(waitingBaseline.timerRemaining(2_000))
+        assertNull(waitingBaseline.transitionCountdownRemaining(2_000))
+    }
+
+    @Test
+    fun baselineIdentityRejectsAChangedSequenceOccurrenceOrCountdownTarget() {
+        val first = activity("first", TimeTrackingMode.TIMER, 5)
+        val second = activity("second", TimeTrackingMode.STOPWATCH)
+        val activities = mapOf(first.id to first, second.id to second)
+        val snapshot = sequence(listOf(first.id, second.id), countdownSeconds = 3)
+        val engine = engine()
+        val started = engine.start(snapshot, activities, instant(0), instant(0), ZoneOffset.UTC)
+        val baseline =
+            RuntimeDisplayBaseline.capture(
+                sequenceRuntime(started, snapshot, activities),
+                WallMonotonicAnchor(instant(0), 1_000),
+                1_000,
+            )
+        val transitioned = engine.reconcile(started, snapshot, activities, instant(5))
+        val transitionedRuntime = sequenceRuntime(transitioned, snapshot, activities)
+
+        assertTrue(baseline.matches(sequenceRuntime(started, snapshot, activities)))
+        assertFalse(baseline.matches(transitionedRuntime))
     }
 
     @Test
@@ -189,7 +316,10 @@ class RuntimePlatformModelsTest {
                 5_000,
             )
 
-        repeat(10_000) { baseline.activeElapsed(5_000L + it) }
+        repeat(10_000) {
+            baseline.activeElapsed(5_000L + it)
+            baseline.currentStepStopwatchElapsed(5_000L + it)
+        }
 
         assertEquals(Duration.ofSeconds(2_020), baseline.activeElapsed(15_000))
     }
@@ -207,25 +337,36 @@ class RuntimePlatformModelsTest {
         state: SequenceRuntimeState,
         snapshot: SequenceConfigSnapshot,
         activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
-    ) = ActiveSequenceRuntime(
-        ActiveSession(
-            ActiveSessionKind.SEQUENCE,
-            if (state.execution.status ==
-                SequenceExecutionStatus.PAUSED
-            ) {
-                ActiveSessionState.PAUSED
+    ): ActiveSequenceRuntime {
+        val sessionState =
+            when {
+                state.execution.status == SequenceExecutionStatus.PAUSED -> ActiveSessionState.PAUSED
+                state.execution.currentOccurrenceId == null &&
+                    state.execution.intervals
+                        .singleOrNull { it.endedAt == null }
+                        ?.kind ==
+                    SequenceIntervalKind.IMPLICIT_IDLE -> ActiveSessionState.WAITING_NEXT
+                else -> ActiveSessionState.RUNNING
+            }
+        return ActiveSequenceRuntime(
+            ActiveSession(
+                ActiveSessionKind.SEQUENCE,
+                sessionState,
+                null,
+                state.execution.id,
+                state.execution.updatedAt,
+            ),
+            state.execution,
+            snapshot,
+            activities,
+            state.currentChild,
+            if (sessionState == ActiveSessionState.WAITING_NEXT) {
+                null
             } else {
-                ActiveSessionState.RUNNING
+                state.execution.currentOccurrenceId?.let { null } ?: nextRemainingOccurrence(state.execution)?.id
             },
-            null,
-            state.execution.id,
-            state.execution.updatedAt,
-        ),
-        state.execution,
-        snapshot,
-        activities,
-        state.currentChild,
-    )
+        )
+    }
 
     private fun engine(): SequenceRuntimeEngine {
         var occurrence = 0
@@ -266,6 +407,7 @@ class RuntimePlatformModelsTest {
     private fun sequence(
         activityIds: List<ActivitySnapshotId>,
         countdownSeconds: Long,
+        autoAdvance: Boolean = true,
     ) = SequenceConfigSnapshot(
         SequenceSnapshotId("sequence"),
         "Sequence",
@@ -275,7 +417,7 @@ class RuntimePlatformModelsTest {
         null,
         instant(0),
         SequenceSnapshotSettings(
-            true,
+            autoAdvance,
             Duration.ZERO,
             Duration.ofSeconds(countdownSeconds),
             true,

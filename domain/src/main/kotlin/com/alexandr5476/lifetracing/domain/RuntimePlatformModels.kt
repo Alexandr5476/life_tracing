@@ -48,6 +48,7 @@ data class ActiveSequenceRuntime(
     val snapshot: SequenceConfigSnapshot,
     val activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
     val currentChild: ActivityExecution?,
+    val transitionCountdownTargetId: SequenceOccurrenceId?,
 ) : ActiveRuntime
 
 enum class RuntimeDeadlineKind {
@@ -123,32 +124,13 @@ object NextRuntimeDeadlineResolver {
             )
         }
 
-        val open = runtime.execution.intervals.singleOrNull { it.endedAt == null } ?: return null
-        if (open.kind != SequenceIntervalKind.TRANSITION_COUNTDOWN) return null
-        val targetId = requireNotNull(open.occurrenceId)
-        val target = runtime.execution.occurrences.single { it.id == targetId }
-        val requiredMs = effectiveSettings(runtime, target).startCountdown.toMillis()
-        val consumedMs =
-            runtime.execution.intervals
-                .asSequence()
-                .filter {
-                    it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                        it.occurrenceId == targetId &&
-                        it.endedAt != null
-                }.fold(0L) { total, interval ->
-                    Math.addExact(
-                        total,
-                        Duration.between(interval.startedAt, requireNotNull(interval.endedAt)).toMillis(),
-                    )
-                }
-        val remainingMs = Math.subtractExact(requiredMs, consumedMs)
-        require(remainingMs > 0) { "Transition countdown must retain positive remaining time" }
+        val progress = TransitionCountdownProgressResolver.running(runtime) ?: return null
         return RuntimeDeadline(
-            Instant.ofEpochMilli(Math.addExact(open.startedAt.toEpochMilli(), remainingMs)),
+            requireNotNull(progress.deadlineAt),
             RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN,
             ActiveSessionKind.SEQUENCE,
             runtime.execution.id.value,
-            targetId,
+            progress.targetOccurrenceId,
         )
     }
 
@@ -173,22 +155,165 @@ object NextRuntimeDeadlineResolver {
     }
 }
 
+data class TransitionCountdownProgress(
+    val targetOccurrenceId: SequenceOccurrenceId,
+    val remaining: Duration,
+    val deadlineAt: Instant?,
+)
+
+object TransitionCountdownProgressResolver {
+    fun running(runtime: ActiveSequenceRuntime): TransitionCountdownProgress? {
+        if (runtime.session.state != ActiveSessionState.RUNNING ||
+            runtime.execution.currentOccurrenceId != null
+        ) {
+            return null
+        }
+        val open = runtime.execution.intervals.singleOrNull { it.endedAt == null } ?: return null
+        if (open.kind != SequenceIntervalKind.TRANSITION_COUNTDOWN) return null
+        val targetId = requireNotNull(open.occurrenceId)
+        require(targetId == runtime.transitionCountdownTargetId) {
+            "Transition countdown target disagrees with runtime evidence"
+        }
+        val remaining = remaining(runtime, targetId)
+        return TransitionCountdownProgress(
+            targetId,
+            remaining,
+            Instant.ofEpochMilli(Math.addExact(open.startedAt.toEpochMilli(), remaining.toMillis())),
+        )
+    }
+
+    fun paused(runtime: ActiveSequenceRuntime): TransitionCountdownProgress? {
+        if (runtime.session.state != ActiveSessionState.PAUSED ||
+            runtime.execution.currentOccurrenceId != null
+        ) {
+            return null
+        }
+        val targetId = runtime.transitionCountdownTargetId ?: return null
+        return TransitionCountdownProgress(targetId, remaining(runtime, targetId), null)
+    }
+
+    fun closedDuration(
+        execution: SequenceExecution,
+        targetId: SequenceOccurrenceId,
+    ): Duration =
+        execution.intervals
+            .asSequence()
+            .filter {
+                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
+                    it.occurrenceId == targetId &&
+                    it.endedAt != null
+            }.fold(Duration.ZERO) { total, interval ->
+                total.plusMillis(Duration.between(interval.startedAt, requireNotNull(interval.endedAt)).toMillis())
+            }
+
+    private fun remaining(
+        runtime: ActiveSequenceRuntime,
+        targetId: SequenceOccurrenceId,
+    ): Duration {
+        val target = runtime.execution.occurrences.single { it.id == targetId }
+        val remaining =
+            NextRuntimeDeadlineResolver
+                .effectiveSettings(runtime, target)
+                .startCountdown
+                .minus(closedDuration(runtime.execution, targetId))
+        require(!remaining.isNegative && !remaining.isZero) {
+            "Transition countdown must retain positive remaining time"
+        }
+        return remaining
+    }
+}
+
+sealed interface RuntimeDisplayIdentity {
+    fun matches(runtime: ActiveRuntime): Boolean
+
+    data class Activity(
+        val executionId: ActivityExecutionId,
+        val executionUpdatedAt: Instant,
+        val sessionState: ActiveSessionState,
+        val sessionUpdatedAt: Instant,
+    ) : RuntimeDisplayIdentity {
+        override fun matches(runtime: ActiveRuntime): Boolean =
+            runtime is ActiveActivityRuntime &&
+                executionId == runtime.execution.id &&
+                executionUpdatedAt == runtime.execution.updatedAt &&
+                sessionState == runtime.session.state &&
+                sessionUpdatedAt == runtime.session.updatedAt
+    }
+
+    data class Sequence(
+        val executionId: SequenceExecutionId,
+        val executionUpdatedAt: Instant,
+        val sessionState: ActiveSessionState,
+        val sessionUpdatedAt: Instant,
+        val currentOccurrenceId: SequenceOccurrenceId?,
+        val currentChildExecutionId: ActivityExecutionId?,
+        val currentChildUpdatedAt: Instant?,
+        val transitionCountdownTargetId: SequenceOccurrenceId?,
+    ) : RuntimeDisplayIdentity {
+        override fun matches(runtime: ActiveRuntime): Boolean =
+            runtime is ActiveSequenceRuntime &&
+                executionId == runtime.execution.id &&
+                executionUpdatedAt == runtime.execution.updatedAt &&
+                sessionState == runtime.session.state &&
+                sessionUpdatedAt == runtime.session.updatedAt &&
+                currentOccurrenceId == runtime.execution.currentOccurrenceId &&
+                currentChildExecutionId == runtime.currentChild?.id &&
+                currentChildUpdatedAt == runtime.currentChild?.updatedAt &&
+                transitionCountdownTargetId == runtime.transitionCountdownTargetId
+    }
+
+    companion object {
+        fun capture(runtime: ActiveRuntime): RuntimeDisplayIdentity =
+            when (runtime) {
+                is ActiveActivityRuntime ->
+                    Activity(
+                        runtime.execution.id,
+                        runtime.execution.updatedAt,
+                        runtime.session.state,
+                        runtime.session.updatedAt,
+                    )
+                is ActiveSequenceRuntime ->
+                    Sequence(
+                        runtime.execution.id,
+                        runtime.execution.updatedAt,
+                        runtime.session.state,
+                        runtime.session.updatedAt,
+                        runtime.execution.currentOccurrenceId,
+                        runtime.currentChild?.id,
+                        runtime.currentChild?.updatedAt,
+                        runtime.transitionCountdownTargetId,
+                    )
+            }
+    }
+}
+
 @Suppress("LongParameterList") // Flat immutable values keep every tick independent from runtime history.
 class RuntimeDisplayBaseline private constructor(
+    val identity: RuntimeDisplayIdentity,
     private val anchorElapsedRealtimeMs: Long,
     private val activeElapsedAtAnchor: Duration,
     private val activeProgresses: Boolean,
+    private val currentStepStopwatchElapsedAtAnchor: Duration?,
+    private val currentStepStopwatchProgresses: Boolean,
     private val timerZeroElapsedRealtimeMs: Long?,
     private val timerRemainingAtAnchor: Duration?,
     private val timerOvertimeAtAnchor: Duration?,
     private val timerZeroBehavior: TimerZeroBehavior?,
     private val transitionCountdownElapsedRealtimeMs: Long?,
+    private val transitionCountdownRemainingAtAnchor: Duration?,
 ) {
+    fun matches(runtime: ActiveRuntime): Boolean = identity.matches(runtime)
+
     fun activeElapsed(elapsedRealtimeNowMs: Long): Duration =
         if (activeProgresses) {
             activeElapsedAtAnchor.plusMillis(monotonicDelta(elapsedRealtimeNowMs))
         } else {
             activeElapsedAtAnchor
+        }
+
+    fun currentStepStopwatchElapsed(elapsedRealtimeNowMs: Long): Duration? =
+        currentStepStopwatchElapsedAtAnchor?.let {
+            if (currentStepStopwatchProgresses) it.plusMillis(monotonicDelta(elapsedRealtimeNowMs)) else it
         }
 
     fun timerRemaining(elapsedRealtimeNowMs: Long): Duration? =
@@ -202,6 +327,7 @@ class RuntimeDisplayBaseline private constructor(
 
     fun transitionCountdownRemaining(elapsedRealtimeNowMs: Long): Duration? =
         transitionCountdownElapsedRealtimeMs?.let { remaining(it, elapsedRealtimeNowMs) }
+            ?: transitionCountdownRemainingAtAnchor
 
     private fun monotonicDelta(elapsedRealtimeNowMs: Long): Long =
         Math.subtractExact(elapsedRealtimeNowMs, anchorElapsedRealtimeMs).coerceAtLeast(0L)
@@ -222,22 +348,27 @@ class RuntimeDisplayBaseline private constructor(
             val timerDeadline =
                 timer?.let { TimerDeadlineCalculator.deadline(it.execution, it.target, TimerZeroBehavior.FINISH) }
             val timerElapsed = timer?.let { activityElapsed(it.execution, observedWall) }
-            val transitionDeadline =
-                NextRuntimeDeadlineResolver
-                    .resolve(runtime)
-                    ?.takeIf { it.kind == RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN }
+            val currentStopwatch = currentStepStopwatchSource(runtime)
+            val transition =
+                (runtime as? ActiveSequenceRuntime)?.let {
+                    TransitionCountdownProgressResolver.running(it) ?: TransitionCountdownProgressResolver.paused(it)
+                }
             return RuntimeDisplayBaseline(
+                RuntimeDisplayIdentity.capture(runtime),
                 elapsedRealtimeNowMs,
                 when (runtime) {
                     is ActiveActivityRuntime -> activityElapsed(runtime.execution, observedWall)
                     is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, observedWall)
                 },
                 activeProgresses(runtime),
+                currentStopwatch?.let { activityElapsed(it, observedWall) },
+                currentStopwatch != null && activeProgresses(runtime),
                 timerDeadline?.let(anchor::elapsedAt),
                 timer?.target?.minus(requireNotNull(timerElapsed))?.coerceAtLeastZero(),
                 timerElapsed?.minus(requireNotNull(timer).target)?.coerceAtLeastZero(),
                 timer?.zeroBehavior,
-                transitionDeadline?.at?.let(anchor::elapsedAt),
+                transition?.deadlineAt?.let(anchor::elapsedAt),
+                transition?.remaining,
             )
         }
 
@@ -281,6 +412,16 @@ class RuntimeDisplayBaseline private constructor(
                     } else {
                         null
                     }
+                }
+            }
+
+        private fun currentStepStopwatchSource(runtime: ActiveRuntime): ActivityExecution? =
+            (runtime as? ActiveSequenceRuntime)?.let { sequence ->
+                val currentId = sequence.execution.currentOccurrenceId ?: return null
+                val occurrence = sequence.execution.occurrences.single { it.id == currentId }
+                sequence.currentChild?.takeIf {
+                    sequence.activitySnapshots.getValue(occurrence.activitySnapshotId).timeTrackingMode ==
+                        TimeTrackingMode.STOPWATCH
                 }
             }
 
