@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -60,7 +61,6 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import java.util.Locale
 
 @Composable
 fun DailyRoute(controller: DailyController) {
@@ -632,24 +632,31 @@ private fun timerText(
 }
 
 @Composable
-private fun localizedDate(date: LocalDate): String =
-    remember(date, Locale.getDefault()) {
-        DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(Locale.getDefault()).format(date)
+private fun localizedDate(date: LocalDate): String {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(date, locale) {
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(locale).format(date)
     }
+}
 
 @Composable
-private fun localizedTime(time: LocalTime): String =
-    remember(time, Locale.getDefault()) {
-        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.getDefault()).format(time)
+private fun localizedTime(time: LocalTime): String {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(time, locale) {
+        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(time)
     }
+}
 
 @Composable
-private fun localizedTime(instant: Instant): String =
-    remember(instant, Locale.getDefault(), ZoneId.systemDefault()) {
+private fun localizedTime(instant: Instant): String {
+    val locale = LocalConfiguration.current.locales[0]
+    val zoneId = ZoneId.systemDefault()
+    return remember(instant, locale, zoneId) {
         DateTimeFormatter
             .ofLocalizedTime(FormatStyle.SHORT)
-            .withLocale(Locale.getDefault())
-            .format(instant.atZone(ZoneId.systemDefault()))
+            .withLocale(locale)
+            .format(instant.atZone(zoneId))
     }
+}
 
 private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))

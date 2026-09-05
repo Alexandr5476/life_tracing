@@ -11,10 +11,13 @@ package com.alexandr5476.lifetracing.daily
 
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -262,6 +265,67 @@ class DailyScreenPresentationTest {
         composeTestRule.onNodeWithText("Early sequence root").fetchSemanticsNode()
         composeTestRule.onNodeWithText(durationText(180)).fetchSemanticsNode()
         composeTestRule.onNodeWithText(string(R.string.daily_ended_early)).fetchSemanticsNode()
+    }
+
+    @Test
+    fun daily_formatting_uses_effective_configuration_locale_and_recomposes() {
+        val originalDefault = Locale.getDefault()
+        val russian = Locale.forLanguageTag("ru")
+        val selectedDate = LocalDate.parse("2026-08-20")
+        val weekStart = LocalDate.parse("2026-08-17")
+        val exactTime = LocalTime.of(10, 30)
+        val noLive = completedActivity("Localized completion", null, TimeTrackingMode.NO_LIVE_TRACKING)
+        val timed = completedActivity("Localized range", Duration.ofMinutes(10))
+        val effectiveLocale = mutableStateOf(russian)
+        try {
+            Locale.setDefault(Locale.US)
+            composeTestRule.setContent {
+                val locale by effectiveLocale
+                val configuration =
+                    android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                        setLocale(locale)
+                    }
+                val context = composeTestRule.activity.createConfigurationContext(configuration)
+                CompositionLocalProvider(
+                    LocalConfiguration provides configuration,
+                    LocalContext provides context,
+                ) {
+                    LifeTracingTheme {
+                        DailyScreen(
+                            state(
+                                DailyDateRelation.PAST,
+                                DailyRead(
+                                    listOf(
+                                        plan(
+                                            "Localized exact",
+                                            target = PlanTarget.ExactDay(at, ZoneOffset.UTC),
+                                            exactTime = exactTime,
+                                        ),
+                                    ),
+                                    listOf(plan("Localized week", target = PlanTarget.Week(weekStart))),
+                                    listOf(noLive, timed),
+                                    null,
+                                ),
+                                selectedDate,
+                            ),
+                            onAction = {},
+                        )
+                    }
+                }
+            }
+
+            assertDailyFormatting(russian, selectedDate, weekStart, exactTime, noLive, timed)
+
+            composeTestRule.runOnIdle { effectiveLocale.value = Locale.US }
+            assertDailyFormatting(Locale.US, selectedDate, weekStart, exactTime, noLive, timed)
+            composeTestRule.onNodeWithText(localizedDate(selectedDate, russian)).assertDoesNotExist()
+
+            Locale.setDefault(russian)
+            composeTestRule.runOnIdle { effectiveLocale.value = Locale.UK }
+            composeTestRule.onNodeWithText(localizedDate(selectedDate, Locale.UK)).assertIsDisplayed()
+        } finally {
+            Locale.setDefault(originalDefault)
+        }
     }
 
     @Test
@@ -801,17 +865,60 @@ class DailyScreenPresentationTest {
             localizedTime(root.completedAt),
         )
 
-    private fun localizedDate(date: LocalDate): String =
-        DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(Locale.getDefault()).format(date)
+    private fun assertDailyFormatting(
+        locale: Locale,
+        selectedDate: LocalDate,
+        weekStart: LocalDate,
+        exactTime: LocalTime,
+        noLive: CompletedActivityHistoryRoot,
+        timed: CompletedActivityHistoryRoot,
+    ) {
+        composeTestRule.onNodeWithText(localizedDate(selectedDate, locale)).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(localizedString(locale, R.string.daily_week_of, localizedDate(weekStart, locale)))
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(localizedString(locale, R.string.daily_exact_time, localizedTime(exactTime, locale)))
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                localizedString(
+                    locale,
+                    R.string.daily_completed_at,
+                    localizedTime(noLive.completedAt, locale),
+                ),
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                localizedString(
+                    locale,
+                    R.string.daily_time_range,
+                    localizedTime(requireNotNull(timed.startedAt), locale),
+                    localizedTime(timed.completedAt, locale),
+                ),
+            ).assertIsDisplayed()
+    }
 
-    private fun localizedTime(time: LocalTime): String =
-        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.getDefault()).format(time)
+    private fun localizedDate(
+        date: LocalDate,
+        locale: Locale = effectiveLocale(),
+    ): String = DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(locale).format(date)
 
-    private fun localizedTime(instant: Instant): String =
+    private fun localizedTime(
+        time: LocalTime,
+        locale: Locale = effectiveLocale(),
+    ): String = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(time)
+
+    private fun localizedTime(
+        instant: Instant,
+        locale: Locale = effectiveLocale(),
+    ): String =
         DateTimeFormatter
             .ofLocalizedTime(FormatStyle.SHORT)
-            .withLocale(Locale.getDefault())
+            .withLocale(locale)
             .format(instant.atZone(ZoneId.systemDefault()))
+
+    private fun effectiveLocale(): Locale = composeTestRule.activity.resources.configuration.locales[0]
 
     private fun durationText(seconds: Long): String = DateUtils.formatElapsedTime(seconds)
 
@@ -821,6 +928,16 @@ class DailyScreenPresentationTest {
         id: Int,
         vararg arguments: Any,
     ): String = composeTestRule.activity.getString(id, *arguments)
+
+    private fun localizedString(
+        locale: Locale,
+        id: Int,
+        vararg arguments: Any,
+    ): String {
+        val configuration = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
+        configuration.setLocale(locale)
+        return composeTestRule.activity.createConfigurationContext(configuration).getString(id, *arguments)
+    }
 
     private companion object {
         val at: Instant = Instant.parse("2026-08-20T10:00:00Z")
