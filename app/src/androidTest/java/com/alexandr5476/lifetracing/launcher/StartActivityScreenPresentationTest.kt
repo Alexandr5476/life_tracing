@@ -382,15 +382,16 @@ class StartActivityScreenPresentationTest {
     }
 
     @Test
-    fun pointerDragCancellationRestoresOrderAndOnlyCompletedChangeReordersWithoutSelecting() {
+    fun pointerDragFollowsIdentityAcrossMultipleMovesAndCancellationRestoresOrder() {
         val actions = mutableListOf<StartActivityAction>()
         val interaction = StartActivityRouteInteraction()
         val sequence = trackable("Drag sequence", sequence = true)
         val activity = trackable("Drag activity")
+        val third = trackable("Drag third", sequence = true)
         composeTestRule.setContent {
             LifeTracingTheme {
                 StartActivityScreen(
-                    homeState(recent = emptyList(), pinned = listOf(sequence, activity)),
+                    homeState(recent = emptyList(), pinned = listOf(sequence, activity, third)),
                     actions::add,
                     interaction,
                 )
@@ -404,6 +405,7 @@ class StartActivityScreenPresentationTest {
             .performTouchInput {
                 down(center)
                 advanceEventTime(1_000)
+                moveBy(Offset(0f, 100f))
                 moveBy(Offset(0f, 100f))
                 cancel()
             }
@@ -422,10 +424,11 @@ class StartActivityScreenPresentationTest {
                 down(center)
                 advanceEventTime(1_000)
                 moveBy(Offset(0f, 100f))
+                moveBy(Offset(0f, 100f))
                 up()
             }
         assertEquals(
-            listOf(StartActivityAction.ReorderPinned(listOf(activity.id, sequence.id))),
+            listOf(StartActivityAction.ReorderPinned(listOf(activity.id, third.id, sequence.id))),
             actions,
         )
     }

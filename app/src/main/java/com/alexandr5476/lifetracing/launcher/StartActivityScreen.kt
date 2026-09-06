@@ -33,7 +33,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,7 +70,7 @@ internal fun StartActivityRoute(
     val state by controller.state.collectAsState()
     val exitPolicy = session.exitPolicy
     val exitRoute = {
-        exitPolicy.requestExit(state.command, onBack, onCommitted)
+        exitPolicy.requestExit({ controller.state.value.command }, onBack, onCommitted)
     }
     BackHandler(enabled = true) {
         exitRoute()
@@ -415,7 +414,7 @@ private fun PinnedSection(
     onReorder: (List<LibraryTemplateId>) -> Unit,
 ) {
     var order by remember { mutableStateOf(canonical) }
-    var draggedIndex by remember { mutableIntStateOf(-1) }
+    var draggedId by remember { mutableStateOf<LibraryTemplateId?>(null) }
     var dragStartOrder by remember { mutableStateOf<List<LibraryTrackable>?>(null) }
     LaunchedEffect(canonical) { order = canonical }
     LaunchedEffect(organizationFailure) { if (organizationFailure != null) order = canonical }
@@ -444,23 +443,26 @@ private fun PinnedSection(
                     },
                     onDrag = { delta ->
                         if (organizationInFlight) return@PinnedRow
-                        val next = (index + if (delta > 0f) 1 else -1).coerceIn(0, order.lastIndex)
-                        if (next != index) order = order.move(index, next)
+                        val current = order.indexOfFirst { it.id == draggedId }
+                        if (current >= 0) {
+                            val next = (current + if (delta > 0f) 1 else -1).coerceIn(0, order.lastIndex)
+                            if (next != current) order = order.move(current, next)
+                        }
                     },
                     onDragStart = {
-                        draggedIndex = index
+                        draggedId = item.id
                         dragStartOrder = order
                     },
                     onDragEnd = {
-                        if (draggedIndex >= 0 && order != dragStartOrder) {
+                        if (draggedId != null && order != dragStartOrder) {
                             onReorder(order.map(LibraryTrackable::id))
                         }
-                        draggedIndex = -1
+                        draggedId = null
                         dragStartOrder = null
                     },
                     onDragCancel = {
                         order = dragStartOrder ?: canonical
-                        draggedIndex = -1
+                        draggedId = null
                         dragStartOrder = null
                     },
                 )

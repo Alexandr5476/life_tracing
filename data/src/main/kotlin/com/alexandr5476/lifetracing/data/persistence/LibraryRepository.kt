@@ -582,13 +582,21 @@ class LibraryRepository internal constructor(
             if (activities.isEmpty()) {
                 emptyMap()
             } else {
-                database.libraryDao().getActivityTagLinks(activities.map(LibrarySummaryRow::id)).tagMap()
+                activities
+                    .map(LibrarySummaryRow::id)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(database.libraryDao()::getActivityTagLinks)
+                    .tagMap()
             }
         val sequenceTags =
             if (sequences.isEmpty()) {
                 emptyMap()
             } else {
-                database.libraryDao().getSequenceTagLinks(sequences.map(LibrarySummaryRow::id)).tagMap()
+                sequences
+                    .map(LibrarySummaryRow::id)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(database.libraryDao()::getSequenceTagLinks)
+                    .tagMap()
             }
         return activities.map { it.toDomain(true, activityTags[it.id].orEmpty()) } +
             sequences.map { it.toDomain(false, sequenceTags[it.id].orEmpty()) }

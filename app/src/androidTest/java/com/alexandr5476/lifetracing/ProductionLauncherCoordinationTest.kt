@@ -11,6 +11,7 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
@@ -144,6 +145,104 @@ class ProductionLauncherCoordinationTest {
     fun committedActivitySurvivesProductionCoordinatorFailureWithoutWriterRetry() =
         runBlocking {
             verifyCommittedCoordinationFailure(sequence = false)
+        }
+
+    @Test
+    fun restoredLauncherRouteReturnsToDailyWithoutCreatingAnotherDurableCommand() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, now)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val noLiveId =
+                authoring
+                    .createActivityTemplate(
+                        ActivityTemplateDraft(
+                            "Recovered quick ${now.toEpochMilli()}",
+                            null,
+                            TimeTrackingMode.NO_LIVE_TRACKING,
+                            null,
+                        ),
+                        createdAt = now,
+                    ).id
+            val liveId =
+                authoring
+                    .createActivityTemplate(
+                        ActivityTemplateDraft(
+                            "Recovered live ${now.toEpochMilli()}",
+                            null,
+                            TimeTrackingMode.STOPWATCH,
+                            null,
+                        ),
+                        createdAt = now,
+                    ).id
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val quickController =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(now),
+                    { command -> executeLauncherCommand(command, commands, library) },
+                )
+            try {
+                withTimeout(5_000) { quickController.state.first { it.home !is LauncherLoad.Loading } }
+                quickController.dispatch(StartActivityAction.Select(LibraryTemplateId.Activity(noLiveId)))
+                withTimeout(5_000) { quickController.state.first { it.selected is LauncherLoad.Content } }
+                quickController.dispatch(StartActivityAction.Launch())
+                val noLive =
+                    withTimeout(5_000) { quickController.state.first { it.command is LauncherCommandState.Committed } }
+                        .command as LauncherCommandState.Committed
+                val noLiveStack = mutableListOf<androidx.navigation3.runtime.NavKey>(DailyRoot, StartActivityRoot)
+                noLiveStack.normalizeRestoredStartActivity()
+                val dailyAfterNoLive =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now, 100))
+                assertEquals(listOf(DailyRoot), noLiveStack)
+                assertEquals(
+                    1,
+                    dailyAfterNoLive.completedHistory
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .count { it.executionId == (noLive.result as LauncherCommit.Activity).executionId },
+                )
+
+                quickController.close()
+                val liveController =
+                    controller(
+                        scope,
+                        library,
+                        live,
+                        FixedWallClock(now),
+                        { command -> executeLauncherCommand(command, commands, library) },
+                    )
+                withTimeout(5_000) { liveController.state.first { it.home !is LauncherLoad.Loading } }
+                liveController.dispatch(StartActivityAction.Select(LibraryTemplateId.Activity(liveId)))
+                withTimeout(5_000) { liveController.state.first { it.selected is LauncherLoad.Content } }
+                liveController.dispatch(StartActivityAction.Launch())
+                val liveCommit =
+                    withTimeout(5_000) { liveController.state.first { it.command is LauncherCommandState.Committed } }
+                        .command as LauncherCommandState.Committed
+                val liveStack = mutableListOf<androidx.navigation3.runtime.NavKey>(DailyRoot, StartActivityRoot)
+                liveStack.normalizeRestoredStartActivity()
+                val dailyAfterLive =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now, 100))
+                assertEquals(listOf(DailyRoot), liveStack)
+                assertEquals(
+                    (liveCommit.result as LauncherCommit.Activity).executionId,
+                    (dailyAfterLive.active as DailyActive.Activity).runtime.execution.id,
+                )
+                liveController.close()
+            } finally {
+                quickController.close()
+                scope.cancel()
+                clearLiveSession(live, now.plusSeconds(1))
+            }
         }
 
     @Test

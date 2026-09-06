@@ -320,6 +320,43 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun renderedExitCallbackReadsTheControllerDuringADelayedNoLiveCommit() =
+        runBlocking {
+            val writerGate = CompletableDeferred<Unit>()
+            val harness =
+                Harness().apply {
+                    target = noLiveTarget("quick").copy(startCountdown = Duration.ofSeconds(3))
+                    this.writerGate = writerGate
+                }
+            val controller = harness.controller(this)
+            val policy = LauncherRouteExitPolicy()
+            var backs = 0
+            var handoffs = 0
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("quick"))
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitPreflight()
+            val renderedExit = {
+                policy.requestExit({ controller.state.value.command }, { backs++ }, { handoffs++ })
+            }
+
+            harness.scheduler.fireLatestTwice()
+            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            renderedExit()
+            assertEquals(0, backs)
+            assertEquals(0, handoffs)
+
+            writerGate.complete(Unit)
+            controller.awaitCommitted()
+            renderedExit()
+            policy.onCommand(controller.state.value.command) { handoffs++ }
+            assertEquals(1, harness.commands.size)
+            assertEquals(0, backs)
+            assertEquals(1, handoffs)
+            controller.close()
+        }
+
+    @Test
     fun reorderPassesTheCompleteIdentityOrderAndRefreshesPinned() =
         runBlocking {
             val harness = Harness()

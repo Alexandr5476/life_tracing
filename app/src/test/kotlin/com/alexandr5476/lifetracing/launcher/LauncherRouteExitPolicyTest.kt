@@ -11,14 +11,14 @@ class LauncherRouteExitPolicyTest {
         var backs = 0
         var committed = 0
 
-        policy.requestExit(LauncherCommandState.Committing, { backs++ }, { committed++ })
+        policy.requestExit({ LauncherCommandState.Committing }, { backs++ }, { committed++ })
         assertEquals(0, backs)
         assertEquals(0, committed)
 
         val result = LauncherCommandState.Committed(LauncherCommit.Activity(ActivityExecutionId("done"), false))
-        policy.requestExit(result, { backs++ }, { committed++ })
+        policy.requestExit({ result }, { backs++ }, { committed++ })
         policy.onCommand(result) { committed++ }
-        policy.requestExit(result, { backs++ }, { committed++ })
+        policy.requestExit({ result }, { backs++ }, { committed++ })
 
         assertEquals(0, backs)
         assertEquals(1, committed)
@@ -28,7 +28,7 @@ class LauncherRouteExitPolicyTest {
     fun ordinaryExitAndCoordinationFailureUseTheirSeparateRequiredPaths() {
         val ordinary = LauncherRouteExitPolicy()
         var backs = 0
-        ordinary.requestExit(LauncherCommandState.Checking, { backs++ }, {})
+        ordinary.requestExit({ LauncherCommandState.Checking }, { backs++ }, {})
         assertEquals(1, backs)
 
         val committed = LauncherRouteExitPolicy()
@@ -40,5 +40,23 @@ class LauncherRouteExitPolicyTest {
             ),
         ) { delivered++ }
         assertEquals(1, delivered)
+    }
+
+    @Test
+    fun exitReadsTheControllerCommandAtInvocationRatherThanTheLastRenderedValue() {
+        val policy = LauncherRouteExitPolicy()
+        var current: LauncherCommandState = LauncherCommandState.Checking
+        var backs = 0
+        var committed = 0
+
+        current = LauncherCommandState.Committing
+        policy.requestExit({ current }, { backs++ }, { committed++ })
+        assertEquals(0, backs)
+        assertEquals(0, committed)
+
+        current = LauncherCommandState.Committed(LauncherCommit.Activity(ActivityExecutionId("done"), false))
+        policy.requestExit({ current }, { backs++ }, { committed++ })
+        assertEquals(0, backs)
+        assertEquals(1, committed)
     }
 }

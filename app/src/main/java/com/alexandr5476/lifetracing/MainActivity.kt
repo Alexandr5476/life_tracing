@@ -11,6 +11,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -69,10 +70,11 @@ internal fun LifeTracingApp(
         Surface {
             val context = LocalContext.current
             // This is the sole production acquisition point for the lazily-owned controller.
-            val controller =
+            val runtimeGraph =
                 remember(context.applicationContext) {
-                    LifeTracingRuntimeGraph.from(context.applicationContext).dailyController
+                    LifeTracingRuntimeGraph.from(context.applicationContext)
                 }
+            val controller = runtimeGraph.dailyController
             val backStack = rememberNavBackStack(dailyInitialBackStack.single())
             val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
             NavDisplay(
@@ -82,29 +84,31 @@ internal fun LifeTracingApp(
                         entry<DailyRoot> {
                             DailyRoute(
                                 controller = controller,
-                                onStartActivity = { backStack.openStartActivity() },
+                                onStartActivity = {
+                                    launcherSessions.acquire(runtimeGraph::createStartActivityController)
+                                    backStack.openStartActivity()
+                                },
                             )
                         }
                         entry<StartActivityRoot> {
-                            val session =
-                                launcherSessions.acquire {
-                                    LifeTracingRuntimeGraph
-                                        .from(context.applicationContext)
-                                        .createStartActivityController()
-                                }
-                            StartActivityRoute(
-                                session = session,
-                                onBack = {
-                                    launcherSessions.release(session)
-                                    backStack.removeStartActivity()
-                                },
-                                onCommitted = {
-                                    launcherSessions.release(session)
-                                    backStack.completeStartActivity {
-                                        controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
-                                    }
-                                },
-                            )
+                            val session = launcherSessions.activeSession
+                            if (session == null) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredStartActivity() }
+                            } else {
+                                StartActivityRoute(
+                                    session = session,
+                                    onBack = {
+                                        launcherSessions.release(session)
+                                        backStack.removeStartActivity()
+                                    },
+                                    onCommitted = {
+                                        launcherSessions.release(session)
+                                        backStack.completeStartActivity {
+                                            controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
@@ -123,6 +127,11 @@ internal fun MutableList<NavKey>.openStartActivity() {
 
 internal fun MutableList<NavKey>.removeStartActivity() {
     if (lastOrNull() is StartActivityRoot) removeAt(lastIndex)
+}
+
+/** A restored launcher route has no durable command state and must never acquire a new controller. */
+internal fun MutableList<NavKey>.normalizeRestoredStartActivity() {
+    removeStartActivity()
 }
 
 internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) {

@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteException
+import androidx.room.RoomDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
@@ -58,6 +59,7 @@ import org.junit.runner.RunWith
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
 class LibraryRepositoryTest {
@@ -117,6 +119,59 @@ class LibraryRepositoryTest {
         assertEquals(listOf("nested"), folder.folders.map { it.id.value })
         assertEquals(listOf("activity-folder"), folder.activities.map { it.id.value })
         assertTrue(folder.sequences.isEmpty())
+    }
+
+    @Test
+    fun catalogTagHydrationChunksBothKindsAboveTheSafeBindCount() {
+        val tagQueries: MutableList<Pair<String, List<Any?>>> = mutableListOf()
+        database.close()
+        database =
+            LifeTracingDatabase
+                .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .setQueryCallback(
+                    RoomDatabase.QueryCallback { sql, bindArgs -> tagQueries += sql to bindArgs },
+                    Executor { command -> command.run() },
+                ).allowMainThreadQueries()
+                .build()
+        val repository = repository()
+        repository.createTag(TagId("tag"), "Tag", instant(0))
+        val itemCount = 901
+
+        repeat(itemCount) { index ->
+            activity("activity-$index", "Activity $index")
+            sequence("sequence-$index", "Sequence $index")
+            database.libraryDao().addActivityTag(ActivityTemplateTagEntity("activity-$index", "tag"))
+            database.libraryDao().addSequenceTag(SequenceTemplateTagEntity("sequence-$index", "tag"))
+        }
+
+        val all = repository.getAll()
+        assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Activity })
+        assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Sequence })
+        assertTrue(all.all { TagId("tag") in it.tagIds })
+        assertEquals(
+            listOf(900, 1),
+            tagQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
+        )
+        assertEquals(
+            listOf(900, 1),
+            tagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
+        )
+    }
+
+    @Test
+    fun completeThreeItemPinnedOrderPersists() {
+        val repository = repository()
+        activity("activity-a", "A")
+        activity("activity-b", "B")
+        sequence("sequence-c", "C")
+        val a = LibraryTemplateId.Activity(ActivityTemplateId("activity-a"))
+        val b = LibraryTemplateId.Activity(ActivityTemplateId("activity-b"))
+        val c = LibraryTemplateId.Sequence(SequenceTemplateId("sequence-c"))
+
+        listOf(a, b, c).forEach(repository::pin)
+        repository.reorderPinned(listOf(b, c, a))
+
+        assertEquals(listOf(b, c, a), repository.getPinned().map { it.id })
     }
 
     @Test

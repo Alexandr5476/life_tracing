@@ -27,4 +27,13 @@ class MainActivityNavigationTest {
         assertEquals(listOf("today"), events)
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    @Test
+    fun restoredLauncherWithoutItsRetainedSessionReturnsToCanonicalDaily() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, StartActivityRoot)
+
+        backStack.normalizeRestoredStartActivity()
+
+        assertEquals(listOf(DailyRoot), backStack)
+    }
 }

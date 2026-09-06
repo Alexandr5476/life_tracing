@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import android.database.sqlite.SQLiteException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
@@ -38,6 +39,7 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -198,6 +200,81 @@ class ProductionLiveSlotRaceTest {
         assertEquals(PlanEntryStatus.PLANNED, sequencePlanAfter.status)
         assertNull(activityPlanAfter.fulfilledActivityExecutionId)
         assertNull(sequencePlanAfter.fulfilledSequenceExecutionId)
+    }
+
+    @Test
+    fun lateRecentFailuresRollBackTemplateLaunchesAndPreserveAnUnrelatedLiveSession() {
+        var database = openDatabase()
+        activity(database, "timed")
+        activity(database, "quick", "NO_LIVE_TRACKING")
+        activity(database, "winner")
+        activitySnapshot(database, "step")
+        sequence(database, "sequence", "step")
+
+        val activitySnapshotsBefore = count(database, "activity_snapshots")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_timed_recent BEFORE UPDATE ON activity_template_user_state " +
+                "WHEN OLD.activity_template_id = 'timed' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+        assertThrows(SQLiteException::class.java) {
+            library(database).startActivityFromTemplate(ActivityTemplateId("timed"), at(10), at(10), ZoneOffset.UTC)
+        }
+        database = reloadDatabase()
+        assertEquals(activitySnapshotsBefore, count(database, "activity_snapshots"))
+        assertEquals(0, count(database, "activity_executions"))
+        assertEquals(0, count(database, "active_session"))
+        assertNull(database.activityTemplateDao().getUserState("timed")?.lastUsedAtMs)
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_timed_recent")
+
+        val winner =
+            library(database)
+                .startActivityFromTemplate(
+                    ActivityTemplateId("winner"),
+                    at(20),
+                    at(20),
+                    ZoneOffset.UTC,
+                )
+        val snapshotsBeforeQuick = count(database, "activity_snapshots")
+        val executionsBeforeQuick = count(database, "activity_executions")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_quick_recent BEFORE UPDATE ON activity_template_user_state " +
+                "WHEN OLD.activity_template_id = 'quick' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+        assertThrows(SQLiteException::class.java) {
+            library(database)
+                .completeNoLiveActivityFromTemplate(
+                    ActivityTemplateId("quick"),
+                    at(21),
+                    at(21),
+                    ZoneOffset.UTC,
+                )
+        }
+        database = reloadDatabase()
+        assertEquals(snapshotsBeforeQuick, count(database, "activity_snapshots"))
+        assertEquals(executionsBeforeQuick, count(database, "activity_executions"))
+        assertEquals(winner.id, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(20_000L, database.activityTemplateDao().getUserState("winner")?.lastUsedAtMs)
+        assertNull(database.activityTemplateDao().getUserState("quick")?.lastUsedAtMs)
+        assertTrue(daily(database, 21).completedHistory.isEmpty())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_quick_recent")
+
+        LiveSessionRepository.create(database).completeActiveActivity(at(22))
+        val sequenceSnapshotsBefore = count(database, "sequence_snapshots")
+        val sequenceExecutionsBefore = count(database, "sequence_executions")
+        val occurrencesBefore = count(database, "sequence_occurrences")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_sequence_recent BEFORE UPDATE ON sequence_template_user_state " +
+                "WHEN OLD.sequence_template_id = 'sequence' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+        assertThrows(SQLiteException::class.java) {
+            library(database).startSequenceFromTemplate(SequenceTemplateId("sequence"), at(30), at(30), ZoneOffset.UTC)
+        }
+        database = reloadDatabase()
+        assertEquals(sequenceSnapshotsBefore, count(database, "sequence_snapshots"))
+        assertEquals(sequenceExecutionsBefore, count(database, "sequence_executions"))
+        assertEquals(occurrencesBefore, count(database, "sequence_occurrences"))
+        assertEquals(0, count(database, "active_session"))
+        assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
     }
 
     @Test
