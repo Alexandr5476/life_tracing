@@ -217,7 +217,12 @@ class ProductionLiveSlotRaceTest {
                 "WHEN OLD.activity_template_id = 'timed' BEGIN SELECT RAISE(ABORT, 'forced'); END",
         )
         assertThrows(SQLiteException::class.java) {
-            library(database).startActivityFromTemplate(ActivityTemplateId("timed"), at(10), at(10), ZoneOffset.UTC)
+            activityCommands(database).startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                at(10),
+                at(10),
+                ZoneOffset.UTC,
+            )
         }
         database = reloadDatabase()
         assertEquals(activitySnapshotsBefore, count(database, "activity_snapshots"))

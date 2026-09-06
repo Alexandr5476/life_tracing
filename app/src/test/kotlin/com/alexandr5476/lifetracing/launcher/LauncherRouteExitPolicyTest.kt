@@ -11,14 +11,14 @@ class LauncherRouteExitPolicyTest {
         var backs = 0
         var committed = 0
 
-        policy.requestExit({ LauncherCommandState.Committing }, { backs++ }, { committed++ })
+        policy.requestExit({ LauncherRouteExitDecision.WAIT_FOR_COMMIT }, { backs++ }, { committed++ })
         assertEquals(0, backs)
         assertEquals(0, committed)
 
         val result = LauncherCommandState.Committed(LauncherCommit.Activity(ActivityExecutionId("done"), false))
-        policy.requestExit({ result }, { backs++ }, { committed++ })
+        policy.requestExit({ LauncherRouteExitDecision.DELIVER_COMMIT }, { backs++ }, { committed++ })
         policy.onCommand(result) { committed++ }
-        policy.requestExit({ result }, { backs++ }, { committed++ })
+        policy.requestExit({ LauncherRouteExitDecision.DELIVER_COMMIT }, { backs++ }, { committed++ })
 
         assertEquals(0, backs)
         assertEquals(1, committed)
@@ -28,7 +28,7 @@ class LauncherRouteExitPolicyTest {
     fun ordinaryExitAndCoordinationFailureUseTheirSeparateRequiredPaths() {
         val ordinary = LauncherRouteExitPolicy()
         var backs = 0
-        ordinary.requestExit({ LauncherCommandState.Checking }, { backs++ }, {})
+        ordinary.requestExit({ LauncherRouteExitDecision.BACK }, { backs++ }, {})
         assertEquals(1, backs)
 
         val committed = LauncherRouteExitPolicy()
@@ -43,18 +43,18 @@ class LauncherRouteExitPolicyTest {
     }
 
     @Test
-    fun exitReadsTheControllerCommandAtInvocationRatherThanTheLastRenderedValue() {
+    fun exitUsesTheControllerArbitrationResultRatherThanTheLastRenderedValue() {
         val policy = LauncherRouteExitPolicy()
-        var current: LauncherCommandState = LauncherCommandState.Checking
+        var current = LauncherRouteExitDecision.BACK
         var backs = 0
         var committed = 0
 
-        current = LauncherCommandState.Committing
+        current = LauncherRouteExitDecision.WAIT_FOR_COMMIT
         policy.requestExit({ current }, { backs++ }, { committed++ })
         assertEquals(0, backs)
         assertEquals(0, committed)
 
-        current = LauncherCommandState.Committed(LauncherCommit.Activity(ActivityExecutionId("done"), false))
+        current = LauncherRouteExitDecision.DELIVER_COMMIT
         policy.requestExit({ current }, { backs++ }, { committed++ })
         assertEquals(0, backs)
         assertEquals(1, committed)

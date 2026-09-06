@@ -70,7 +70,7 @@ internal fun StartActivityRoute(
     val state by controller.state.collectAsState()
     val exitPolicy = session.exitPolicy
     val exitRoute = {
-        exitPolicy.requestExit({ controller.state.value.command }, onBack, onCommitted)
+        exitPolicy.requestExit(controller::arbitrateRouteExit, onBack, onCommitted)
     }
     BackHandler(enabled = true) {
         exitRoute()

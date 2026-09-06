@@ -320,7 +320,7 @@ class StartActivityControllerTest {
         }
 
     @Test
-    fun renderedExitCallbackReadsTheControllerDuringADelayedNoLiveCommit() =
+    fun routeExitArbitrationBlocksBackWhenTheDurableBoundaryWinsAndDeliversOnce() =
         runBlocking {
             val writerGate = CompletableDeferred<Unit>()
             val harness =
@@ -337,7 +337,7 @@ class StartActivityControllerTest {
             controller.dispatch(StartActivityAction.Launch())
             controller.awaitPreflight()
             val renderedExit = {
-                policy.requestExit({ controller.state.value.command }, { backs++ }, { handoffs++ })
+                policy.requestExit(controller::arbitrateRouteExit, { backs++ }, { handoffs++ })
             }
 
             harness.scheduler.fireLatestTwice()
@@ -353,6 +353,37 @@ class StartActivityControllerTest {
             assertEquals(1, harness.commands.size)
             assertEquals(0, backs)
             assertEquals(1, handoffs)
+            controller.close()
+        }
+
+    @Test
+    fun routeExitArbitrationCancelsPendingAttemptBeforeBackCanCrossTheDurableBoundary() =
+        runBlocking {
+            val harness =
+                Harness().apply {
+                    target = noLiveTarget("quick").copy(startCountdown = Duration.ofSeconds(3))
+                }
+            val controller = harness.controller(this)
+            val policy = LauncherRouteExitPolicy()
+            var backs = 0
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("quick"))
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitPreflight()
+
+            policy.requestExit(
+                controller::arbitrateRouteExit,
+                {
+                    // This is the old read-then-pop interleaving point. The cancelled boundary cannot commit.
+                    harness.scheduler.fireLatestTwice()
+                    backs++
+                },
+                { error("Cancelled launch must not hand off") },
+            )
+
+            assertEquals(1, backs)
+            assertEquals(LauncherCommandState.Idle, controller.state.value.command)
+            assertTrue(harness.commands.isEmpty())
             controller.close()
         }
 

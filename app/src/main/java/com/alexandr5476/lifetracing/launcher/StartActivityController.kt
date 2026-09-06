@@ -107,6 +107,12 @@ sealed interface LauncherCommandState {
     ) : LauncherCommandState
 }
 
+internal enum class LauncherRouteExitDecision {
+    BACK,
+    WAIT_FOR_COMMIT,
+    DELIVER_COMMIT,
+}
+
 data class StartActivityState(
     val home: LauncherLoad<LauncherHome> = LauncherLoad.Loading,
     val searchQuery: String = "",
@@ -278,6 +284,26 @@ class StartActivityController internal constructor(
         targetGeneration.incrementAndGet()
         abandonPendingLaunch()
     }
+
+    /** Shares the durable-boundary lock so Back cannot escape a pending launch. */
+    internal fun arbitrateRouteExit(): LauncherRouteExitDecision =
+        synchronized(lifecycleLock) {
+            when (mutableState.value.command) {
+                is LauncherCommandState.Committed,
+                is LauncherCommandState.CommittedCoordinationFailure,
+                -> LauncherRouteExitDecision.DELIVER_COMMIT
+
+                LauncherCommandState.Committing -> LauncherRouteExitDecision.WAIT_FOR_COMMIT
+                LauncherCommandState.Checking,
+                is LauncherCommandState.Preflight,
+                -> {
+                    cancelPendingLaunchLocked()
+                    LauncherRouteExitDecision.BACK
+                }
+
+                else -> LauncherRouteExitDecision.BACK
+            }
+        }
 
     private fun retryReads() {
         if (mutableState.value.home is LauncherLoad.Failure) refreshHome()
@@ -546,15 +572,19 @@ class StartActivityController internal constructor(
 
     private fun abandonPendingLaunch() {
         synchronized(lifecycleLock) {
-            val command = mutableState.value.command
-            if (command != LauncherCommandState.Checking && command !is LauncherCommandState.Preflight) return
-            attemptGeneration.incrementAndGet()
-            pendingLaunchJob?.cancel()
-            pendingLaunchJob = null
-            preflightHandle?.cancel()
-            preflightHandle = null
-            mutableState.update { it.copy(command = LauncherCommandState.Idle) }
+            cancelPendingLaunchLocked()
         }
+    }
+
+    private fun cancelPendingLaunchLocked() {
+        val command = mutableState.value.command
+        if (command != LauncherCommandState.Checking && command !is LauncherCommandState.Preflight) return
+        attemptGeneration.incrementAndGet()
+        pendingLaunchJob?.cancel()
+        pendingLaunchJob = null
+        preflightHandle?.cancel()
+        preflightHandle = null
+        mutableState.update { it.copy(command = LauncherCommandState.Idle) }
     }
 
     private fun publishAttempt(

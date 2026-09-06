@@ -16,14 +16,14 @@ internal class LauncherRouteExitPolicy {
     private var committedResultHandled = false
 
     fun requestExit(
-        currentCommand: () -> LauncherCommandState,
+        arbitrateExit: () -> LauncherRouteExitDecision,
         onBack: () -> Unit,
         onCommitted: () -> Unit,
     ) {
-        val command = currentCommand()
-        when {
-            command.isCommittedResult() -> deliverCommittedResult(onCommitted)
-            command != LauncherCommandState.Committing -> onBack()
+        when (arbitrateExit()) {
+            LauncherRouteExitDecision.BACK -> onBack()
+            LauncherRouteExitDecision.DELIVER_COMMIT -> deliverCommittedResult(onCommitted)
+            LauncherRouteExitDecision.WAIT_FOR_COMMIT -> Unit
         }
     }
 
