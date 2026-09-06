@@ -333,21 +333,17 @@ class DailyController internal constructor(
                 return
             }
             mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+            var rejection: Exception? = null
             try {
                 executeRuntimeCommand(command)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                mutableState.update {
-                    it.copy(commandInFlight = false, commandFailure = DailyCommandFailure.Rejected(failure.message()))
-                }
-                refresh()
-                return
+                rejection = failure
             }
 
             try {
                 coordinateRuntimeStateChanged()
-                mutableState.update { it.copy(commandInFlight = false) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -357,8 +353,15 @@ class DailyController internal constructor(
                         commandFailure = DailyCommandFailure.Coordination(failure.message()),
                     )
                 }
+                refresh()
+                return
             }
-            refresh()
+            mutableState.update {
+                it.copy(
+                    commandInFlight = false,
+                    commandFailure = rejection?.let { failure -> DailyCommandFailure.Rejected(failure.message()) },
+                )
+            }
         }
     }
 

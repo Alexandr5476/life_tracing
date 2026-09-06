@@ -326,6 +326,10 @@ class LiveSessionRepositoryTest {
         assertEquals(instant(60), reconciled.occurrences[0].completedAt)
         assertEquals(instant(60), reconciled.occurrences[1].enteredAt)
         assertEquals(RuntimeOccurrenceStatus.CURRENT, reconciled.occurrences[1].status)
+        val active = repository.getActiveRuntime() as ActiveSequenceRuntime
+        assertEquals(reconciled, active.execution)
+        assertEquals(reconciled.occurrences[1].id, active.execution.currentOccurrenceId)
+        assertNull(NextRuntimeDeadlineResolver.resolve(active))
     }
 
     @Test

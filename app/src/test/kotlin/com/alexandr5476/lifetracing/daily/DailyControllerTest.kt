@@ -381,12 +381,52 @@ class DailyControllerTest {
                     ?.id,
             )
             assertInstanceOf(DailyCommandFailure.Rejected::class.java, controller.state.value.commandFailure)
-            assertEquals(0, harness.coordinationCalls)
+            assertEquals(1, harness.coordinationCalls)
             controller.close()
         }
 
     @Test
-    fun repositoryAndPostCommitFailuresRemainDistinctAndRecoverable() =
+    fun commitThenRejectSynchronizesThenShowsTheRequestedActionAsRejected() =
+        runBlocking {
+            val old = SequenceOccurrenceId("old")
+            val reconciled = SequenceOccurrenceId("reconciled")
+            val harness = Harness()
+            harness.daily = daily(sequenceActive(DailyActiveSequenceState.RUNNING_CURRENT, old))
+            harness.repositoryFailure = IllegalArgumentException("stale occurrence")
+            val controller = harness.controller(this)
+            controller.awaitLoaded()
+            harness.events.clear()
+            harness.daily = daily(sequenceActive(DailyActiveSequenceState.WAITING_NEXT, reconciled))
+
+            controller.dispatch(DailyAction.CompleteCurrentSequenceStep(old))
+            harness.awaitCommandFinished(controller)
+
+            assertEquals(listOf("repository", "coordinate", "read"), harness.events)
+            assertEquals(DailyActiveSequenceState.WAITING_NEXT, controller.loadedSequence().state)
+            assertInstanceOf(DailyCommandFailure.Rejected::class.java, controller.state.value.commandFailure)
+            assertEquals(1, harness.coordinationCalls)
+            assertEquals(2, harness.queries.size)
+            controller.close()
+        }
+
+    @Test
+    fun successfulCommandUsesItsSemanticGenerationForExactlyOneRefresh() =
+        runBlocking {
+            val harness = Harness().apply { daily = daily(activityRuntime("active")) }
+            val controller = harness.controller(this)
+            controller.awaitLoaded()
+            harness.events.clear()
+
+            controller.dispatch(DailyAction.FinishActivity)
+            harness.awaitCommandFinished(controller)
+
+            assertEquals(listOf("repository", "coordinate", "read"), harness.events)
+            assertEquals(2, harness.queries.size)
+            controller.close()
+        }
+
+    @Test
+    fun commandCoordinationUsesOneSemanticGenerationReadAndRefreshesWhenItFails() =
         runBlocking {
             val rejected =
                 Harness().apply {
@@ -398,13 +438,14 @@ class DailyControllerTest {
             rejectedController.dispatch(DailyAction.FinishActivity)
             rejected.awaitCommandFinished(rejectedController)
             assertInstanceOf(DailyCommandFailure.Rejected::class.java, rejectedController.state.value.commandFailure)
-            assertEquals(0, rejected.coordinationCalls)
+            assertEquals(1, rejected.coordinationCalls)
             assertEquals(2, rejected.queries.size)
             rejectedController.close()
 
             val coordination =
                 Harness().apply {
                     daily = daily(activityRuntime("committed"))
+                    repositoryFailure = IllegalStateException("reconciled then rejected")
                     coordinationFailure = IllegalStateException("scheduler failed")
                 }
             val coordinationController = coordination.controller(this)
@@ -465,6 +506,7 @@ class DailyControllerTest {
                     events += "coordinate"
                     coordinationCalls++
                     coordinationFailure?.let { throw it }
+                    semantic.value++
                 },
                 semantic,
                 { baseline },

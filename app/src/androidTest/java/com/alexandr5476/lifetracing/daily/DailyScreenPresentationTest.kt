@@ -39,10 +39,13 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionTransitions
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValidator
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotField
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyPlan
@@ -361,6 +364,23 @@ class DailyScreenPresentationTest {
     }
 
     @Test
+    fun stopwatch_honors_frozen_show_seconds_while_timer_keeps_second_precision() {
+        val standalone = activity("Minute stopwatch", TimeTrackingMode.STOPWATCH, showSeconds = false)
+        val harness = screen(daily(DailyActive.Activity(standalone), baseline(standalone, 65)), tick = 65_000)
+        composeTestRule.onNodeWithText("0:01").assertIsDisplayed()
+
+        val sequence = singleStepSequence(snapshot("Sequence minute stopwatch", showSeconds = false)).active()
+        harness.state.value = daily(sequence, baseline(sequence.runtime, 65))
+        composeTestRule.runOnIdle { harness.tick.longValue = 65_000 }
+        composeTestRule.onNodeWithText("0:01").assertIsDisplayed()
+
+        val timer = activity("Precise timer", TimeTrackingMode.TIMER, showSeconds = false)
+        harness.state.value = daily(DailyActive.Activity(timer), baseline(timer, 2))
+        composeTestRule.runOnIdle { harness.tick.longValue = 2_000 }
+        composeTestRule.onNodeWithText(string(R.string.daily_remaining, durationText(3))).assertIsDisplayed()
+    }
+
+    @Test
     fun activity_timer_uses_remaining_then_overtime_and_missing_baseline_is_unavailable() {
         val timer = activity("Overtime timer", TimeTrackingMode.TIMER, TimerZeroBehavior.OVERTIME)
         val timerBaseline = baseline(timer, 2)
@@ -412,7 +432,7 @@ class DailyScreenPresentationTest {
     }
 
     @Test
-    fun sequence_timer_uses_child_value_and_no_live_current_has_no_synthetic_timer() {
+    fun sequence_timer_and_no_live_current_use_their_frozen_values() {
         val timerFixture =
             singleStepSequence(snapshot("Timer child", TimeTrackingMode.TIMER, TimerZeroBehavior.OVERTIME))
         val timer = timerFixture.active()
@@ -422,10 +442,35 @@ class DailyScreenPresentationTest {
         composeTestRule.runOnIdle { harness.tick.longValue = 7_000 }
         composeTestRule.onNodeWithText(string(R.string.daily_overtime, durationText(2))).assertIsDisplayed()
 
-        val noLiveFixture = singleStepSequence(snapshot("No-live current", TimeTrackingMode.NO_LIVE_TRACKING))
-        val noLive = noLiveFixture.active()
-        harness.state.value = daily(noLive, baseline(noLive.runtime, 3))
+        val noLiveWithMainValue =
+            singleStepSequence(
+                snapshot("No-live with value", TimeTrackingMode.NO_LIVE_TRACKING).copy(
+                    fields =
+                        listOf(
+                            ActivitySnapshotField(
+                                ActivitySnapshotFieldId("pages"),
+                                null,
+                                0,
+                                "Pages",
+                                type = CustomFieldType.NUMBER,
+                                unit = "pages",
+                                displayPrecision = 0,
+                                defaultNumberScaled = 0,
+                                isMainValue = true,
+                            ),
+                        ),
+                ),
+            ).active()
+        harness.state.value = daily(noLiveWithMainValue, baseline(noLiveWithMainValue.runtime, 3))
         composeTestRule.runOnIdle { harness.tick.longValue = 3_000 }
+        composeTestRule.onNodeWithText("0 pages").assertIsDisplayed()
+        composeTestRule.onNodeWithText(string(R.string.daily_no_live_current_step)).assertDoesNotExist()
+
+        val noLiveWithoutMainValue =
+            singleStepSequence(
+                snapshot("No-live current", TimeTrackingMode.NO_LIVE_TRACKING),
+            ).active()
+        harness.state.value = daily(noLiveWithoutMainValue, baseline(noLiveWithoutMainValue.runtime, 3))
         composeTestRule.onNodeWithText(string(R.string.daily_no_live_current_step)).assertIsDisplayed()
         composeTestRule.onNodeWithText(string(R.string.daily_remaining, durationText(2))).assertDoesNotExist()
         composeTestRule.onNodeWithText(string(R.string.daily_overtime, durationText(2))).assertDoesNotExist()
@@ -513,8 +558,9 @@ class DailyScreenPresentationTest {
         mode: TimeTrackingMode,
         zeroBehavior: TimerZeroBehavior = TimerZeroBehavior.FINISH,
         pausedAtSeconds: Long? = null,
+        showSeconds: Boolean = true,
     ): ActiveActivityRuntime {
-        val snapshot = snapshot(name, mode, zeroBehavior)
+        val snapshot = snapshot(name, mode, zeroBehavior, showSeconds = showSeconds)
         var execution =
             ActivityExecutionFactory {
                 ActivityExecutionId(
@@ -547,6 +593,7 @@ class DailyScreenPresentationTest {
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         zeroBehavior: TimerZeroBehavior = TimerZeroBehavior.FINISH,
         timerSeconds: Long = 5,
+        showSeconds: Boolean = true,
     ) = ActivityConfigSnapshot(
         ActivitySnapshotId(name),
         name,
@@ -558,7 +605,7 @@ class DailyScreenPresentationTest {
         null,
         false,
         at,
-        ActivityTemplateSettings(timerZeroBehavior = zeroBehavior),
+        ActivityTemplateSettings(showSeconds = showSeconds, timerZeroBehavior = zeroBehavior),
     )
 
     private fun plan(

@@ -328,8 +328,10 @@ class AndroidRuntimeCoordinatorTest {
                     autoAdvance = false,
                 )
             waiting.reconcile(instant(10))
-            current = waiting.runtime()
+            val waitingRuntime = requireNotNull(waiting.runtime())
+            current = waitingRuntime
             coordinator.onRuntimeStateChanged()
+            assertEquals(true, requireNotNull(coordinator.displayBaseline).matches(waitingRuntime))
             current = null
             coordinator.onRuntimeStateChanged()
 

@@ -54,6 +54,7 @@ import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -255,7 +256,7 @@ private fun ActiveActivityCard(
             style = MaterialTheme.typography.labelLarge,
         )
         LiveActivityValue(
-            runtime.snapshot.timeTrackingMode,
+            runtime.snapshot,
             state.runtimeDisplayBaseline,
             displayElapsedRealtimeMs,
         )
@@ -274,7 +275,7 @@ private fun ActiveActivityCard(
 
 @Composable
 private fun LiveActivityValue(
-    mode: TimeTrackingMode,
+    snapshot: com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot,
     baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?,
     displayElapsedRealtimeMs: Long?,
 ) {
@@ -282,7 +283,8 @@ private fun LiveActivityValue(
     val value =
         when {
             baseline == null -> stringResource(R.string.daily_timing_unavailable)
-            mode == TimeTrackingMode.STOPWATCH -> durationText(baseline.activeElapsed(elapsedNow))
+            snapshot.timeTrackingMode == TimeTrackingMode.STOPWATCH ->
+                stopwatchText(baseline.activeElapsed(elapsedNow), snapshot.settings.showSeconds)
             else -> timerText(baseline, elapsedNow)
         }
     Text(text = value, style = MaterialTheme.typography.headlineSmall)
@@ -349,10 +351,12 @@ private fun CurrentSequenceContent(
     val value =
         when {
             current.activity.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING ->
-                stringResource(R.string.daily_no_live_current_step)
+                current.activity.mainValueText() ?: stringResource(R.string.daily_no_live_current_step)
             baseline == null -> stringResource(R.string.daily_timing_unavailable)
             current.activity.timeTrackingMode == TimeTrackingMode.STOPWATCH ->
-                baseline.currentStepStopwatchElapsed(elapsedNow)?.let(::durationText)
+                baseline.currentStepStopwatchElapsed(elapsedNow)?.let {
+                    stopwatchText(it, current.activity.settings.showSeconds)
+                }
                     ?: stringResource(R.string.daily_timing_unavailable)
             active.runtime.currentChild == null -> stringResource(R.string.daily_timing_unavailable)
             else -> timerText(baseline, elapsedNow)
@@ -660,3 +664,24 @@ private fun localizedTime(instant: Instant): String {
 }
 
 private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
+
+private fun stopwatchText(
+    value: Duration,
+    showSeconds: Boolean,
+): String =
+    if (showSeconds) {
+        durationText(value)
+    } else {
+        val minutes = value.seconds.coerceAtLeast(0) / 60
+        "%d:%02d".format(minutes / 60, minutes % 60)
+    }
+
+private fun com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot.mainValueText(): String? =
+    fields
+        .singleOrNull { it.isMainValue }
+        ?.let { field ->
+            field.defaultNumberScaled?.let { value ->
+                BigDecimal.valueOf(value, 3).stripTrailingZeros().toPlainString() +
+                    field.unit?.let { " $it" }.orEmpty()
+            }
+        }
