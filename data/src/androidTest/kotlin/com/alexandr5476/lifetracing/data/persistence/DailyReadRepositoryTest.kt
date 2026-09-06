@@ -149,6 +149,7 @@ class DailyReadRepositoryTest {
         )
         database.planEntryDao().insert(plan("week", sequence = "sequence-one", precision = "WEEK", week = "2026-08-17"))
         database.planEntryDao().insert(plan("month", activity = "no-live", precision = "MONTH", month = "2026-08"))
+        val exactRow = requireNotNull(database.planEntryDao().getById("exact"))
         val completed =
             live.completeNoLiveActivityFromSnapshot(
                 snapshotId = ActivitySnapshotId("no-live"),
@@ -194,6 +195,51 @@ class DailyReadRepositoryTest {
             Instant.parse("2026-08-20T23:30:00Z"),
             (moved.plan.target as com.alexandr5476.lifetracing.domain.PlanTarget.ExactDay).scheduledAt,
         )
+        assertEquals(exactRow, database.planEntryDao().getById("exact"))
+    }
+
+    @Test
+    fun passedFloatingDayPlanStaysInItsOriginalDailyContextWithoutCreatingACopy() {
+        database.planEntryDao().insert(plan("past-floating", activity = "no-live", day = "2026-08-19"))
+        val before = requireNotNull(database.planEntryDao().getById("past-floating"))
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+
+        val past = read("2026-08-19", now).dayPlans.single()
+
+        assertEquals(PlanEntryId("past-floating"), past.plan.id)
+        assertEquals(PlanEntryStatus.PLANNED, past.plan.status)
+        assertEquals(
+            LocalDate.parse("2026-08-19"),
+            (past.plan.target as com.alexandr5476.lifetracing.domain.PlanTarget.FloatingDay).date,
+        )
+        assertTrue(past.overdue)
+        assertTrue(
+            read("2026-08-20", now).dayPlans.none { it.plan.id == PlanEntryId("past-floating") },
+        )
+        assertEquals(before, database.planEntryDao().getById("past-floating"))
+    }
+
+    @Test
+    fun passedWeekPlanStaysInItsOriginalWeekWithoutCreatingACopy() {
+        database.planEntryDao().insert(
+            plan("past-week", sequence = "sequence-one", precision = "WEEK", week = "2026-08-10"),
+        )
+        val before = requireNotNull(database.planEntryDao().getById("past-week"))
+        val now = Instant.parse("2026-08-17T12:00:00Z")
+
+        val past = read("2026-08-12", now).weekPlans.single()
+
+        assertEquals(PlanEntryId("past-week"), past.plan.id)
+        assertEquals(PlanEntryStatus.PLANNED, past.plan.status)
+        assertEquals(
+            LocalDate.parse("2026-08-10"),
+            (past.plan.target as com.alexandr5476.lifetracing.domain.PlanTarget.Week).weekStart,
+        )
+        assertTrue(past.overdue)
+        assertTrue(
+            read("2026-08-17", now).weekPlans.none { it.plan.id == PlanEntryId("past-week") },
+        )
+        assertEquals(before, database.planEntryDao().getById("past-week"))
     }
 
     @Test

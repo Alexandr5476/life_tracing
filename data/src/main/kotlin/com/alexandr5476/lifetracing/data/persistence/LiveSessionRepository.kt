@@ -57,6 +57,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
+import com.alexandr5476.lifetracing.domain.TransitionCountdownProgressResolver
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
 import java.time.ZoneId
@@ -774,6 +775,7 @@ class LiveSessionRepository internal constructor(
                     loaded.snapshot,
                     loaded.activities,
                     loaded.state.currentChild,
+                    transitionCountdownTargetId(session, loaded.state.execution),
                 )
             }
         }
@@ -939,16 +941,16 @@ class LiveSessionRepository internal constructor(
     private fun countdownConsumedMs(
         execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
         target: SequenceOccurrenceId,
-    ): Long =
-        execution.intervals
-            .asSequence()
-            .filter {
-                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.occurrenceId == target && it.endedAt != null
-            }.sumOf {
-                java.time.Duration
-                    .between(it.startedAt, requireNotNull(it.endedAt))
-                    .toMillis()
-            }
+    ): Long = TransitionCountdownProgressResolver.closedDuration(execution, target).toMillis()
+
+    private fun transitionCountdownTargetId(
+        session: ActiveSession,
+        execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
+    ): SequenceOccurrenceId? =
+        when {
+            execution.currentOccurrenceId != null || session.state == ActiveSessionState.WAITING_NEXT -> null
+            else -> requireNotNull(nextRemainingOccurrence(execution)).id
+        }
 
     private fun validateCurrentChild(
         sequenceId: SequenceExecutionId,

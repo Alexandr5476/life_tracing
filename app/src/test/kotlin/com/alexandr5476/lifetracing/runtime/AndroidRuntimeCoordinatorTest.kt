@@ -35,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -46,6 +47,44 @@ import java.time.ZoneOffset
 
 @Suppress("LargeClass") // Existing coordinator boundary scenarios share one focused harness.
 class AndroidRuntimeCoordinatorTest {
+    @Test
+    fun semanticGenerationAdvancesForForegroundRuntimeAndTimeCoordination() =
+        runBlocking {
+            val coordinator =
+                coordinator(
+                    load = { null },
+                    reconcile = { RuntimeReconciliationResult(null, emptyList()) },
+                )
+
+            coordinator.onForeground()
+            coordinator.onRuntimeStateChanged()
+            coordinator.onSystemTimeChanged()
+
+            assertEquals(3L, coordinator.semanticGeneration.value)
+        }
+
+    @Test
+    fun onlyAcceptedDeadlineSignalAdvancesSemanticGeneration() =
+        runBlocking {
+            var current: ActiveRuntime? = runningTimer(timerTargetSeconds = 10)
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(current)))
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        current = null
+                        RuntimeReconciliationResult(null, emptyList())
+                    },
+                    wallSeconds = 10,
+                )
+
+            coordinator.onDeadlineSignal(deadline.copy(at = deadline.at.plusSeconds(1)))
+            assertEquals(0L, coordinator.semanticGeneration.value)
+
+            coordinator.onDeadlineSignal(deadline)
+            assertEquals(1L, coordinator.semanticGeneration.value)
+        }
+
     @Test
     fun coroutineDriverUsesMonotonicDeadlineAndReplacesPreviousOneShot() =
         runBlocking {
@@ -289,8 +328,10 @@ class AndroidRuntimeCoordinatorTest {
                     autoAdvance = false,
                 )
             waiting.reconcile(instant(10))
-            current = waiting.runtime()
+            val waitingRuntime = requireNotNull(waiting.runtime())
+            current = waitingRuntime
             coordinator.onRuntimeStateChanged()
+            assertEquals(true, requireNotNull(coordinator.displayBaseline).matches(waitingRuntime))
             current = null
             coordinator.onRuntimeStateChanged()
 
@@ -1032,6 +1073,11 @@ class AndroidRuntimeCoordinatorTest {
                 snapshot,
                 snapshots,
                 state.currentChild,
+                if (sessionState == ActiveSessionState.WAITING_NEXT) {
+                    null
+                } else {
+                    state.execution.currentOccurrenceId?.let { null } ?: nextRemainingOccurrence(state.execution)?.id
+                },
             )
         }
     }

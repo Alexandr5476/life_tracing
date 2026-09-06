@@ -5,7 +5,12 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import com.alexandr5476.lifetracing.daily.CoroutineLocalDateBoundaryScheduler
+import com.alexandr5476.lifetracing.daily.DailyController
+import com.alexandr5476.lifetracing.daily.DailyRuntimeCommand
+import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -16,6 +21,9 @@ import com.alexandr5476.lifetracing.runtime.AndroidWallClock
 import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.ZoneId
+import java.util.UUID
 
 class LifeTracingApplication : Application() {
     override fun onCreate() {
@@ -49,28 +57,13 @@ class LifeTracingApplication : Application() {
     }
 }
 
-class LifeTracingRuntimeGraph private constructor(
-    context: Context,
+class LifeTracingRuntimeGraph internal constructor(
+    val scope: kotlinx.coroutines.CoroutineScope,
+    val coordinator: AndroidRuntimeCoordinator,
+    private val dailyControllerOwner: DailyControllerOwner,
 ) {
-    val scope =
-        kotlinx.coroutines.CoroutineScope(
-            kotlinx.coroutines.SupervisorJob() +
-                kotlinx.coroutines.Dispatchers.IO +
-                kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
-                    Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
-                },
-        )
-    private val repository = LiveSessionRepository.create(context)
-    val coordinator =
-        AndroidRuntimeCoordinator(
-            repository,
-            AndroidWallClock(),
-            AndroidMonotonicClock,
-            AndroidRuntimeDeadlineScheduler(context),
-            CoroutineInProcessRuntimeDeadlineDriver(scope, AndroidMonotonicClock),
-            AndroidRuntimeFeedbackDispatcher(NoOpRuntimeSoundPlayer, AndroidRuntimeVibrator(context)),
-            AndroidRuntimeNotificationPublisher(context),
-        )
+    val dailyController: DailyController
+        get() = dailyControllerOwner.get()
 
     companion object {
         @Volatile
@@ -78,7 +71,81 @@ class LifeTracingRuntimeGraph private constructor(
 
         fun from(context: Context): LifeTracingRuntimeGraph =
             instance ?: synchronized(this) {
-                instance ?: LifeTracingRuntimeGraph(context.applicationContext).also { instance = it }
+                instance ?: create(context.applicationContext).also { instance = it }
             }
+
+        @Suppress("LongMethod") // Runtime graph wiring is intentionally kept at one composition root.
+        private fun create(context: Context): LifeTracingRuntimeGraph {
+            val scope =
+                kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.SupervisorJob() +
+                        kotlinx.coroutines.Dispatchers.IO +
+                        kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                            Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
+                        },
+                )
+            val wallClock = AndroidWallClock()
+            val repository = LiveSessionRepository.create(context)
+            val coordinator =
+                AndroidRuntimeCoordinator(
+                    repository,
+                    wallClock,
+                    AndroidMonotonicClock,
+                    AndroidRuntimeDeadlineScheduler(context),
+                    CoroutineInProcessRuntimeDeadlineDriver(scope, AndroidMonotonicClock),
+                    AndroidRuntimeFeedbackDispatcher(NoOpRuntimeSoundPlayer, AndroidRuntimeVibrator(context)),
+                    AndroidRuntimeNotificationPublisher(context),
+                )
+            return LifeTracingRuntimeGraph(
+                scope,
+                coordinator,
+                DailyControllerOwner {
+                    val dailyReadRepository = DailyReadRepository.create(context)
+                    DailyController(
+                        scope,
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                dailyReadRepository.getDaily(query)
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                when (command) {
+                                    is DailyRuntimeCommand.PauseActivity ->
+                                        repository.pauseActiveActivity(command.pauseId, command.at)
+                                    is DailyRuntimeCommand.ResumeActivity ->
+                                        repository.resumeActiveActivity(command.at)
+                                    is DailyRuntimeCommand.FinishActivity ->
+                                        repository.completeActiveActivity(command.at)
+                                    is DailyRuntimeCommand.PauseSequence ->
+                                        repository.pauseActiveSequence(command.at)
+                                    is DailyRuntimeCommand.ResumeSequence ->
+                                        repository.resumeActiveSequence(command.at)
+                                    is DailyRuntimeCommand.StartNextSequenceStep ->
+                                        repository.startNextSequenceStep(command.at)
+                                    is DailyRuntimeCommand.CompleteCurrentSequenceStep ->
+                                        repository.completeCurrentSequenceStep(command.occurrenceId, command.at)
+                                }
+                            }
+                        },
+                        coordinator::onRuntimeStateChanged,
+                        coordinator.semanticGeneration,
+                        { coordinator.displayBaseline },
+                        wallClock,
+                        ZoneId::systemDefault,
+                        { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
+                        CoroutineLocalDateBoundaryScheduler(scope),
+                    )
+                },
+            )
+        }
     }
+}
+
+internal class DailyControllerOwner(
+    factory: () -> DailyController,
+) {
+    private val controller = lazy(LazyThreadSafetyMode.SYNCHRONIZED, factory)
+
+    fun get(): DailyController = controller.value
 }

@@ -9,10 +9,13 @@ import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.WallClock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-@Suppress("LongParameterList") // Production dependencies stay explicit; tests replace only boundary functions.
+@Suppress("LongParameterList", "TooManyFunctions") // Production dependencies stay explicit; tests replace boundaries.
 class AndroidRuntimeCoordinator internal constructor(
     private val loadRuntime: () -> ActiveRuntime?,
     private val reconcile: (java.time.Instant) -> RuntimeReconciliationResult,
@@ -25,6 +28,8 @@ class AndroidRuntimeCoordinator internal constructor(
     private val log: (String) -> Unit,
 ) {
     private val mutex = Mutex()
+    private val mutableSemanticGeneration = MutableStateFlow(0L)
+    val semanticGeneration: StateFlow<Long> = mutableSemanticGeneration.asStateFlow()
     val clockAnchor = RuntimeClockAnchor(wallClock, monotonicClock)
 
     @Volatile
@@ -57,6 +62,7 @@ class AndroidRuntimeCoordinator internal constructor(
         mutex.withLock {
             clockAnchor.reset()
             reconcileAndScheduleLocked(emitFeedback = true)
+            invalidateSemanticState()
         }
     }
 
@@ -66,6 +72,7 @@ class AndroidRuntimeCoordinator internal constructor(
             scheduler.cancel()
             clockAnchor.reset()
             reconcileAndScheduleLocked(emitFeedback = false)
+            invalidateSemanticState()
         }
     }
 
@@ -73,6 +80,7 @@ class AndroidRuntimeCoordinator internal constructor(
         mutex.withLock {
             clockAnchor.reset()
             reconcileAndScheduleLocked(emitFeedback = false)
+            invalidateSemanticState()
         }
     }
 
@@ -81,6 +89,7 @@ class AndroidRuntimeCoordinator internal constructor(
             val runtime = loadRuntime()
             schedule(runtime)
             bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, null) }
+            invalidateSemanticState()
         }
     }
 
@@ -107,11 +116,15 @@ class AndroidRuntimeCoordinator internal constructor(
             schedule(runtime)
             latest?.let { bestEffort("runtime_feedback_failed") { feedbackDispatcher.dispatch(it) } }
             bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, latest) }
+            invalidateSemanticState()
         }
     }
 
     private suspend fun reconcileAndSchedule(emitFeedback: Boolean) {
-        mutex.withLock { reconcileAndScheduleLocked(emitFeedback) }
+        mutex.withLock {
+            reconcileAndScheduleLocked(emitFeedback)
+            invalidateSemanticState()
+        }
     }
 
     private fun reconcileAndScheduleLocked(emitFeedback: Boolean) {
@@ -138,6 +151,10 @@ class AndroidRuntimeCoordinator internal constructor(
             localDeadlineDriver.arm(deadline, anchor, ::onDeadlineSignal)
             scheduler.schedule(deadline)
         }
+    }
+
+    private fun invalidateSemanticState() {
+        mutableSemanticGeneration.value = Math.incrementExact(mutableSemanticGeneration.value)
     }
 
     // Platform effects are isolated; durable/domain work stays outside this block.

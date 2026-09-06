@@ -672,20 +672,7 @@ class SequenceRuntimeEngine(
     private fun closedCountdownMillis(
         execution: SequenceExecution,
         target: SequenceOccurrenceId,
-    ): Long =
-        execution.intervals
-            .asSequence()
-            .filter {
-                it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && it.occurrenceId == target && it.endedAt != null
-            }.fold(0L) { total, interval ->
-                Math.addExact(
-                    total,
-                    Math.subtractExact(
-                        requireNotNull(interval.endedAt).toEpochMilli(),
-                        interval.startedAt.toEpochMilli(),
-                    ),
-                )
-            }
+    ): Long = TransitionCountdownProgressResolver.closedDuration(execution, target).toMillis()
 
     private inner class ReconciliationWorkingSet(
         initial: SequenceRuntimeState,
