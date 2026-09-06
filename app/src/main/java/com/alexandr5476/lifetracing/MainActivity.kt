@@ -15,12 +15,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModelProvider
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
+import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -29,12 +31,15 @@ import kotlinx.serialization.Serializable
 
 class MainActivity : AppCompatActivity() {
     private val appearancePreferences by lazy { AppearancePreferencesRepository(applicationContext) }
+    internal val startActivityRouteSessions by lazy {
+        ViewModelProvider(this)[StartActivityRouteSessionOwner::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val appearance by appearancePreferences.preferences.collectAsState(initial = AppearancePreferences())
-            LifeTracingApp(appearance)
+            LifeTracingApp(appearance, startActivityRouteSessions = startActivityRouteSessions)
         }
     }
 }
@@ -51,9 +56,10 @@ internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
 @Composable
 @Suppress("FunctionNaming")
-fun LifeTracingApp(
+internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
+    startActivityRouteSessions: StartActivityRouteSessionOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -68,6 +74,7 @@ fun LifeTracingApp(
                     LifeTracingRuntimeGraph.from(context.applicationContext).dailyController
                 }
             val backStack = rememberNavBackStack(dailyInitialBackStack.single())
+            val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
             NavDisplay(
                 backStack = backStack,
                 entryProvider =
@@ -79,14 +86,20 @@ fun LifeTracingApp(
                             )
                         }
                         entry<StartActivityRoot> {
-                            StartActivityRoute(
-                                createController = {
+                            val session =
+                                launcherSessions.acquire {
                                     LifeTracingRuntimeGraph
                                         .from(context.applicationContext)
                                         .createStartActivityController()
+                                }
+                            StartActivityRoute(
+                                session = session,
+                                onBack = {
+                                    launcherSessions.release(session)
+                                    backStack.removeStartActivity()
                                 },
-                                onBack = { backStack.removeStartActivity() },
                                 onCommitted = {
+                                    launcherSessions.release(session)
                                     backStack.completeStartActivity {
                                         controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
                                     }
@@ -109,7 +122,7 @@ internal fun MutableList<NavKey>.openStartActivity() {
 }
 
 internal fun MutableList<NavKey>.removeStartActivity() {
-    if (lastOrNull() is StartActivityRoot) removeLast()
+    if (lastOrNull() is StartActivityRoot) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) {

@@ -21,6 +21,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotSame
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -251,6 +254,72 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun routeSessionRetainsOnePreflightAcrossHostRecreationAndReleasesOnExit() =
+        runBlocking {
+            val harness = Harness().apply { target = activityTarget("activity", Duration.ofSeconds(3)) }
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.selectAndAwait(activityId("activity"))
+            first.controller.dispatch(StartActivityAction.Launch())
+            first.controller.awaitPreflight()
+
+            val recreated = owner.acquire { error("A retained route must not create another controller") }
+            assertSame(first, recreated)
+            owner.release(recreated)
+            harness.scheduler.fireAllTwice()
+            assertTrue(harness.commands.isEmpty())
+
+            val resumed = owner.acquire { harness.controller(this) }
+            resumed.controller.awaitHome()
+            resumed.controller.selectAndAwait(activityId("activity"))
+            resumed.controller.dispatch(StartActivityAction.Launch())
+            resumed.controller.awaitPreflight()
+            assertSame(resumed, owner.acquire { error("Host recreation must retain preflight") })
+            harness.scheduler.fireLatestTwice()
+            resumed.controller.awaitCommitted()
+            assertEquals(1, harness.commands.size)
+
+            owner.release(resumed)
+            assertNull(owner.activeSession)
+            val next = owner.acquire { Harness().controller(this) }
+            assertNotSame(resumed, next)
+            owner.release(next)
+        }
+
+    @Test
+    fun routeSessionRetainsNoLiveCommitObservationAndTerminalDeliveryAcrossHostRecreation() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val harness =
+                Harness().apply {
+                    target = noLiveTarget("quick")
+                    writerGate = gate
+                }
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.selectAndAwait(activityId("quick"))
+            first.controller.dispatch(StartActivityAction.Launch())
+            withTimeout(2_000) { first.controller.state.first { it.command == LauncherCommandState.Committing } }
+
+            val recreated = owner.acquire { error("A retained commit must not create another controller") }
+            assertSame(first.controller, recreated.controller)
+            gate.complete(Unit)
+            recreated.controller.awaitCommitted()
+            assertEquals(1, harness.commands.size)
+
+            var deliveries = 0
+            recreated.exitPolicy.onCommand(recreated.controller.state.value.command) { deliveries++ }
+            owner
+                .acquire { error("Terminal route must remain retained until popped") }
+                .exitPolicy
+                .onCommand(recreated.controller.state.value.command) { deliveries++ }
+            assertEquals(1, deliveries)
+            owner.release(recreated)
+        }
+
+    @Test
     fun reorderPassesTheCompleteIdentityOrderAndRefreshesPinned() =
         runBlocking {
             val harness = Harness()
@@ -270,6 +339,37 @@ class StartActivityControllerTest {
             controller.close()
         }
 
+    @Test
+    fun reorderRejectsOverlapAndFailureKeepsTheCanonicalPinnedOrder() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val harness =
+                Harness().apply {
+                    reorderGate = gate
+                    reorderFailure = IllegalStateException("failed")
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            val first = listOf(sequenceId("sequence"), activityId("activity"))
+
+            controller.dispatch(StartActivityAction.ReorderPinned(first))
+            controller.dispatch(StartActivityAction.ReorderPinned(first.reversed()))
+            withTimeout(2_000) {
+                while (harness.reorders.isEmpty()) kotlinx.coroutines.yield()
+            }
+            assertTrue(controller.state.value.organizationInFlight)
+            assertEquals(listOf(first), harness.reorders)
+            gate.complete(Unit)
+            withTimeout(2_000) { controller.state.first { it.organizationFailure == "failed" } }
+
+            assertEquals(
+                listOf("pinned-2", "pinned-1"),
+                (controller.state.value.home as LauncherLoad.Content).value.pinned.map { it.name },
+            )
+            assertEquals(1, harness.pinnedReads)
+            controller.close()
+        }
+
     private class Harness {
         val wall = MutableWallClock(NOW)
         val scheduler = FakePreflightScheduler()
@@ -284,6 +384,9 @@ class StartActivityControllerTest {
         var liveChecks = 0
         var homeFailure: Exception? = null
         var writerFailure: Exception? = null
+        var writerGate: CompletableDeferred<Unit>? = null
+        var reorderGate: CompletableDeferred<Unit>? = null
+        var reorderFailure: Exception? = null
         var coordinationFailure: Exception? = null
         var live = false
         var target: LibraryLaunchTarget = activityTarget("activity")
@@ -315,13 +418,18 @@ class StartActivityControllerTest {
                 searcher,
                 browser,
                 targetReader,
-                { reorders += it },
+                {
+                    reorders += it
+                    reorderGate?.await()
+                    reorderFailure?.let { throw it }
+                },
                 {
                     liveChecks++
                     live
                 },
                 { command ->
                     commands += command
+                    writerGate?.await()
                     writerFailure?.let { throw it }
                     when (command) {
                         is LauncherDurableCommand.StartActivity ->

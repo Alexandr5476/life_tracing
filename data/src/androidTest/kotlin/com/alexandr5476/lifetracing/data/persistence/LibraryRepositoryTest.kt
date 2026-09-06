@@ -20,6 +20,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
@@ -491,6 +492,16 @@ class LibraryRepositoryTest {
         assertNull(database.activitySnapshotDao().getById("activity-launch-6"))
         assertEquals(32L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
         assertEquals(timer.id, database.activeSessionDao().get()?.activityExecutionId)
+        val dailyAfterNoLive =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(32), 100))
+        assertEquals(timer.id, (dailyAfterNoLive.active as DailyActive.Activity).runtime.execution.id)
+        assertTrue(
+            dailyAfterNoLive.completedHistory
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .mapTo(mutableSetOf()) { it.executionId }
+                .containsAll(setOf(noLive.id, overridden.id, missing.id)),
+        )
         val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(overridden.id))
         assertEquals(
             0L,

@@ -29,7 +29,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -64,22 +63,19 @@ import java.time.Duration
 import java.time.Instant
 
 @Composable
-fun StartActivityRoute(
-    createController: () -> StartActivityController,
+internal fun StartActivityRoute(
+    session: StartActivityRouteSession,
     onBack: () -> Unit,
     onCommitted: () -> Unit,
 ) {
-    val controller = remember { createController() }
+    val controller = session.controller
     val state by controller.state.collectAsState()
-    val exitPolicy = remember { LauncherRouteExitPolicy() }
+    val exitPolicy = session.exitPolicy
     val exitRoute = {
         exitPolicy.requestExit(state.command, onBack, onCommitted)
     }
     BackHandler(enabled = true) {
         exitRoute()
-    }
-    DisposableEffect(controller) {
-        onDispose { controller.close() }
     }
     LaunchedEffect(state.command) {
         exitPolicy.onCommand(state.command, onCommitted)
