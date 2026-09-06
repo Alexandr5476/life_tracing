@@ -310,15 +310,15 @@ class ActivityCommandRepository internal constructor(
     private fun resolveValueOverrides(
         prepared: PreparedSource,
         overrides: List<ActivityEntryValueOverride>,
-    ): List<ActivityExecutionValueOverride> =
-        overrides.map { override ->
+    ): List<ActivityExecutionValueOverride> {
+        if (prepared.directTemplateId != null) {
+            return resolveDirectTemplateValueOverrides(prepared.snapshot, overrides)
+        }
+        return overrides.map { override ->
             val field =
                 when (val reference = override.field) {
                     is ActivityEntryFieldReference.Template -> {
-                        require(prepared.directTemplateId != null) {
-                            "Template Field reference requires direct Template use"
-                        }
-                        prepared.snapshot.fields.singleOrNull { it.sourceFieldId == reference.id }
+                        throw IllegalArgumentException("Template Field reference requires direct Template use")
                     }
                     is ActivityEntryFieldReference.Snapshot -> {
                         require(prepared.plan != null) { "Snapshot Field reference requires Plan snapshot use" }
@@ -342,6 +342,7 @@ class ActivityCommandRepository internal constructor(
                 },
             )
         }
+    }
 
     private fun resolveOption(
         prepared: PreparedSource,
@@ -447,4 +448,36 @@ private fun ActivityExecutionFieldValue.remap(
         is CategoryExecutionValue ->
             CategoryExecutionValue(fieldIds.getValue(snapshotFieldId), optionIds.getValue(optionId))
         is TextExecutionValue -> TextExecutionValue(fieldIds.getValue(snapshotFieldId), value)
+    }
+
+internal fun resolveDirectTemplateValueOverrides(
+    snapshot: ActivityConfigSnapshot,
+    overrides: List<ActivityEntryValueOverride>,
+): List<ActivityExecutionValueOverride> =
+    overrides.map { override ->
+        val reference =
+            override.field as? ActivityEntryFieldReference.Template
+                ?: throw IllegalArgumentException("Template Field reference requires direct Template use")
+        val field =
+            snapshot.fields.singleOrNull { it.sourceFieldId == reference.id }
+                ?: throw IllegalArgumentException("Unknown Activity entry Field reference")
+        ActivityExecutionValueOverride(
+            field.id,
+            when (val value = override.value) {
+                ActivityEntryValue.Missing -> null
+                is ActivityEntryValue.Number -> NumberExecutionValue(field.id, value.scaledValue)
+                is ActivityEntryValue.Text -> TextExecutionValue(field.id, value.value)
+                is ActivityEntryValue.Category -> {
+                    val option =
+                        value.option as? ActivityEntryOptionReference.Template
+                            ?: throw IllegalArgumentException(
+                                "Template option reference requires direct Template use",
+                            )
+                    val snapshotOption =
+                        field.categoryOptions.singleOrNull { it.sourceOptionId == option.id }
+                            ?: throw IllegalArgumentException("Category option must belong to the selected Field")
+                    CategoryExecutionValue(field.id, snapshotOption.id)
+                }
+            },
+        )
     }

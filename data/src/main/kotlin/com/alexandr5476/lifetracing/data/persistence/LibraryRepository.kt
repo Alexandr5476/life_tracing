@@ -3,11 +3,11 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecution
-import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
-import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -21,11 +21,13 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateRevisionPolicy
 import com.alexandr5476.lifetracing.domain.ActivityTemplateUserState
 import com.alexandr5476.lifetracing.domain.CategoryOption
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.FolderTreeValidator
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
+import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryPinnedRanks
 import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
@@ -56,6 +58,7 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.Tag
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.firstEffectiveStep
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
@@ -146,6 +149,45 @@ class LibraryRepository internal constructor(
             ).sortedWith(recentComparator).take(limit)
         }
     }
+
+    fun getLaunchTarget(id: LibraryTemplateId): LibraryLaunchTarget =
+        transaction {
+            when (id) {
+                is LibraryTemplateId.Activity -> {
+                    val template = requireActiveActivity(id.id)
+                    val mainValue =
+                        template.fields.singleOrNull { field ->
+                            field.deletedAt == null &&
+                                field.isMainValue &&
+                                field.type == CustomFieldType.NUMBER
+                        }
+                    LibraryLaunchTarget.Activity(
+                        id,
+                        template.name,
+                        template.settings.startCountdown,
+                        template.timeTrackingMode,
+                        mainValue?.let { field ->
+                            ActivityLaunchMainValue(
+                                field.id,
+                                field.name,
+                                field.unit,
+                                field.displayPrecision,
+                                field.defaultNumberScaled,
+                            )
+                        },
+                    )
+                }
+                is LibraryTemplateId.Sequence -> {
+                    val template = requireActiveSequence(id.id)
+                    val first = requireNotNull(template.firstEffectiveStep()) { "An empty Sequence cannot launch" }
+                    LibraryLaunchTarget.Sequence(
+                        id,
+                        template.name,
+                        first.overrides.startCountdown ?: template.settings.sequenceStartCountdown,
+                    )
+                }
+            }
+        }
 
     fun createFolder(
         id: FolderId,
@@ -400,7 +442,7 @@ class LibraryRepository internal constructor(
         completedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
-        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+        valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
             val template = requireActiveActivity(templateId)
@@ -415,7 +457,7 @@ class LibraryRepository internal constructor(
                     completedAt,
                     zoneId,
                     createdAt,
-                    actualValues.map { ActivityExecutionValueOverride(it.snapshotFieldId, it) },
+                    resolveDirectTemplateValueOverrides(snapshot, valueOverrides),
                 )
             check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
@@ -634,8 +676,12 @@ class LibraryRepository internal constructor(
         val ids = template.nodes.flatMap(SequenceNode::activitySnapshotIds).distinct()
         return database
             .activitySnapshotDao()
-            .getAggregates(ids.map(ActivitySnapshotId::value))
-            .associate {
+            .let { dao ->
+                ids
+                    .map(ActivitySnapshotId::value)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(dao::getAggregates)
+            }.associate {
                 val snapshot = it.toDomain()
                 snapshot.id to snapshot.timeTrackingMode
             }.also { require(it.keys == ids.toSet()) { "Sequence is missing ActivitySnapshot metadata" } }
@@ -728,6 +774,7 @@ class LibraryRepository internal constructor(
         private fun uuid(): String = UUID.randomUUID().toString()
 
         private const val PINNED_RANK_STEP = 1024
+        private const val SQLITE_SAFE_BIND_COUNT = 900
         private const val DATABASE_NAME = "lifetracing.db"
     }
 }

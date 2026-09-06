@@ -267,6 +267,16 @@ object SequenceTemplateLifecycle {
     fun restore(template: SequenceTemplate): SequenceTemplate = template.copy(deletedAt = null)
 }
 
+fun SequenceTemplate.firstEffectiveStep(): ActivityStep? =
+    nodes
+        .sortedBy(SequenceNode::position)
+        .firstNotNullOfOrNull { node ->
+            when (node) {
+                is ActivityStep -> node
+                is SequenceRepeatBlock -> node.children.minByOrNull(ActivityStep::position)
+            }
+        }
+
 object SequenceStructureEditor {
     fun reorderTopLevel(
         nodes: List<SequenceNode>,

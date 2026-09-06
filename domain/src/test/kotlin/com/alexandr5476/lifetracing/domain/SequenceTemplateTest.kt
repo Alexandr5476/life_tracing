@@ -202,6 +202,23 @@ class SequenceTemplateTest {
     }
 
     @Test
+    fun `first effective step follows runtime order through empty and populated Repeats`() {
+        val first = step("first", 0).copy(overrides = SequenceStepOverrides(startCountdown = Duration.ofSeconds(4)))
+        val sequence =
+            template(
+                nodes =
+                    listOf(
+                        repeat("empty", 0, 2),
+                        repeat("populated", 1, 3, listOf(first, step("second", 1))),
+                        step("later", 2),
+                    ),
+            )
+
+        assertEquals(first, sequence.firstEffectiveStep())
+        assertNull(template(nodes = listOf(repeat("empty", 0, 2))).firstEffectiveStep())
+    }
+
+    @Test
     fun `steps move into out of and between Repeats`() {
         val initial =
             listOf<SequenceNode>(

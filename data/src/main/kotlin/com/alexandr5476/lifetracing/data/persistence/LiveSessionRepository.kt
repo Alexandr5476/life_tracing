@@ -33,6 +33,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
+import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -104,7 +105,7 @@ class LiveSessionRepository internal constructor(
         valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
-            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            requireLiveSlot()
             val snapshot = loadActivitySnapshot(snapshotId)
             val execution =
                 ActivityExecutionValuePolicy.apply(
@@ -133,7 +134,7 @@ class LiveSessionRepository internal constructor(
         valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
         transaction {
-            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            requireLiveSlot()
             val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
             val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
             require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
@@ -253,7 +254,7 @@ class LiveSessionRepository internal constructor(
         zoneId: ZoneId,
     ): SequenceRuntimeState =
         transaction {
-            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            requireLiveSlot()
             val snapshot = loadSequenceSnapshot(snapshotId)
             val activities = loadActivitySnapshots(snapshot)
             val state = sequenceEngine.start(snapshot, activities, startedAt, createdAt, zoneId)
@@ -270,7 +271,7 @@ class LiveSessionRepository internal constructor(
         zoneId: ZoneId,
     ): SequenceRuntimeState =
         transaction {
-            require(getActiveSessionLocked() == null) { "Another live session is already active" }
+            requireLiveSlot()
             val plan = requireStartablePlan(planEntryId, PlanTrackableKind.SEQUENCE)
             val snapshot = loadSequenceSnapshot(requireNotNull(plan.sequenceSnapshotId))
             val activities = loadActivitySnapshots(snapshot)
@@ -755,6 +756,10 @@ class LiveSessionRepository internal constructor(
             ActiveSessionKind.SEQUENCE -> validateSequenceSession(session)
         }
         return session
+    }
+
+    private fun requireLiveSlot() {
+        if (getActiveSessionLocked() != null) throw LiveSessionConflictException()
     }
 
     internal fun getActiveRuntimeLocked(): ActiveRuntime? {

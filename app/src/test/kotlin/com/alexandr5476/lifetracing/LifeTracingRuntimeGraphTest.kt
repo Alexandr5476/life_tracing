@@ -6,12 +6,16 @@ import com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler
 import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.DailyRead
+import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
+import com.alexandr5476.lifetracing.launcher.PreflightHandle
+import com.alexandr5476.lifetracing.launcher.PreflightScheduler
+import com.alexandr5476.lifetracing.launcher.StartActivityController
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.InProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.RuntimeDeadlineScheduler
@@ -26,6 +30,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -38,6 +43,7 @@ class LifeTracingRuntimeGraphTest {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
             val boundary = RecordingBoundary()
             var controllerCreations = 0
+            var launcherCreations = 0
             var reads = 0
             val graph =
                 LifeTracingRuntimeGraph(
@@ -61,6 +67,10 @@ class LifeTracingRuntimeGraphTest {
                             boundary,
                         )
                     },
+                    {
+                        launcherCreations++
+                        launcher(scope)
+                    },
                 )
 
             graph.coordinator.recoverAndSchedule()
@@ -76,6 +86,12 @@ class LifeTracingRuntimeGraphTest {
             assertEquals(1, controllerCreations)
             assertEquals(1, reads)
             assertEquals(1, boundary.arms)
+            val firstLauncher = graph.createStartActivityController()
+            val secondLauncher = graph.createStartActivityController()
+            assertNotSame(firstLauncher, secondLauncher)
+            assertEquals(2, launcherCreations)
+            firstLauncher.close()
+            secondLauncher.close()
             first.close()
             scope.cancel()
         }
@@ -114,6 +130,23 @@ class LifeTracingRuntimeGraphTest {
                 override fun canPostRuntimeNotifications(): Boolean = true
             },
             {},
+        )
+
+    private fun launcher(scope: CoroutineScope) =
+        StartActivityController(
+            scope,
+            { emptyList() },
+            { emptyList() },
+            { emptyList() },
+            { LibraryContents(emptyList(), emptyList(), emptyList()) },
+            { error("unused target reader") },
+            {},
+            { false },
+            { error("unused launcher writer") },
+            {},
+            FixedWallClock,
+            { ZoneOffset.UTC },
+            PreflightScheduler { _, _ -> PreflightHandle {} },
         )
 
     private class RecordingBoundary : LocalDateBoundaryScheduler {

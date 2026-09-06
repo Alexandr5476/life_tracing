@@ -5,10 +5,14 @@ import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
+import com.alexandr5476.lifetracing.domain.ActivityEntryValue
+import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -16,9 +20,14 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.DailyActive
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
+import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
@@ -45,6 +54,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneOffset
 
 @RunWith(AndroidJUnit4::class)
@@ -105,6 +115,41 @@ class LibraryRepositoryTest {
         assertEquals(listOf("nested"), folder.folders.map { it.id.value })
         assertEquals(listOf("activity-folder"), folder.activities.map { it.id.value })
         assertTrue(folder.sequences.isEmpty())
+    }
+
+    @Test
+    fun launchTargetLoadsOnlySelectedConfigurationAndUsesFirstEffectiveRepeatStepOverride() {
+        val repository = repository()
+        activity(
+            "activity",
+            "Activity",
+            mode = "NO_LIVE_TRACKING",
+            fields = listOf(activityField("main", "activity", null)),
+            settings = ActivityTemplateSettingsEntity("activity", startCountdownMs = 2_000),
+        )
+        seedSnapshot("repeat-step", "STOPWATCH")
+        sequence(
+            "sequence",
+            "Sequence",
+            nodes =
+                listOf(
+                    SequenceNodeEntity("empty", "sequence", "REPEAT", null, 0, null, 2),
+                    SequenceNodeEntity("repeat", "sequence", "REPEAT", null, 1, null, 3),
+                    SequenceNodeEntity("first", "sequence", "STEP", "repeat", 0, "repeat-step", null),
+                ),
+            settings = SequenceTemplateSettingsEntity("sequence", sequenceStartCountdownMs = 5_000),
+            stepOverrides = listOf(SequenceStepOverrideEntity("first", 7_000, null, null, null, null)),
+        )
+
+        val activity = repository.getLaunchTarget(LibraryTemplateId.Activity(ActivityTemplateId("activity")))
+        val sequence = repository.getLaunchTarget(LibraryTemplateId.Sequence(SequenceTemplateId("sequence")))
+
+        assertEquals(2_000L, activity.startCountdown.toMillis())
+        assertEquals(ActivityTemplateFieldId("main"), (activity as LibraryLaunchTarget.Activity).mainValue?.fieldId)
+        assertEquals(7_000L, sequence.startCountdown.toMillis())
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activityTemplateDao().getUserState("activity")?.lastUsedAtMs)
+        assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
     }
 
     @Test
@@ -285,11 +330,26 @@ class LibraryRepositoryTest {
     fun ordinaryTemplateLaunchesCreateFreshSnapshotsAndUpdateRecentWithoutPlanLinkage() {
         val repository = repository()
         activity("timed", "Timed")
+        activity("timer", "Timer", mode = "TIMER")
         activity(
             "no-live",
             "No live",
             mode = "NO_LIVE_TRACKING",
-            fields = listOf(activityField("no-live-field", "no-live", deleted = null)),
+            fields = listOf(activityField("no-live-field", "no-live", deleted = null, name = "Shared value")),
+        )
+        activity(
+            "same-label-other",
+            "Other",
+            mode = "NO_LIVE_TRACKING",
+            fields =
+                listOf(
+                    activityField(
+                        "same-label-other-field",
+                        "same-label-other",
+                        deleted = null,
+                        name = "Shared value",
+                    ),
+                ),
         )
         seedSnapshot("plan-snapshot", "STOPWATCH")
         database.planEntryDao().insert(
@@ -317,7 +377,12 @@ class LibraryRepositoryTest {
             ),
         )
         seedSnapshot("step", "NO_LIVE_TRACKING")
-        sequence("sequence", "Sequence", nodes = listOf(step("sequence-step", "sequence", "step")))
+        sequence(
+            "sequence",
+            "Sequence",
+            recent = 100,
+            nodes = listOf(step("sequence-step", "sequence", "step")),
+        )
 
         repository.archiveActivityTemplate(ActivityTemplateId("timed"), instant(5))
         assertThrows(IllegalArgumentException::class.java) {
@@ -338,7 +403,25 @@ class LibraryRepositoryTest {
         assertEquals(1L, database.activityTemplateDao().getById("timed")?.revision)
         assertEquals("PLANNED", database.planEntryDao().getById("unrelated-plan")?.status)
         liveForExistingDatabase().completeActiveActivity(instant(20))
-
+        val timer =
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("timer"),
+                instant(21),
+                instant(21),
+                ZoneOffset.UTC,
+            )
+        val timerSnapshot =
+            requireNotNull(
+                database.activitySnapshotDao().getAggregate(timer.snapshotId.value),
+            ).toDomain()
+        assertEquals("TIMER", timerSnapshot.timeTrackingMode.name)
+        assertEquals(60_000L, timerSnapshot.timerTarget?.toMillis())
+        assertEquals("FINISH", timerSnapshot.settings.timerZeroBehavior.name)
+        val activeTimer =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(21), 100))
+                .active as DailyActive.Activity
+        assertEquals(timer.id, activeTimer.runtime.execution.id)
         val noLive =
             repository.completeNoLiveActivityFromTemplate(
                 ActivityTemplateId("no-live"),
@@ -348,9 +431,74 @@ class LibraryRepositoryTest {
             )
         assertEquals(ActivityExecutionStatus.COMPLETED, noLive.status)
         assertEquals(1_000L, (noLive.values.single() as NumberExecutionValue).scaledValue)
+        assertNull(noLive.activeDuration)
+        assertNull(noLive.completionReason)
         assertNull(noLive.planEntryId)
-        assertNull(database.activeSessionDao().get())
+        assertEquals(timer.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(29L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+        val overridden =
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(31),
+                instant(31),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("no-live-field")),
+                        ActivityEntryValue.Number(0),
+                    ),
+                ),
+            )
+        assertEquals(0L, (overridden.values.single() as NumberExecutionValue).scaledValue)
+        assertEquals(
+            ActivityTemplateFieldId("no-live-field"),
+            database
+                .activitySnapshotDao()
+                .getAggregate(overridden.snapshotId.value)
+                ?.toDomain()
+                ?.fields
+                ?.single()
+                ?.sourceFieldId,
+        )
+        val missing =
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(32),
+                instant(32),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("no-live-field")),
+                        ActivityEntryValue.Missing,
+                    ),
+                ),
+            )
+        assertTrue(missing.values.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(33),
+                instant(33),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("same-label-other-field")),
+                        ActivityEntryValue.Number(99),
+                    ),
+                ),
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-6"))
+        assertEquals(32L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+        assertEquals(timer.id, database.activeSessionDao().get()?.activityExecutionId)
+        val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(overridden.id))
+        assertEquals(
+            0L,
+            (detail.fields.single().actualValue as ActivityHistoryActualValue.Number).scaledValue,
+        )
+        assertEquals("Shared value", detail.fields.single().name)
+
+        liveForExistingDatabase().completeActiveActivity(instant(34))
 
         repository.archiveSequenceTemplate(SequenceTemplateId("sequence"), instant(35))
         assertThrows(IllegalArgumentException::class.java) {
@@ -375,9 +523,14 @@ class LibraryRepositoryTest {
             database.sequenceSnapshotDao().getById(sequence.execution.snapshotId.value)?.sourceTemplateId,
         )
         assertTrue(sequence.children.values.all { it.planEntryId == null })
-        assertEquals(40L, database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+        assertEquals(100L, database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
         assertEquals(1L, database.sequenceTemplateDao().getById("sequence")?.revision)
         assertEquals("PLANNED", database.planEntryDao().getById("unrelated-plan")?.status)
+        val activeSequence =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(40), 100))
+                .active as DailyActive.Sequence
+        assertEquals(sequence.execution.id, activeSequence.runtime.execution.id)
     }
 
     @Test
@@ -420,6 +573,33 @@ class LibraryRepositoryTest {
         assertNull(database.activeSessionDao().get())
         assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
         assertEquals("existing-sequence", database.sequenceExecutionDao().getById("sequence-collision")?.snapshotId)
+    }
+
+    @Test
+    fun liveConflictRollsBackRequestedSnapshotAndRecentWithoutTouchingTheWinner() {
+        activity("winner", "Winner")
+        activity("loser", "Loser")
+        val repository = repository()
+        val winner =
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("winner"),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+            )
+
+        assertThrows(LiveSessionConflictException::class.java) {
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("loser"),
+                instant(20),
+                instant(20),
+                ZoneOffset.UTC,
+            )
+        }
+
+        assertNull(database.activitySnapshotDao().getById("activity-launch-2"))
+        assertNull(database.activityTemplateDao().getUserState("loser")?.lastUsedAtMs)
+        assertEquals(winner.id, database.activeSessionDao().get()?.activityExecutionId)
     }
 
     @Test
@@ -618,6 +798,7 @@ class LibraryRepositoryTest {
         pinned: Int? = null,
         recent: Long? = null,
         fields: List<ActivityTemplateFieldEntity> = emptyList(),
+        settings: ActivityTemplateSettingsEntity = ActivityTemplateSettingsEntity(id),
     ) {
         series("$id-series", "ACTIVITY")
         database.activityTemplateDao().insertAggregate(
@@ -635,7 +816,7 @@ class LibraryRepositoryTest {
                     deleted,
                     folder,
                 ),
-                ActivityTemplateSettingsEntity(id),
+                settings,
                 fields = fields,
                 userState = ActivityTemplateUserStateEntity(id, pinned, recent),
             ),
@@ -652,15 +833,18 @@ class LibraryRepositoryTest {
         recent: Long? = null,
         fields: List<SequenceTemplateFieldEntity> = emptyList(),
         nodes: List<SequenceNodeEntity> = emptyList(),
+        settings: SequenceTemplateSettingsEntity = SequenceTemplateSettingsEntity(id),
+        stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
     ) {
         series("$id-series", "SEQUENCE")
         database.sequenceTemplateDao().insertAggregate(
             SequenceTemplateAggregateEntity(
                 SequenceTemplateEntity(id, name, "$name comment", "$id-series", revision, 0, 0, deleted, folder),
-                SequenceTemplateSettingsEntity(id),
+                settings,
                 SequenceTemplateUserStateEntity(id, pinned, recent),
                 fields = fields,
                 nodes = nodes,
+                stepOverrides = stepOverrides,
             ),
         )
     }
@@ -720,7 +904,8 @@ class LibraryRepositoryTest {
         id: String,
         owner: String,
         deleted: Long?,
-    ) = ActivityTemplateFieldEntity(id, owner, 0, id, "NUMBER", "reps", 0, 1_000, null, null, true, 0, 0, deleted)
+        name: String = id,
+    ) = ActivityTemplateFieldEntity(id, owner, 0, name, "NUMBER", "reps", 0, 1_000, null, null, true, 0, 0, deleted)
 
     private fun sequenceField(
         id: String,

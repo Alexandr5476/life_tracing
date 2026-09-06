@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.domain
 
+import java.time.Duration
 import java.time.Instant
 
 @JvmInline
@@ -101,6 +102,34 @@ data class LibraryContents(
 data class LibraryRoot(
     val contents: LibraryContents,
     val pinned: List<LibraryTrackable>,
+)
+
+sealed interface LibraryLaunchTarget {
+    val id: LibraryTemplateId
+    val name: String
+    val startCountdown: Duration
+
+    data class Activity(
+        override val id: LibraryTemplateId.Activity,
+        override val name: String,
+        override val startCountdown: Duration,
+        val timeTrackingMode: TimeTrackingMode,
+        val mainValue: ActivityLaunchMainValue?,
+    ) : LibraryLaunchTarget
+
+    data class Sequence(
+        override val id: LibraryTemplateId.Sequence,
+        override val name: String,
+        override val startCountdown: Duration,
+    ) : LibraryLaunchTarget
+}
+
+data class ActivityLaunchMainValue(
+    val fieldId: ActivityTemplateFieldId,
+    val name: String,
+    val unit: String?,
+    val displayPrecision: Int?,
+    val defaultNumberScaled: Long?,
 )
 
 object LibraryPinnedRanks {
