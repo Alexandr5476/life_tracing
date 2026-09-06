@@ -71,20 +71,20 @@ fun StartActivityRoute(
 ) {
     val controller = remember { createController() }
     val state by controller.state.collectAsState()
-    val committing = state.command == LauncherCommandState.Committing
+    val exitPolicy = remember { LauncherRouteExitPolicy() }
+    val exitRoute = {
+        exitPolicy.requestExit(state.command, onBack, onCommitted)
+    }
     BackHandler(enabled = true) {
-        if (!committing) onBack()
+        exitRoute()
     }
     DisposableEffect(controller) {
         onDispose { controller.close() }
     }
-    when (state.command) {
-        is LauncherCommandState.Committed,
-        is LauncherCommandState.CommittedCoordinationFailure,
-        -> LaunchedEffect(state.command) { onCommitted() }
-        else -> Unit
+    LaunchedEffect(state.command) {
+        exitPolicy.onCommand(state.command, onCommitted)
     }
-    StartActivityScreen(state, controller::dispatch, onBack)
+    StartActivityScreen(state, controller::dispatch, exitRoute)
 }
 
 @Composable
@@ -347,7 +347,9 @@ private fun TrackableSection(
     LauncherCard {
         SectionTitle(title)
         if (items.isEmpty()) Text(stringResource(empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        items.forEach { item -> key(item.key()) { TrackableRow(item, enabled) { onSelect(item.id) } } }
+        items.forEach { item ->
+            key(item.key()) { TrackableRow(item, enabled, onSelect = { onSelect(item.id) }) }
+        }
     }
 }
 
@@ -375,7 +377,9 @@ private fun SearchSection(
             is LauncherLoad.Failure -> LauncherFailure(R.string.launcher_search_failure) { onRetry() }
             is LauncherLoad.Content -> {
                 if (state.value.isEmpty()) Text(stringResource(R.string.launcher_search_empty))
-                state.value.forEach { item -> key(item.key()) { TrackableRow(item, enabled) { onSelect(item.id) } } }
+                state.value.forEach { item ->
+                    key(item.key()) { TrackableRow(item, enabled, onSelect = { onSelect(item.id) }) }
+                }
             }
         }
     }
@@ -414,7 +418,7 @@ private fun BrowseSection(
                     TextButton(onClick = { onFolder(folder) }, enabled = enabled) { Text(folder.name) }
                 }
                 (contents.activities + contents.sequences).forEach { item ->
-                    key(item.key()) { TrackableRow(item, enabled) { onSelect(item.id) } }
+                    key(item.key()) { TrackableRow(item, enabled, onSelect = { onSelect(item.id) }) }
                 }
             }
         }
@@ -432,6 +436,7 @@ private fun PinnedSection(
 ) {
     var order by remember { mutableStateOf(canonical) }
     var draggedIndex by remember { mutableIntStateOf(-1) }
+    var dragStartOrder by remember { mutableStateOf<List<LibraryTrackable>?>(null) }
     LaunchedEffect(canonical) { order = canonical }
     LaunchedEffect(organizationFailure) { if (organizationFailure != null) order = canonical }
     LauncherCard {
@@ -462,10 +467,21 @@ private fun PinnedSection(
                         val next = (index + if (delta > 0f) 1 else -1).coerceIn(0, order.lastIndex)
                         if (next != index) order = order.move(index, next)
                     },
-                    onDragStart = { draggedIndex = index },
+                    onDragStart = {
+                        draggedIndex = index
+                        dragStartOrder = order
+                    },
                     onDragEnd = {
-                        if (draggedIndex >= 0 && order != canonical) onReorder(order.map(LibraryTrackable::id))
+                        if (draggedIndex >= 0 && order != dragStartOrder) {
+                            onReorder(order.map(LibraryTrackable::id))
+                        }
                         draggedIndex = -1
+                        dragStartOrder = null
+                    },
+                    onDragCancel = {
+                        order = dragStartOrder ?: canonical
+                        draggedIndex = -1
+                        dragStartOrder = null
                     },
                 )
             }
@@ -491,11 +507,22 @@ private fun PinnedRow(
     onDrag: (Float) -> Unit,
     onDragStart: () -> Unit,
     onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
 ) {
+    val moveUp = stringResource(R.string.launcher_move_up, item.name)
+    val moveDown = stringResource(R.string.launcher_move_down, item.name)
     Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        TrackableRow(item, enabled, onSelect)
-        TextButton(onClick = { onMove(-1) }, enabled = enabled && canMoveUp) { Text("\u2191") }
-        TextButton(onClick = { onMove(1) }, enabled = enabled && canMoveDown) { Text("\u2193") }
+        TrackableRow(item, enabled, onSelect, Modifier.weight(1f))
+        TextButton(
+            onClick = { onMove(-1) },
+            modifier = Modifier.semantics { contentDescription = moveUp },
+            enabled = enabled && canMoveUp,
+        ) { Text("\u2191") }
+        TextButton(
+            onClick = { onMove(1) },
+            modifier = Modifier.semantics { contentDescription = moveDown },
+            enabled = enabled && canMoveDown,
+        ) { Text("\u2193") }
         val handle = stringResource(R.string.launcher_drag_handle)
         Text(
             "\u2195",
@@ -510,7 +537,7 @@ private fun PinnedRow(
                             }
                         },
                         onDragEnd = { if (enabled) onDragEnd() },
-                        onDragCancel = onDragEnd,
+                        onDragCancel = onDragCancel,
                     )
                 },
         )
@@ -522,11 +549,12 @@ private fun TrackableRow(
     item: LibraryTrackable,
     enabled: Boolean,
     onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.small
     Card(
         modifier =
-            Modifier
+            modifier
                 .fillMaxWidth()
                 .clip(shape)
                 .combinedClickable(enabled = enabled, onClick = onSelect),
@@ -566,7 +594,7 @@ private fun QuickMainValueCard(
     }
     var changed by remember(target.id) { mutableStateOf(false) }
     val parsed = parseLauncherNumber(value, mainValue.displayPrecision)
-    val valid = value.isBlank() || parsed != null
+    val valid = !changed || value.isBlank() || parsed != null
     LauncherCard(container = MaterialTheme.colorScheme.secondaryContainer) {
         Text(target.name, style = MaterialTheme.typography.titleMedium)
         LifeTracingOutlinedTextField(
@@ -584,7 +612,7 @@ private fun QuickMainValueCard(
             LifeTracingPrimaryButton(
                 enabled = valid,
                 onClick = {
-                    val override = mainValue.overrideFor(value, changed)
+                    val override = quickMainValueOverride(mainValue, value, changed)
                     onLaunch(override)
                 },
             ) { Text(stringResource(R.string.launcher_complete)) }
@@ -594,7 +622,8 @@ private fun QuickMainValueCard(
 
 private fun ActivityLaunchMainValue.label(): String = listOfNotNull(name, unit).joinToString(" ")
 
-private fun ActivityLaunchMainValue.overrideFor(
+internal fun quickMainValueOverride(
+    mainValue: ActivityLaunchMainValue,
     text: String,
     changed: Boolean,
 ): QuickMainValueOverride? {
@@ -604,10 +633,10 @@ private fun ActivityLaunchMainValue.overrideFor(
             QuickMainValue.Missing
         } else {
             QuickMainValue.Number(
-                requireNotNull(parseLauncherNumber(text, displayPrecision)),
+                requireNotNull(parseLauncherNumber(text, mainValue.displayPrecision)),
             )
         }
-    return QuickMainValueOverride(fieldId, value)
+    return QuickMainValueOverride(mainValue.fieldId, value)
 }
 
 @Composable

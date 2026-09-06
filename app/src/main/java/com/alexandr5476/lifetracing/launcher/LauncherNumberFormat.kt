@@ -14,9 +14,8 @@ internal fun formatLauncherNumber(
             val precision = displayPrecision?.coerceIn(0, STORAGE_SCALE) ?: STORAGE_SCALE
             BigDecimal
                 .valueOf(value, STORAGE_SCALE)
-                .let { number ->
-                    runCatching { number.setScale(precision, RoundingMode.UNNECESSARY) }.getOrDefault(number)
-                }.stripTrailingZeros()
+                .setScale(precision, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
                 .toPlainString()
         }.orEmpty()
 

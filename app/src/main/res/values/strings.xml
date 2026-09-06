@@ -80,6 +80,8 @@
     <string name="launcher_pinned_empty">No pinned activities.</string>
     <string name="launcher_pinned_failure">Pinned order could not be saved.</string>
     <string name="launcher_drag_handle">Drag to reorder</string>
+    <string name="launcher_move_up">Move %1$s up</string>
+    <string name="launcher_move_down">Move %1$s down</string>
     <string name="launcher_search">Search</string>
     <string name="launcher_search_hint">Search library</string>
     <string name="launcher_search_loading">Searching…</string>

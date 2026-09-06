@@ -80,6 +80,8 @@
     <string name="launcher_pinned_empty">Нет закреплённых действий.</string>
     <string name="launcher_pinned_failure">Не удалось сохранить порядок.</string>
     <string name="launcher_drag_handle">Перетащить для изменения порядка</string>
+    <string name="launcher_move_up">Переместить %1$s выше</string>
+    <string name="launcher_move_down">Переместить %1$s ниже</string>
     <string name="launcher_search">Поиск</string>
     <string name="launcher_search_hint">Поиск в библиотеке</string>
     <string name="launcher_search_loading">Поиск…</string>

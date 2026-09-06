@@ -75,9 +75,7 @@ fun LifeTracingApp(
                         entry<DailyRoot> {
                             DailyRoute(
                                 controller = controller,
-                                onStartActivity = {
-                                    if (backStack.lastOrNull() !is StartActivityRoot) backStack.add(StartActivityRoot)
-                                },
+                                onStartActivity = { backStack.openStartActivity() },
                             )
                         }
                         entry<StartActivityRoot> {
@@ -87,10 +85,11 @@ fun LifeTracingApp(
                                         .from(context.applicationContext)
                                         .createStartActivityController()
                                 },
-                                onBack = { if (backStack.lastOrNull() is StartActivityRoot) backStack.removeLast() },
+                                onBack = { backStack.removeStartActivity() },
                                 onCommitted = {
-                                    controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
-                                    if (backStack.lastOrNull() is StartActivityRoot) backStack.removeLast()
+                                    backStack.completeStartActivity {
+                                        controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
+                                    }
                                 },
                             )
                         }
@@ -104,6 +103,19 @@ fun LifeTracingApp(
 }
 
 internal val dailyNavigationTransitionDurationMillis = LifeTracingMotion.standardDurationMillis
+
+internal fun MutableList<NavKey>.openStartActivity() {
+    if (lastOrNull() !is StartActivityRoot) add(StartActivityRoot)
+}
+
+internal fun MutableList<NavKey>.removeStartActivity() {
+    if (lastOrNull() is StartActivityRoot) removeLast()
+}
+
+internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) {
+    selectToday()
+    removeStartActivity()
+}
 
 private fun lifeTracingNavigationTransition(): ContentTransform =
     fadeIn(animationSpec = tween(dailyNavigationTransitionDurationMillis)) togetherWith

@@ -5,7 +5,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -88,10 +90,57 @@ class StartActivityScreenPresentationTest {
         }
     }
 
-    private fun homeState(recent: List<LibraryTrackable>) =
-        StartActivityState(
-            home = LauncherLoad.Content(LauncherHome(recent, listOf(trackable("Pinned Sequence", sequence = true)))),
+    @Test
+    fun roundedDefaultRemainsEnabledAndPinnedMoveUsesTheCompleteOrder() {
+        val actions = mutableListOf<StartActivityAction>()
+        val activity = trackable("Precise value")
+        val sequence = trackable("Pinned sequence", sequence = true)
+        val pinnedActivity = trackable("Pinned activity")
+        var state by mutableStateOf(homeState(recent = listOf(activity), pinned = listOf(sequence, pinnedActivity)))
+        composeTestRule.setContent {
+            LifeTracingTheme { StartActivityScreen(state, actions::add) }
+        }
+
+        composeTestRule
+            .onNodeWithContentDescription("Move Pinned sequence down")
+            .assertIsDisplayed()
+            .assertIsEnabled()
+            .performClick()
+        assertEquals(
+            StartActivityAction.ReorderPinned(listOf(pinnedActivity.id, sequence.id)),
+            actions.last(),
         )
+
+        composeTestRule.onNodeWithText("Precise value").performClick()
+        state =
+            state.copy(
+                selected =
+                    LauncherLoad.Content(
+                        activityTarget(
+                            activity.id,
+                            mainValue =
+                                ActivityLaunchMainValue(
+                                    ActivityTemplateFieldId("precise"),
+                                    "Value",
+                                    null,
+                                    2,
+                                    1_234,
+                                ),
+                        ),
+                    ),
+            )
+        composeTestRule.onNodeWithText("Complete").assertIsEnabled().performClick()
+        composeTestRule.runOnIdle {
+            assertEquals(StartActivityAction.Launch(), actions.last())
+        }
+    }
+
+    private fun homeState(
+        recent: List<LibraryTrackable>,
+        pinned: List<LibraryTrackable> = listOf(trackable("Pinned Sequence", sequence = true)),
+    ) = StartActivityState(
+        home = LauncherLoad.Content(LauncherHome(recent, pinned)),
+    )
 
     private fun trackable(
         name: String,
