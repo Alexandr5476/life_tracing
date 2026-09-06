@@ -64,13 +64,16 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
 @Composable
-fun DailyRoute(controller: DailyController) {
+fun DailyRoute(
+    controller: DailyController,
+    onStartActivity: () -> Unit = {},
+) {
     DisposableEffect(controller) {
         controller.onRouteEntered()
         onDispose { controller.dispatch(DailyAction.Hidden) }
     }
     val state by controller.state.collectAsState()
-    DailyScreen(state = state, onAction = controller::dispatch)
+    DailyScreen(state = state, onAction = controller::dispatch, onStartActivity = onStartActivity)
 }
 
 @Composable
@@ -78,6 +81,7 @@ internal fun DailyScreen(
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long? = null,
+    onStartActivity: () -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -89,7 +93,7 @@ internal fun DailyScreen(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            DateHeader(state.selectedDate, state.dateRelation, onAction)
+            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity)
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
@@ -106,6 +110,7 @@ private fun DateHeader(
     selectedDate: LocalDate,
     relation: DailyDateRelation,
     onAction: (DailyAction) -> Unit,
+    onStartActivity: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -128,6 +133,11 @@ private fun DateHeader(
             if (relation != DailyDateRelation.TODAY) {
                 TextButton(onClick = { onAction(DailyAction.Today) }) {
                     Text(stringResource(R.string.daily_return_today))
+                }
+            }
+            if (relation == DailyDateRelation.TODAY) {
+                LifeTracingPrimaryButton(onClick = onStartActivity) {
+                    Text(stringResource(R.string.daily_start_activity))
                 }
             }
         }

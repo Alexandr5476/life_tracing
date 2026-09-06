@@ -20,6 +20,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
+import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -41,6 +42,10 @@ class MainActivity : AppCompatActivity() {
 /** Navigation identity only: Daily has no domain identifier. */
 @Serializable
 data object DailyRoot : NavKey
+
+/** Navigation identity only: one launcher exists for one entry on the Daily-owned stack. */
+@Serializable
+data object StartActivityRoot : NavKey
 
 internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
@@ -67,7 +72,28 @@ fun LifeTracingApp(
                 backStack = backStack,
                 entryProvider =
                     entryProvider {
-                        entry<DailyRoot> { DailyRoute(controller) }
+                        entry<DailyRoot> {
+                            DailyRoute(
+                                controller = controller,
+                                onStartActivity = {
+                                    if (backStack.lastOrNull() !is StartActivityRoot) backStack.add(StartActivityRoot)
+                                },
+                            )
+                        }
+                        entry<StartActivityRoot> {
+                            StartActivityRoute(
+                                createController = {
+                                    LifeTracingRuntimeGraph
+                                        .from(context.applicationContext)
+                                        .createStartActivityController()
+                                },
+                                onBack = { if (backStack.lastOrNull() is StartActivityRoot) backStack.removeLast() },
+                                onCommitted = {
+                                    controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
+                                    if (backStack.lastOrNull() is StartActivityRoot) backStack.removeLast()
+                                },
+                            )
+                        }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
                 popTransitionSpec = { lifeTracingNavigationTransition() },
