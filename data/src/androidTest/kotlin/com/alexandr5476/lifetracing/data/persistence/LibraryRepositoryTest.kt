@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValue
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
@@ -328,8 +329,9 @@ class LibraryRepositoryTest {
     }
 
     @Test
-    fun ordinaryTemplateLaunchesCreateFreshSnapshotsAndUpdateRecentWithoutPlanLinkage() {
+    fun productionTemplateLaunchesCreateFreshSnapshotsAndUpdateRecentWithoutPlanLinkage() {
         val repository = repository()
+        val activityCommands = activityCommands()
         activity("timed", "Timed")
         activity("timer", "Timer", mode = "TIMER")
         activity(
@@ -387,12 +389,17 @@ class LibraryRepositoryTest {
 
         repository.archiveActivityTemplate(ActivityTemplateId("timed"), instant(5))
         assertThrows(IllegalArgumentException::class.java) {
-            repository.startActivityFromTemplate(ActivityTemplateId("timed"), instant(10), instant(10), ZoneOffset.UTC)
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+            )
         }
         repository.restoreActivityTemplate(ActivityTemplateId("timed"))
         val timed =
-            repository.startActivityFromTemplate(
-                ActivityTemplateId("timed"),
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
                 instant(10),
                 instant(10),
                 ZoneOffset.UTC,
@@ -405,8 +412,8 @@ class LibraryRepositoryTest {
         assertEquals("PLANNED", database.planEntryDao().getById("unrelated-plan")?.status)
         liveForExistingDatabase().completeActiveActivity(instant(20))
         val timer =
-            repository.startActivityFromTemplate(
-                ActivityTemplateId("timer"),
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timer")),
                 instant(21),
                 instant(21),
                 ZoneOffset.UTC,
@@ -784,6 +791,30 @@ class LibraryRepositoryTest {
             { SequenceTemplateCategoryOptionId("sequence-copy-option-${++sequenceOption}") },
             { SequenceNodeId("sequence-copy-node-${++sequenceNode}") },
             { StatisticsSeriesId("copy-series-${++series}") },
+        )
+    }
+
+    private fun activityCommands(): ActivityCommandRepository {
+        var execution = 0
+        var snapshot = 0
+        var field = 0
+        var option = 0
+        return ActivityCommandRepository(
+            database,
+            LiveSessionRepository(
+                database,
+                { ActivityExecutionId("command-execution-${++execution}") },
+                { ActivityExecutionPauseId("command-pause-${++execution}") },
+                { SequenceExecutionId("unused-sequence") },
+                { SequenceOccurrenceId("unused-occurrence") },
+                { SequenceIntervalId("unused-interval") },
+            ),
+            ActivitySnapshotFactory(
+                { ActivitySnapshotId("command-snapshot-${++snapshot}") },
+                { ActivitySnapshotFieldId("command-field-${++field}") },
+                { ActivitySnapshotCategoryOptionId("command-option-${++option}") },
+            ),
+            { ActivityExecutionId("command-execution-${++execution}") },
         )
     }
 

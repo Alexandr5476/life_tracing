@@ -193,49 +193,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         { command ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                when (command) {
-                                    is LauncherDurableCommand.StartActivity -> {
-                                        val execution =
-                                            activityCommandRepository.startLive(
-                                                ActivityEntrySource.Template(command.templateId),
-                                                command.at,
-                                                command.at,
-                                                command.zoneId,
-                                            )
-                                        LauncherCommit.Activity(execution.id, true)
-                                    }
-                                    is LauncherDurableCommand.CompleteNoLive -> {
-                                        val overrides =
-                                            command.override
-                                                ?.let { override ->
-                                                    listOf(
-                                                        ActivityEntryValueOverride(
-                                                            ActivityEntryFieldReference.Template(override.fieldId),
-                                                            override.toEntryValue(),
-                                                        ),
-                                                    )
-                                                }.orEmpty()
-                                        val execution =
-                                            libraryRepository.completeNoLiveActivityFromTemplate(
-                                                command.templateId,
-                                                command.at,
-                                                command.at,
-                                                command.zoneId,
-                                                overrides,
-                                            )
-                                        LauncherCommit.Activity(execution.id, false)
-                                    }
-                                    is LauncherDurableCommand.StartSequence -> {
-                                        val state =
-                                            libraryRepository.startSequenceFromTemplate(
-                                                command.templateId,
-                                                command.at,
-                                                command.at,
-                                                command.zoneId,
-                                            )
-                                        LauncherCommit.Sequence(state.execution.id)
-                                    }
-                                }
+                                executeLauncherCommand(command, activityCommandRepository, libraryRepository)
                             }
                         },
                         coordinator::onRuntimeStateChanged,
@@ -248,6 +206,55 @@ class LifeTracingRuntimeGraph internal constructor(
         }
     }
 }
+
+internal fun executeLauncherCommand(
+    command: LauncherDurableCommand,
+    activityCommandRepository: ActivityCommandRepository,
+    libraryRepository: LibraryRepository,
+): LauncherCommit =
+    when (command) {
+        is LauncherDurableCommand.StartActivity -> {
+            val execution =
+                activityCommandRepository.startLive(
+                    ActivityEntrySource.Template(command.templateId),
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                )
+            LauncherCommit.Activity(execution.id, true)
+        }
+        is LauncherDurableCommand.CompleteNoLive -> {
+            val overrides =
+                command.override
+                    ?.let { override ->
+                        listOf(
+                            ActivityEntryValueOverride(
+                                ActivityEntryFieldReference.Template(override.fieldId),
+                                override.toEntryValue(),
+                            ),
+                        )
+                    }.orEmpty()
+            val execution =
+                libraryRepository.completeNoLiveActivityFromTemplate(
+                    command.templateId,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    overrides,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.StartSequence -> {
+            val state =
+                libraryRepository.startSequenceFromTemplate(
+                    command.templateId,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                )
+            LauncherCommit.Sequence(state.execution.id)
+        }
+    }
 
 internal class DailyControllerOwner(
     factory: () -> DailyController,
