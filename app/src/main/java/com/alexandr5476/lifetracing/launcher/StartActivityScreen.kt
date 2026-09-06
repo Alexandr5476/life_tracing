@@ -52,7 +52,6 @@ import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
-import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingLinearProgressIndicator
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -80,29 +79,28 @@ internal fun StartActivityRoute(
     LaunchedEffect(state.command) {
         exitPolicy.onCommand(state.command, onCommitted)
     }
-    StartActivityScreen(state, controller::dispatch, exitRoute)
+    StartActivityScreen(state, controller::dispatch, session.interaction, exitRoute)
 }
 
 @Composable
 internal fun StartActivityScreen(
     state: StartActivityState,
     onAction: (StartActivityAction) -> Unit,
+    interaction: StartActivityRouteInteraction,
     onRouteBack: () -> Unit = {},
 ) {
-    var selectedForLaunch by remember { mutableStateOf<LibraryTemplateId?>(null) }
-    var quickTarget by remember { mutableStateOf<LibraryLaunchTarget.Activity?>(null) }
-    var breadcrumbs by remember { mutableStateOf(emptyList<Folder>()) }
     val selected = state.selected
-    LaunchedEffect(selected, selectedForLaunch) {
+    val quickEditor = interaction.quickEditor
+    val quickTarget =
+        ((selected as? LauncherLoad.Content)?.value as? LibraryLaunchTarget.Activity)
+            ?.takeIf { it.id == quickEditor?.targetId && it.mainValue?.fieldId == quickEditor.fieldId }
+    val select: (LibraryTemplateId) -> Unit = { id ->
+        interaction.select(id)
+        onAction(StartActivityAction.Select(id))
+    }
+    LaunchedEffect(selected, interaction.pendingSelectionId) {
         val target = (selected as? LauncherLoad.Content)?.value ?: return@LaunchedEffect
-        if (target.id != selectedForLaunch) return@LaunchedEffect
-        selectedForLaunch = null
-        val activity = target as? LibraryLaunchTarget.Activity
-        if (activity?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING && activity.mainValue != null) {
-            quickTarget = activity
-        } else {
-            onAction(StartActivityAction.Launch())
-        }
+        interaction.resolveSelection(target)?.let(onAction)
     }
     Surface(color = MaterialTheme.colorScheme.background) {
         LazyColumn(
@@ -114,11 +112,10 @@ internal fun StartActivityScreen(
         ) {
             item {
                 LauncherHeader(onBack = {
-                    if (breadcrumbs.isEmpty()) {
+                    if (interaction.browsePath.isEmpty()) {
                         onRouteBack()
                     } else {
-                        breadcrumbs = breadcrumbs.dropLast(1)
-                        onAction(StartActivityAction.Browse(breadcrumbs.lastOrNull()?.id))
+                        onAction(StartActivityAction.Browse(interaction.browseBack()))
                     }
                 })
             }
@@ -129,11 +126,10 @@ internal fun StartActivityScreen(
                 item {
                     QuickMainValueCard(
                         target = target,
-                        onCancel = { quickTarget = null },
-                        onLaunch = { override ->
-                            quickTarget = null
-                            onAction(StartActivityAction.Launch(override))
-                        },
+                        editor = requireNotNull(quickEditor),
+                        onValueChange = interaction::editQuickValue,
+                        onCancel = interaction::cancelQuickEditor,
+                        onComplete = { interaction.completeQuickEditor(target)?.let(onAction) },
                     )
                 }
             }
@@ -146,11 +142,8 @@ internal fun StartActivityScreen(
                             title = R.string.launcher_recent,
                             empty = R.string.launcher_recent_empty,
                             items = home.value.recent,
-                            enabled = state.canSelect(quickTarget),
-                            onSelect = { id ->
-                                selectedForLaunch = id
-                                onAction(StartActivityAction.Select(id))
-                            },
+                            enabled = state.canSelect(quickEditor != null),
+                            onSelect = select,
                         )
                     }
                     item {
@@ -158,11 +151,8 @@ internal fun StartActivityScreen(
                             canonical = home.value.pinned,
                             organizationInFlight = state.organizationInFlight,
                             organizationFailure = state.organizationFailure,
-                            enabled = state.canSelect(quickTarget),
-                            onSelect = { id ->
-                                selectedForLaunch = id
-                                onAction(StartActivityAction.Select(id))
-                            },
+                            enabled = state.canSelect(quickEditor != null),
+                            onSelect = select,
                             onReorder = { onAction(StartActivityAction.ReorderPinned(it)) },
                         )
                     }
@@ -173,32 +163,26 @@ internal fun StartActivityScreen(
                 SearchSection(
                     query = state.searchQuery,
                     state = state.search,
-                    enabled = state.canSelect(quickTarget),
+                    enabled = state.canSelect(quickEditor != null),
                     onSearch = { onAction(StartActivityAction.Search(it)) },
-                    onSelect = { id ->
-                        selectedForLaunch = id
-                        onAction(StartActivityAction.Select(id))
-                    },
+                    onSelect = select,
                     onRetry = { onAction(StartActivityAction.Retry) },
                 )
             }
             item {
                 BrowseSection(
                     state = state.browse,
-                    breadcrumbs = breadcrumbs,
-                    enabled = state.canSelect(quickTarget),
+                    breadcrumbs = interaction.browsePath,
+                    enabled = state.canSelect(quickEditor != null),
                     onBrowse = { folder ->
-                        breadcrumbs = if (folder == null) emptyList() else breadcrumbs
+                        if (folder == null) interaction.openRoot()
                         onAction(StartActivityAction.Browse(folder))
                     },
                     onFolder = { folder ->
-                        breadcrumbs = breadcrumbs + folder
+                        interaction.openFolder(folder)
                         onAction(StartActivityAction.Browse(folder.id))
                     },
-                    onSelect = { id ->
-                        selectedForLaunch = id
-                        onAction(StartActivityAction.Select(id))
-                    },
+                    onSelect = select,
                     onRetry = { onAction(StartActivityAction.Retry) },
                 )
             }
@@ -206,9 +190,9 @@ internal fun StartActivityScreen(
     }
 }
 
-private fun StartActivityState.canSelect(quickTarget: LibraryLaunchTarget.Activity?): Boolean =
+private fun StartActivityState.canSelect(quickEditorOpen: Boolean): Boolean =
     !organizationInFlight &&
-        quickTarget == null &&
+        !quickEditorOpen &&
         selected !is LauncherLoad.Loading &&
         command == LauncherCommandState.Idle
 
@@ -384,7 +368,7 @@ private fun SearchSection(
 @Composable
 private fun BrowseSection(
     state: LauncherLoad<com.alexandr5476.lifetracing.domain.LibraryContents>,
-    breadcrumbs: List<Folder>,
+    breadcrumbs: List<LauncherBreadcrumb>,
     enabled: Boolean,
     onBrowse: (com.alexandr5476.lifetracing.domain.FolderId?) -> Unit,
     onFolder: (Folder) -> Unit,
@@ -581,24 +565,19 @@ private fun TrackableRow(
 @Composable
 private fun QuickMainValueCard(
     target: LibraryLaunchTarget.Activity,
+    editor: QuickMainValueEditorState,
+    onValueChange: (String) -> Unit,
     onCancel: () -> Unit,
-    onLaunch: (QuickMainValueOverride?) -> Unit,
+    onComplete: () -> Unit,
 ) {
     val mainValue = requireNotNull(target.mainValue)
-    var value by remember(target.id) {
-        mutableStateOf(formatLauncherNumber(mainValue.defaultNumberScaled, mainValue.displayPrecision))
-    }
-    var changed by remember(target.id) { mutableStateOf(false) }
-    val parsed = parseLauncherNumber(value, mainValue.displayPrecision)
-    val valid = !changed || value.isBlank() || parsed != null
+    val parsed = parseLauncherNumber(editor.text, mainValue.displayPrecision)
+    val valid = !editor.changed || editor.text.isBlank() || parsed != null
     LauncherCard(container = MaterialTheme.colorScheme.secondaryContainer) {
         Text(target.name, style = MaterialTheme.typography.titleMedium)
         LifeTracingOutlinedTextField(
-            value = value,
-            onValueChange = {
-                value = it
-                changed = true
-            },
+            value = editor.text,
+            onValueChange = onValueChange,
             modifier = Modifier.widthIn(max = 360.dp),
             label = { Text(mainValue.label()) },
         )
@@ -607,10 +586,7 @@ private fun QuickMainValueCard(
             LifeTracingSecondaryButton(onClick = onCancel) { Text(stringResource(R.string.launcher_cancel)) }
             LifeTracingPrimaryButton(
                 enabled = valid,
-                onClick = {
-                    val override = quickMainValueOverride(mainValue, value, changed)
-                    onLaunch(override)
-                },
+                onClick = onComplete,
             ) { Text(stringResource(R.string.launcher_complete)) }
         }
     }
