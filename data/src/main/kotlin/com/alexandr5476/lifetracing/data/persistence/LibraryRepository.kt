@@ -3,11 +3,11 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecution
-import com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
-import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
@@ -21,16 +21,19 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateRevisionPolicy
 import com.alexandr5476.lifetracing.domain.ActivityTemplateUserState
 import com.alexandr5476.lifetracing.domain.CategoryOption
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.FolderTreeValidator
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
+import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryPinnedRanks
 import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceNode
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
@@ -50,12 +53,14 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateRevisionPolicy
 import com.alexandr5476.lifetracing.domain.SequenceTemplateUserState
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsSeries
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.Tag
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.firstEffectiveStep
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
@@ -146,6 +151,69 @@ class LibraryRepository internal constructor(
             ).sortedWith(recentComparator).take(limit)
         }
     }
+
+    fun getLaunchTarget(id: LibraryTemplateId): LibraryLaunchTarget =
+        transaction {
+            when (id) {
+                is LibraryTemplateId.Activity -> {
+                    val template = requireActiveActivity(id.id)
+                    val mainValue =
+                        template.fields.singleOrNull { field ->
+                            field.deletedAt == null &&
+                                field.isMainValue &&
+                                field.type == CustomFieldType.NUMBER
+                        }
+                    LibraryLaunchTarget.Activity(
+                        id,
+                        template.name,
+                        template.settings.startCountdown,
+                        template.timeTrackingMode,
+                        mainValue?.let { field ->
+                            ActivityLaunchMainValue(
+                                field.id,
+                                field.name,
+                                field.unit,
+                                field.displayPrecision,
+                                field.defaultNumberScaled,
+                            )
+                        },
+                        template.revision,
+                    )
+                }
+                is LibraryTemplateId.Sequence -> {
+                    val template = requireActiveSequence(id.id)
+                    val first = requireNotNull(template.firstEffectiveStep()) { "An empty Sequence cannot launch" }
+                    LibraryLaunchTarget.Sequence(
+                        id,
+                        template.name,
+                        first.overrides.startCountdown ?: template.settings.sequenceStartCountdown,
+                        template.revision,
+                    )
+                }
+            }
+        }
+
+    /** Checks the current semantic target and live slot in one database transaction. */
+    fun hasLiveLaunchConflict(
+        id: LibraryTemplateId,
+        expectedRevision: Long,
+    ): Boolean =
+        transaction {
+            val isLive =
+                when (id) {
+                    is LibraryTemplateId.Activity -> {
+                        val template = requireActiveActivity(id.id)
+                        if (template.revision != expectedRevision) throw StaleLauncherTargetException()
+                        template.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING
+                    }
+                    is LibraryTemplateId.Sequence -> {
+                        val template = requireActiveSequence(id.id)
+                        if (template.revision != expectedRevision) throw StaleLauncherTargetException()
+                        true
+                    }
+                }
+            isLive && liveSessions.getActiveSessionLocked() != null
+        }
 
     fun createFolder(
         id: FolderId,
@@ -400,10 +468,12 @@ class LibraryRepository internal constructor(
         completedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
-        actualValues: List<ActivityExecutionFieldValue> = emptyList(),
+        valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+        expectedRevision: Long? = null,
     ): ActivityExecution =
         transaction {
             val template = requireActiveActivity(templateId)
+            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             require(template.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick completion requires NO_LIVE_TRACKING"
             }
@@ -415,7 +485,7 @@ class LibraryRepository internal constructor(
                     completedAt,
                     zoneId,
                     createdAt,
-                    actualValues.map { ActivityExecutionValueOverride(it.snapshotFieldId, it) },
+                    resolveDirectTemplateValueOverrides(snapshot, valueOverrides),
                 )
             check(database.libraryDao().touchActivity(templateId.value, createdAt.toEpochMilli()) == 1) {
                 "ActivityTemplate is missing user state"
@@ -428,9 +498,11 @@ class LibraryRepository internal constructor(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        expectedRevision: Long? = null,
     ): SequenceRuntimeState =
         transaction {
             val template = requireActiveSequence(templateId)
+            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             val snapshot = sequenceSnapshotFactory.fromTemplate(template, activityModes(template), createdAt)
             database.sequenceSnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val state = liveSessions.startSequenceFromSnapshot(snapshot.id, startedAt, createdAt, zoneId)
@@ -481,6 +553,9 @@ class LibraryRepository internal constructor(
     ): SequenceTemplate =
         transaction {
             val source = requireActiveSequence(sourceId)
+            RuntimeOccurrenceCardinalityPolicy.requireSupported(
+                RuntimeOccurrenceCardinalityPolicy.templateMaterializedCount(source.nodes),
+            )
             val id = nextSequenceTemplateId()
             val seriesId = nextStatisticsSeriesId()
             val duplicate =
@@ -540,13 +615,21 @@ class LibraryRepository internal constructor(
             if (activities.isEmpty()) {
                 emptyMap()
             } else {
-                database.libraryDao().getActivityTagLinks(activities.map(LibrarySummaryRow::id)).tagMap()
+                activities
+                    .map(LibrarySummaryRow::id)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(database.libraryDao()::getActivityTagLinks)
+                    .tagMap()
             }
         val sequenceTags =
             if (sequences.isEmpty()) {
                 emptyMap()
             } else {
-                database.libraryDao().getSequenceTagLinks(sequences.map(LibrarySummaryRow::id)).tagMap()
+                sequences
+                    .map(LibrarySummaryRow::id)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(database.libraryDao()::getSequenceTagLinks)
+                    .tagMap()
             }
         return activities.map { it.toDomain(true, activityTags[it.id].orEmpty()) } +
             sequences.map { it.toDomain(false, sequenceTags[it.id].orEmpty()) }
@@ -634,8 +717,12 @@ class LibraryRepository internal constructor(
         val ids = template.nodes.flatMap(SequenceNode::activitySnapshotIds).distinct()
         return database
             .activitySnapshotDao()
-            .getAggregates(ids.map(ActivitySnapshotId::value))
-            .associate {
+            .let { dao ->
+                ids
+                    .map(ActivitySnapshotId::value)
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(dao::getAggregates)
+            }.associate {
                 val snapshot = it.toDomain()
                 snapshot.id to snapshot.timeTrackingMode
             }.also { require(it.keys == ids.toSet()) { "Sequence is missing ActivitySnapshot metadata" } }
@@ -728,6 +815,7 @@ class LibraryRepository internal constructor(
         private fun uuid(): String = UUID.randomUUID().toString()
 
         private const val PINNED_RANK_STEP = 1024
+        private const val SQLITE_SAFE_BIND_COUNT = 900
         private const val DATABASE_NAME = "lifetracing.db"
     }
 }

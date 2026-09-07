@@ -330,6 +330,9 @@ object TemplateAuthoringDraftValidator {
                 requireOrderedPositions(node.value.children.map(ActivityStepDraft::position), "Repeat")
             }
         }
+        RuntimeOccurrenceCardinalityPolicy.requireSupported(
+            RuntimeOccurrenceCardinalityPolicy.draftMaterializedCount(draft.nodes),
+        )
         draft.fields.forEach { field ->
             requireUniqueIdentities(field.categoryOptions.map(SequenceCategoryOptionDraft::identity), "Category option")
             requireDefaultBelongs(field.defaultCategoryOption, field.categoryOptions.map { it.identity })

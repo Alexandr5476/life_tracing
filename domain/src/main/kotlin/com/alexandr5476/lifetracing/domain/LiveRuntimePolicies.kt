@@ -242,6 +242,10 @@ class SequenceRuntimeEngine(
                 openInterval(state.execution)?.kind in
                 setOf(SequenceIntervalKind.IMPLICIT_IDLE, SequenceIntervalKind.TRANSITION_COUNTDOWN),
         ) { "Start now requires a running Sequence without a current Step" }
+        RuntimeOccurrenceCardinalityPolicy.requireSupported(
+            state.execution.occurrences.size
+                .toLong() + 1,
+        )
         val added = create(state.execution)
         val ordered =
             state.execution.occurrences

@@ -340,6 +340,78 @@ class SequenceRuntimeSecondaryCommandsTest {
     }
 
     @Test
+    fun secondaryInsertionAllowsTheTenthousandthOccurrenceAndRejectsFurtherAddOrReplayBeforeIdGeneration() {
+        var generatedIds = 0
+        val activity = activity("step", TimeTrackingMode.STOPWATCH)
+        val activities = mapOf(activity.id to activity)
+        val snapshot =
+            sequenceWithNodes(
+                listOf(
+                    SequenceSnapshotRepeatBlock(
+                        SequenceSnapshotNodeId("repeat"),
+                        0,
+                        RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES - 1,
+                        listOf(SequenceSnapshotActivityStep(SequenceSnapshotNodeId("step"), 0, activity.id)),
+                    ),
+                ),
+            )
+        val runtime = engine { SequenceOccurrenceId("occurrence-${++generatedIds}") }
+        val started = runtime.start(snapshot, activities, at(0), at(0), ZoneOffset.UTC)
+
+        val atLimit =
+            runtime.addRuntimeOccurrence(
+                started,
+                activity("added", TimeTrackingMode.STOPWATCH),
+                RuntimeInsertionPlacement.TO_END,
+                at(1),
+                snapshot,
+                activities,
+            )
+
+        assertEquals(
+            RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES,
+            atLimit.execution.occurrences.size,
+        )
+        val completed =
+            runtime.completeCurrent(
+                atLimit,
+                atLimit.execution.currentOccurrenceId!!,
+                at(2),
+                snapshot,
+                activities,
+            )
+        val beforeRejectedIds = generatedIds
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runtime.addRuntimeOccurrence(
+                atLimit,
+                activity("rejected", TimeTrackingMode.STOPWATCH),
+                RuntimeInsertionPlacement.TO_END,
+                at(2),
+                snapshot,
+                activities,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runtime.doAgain(
+                completed,
+                atLimit.execution.occurrences
+                    .first()
+                    .id,
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                at(2),
+                snapshot,
+                activities,
+            )
+        }
+
+        assertEquals(
+            beforeRejectedIds,
+            generatedIds,
+        )
+    }
+
+    @Test
     fun doAgainPreservesFrozenTimerOverrideDuringTransitionCountdown() {
         val timer = activity("timer", TimeTrackingMode.TIMER, 5)
         val next = activity("next", TimeTrackingMode.STOPWATCH)
@@ -606,20 +678,27 @@ class SequenceRuntimeSecondaryCommandsTest {
         assertNull(occurrence.repeatIteration)
     }
 
-    private fun engine(): SequenceRuntimeEngine {
+    private fun engine(nextOccurrenceId: (() -> SequenceOccurrenceId)? = null): SequenceRuntimeEngine {
         var execution = 0
         var occurrence = 0
         var child = 0
         var pause = 0
         var interval = 0
         return SequenceRuntimeEngine(
-            SequenceExecutionFactory({
-                SequenceExecutionId("execution-${++execution}")
-            }, RuntimeOccurrenceMaterializer { SequenceOccurrenceId("occurrence-${++occurrence}") }),
+            SequenceExecutionFactory(
+                {
+                    SequenceExecutionId("execution-${++execution}")
+                },
+                RuntimeOccurrenceMaterializer {
+                    nextOccurrenceId?.invoke() ?: SequenceOccurrenceId("occurrence-${++occurrence}")
+                },
+            ),
             ActivityExecutionFactory { ActivityExecutionId("child-${++child}") },
             { ActivityExecutionPauseId("pause-${++pause}") },
             { SequenceIntervalId("interval-${++interval}") },
-            { SequenceOccurrenceId("occurrence-${++occurrence}") },
+            {
+                nextOccurrenceId?.invoke() ?: SequenceOccurrenceId("occurrence-${++occurrence}")
+            },
         )
     }
 

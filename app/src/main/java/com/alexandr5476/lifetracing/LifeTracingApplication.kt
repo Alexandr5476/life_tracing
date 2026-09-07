@@ -8,9 +8,19 @@ import android.util.Log
 import com.alexandr5476.lifetracing.daily.CoroutineLocalDateBoundaryScheduler
 import com.alexandr5476.lifetracing.daily.DailyController
 import com.alexandr5476.lifetracing.daily.DailyRuntimeCommand
+import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
+import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
+import com.alexandr5476.lifetracing.launcher.LauncherCommit
+import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
+import com.alexandr5476.lifetracing.launcher.StartActivityController
+import com.alexandr5476.lifetracing.launcher.toEntryValue
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -61,9 +71,12 @@ class LifeTracingRuntimeGraph internal constructor(
     val scope: kotlinx.coroutines.CoroutineScope,
     val coordinator: AndroidRuntimeCoordinator,
     private val dailyControllerOwner: DailyControllerOwner,
+    private val startActivityControllerFactory: () -> StartActivityController,
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
+
+    fun createStartActivityController(): StartActivityController = startActivityControllerFactory()
 
     companion object {
         @Volatile
@@ -86,6 +99,8 @@ class LifeTracingRuntimeGraph internal constructor(
                 )
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
+            val libraryRepository = LibraryRepository.create(context)
+            val activityCommandRepository = ActivityCommandRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -137,10 +152,117 @@ class LifeTracingRuntimeGraph internal constructor(
                         CoroutineLocalDateBoundaryScheduler(scope),
                     )
                 },
+                {
+                    StartActivityController(
+                        scope,
+                        { limit ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getRecent(limit)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getPinned()
+                            }
+                        },
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.search(query)
+                            }
+                        },
+                        { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                folderId?.let(libraryRepository::getFolderContents)
+                                    ?: libraryRepository.getRoot().contents
+                            }
+                        },
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getLaunchTarget(id)
+                            }
+                        },
+                        { ids ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.reorderPinned(ids)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                repository.getActiveSession() != null
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executeLauncherCommand(command, activityCommandRepository, libraryRepository)
+                            }
+                        },
+                        coordinator::onRuntimeStateChanged,
+                        wallClock,
+                        ZoneId::systemDefault,
+                        CoroutinePreflightScheduler(scope),
+                        initialLiveConflict = { target ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
+                            }
+                        },
+                    )
+                },
             )
         }
     }
 }
+
+internal fun executeLauncherCommand(
+    command: LauncherDurableCommand,
+    activityCommandRepository: ActivityCommandRepository,
+    libraryRepository: LibraryRepository,
+): LauncherCommit =
+    when (command) {
+        is LauncherDurableCommand.StartActivity -> {
+            val execution =
+                activityCommandRepository.startLive(
+                    ActivityEntrySource.Template(command.templateId),
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    expectedTemplateRevision = command.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, true)
+        }
+        is LauncherDurableCommand.CompleteNoLive -> {
+            val overrides =
+                command.override
+                    ?.let { override ->
+                        listOf(
+                            ActivityEntryValueOverride(
+                                ActivityEntryFieldReference.Template(override.fieldId),
+                                override.toEntryValue(),
+                            ),
+                        )
+                    }.orEmpty()
+            val execution =
+                libraryRepository.completeNoLiveActivityFromTemplate(
+                    command.templateId,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    overrides,
+                    command.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.StartSequence -> {
+            val state =
+                libraryRepository.startSequenceFromTemplate(
+                    command.templateId,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    command.expectedRevision,
+                )
+            LauncherCommit.Sequence(state.execution.id)
+        }
+    }
 
 internal class DailyControllerOwner(
     factory: () -> DailyController,

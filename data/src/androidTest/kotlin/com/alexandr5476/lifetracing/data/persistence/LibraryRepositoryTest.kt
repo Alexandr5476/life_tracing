@@ -3,25 +3,43 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteException
+import androidx.room.RoomDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
+import com.alexandr5476.lifetracing.domain.ActivityEntryValue
+import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityStep
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
+import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.DailyActive
+import com.alexandr5476.lifetracing.domain.DailyQuery
+import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
+import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
@@ -29,11 +47,17 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
+import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -44,8 +68,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.Collections
+import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
 class LibraryRepositoryTest {
@@ -105,6 +133,513 @@ class LibraryRepositoryTest {
         assertEquals(listOf("nested"), folder.folders.map { it.id.value })
         assertEquals(listOf("activity-folder"), folder.activities.map { it.id.value })
         assertTrue(folder.sequences.isEmpty())
+    }
+
+    @Test
+    fun catalogTagHydrationChunksBothKindsAboveTheSafeBindCount() {
+        val tagQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
+        database.close()
+        database =
+            LifeTracingDatabase
+                .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .setQueryCallback(
+                    RoomDatabase.QueryCallback { sql, bindArgs -> tagQueries += sql to bindArgs },
+                    Executor { command -> command.run() },
+                ).allowMainThreadQueries()
+                .build()
+        val repository = repository()
+        repository.createTag(TagId("tag"), "Tag", instant(0))
+        val itemCount = 901
+
+        repeat(itemCount) { index ->
+            activity("activity-$index", "Activity $index")
+            sequence("sequence-$index", "Sequence $index")
+            database.libraryDao().addActivityTag(ActivityTemplateTagEntity("activity-$index", "tag"))
+            database.libraryDao().addSequenceTag(SequenceTemplateTagEntity("sequence-$index", "tag"))
+        }
+
+        val all = repository.getAll()
+        val observedTagQueries = synchronized(tagQueries) { tagQueries.toList() }
+        assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Activity })
+        assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Sequence })
+        assertTrue(all.all { TagId("tag") in it.tagIds })
+        assertEquals(
+            listOf(900, 1),
+            observedTagQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
+        )
+        assertEquals(
+            listOf(900, 1),
+            observedTagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
+        )
+    }
+
+    @Test
+    fun completeThreeItemPinnedOrderPersists() {
+        val repository = repository()
+        activity("activity-a", "A")
+        activity("activity-b", "B")
+        sequence("sequence-c", "C")
+        val a = LibraryTemplateId.Activity(ActivityTemplateId("activity-a"))
+        val b = LibraryTemplateId.Activity(ActivityTemplateId("activity-b"))
+        val c = LibraryTemplateId.Sequence(SequenceTemplateId("sequence-c"))
+
+        listOf(a, b, c).forEach(repository::pin)
+        repository.reorderPinned(listOf(b, c, a))
+
+        assertEquals(listOf(b, c, a), repository.getPinned().map { it.id })
+    }
+
+    @Test
+    fun launchTargetLoadsOnlySelectedConfigurationAndUsesFirstEffectiveRepeatStepOverride() {
+        val repository = repository()
+        activity(
+            "activity",
+            "Activity",
+            mode = "NO_LIVE_TRACKING",
+            fields = listOf(activityField("main", "activity", null)),
+            settings = ActivityTemplateSettingsEntity("activity", startCountdownMs = 2_000),
+        )
+        seedSnapshot("repeat-step", "STOPWATCH")
+        sequence(
+            "sequence",
+            "Sequence",
+            nodes =
+                listOf(
+                    SequenceNodeEntity("empty", "sequence", "REPEAT", null, 0, null, 2),
+                    SequenceNodeEntity("repeat", "sequence", "REPEAT", null, 1, null, 3),
+                    SequenceNodeEntity("first", "sequence", "STEP", "repeat", 0, "repeat-step", null),
+                ),
+            settings = SequenceTemplateSettingsEntity("sequence", sequenceStartCountdownMs = 5_000),
+            stepOverrides = listOf(SequenceStepOverrideEntity("first", 7_000, null, null, null, null)),
+        )
+
+        val activity = repository.getLaunchTarget(LibraryTemplateId.Activity(ActivityTemplateId("activity")))
+        val sequence = repository.getLaunchTarget(LibraryTemplateId.Sequence(SequenceTemplateId("sequence")))
+
+        assertEquals(2_000L, activity.startCountdown.toMillis())
+        assertEquals(ActivityTemplateFieldId("main"), (activity as LibraryLaunchTarget.Activity).mainValue?.fieldId)
+        assertEquals(7_000L, sequence.startCountdown.toMillis())
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activityTemplateDao().getUserState("activity")?.lastUsedAtMs)
+        assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun staleLauncherRevisionsRollbackAllWriterResidueAndAcceptedSnapshotsKeepAuthorizedRevision() {
+        val library = repository()
+        activity("timed", "Timed", revision = 2)
+        activity("quick", "Quick", mode = "NO_LIVE_TRACKING", revision = 2)
+        seedSnapshot("step", "STOPWATCH")
+        sequence(
+            "sequence",
+            "Sequence",
+            revision = 2,
+            nodes = listOf(step("step-node", "sequence", "step")),
+        )
+        val commands = activityCommands()
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            commands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 1,
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("command-snapshot-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("timed")?.lastUsedAtMs)
+
+        val timed =
+            commands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(11),
+                instant(11),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 2,
+            )
+        assertEquals(2L, database.activitySnapshotDao().getById(timed.snapshotId.value)?.sourceRevision)
+        liveForExistingDatabase().completeActiveActivity(instant(12))
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("quick"),
+                instant(13),
+                instant(13),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activityTemplateDao().getUserState("quick")?.lastUsedAtMs)
+        val quick =
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("quick"),
+                instant(14),
+                instant(14),
+                ZoneOffset.UTC,
+                expectedRevision = 2,
+            )
+        assertEquals(2L, database.activitySnapshotDao().getById(quick.snapshotId.value)?.sourceRevision)
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.startSequenceFromTemplate(
+                SequenceTemplateId("sequence"),
+                instant(15),
+                instant(15),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertNull(database.sequenceSnapshotDao().getById("sequence-launch-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+        val launched =
+            library.startSequenceFromTemplate(
+                SequenceTemplateId("sequence"),
+                instant(16),
+                instant(16),
+                ZoneOffset.UTC,
+                expectedRevision = 2,
+            )
+        assertEquals(2L, database.sequenceSnapshotDao().getById(launched.execution.snapshotId.value)?.sourceRevision)
+    }
+
+    @Test
+    fun staleNoLiveTargetIsClassifiedBeforeItsCurrentModeAndInitialLiveEligibility() {
+        val library = repository()
+        activity("mode-changed", "Mode changed", mode = "STOPWATCH", revision = 2)
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("mode-changed"),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.hasLiveLaunchConflict(LibraryTemplateId.Activity(ActivityTemplateId("mode-changed")), 1)
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("mode-changed")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun launchConflictRejectsActivitySessionWhoseStateDisagreesWithExecution() {
+        val library = repository()
+        activity("target", "Target")
+        seedSnapshot("running-snapshot", "STOPWATCH")
+        standaloneExecution("running", "running-snapshot", "activity-series")
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO active_session VALUES (1, 'ACTIVITY', 'running', NULL, 'PAUSED', 0)",
+        )
+        val before = database.activeSessionDao().get()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            library.hasLiveLaunchConflict(LibraryTemplateId.Activity(ActivityTemplateId("target")), 1)
+        }
+
+        assertEquals(before, database.activeSessionDao().get())
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun semanticAuthoringSavesInvalidateOldLauncherTargetsBeforeAnyDurableResidue() {
+        val library = repository()
+        val commands = activityCommands()
+        val authoring = TemplateAuthoringRepository(database, deterministicAuthoringIds("launcher-stale"))
+
+        val zeroCountdown =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Zero", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = instant(1),
+            )
+        val zeroTarget = library.getLaunchTarget(LibraryTemplateId.Activity(zeroCountdown.id))
+        val positiveCountdown =
+            authoring.saveActivityTemplate(
+                zeroCountdown.id,
+                zeroCountdown.revision,
+                zeroCountdown.toAuthoringDraft().copy(
+                    settings = ActivityTemplateSettings(startCountdown = Duration.ofSeconds(2)),
+                ),
+                instant(2),
+            )
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                zeroCountdown.id,
+                instant(3),
+                instant(3),
+                ZoneOffset.UTC,
+                expectedRevision = zeroTarget.revision,
+            )
+        }
+        assertEquals(0, count("activity_snapshots"))
+        assertEquals(0, count("activity_executions"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState(zeroCountdown.id.value)?.lastUsedAtMs)
+        val reselectedZero = library.getLaunchTarget(LibraryTemplateId.Activity(zeroCountdown.id))
+        assertEquals(Duration.ofSeconds(2), reselectedZero.startCountdown)
+        val zeroExecution =
+            library.completeNoLiveActivityFromTemplate(
+                zeroCountdown.id,
+                instant(4),
+                instant(4),
+                ZoneOffset.UTC,
+                expectedRevision = positiveCountdown.revision,
+            )
+        assertEquals(
+            positiveCountdown.revision,
+            database.activitySnapshotDao().getById(zeroExecution.snapshotId.value)?.sourceRevision,
+        )
+
+        val preflight =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft(
+                    "Preflight",
+                    null,
+                    TimeTrackingMode.STOPWATCH,
+                    null,
+                    ActivityTemplateSettings(startCountdown = Duration.ofSeconds(1)),
+                ),
+                createdAt = instant(5),
+            )
+        val preflightTarget = library.getLaunchTarget(LibraryTemplateId.Activity(preflight.id))
+        val changedPreflight =
+            authoring.saveActivityTemplate(
+                preflight.id,
+                preflight.revision,
+                preflight.toAuthoringDraft().copy(
+                    settings = ActivityTemplateSettings(startCountdown = Duration.ofSeconds(3)),
+                ),
+                instant(6),
+            )
+        val activitySnapshotCount = count("activity_snapshots")
+        val activityExecutionCount = count("activity_executions")
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            commands.startLive(
+                ActivityEntrySource.Template(preflight.id),
+                instant(7),
+                instant(7),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = preflightTarget.revision,
+            )
+        }
+        assertEquals(activitySnapshotCount, count("activity_snapshots"))
+        assertEquals(activityExecutionCount, count("activity_executions"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState(preflight.id.value)?.lastUsedAtMs)
+        assertEquals(
+            Duration.ofSeconds(3),
+            library.getLaunchTarget(LibraryTemplateId.Activity(preflight.id)).startCountdown,
+        )
+        val preflightExecution =
+            commands.startLive(
+                ActivityEntrySource.Template(preflight.id),
+                instant(8),
+                instant(8),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = changedPreflight.revision,
+            )
+        assertEquals(
+            changedPreflight.revision,
+            database.activitySnapshotDao().getById(preflightExecution.snapshotId.value)?.sourceRevision,
+        )
+        liveForExistingDatabase().completeActiveActivity(instant(9))
+
+        val noLiveToTimed =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("No-live to timed", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = instant(10),
+            )
+        val noLiveTarget = library.getLaunchTarget(LibraryTemplateId.Activity(noLiveToTimed.id))
+        val unrelated =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Unrelated", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = instant(11),
+            )
+        commands.startLive(
+            ActivityEntrySource.Template(unrelated.id),
+            instant(12),
+            instant(12),
+            ZoneOffset.UTC,
+            expectedTemplateRevision = unrelated.revision,
+        )
+        authoring.saveActivityTemplate(
+            noLiveToTimed.id,
+            noLiveToTimed.revision,
+            noLiveToTimed.toAuthoringDraft().copy(timeTrackingMode = TimeTrackingMode.STOPWATCH),
+            instant(13),
+        )
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                noLiveToTimed.id,
+                instant(14),
+                instant(14),
+                ZoneOffset.UTC,
+                expectedRevision = noLiveTarget.revision,
+            )
+        }
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.hasLiveLaunchConflict(noLiveTarget.id, noLiveTarget.revision)
+        }
+        val timedTarget = library.getLaunchTarget(noLiveTarget.id) as LibraryLaunchTarget.Activity
+        assertEquals(TimeTrackingMode.STOPWATCH, timedTarget.timeTrackingMode)
+        assertTrue(library.hasLiveLaunchConflict(timedTarget.id, timedTarget.revision))
+        assertNull(database.activityTemplateDao().getUserState(noLiveToTimed.id.value)?.lastUsedAtMs)
+        liveForExistingDatabase().completeActiveActivity(instant(15))
+
+        val timedToNoLive =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Timed to no-live", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = instant(16),
+            )
+        val timedTargetBeforeSave = library.getLaunchTarget(LibraryTemplateId.Activity(timedToNoLive.id))
+        commands.startLive(
+            ActivityEntrySource.Template(unrelated.id),
+            instant(17),
+            instant(17),
+            ZoneOffset.UTC,
+            expectedTemplateRevision = unrelated.revision,
+        )
+        val noLive =
+            authoring.saveActivityTemplate(
+                timedToNoLive.id,
+                timedToNoLive.revision,
+                timedToNoLive.toAuthoringDraft().copy(timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING),
+                instant(18),
+            )
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            commands.startLive(
+                ActivityEntrySource.Template(timedToNoLive.id),
+                instant(19),
+                instant(19),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = timedTargetBeforeSave.revision,
+            )
+        }
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.hasLiveLaunchConflict(timedTargetBeforeSave.id, timedTargetBeforeSave.revision)
+        }
+        val noLiveTargetAfterSave = library.getLaunchTarget(timedTargetBeforeSave.id) as LibraryLaunchTarget.Activity
+        assertEquals(TimeTrackingMode.NO_LIVE_TRACKING, noLiveTargetAfterSave.timeTrackingMode)
+        assertEquals(false, library.hasLiveLaunchConflict(noLiveTargetAfterSave.id, noLiveTargetAfterSave.revision))
+        val noLiveExecution =
+            library.completeNoLiveActivityFromTemplate(
+                timedToNoLive.id,
+                instant(20),
+                instant(20),
+                ZoneOffset.UTC,
+                expectedRevision = noLive.revision,
+            )
+        assertEquals(
+            noLive.revision,
+            database.activitySnapshotDao().getById(noLiveExecution.snapshotId.value)?.sourceRevision,
+        )
+        liveForExistingDatabase().completeActiveActivity(instant(21))
+
+        val stepSource =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Sequence step", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = instant(22),
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Sequence",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(stepSource.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = instant(23),
+            )
+        val sequenceTarget = library.getLaunchTarget(LibraryTemplateId.Sequence(sequence.id))
+        val positiveSequence =
+            authoring.saveSequenceTemplate(
+                sequence.id,
+                sequence.revision,
+                sequenceDraftWithFirstCountdown(authoring, sequence, Duration.ofSeconds(2)),
+                instant(24),
+            )
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.startSequenceFromTemplate(
+                sequence.id,
+                instant(25),
+                instant(25),
+                ZoneOffset.UTC,
+                sequenceTarget.revision,
+            )
+        }
+        assertEquals(0, count("sequence_snapshots"))
+        assertEquals(0, count("sequence_executions"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.sequenceTemplateDao().getUserState(sequence.id.value)?.lastUsedAtMs)
+        assertEquals(
+            Duration.ofSeconds(2),
+            library.getLaunchTarget(LibraryTemplateId.Sequence(sequence.id)).startCountdown,
+        )
+        val firstSequence =
+            library.startSequenceFromTemplate(
+                sequence.id,
+                instant(26),
+                instant(26),
+                ZoneOffset.UTC,
+                positiveSequence.revision,
+            )
+        assertEquals(
+            positiveSequence.revision,
+            database.sequenceSnapshotDao().getById(firstSequence.execution.snapshotId.value)?.sourceRevision,
+        )
+        liveForExistingDatabase().endSequenceEarly(instant(27))
+        val changedPositiveSequence =
+            authoring.saveSequenceTemplate(
+                sequence.id,
+                positiveSequence.revision,
+                sequenceDraftWithFirstCountdown(authoring, positiveSequence, Duration.ofSeconds(3)),
+                instant(28),
+            )
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.startSequenceFromTemplate(
+                sequence.id,
+                instant(29),
+                instant(29),
+                ZoneOffset.UTC,
+                positiveSequence.revision,
+            )
+        }
+        assertEquals(1, count("sequence_snapshots"))
+        assertEquals(1, count("sequence_executions"))
+        val reselectedSequence = library.getLaunchTarget(LibraryTemplateId.Sequence(sequence.id))
+        assertEquals(Duration.ofSeconds(3), reselectedSequence.startCountdown)
+        val startedSequence =
+            library.startSequenceFromTemplate(
+                sequence.id,
+                instant(30),
+                instant(30),
+                ZoneOffset.UTC,
+                changedPositiveSequence.revision,
+            )
+        assertEquals(
+            changedPositiveSequence.revision,
+            database.sequenceSnapshotDao().getById(startedSequence.execution.snapshotId.value)?.sourceRevision,
+        )
     }
 
     @Test
@@ -282,14 +817,30 @@ class LibraryRepositoryTest {
     }
 
     @Test
-    fun ordinaryTemplateLaunchesCreateFreshSnapshotsAndUpdateRecentWithoutPlanLinkage() {
+    fun productionTemplateLaunchesCreateFreshSnapshotsAndUpdateRecentWithoutPlanLinkage() {
         val repository = repository()
+        val activityCommands = activityCommands()
         activity("timed", "Timed")
+        activity("timer", "Timer", mode = "TIMER")
         activity(
             "no-live",
             "No live",
             mode = "NO_LIVE_TRACKING",
-            fields = listOf(activityField("no-live-field", "no-live", deleted = null)),
+            fields = listOf(activityField("no-live-field", "no-live", deleted = null, name = "Shared value")),
+        )
+        activity(
+            "same-label-other",
+            "Other",
+            mode = "NO_LIVE_TRACKING",
+            fields =
+                listOf(
+                    activityField(
+                        "same-label-other-field",
+                        "same-label-other",
+                        deleted = null,
+                        name = "Shared value",
+                    ),
+                ),
         )
         seedSnapshot("plan-snapshot", "STOPWATCH")
         database.planEntryDao().insert(
@@ -317,16 +868,26 @@ class LibraryRepositoryTest {
             ),
         )
         seedSnapshot("step", "NO_LIVE_TRACKING")
-        sequence("sequence", "Sequence", nodes = listOf(step("sequence-step", "sequence", "step")))
+        sequence(
+            "sequence",
+            "Sequence",
+            recent = 100,
+            nodes = listOf(step("sequence-step", "sequence", "step")),
+        )
 
         repository.archiveActivityTemplate(ActivityTemplateId("timed"), instant(5))
         assertThrows(IllegalArgumentException::class.java) {
-            repository.startActivityFromTemplate(ActivityTemplateId("timed"), instant(10), instant(10), ZoneOffset.UTC)
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+            )
         }
         repository.restoreActivityTemplate(ActivityTemplateId("timed"))
         val timed =
-            repository.startActivityFromTemplate(
-                ActivityTemplateId("timed"),
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
                 instant(10),
                 instant(10),
                 ZoneOffset.UTC,
@@ -338,7 +899,25 @@ class LibraryRepositoryTest {
         assertEquals(1L, database.activityTemplateDao().getById("timed")?.revision)
         assertEquals("PLANNED", database.planEntryDao().getById("unrelated-plan")?.status)
         liveForExistingDatabase().completeActiveActivity(instant(20))
-
+        val timer =
+            activityCommands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timer")),
+                instant(21),
+                instant(21),
+                ZoneOffset.UTC,
+            )
+        val timerSnapshot =
+            requireNotNull(
+                database.activitySnapshotDao().getAggregate(timer.snapshotId.value),
+            ).toDomain()
+        assertEquals("TIMER", timerSnapshot.timeTrackingMode.name)
+        assertEquals(60_000L, timerSnapshot.timerTarget?.toMillis())
+        assertEquals("FINISH", timerSnapshot.settings.timerZeroBehavior.name)
+        val activeTimer =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(21), 100))
+                .active as DailyActive.Activity
+        assertEquals(timer.id, activeTimer.runtime.execution.id)
         val noLive =
             repository.completeNoLiveActivityFromTemplate(
                 ActivityTemplateId("no-live"),
@@ -348,9 +927,84 @@ class LibraryRepositoryTest {
             )
         assertEquals(ActivityExecutionStatus.COMPLETED, noLive.status)
         assertEquals(1_000L, (noLive.values.single() as NumberExecutionValue).scaledValue)
+        assertNull(noLive.activeDuration)
+        assertNull(noLive.completionReason)
         assertNull(noLive.planEntryId)
-        assertNull(database.activeSessionDao().get())
+        assertEquals(timer.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(29L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+        val overridden =
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(31),
+                instant(31),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("no-live-field")),
+                        ActivityEntryValue.Number(0),
+                    ),
+                ),
+            )
+        assertEquals(0L, (overridden.values.single() as NumberExecutionValue).scaledValue)
+        assertEquals(
+            ActivityTemplateFieldId("no-live-field"),
+            database
+                .activitySnapshotDao()
+                .getAggregate(overridden.snapshotId.value)
+                ?.toDomain()
+                ?.fields
+                ?.single()
+                ?.sourceFieldId,
+        )
+        val missing =
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(32),
+                instant(32),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("no-live-field")),
+                        ActivityEntryValue.Missing,
+                    ),
+                ),
+            )
+        assertTrue(missing.values.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(33),
+                instant(33),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("same-label-other-field")),
+                        ActivityEntryValue.Number(99),
+                    ),
+                ),
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-6"))
+        assertEquals(32L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+        assertEquals(timer.id, database.activeSessionDao().get()?.activityExecutionId)
+        val dailyAfterNoLive =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(32), 100))
+        assertEquals(timer.id, (dailyAfterNoLive.active as DailyActive.Activity).runtime.execution.id)
+        assertTrue(
+            dailyAfterNoLive.completedHistory
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .mapTo(mutableSetOf()) { it.executionId }
+                .containsAll(setOf(noLive.id, overridden.id, missing.id)),
+        )
+        val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(overridden.id))
+        assertEquals(
+            0L,
+            (detail.fields.single().actualValue as ActivityHistoryActualValue.Number).scaledValue,
+        )
+        assertEquals("Shared value", detail.fields.single().name)
+
+        liveForExistingDatabase().completeActiveActivity(instant(34))
 
         repository.archiveSequenceTemplate(SequenceTemplateId("sequence"), instant(35))
         assertThrows(IllegalArgumentException::class.java) {
@@ -375,9 +1029,14 @@ class LibraryRepositoryTest {
             database.sequenceSnapshotDao().getById(sequence.execution.snapshotId.value)?.sourceTemplateId,
         )
         assertTrue(sequence.children.values.all { it.planEntryId == null })
-        assertEquals(40L, database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+        assertEquals(100L, database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
         assertEquals(1L, database.sequenceTemplateDao().getById("sequence")?.revision)
         assertEquals("PLANNED", database.planEntryDao().getById("unrelated-plan")?.status)
+        val activeSequence =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(40), 100))
+                .active as DailyActive.Sequence
+        assertEquals(sequence.execution.id, activeSequence.runtime.execution.id)
     }
 
     @Test
@@ -420,6 +1079,139 @@ class LibraryRepositoryTest {
         assertNull(database.activeSessionDao().get())
         assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
         assertEquals("existing-sequence", database.sequenceExecutionDao().getById("sequence-collision")?.snapshotId)
+    }
+
+    @Test
+    fun oversizedPersistedSequenceStartRollsBackBeforeAnyRuntimeOrRecentWriteAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "oversized-sequence-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seedSnapshot("step", "STOPWATCH")
+            sequence(
+                "oversized",
+                "Oversized",
+                nodes =
+                    listOf(
+                        SequenceNodeEntity("repeat", "oversized", "REPEAT", null, 0, null, Int.MAX_VALUE),
+                        SequenceNodeEntity("step", "oversized", "STEP", "repeat", 0, "step", null),
+                    ),
+            )
+
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().startSequenceFromTemplate(
+                    SequenceTemplateId("oversized"),
+                    instant(10),
+                    instant(10),
+                    ZoneOffset.UTC,
+                )
+            }
+
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            assertEquals(0, count("sequence_snapshots"))
+            assertEquals(0, count("sequence_executions"))
+            assertEquals(0, count("sequence_occurrences"))
+            assertEquals(0, count("active_session"))
+            assertNull(database.sequenceTemplateDao().getUserState("oversized")?.lastUsedAtMs)
+            val daily =
+                DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                    .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(10), 100))
+            assertNull(daily.active)
+            assertTrue(daily.completedHistory.isEmpty())
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database =
+                LifeTracingDatabase
+                    .inMemoryBuilder(context)
+                    .allowMainThreadQueries()
+                    .build()
+        }
+    }
+
+    @Test
+    fun oversizedPersistedSequenceDuplicateIsRejectedWithoutResidueAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "oversized-sequence-duplicate-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seedSnapshot("step", "STOPWATCH")
+            sequence(
+                "oversized",
+                "Oversized",
+                nodes =
+                    listOf(
+                        SequenceNodeEntity("repeat", "oversized", "REPEAT", null, 0, null, Int.MAX_VALUE),
+                        SequenceNodeEntity("step", "oversized", "STEP", "repeat", 0, "step", null),
+                    ),
+            )
+            val source =
+                requireNotNull(database.sequenceTemplateDao().getAggregate("oversized")).toDomain()
+            val counts =
+                listOf("sequence_templates", "sequence_nodes", "sequence_template_user_state", "statistics_series")
+                    .associateWith(::count)
+
+            fun assertUnchanged() {
+                assertEquals(
+                    source,
+                    requireNotNull(database.sequenceTemplateDao().getAggregate("oversized")).toDomain(),
+                )
+                counts.forEach { (table, expected) -> assertEquals(expected, count(table)) }
+            }
+
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().duplicateSequenceTemplate(SequenceTemplateId("oversized"), instant(10))
+            }
+            assertUnchanged()
+
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            assertUnchanged()
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().duplicateSequenceTemplate(SequenceTemplateId("oversized"), instant(20))
+            }
+            assertUnchanged()
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database =
+                LifeTracingDatabase
+                    .inMemoryBuilder(context)
+                    .allowMainThreadQueries()
+                    .build()
+        }
+    }
+
+    @Test
+    fun liveConflictRollsBackRequestedSnapshotAndRecentWithoutTouchingTheWinner() {
+        activity("winner", "Winner")
+        activity("loser", "Loser")
+        val repository = repository()
+        val winner =
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("winner"),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+            )
+
+        assertThrows(LiveSessionConflictException::class.java) {
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("loser"),
+                instant(20),
+                instant(20),
+                ZoneOffset.UTC,
+            )
+        }
+
+        assertNull(database.activitySnapshotDao().getById("activity-launch-2"))
+        assertNull(database.activityTemplateDao().getUserState("loser")?.lastUsedAtMs)
+        assertEquals(winner.id, database.activeSessionDao().get()?.activityExecutionId)
     }
 
     @Test
@@ -539,6 +1331,21 @@ class LibraryRepositoryTest {
         assertNotNull(database.statisticsSeriesDao().getById(sequenceCopy.statisticsSeriesId.value))
     }
 
+    private fun sequenceDraftWithFirstCountdown(
+        authoring: TemplateAuthoringRepository,
+        sequence: com.alexandr5476.lifetracing.domain.SequenceTemplate,
+        countdown: Duration,
+    ): SequenceTemplateDraft {
+        val step = sequence.nodes.single() as ActivityStep
+        val snapshots =
+            mapOf(step.activitySnapshotId to requireNotNull(authoring.getStepSnapshot(sequence.id, step.id)))
+        val draft = sequence.toAuthoringDraft(snapshots)
+        val first = draft.nodes.single() as SequenceNodeDraft.Step
+        return draft.copy(
+            nodes = listOf(SequenceNodeDraft.Step(first.value.copy(overrides = SequenceStepOverrides(countdown)))),
+        )
+    }
+
     private fun repository(
         activityExecutionCollision: String? = null,
         sequenceExecutionCollision: String? = null,
@@ -596,6 +1403,30 @@ class LibraryRepositoryTest {
         )
     }
 
+    private fun activityCommands(): ActivityCommandRepository {
+        var execution = 0
+        var snapshot = 0
+        var field = 0
+        var option = 0
+        return ActivityCommandRepository(
+            database,
+            LiveSessionRepository(
+                database,
+                { ActivityExecutionId("command-execution-${++execution}") },
+                { ActivityExecutionPauseId("command-pause-${++execution}") },
+                { SequenceExecutionId("unused-sequence") },
+                { SequenceOccurrenceId("unused-occurrence") },
+                { SequenceIntervalId("unused-interval") },
+            ),
+            ActivitySnapshotFactory(
+                { ActivitySnapshotId("command-snapshot-${++snapshot}") },
+                { ActivitySnapshotFieldId("command-field-${++field}") },
+                { ActivitySnapshotCategoryOptionId("command-option-${++option}") },
+            ),
+            { ActivityExecutionId("command-execution-${++execution}") },
+        )
+    }
+
     private fun liveForExistingDatabase(): LiveSessionRepository {
         var pause = 0
         return LiveSessionRepository(
@@ -618,6 +1449,7 @@ class LibraryRepositoryTest {
         pinned: Int? = null,
         recent: Long? = null,
         fields: List<ActivityTemplateFieldEntity> = emptyList(),
+        settings: ActivityTemplateSettingsEntity = ActivityTemplateSettingsEntity(id),
     ) {
         series("$id-series", "ACTIVITY")
         database.activityTemplateDao().insertAggregate(
@@ -635,7 +1467,7 @@ class LibraryRepositoryTest {
                     deleted,
                     folder,
                 ),
-                ActivityTemplateSettingsEntity(id),
+                settings,
                 fields = fields,
                 userState = ActivityTemplateUserStateEntity(id, pinned, recent),
             ),
@@ -652,15 +1484,18 @@ class LibraryRepositoryTest {
         recent: Long? = null,
         fields: List<SequenceTemplateFieldEntity> = emptyList(),
         nodes: List<SequenceNodeEntity> = emptyList(),
+        settings: SequenceTemplateSettingsEntity = SequenceTemplateSettingsEntity(id),
+        stepOverrides: List<SequenceStepOverrideEntity> = emptyList(),
     ) {
         series("$id-series", "SEQUENCE")
         database.sequenceTemplateDao().insertAggregate(
             SequenceTemplateAggregateEntity(
                 SequenceTemplateEntity(id, name, "$name comment", "$id-series", revision, 0, 0, deleted, folder),
-                SequenceTemplateSettingsEntity(id),
+                settings,
                 SequenceTemplateUserStateEntity(id, pinned, recent),
                 fields = fields,
                 nodes = nodes,
+                stepOverrides = stepOverrides,
             ),
         )
     }
@@ -720,7 +1555,8 @@ class LibraryRepositoryTest {
         id: String,
         owner: String,
         deleted: Long?,
-    ) = ActivityTemplateFieldEntity(id, owner, 0, id, "NUMBER", "reps", 0, 1_000, null, null, true, 0, 0, deleted)
+        name: String = id,
+    ) = ActivityTemplateFieldEntity(id, owner, 0, name, "NUMBER", "reps", 0, 1_000, null, null, true, 0, 0, deleted)
 
     private fun sequenceField(
         id: String,
@@ -749,4 +1585,29 @@ class LibraryRepositoryTest {
     }
 
     private fun instant(ms: Long): Instant = Instant.ofEpochMilli(ms)
+
+    private fun count(table: String): Int =
+        database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM `$table`").use {
+            check(it.moveToFirst())
+            it.getInt(0)
+        }
+
+    private fun deterministicAuthoringIds(prefix: String): TemplateAuthoringIds {
+        var next = 0
+
+        fun id(kind: String) = "$prefix-$kind-${next++}"
+        return TemplateAuthoringIds(
+            { ActivityTemplateId(id("activity")) },
+            { SequenceTemplateId(id("sequence")) },
+            { StatisticsSeriesId(id("series")) },
+            { ActivityTemplateFieldId(id("activity-field")) },
+            { CategoryOptionId(id("activity-option")) },
+            { SequenceTemplateFieldId(id("sequence-field")) },
+            { SequenceTemplateCategoryOptionId(id("sequence-option")) },
+            { SequenceNodeId(id("node")) },
+            { ActivitySnapshotId(id("snapshot")) },
+            { ActivitySnapshotFieldId(id("snapshot-field")) },
+            { ActivitySnapshotCategoryOptionId(id("snapshot-option")) },
+        )
+    }
 }

@@ -52,13 +52,14 @@ fun LifeTracingSecondaryButton(
 }
 
 @Composable
-@Suppress("FunctionNaming")
+@Suppress("FunctionNaming", "LongParameterList")
 fun LifeTracingOutlinedTextField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     label: @Composable (() -> Unit)? = null,
     readOnly: Boolean = false,
+    enabled: Boolean = true,
 ) {
     OutlinedTextField(
         value = value,
@@ -66,6 +67,7 @@ fun LifeTracingOutlinedTextField(
         modifier = modifier,
         label = label,
         readOnly = readOnly,
+        enabled = enabled,
         shape = MaterialTheme.shapes.small,
     )
 }

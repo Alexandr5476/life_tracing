@@ -2,6 +2,8 @@ package com.alexandr5476.lifetracing.domain
 
 import java.time.Instant
 
+class LiveSessionConflictException : IllegalArgumentException("Another live session is already active")
+
 enum class ActiveSessionKind {
     ACTIVITY,
     SEQUENCE,
