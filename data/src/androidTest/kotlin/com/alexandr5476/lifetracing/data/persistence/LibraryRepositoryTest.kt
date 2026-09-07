@@ -1082,6 +1082,57 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun oversizedPersistedSequenceStartRollsBackBeforeAnyRuntimeOrRecentWriteAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "oversized-sequence-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seedSnapshot("step", "STOPWATCH")
+            sequence(
+                "oversized",
+                "Oversized",
+                nodes =
+                    listOf(
+                        SequenceNodeEntity("repeat", "oversized", "REPEAT", null, 0, null, Int.MAX_VALUE),
+                        SequenceNodeEntity("step", "oversized", "STEP", "repeat", 0, "step", null),
+                    ),
+            )
+
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().startSequenceFromTemplate(
+                    SequenceTemplateId("oversized"),
+                    instant(10),
+                    instant(10),
+                    ZoneOffset.UTC,
+                )
+            }
+
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            assertEquals(0, count("sequence_snapshots"))
+            assertEquals(0, count("sequence_executions"))
+            assertEquals(0, count("sequence_occurrences"))
+            assertEquals(0, count("active_session"))
+            assertNull(database.sequenceTemplateDao().getUserState("oversized")?.lastUsedAtMs)
+            val daily =
+                DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }, liveForExistingDatabase())
+                    .getDaily(DailyQuery(LocalDate.ofEpochDay(0), instant(10), 100))
+            assertNull(daily.active)
+            assertTrue(daily.completedHistory.isEmpty())
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database =
+                LifeTracingDatabase
+                    .inMemoryBuilder(context)
+                    .allowMainThreadQueries()
+                    .build()
+        }
+    }
+
+    @Test
     fun liveConflictRollsBackRequestedSnapshotAndRecentWithoutTouchingTheWinner() {
         activity("winner", "Winner")
         activity("loser", "Loser")

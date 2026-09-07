@@ -4,22 +4,50 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
+object RuntimeOccurrenceCardinalityPolicy {
+    const val MAX_SUPPORTED_RUNTIME_OCCURRENCES = 10_000
+
+    fun materializedCount(nodes: List<SequenceSnapshotNode>): Long =
+        nodes.fold(0L) { total, node ->
+            val produced =
+                when (node) {
+                    is SequenceSnapshotActivityStep -> 1L
+                    is SequenceSnapshotRepeatBlock ->
+                        Math.multiplyExact(node.repeatCount.toLong(), node.children.size.toLong())
+                }
+            Math.addExact(total, produced)
+        }
+
+    fun draftMaterializedCount(nodes: List<SequenceNodeDraft>): Long =
+        nodes.fold(0L) { total, node ->
+            val produced =
+                when (node) {
+                    is SequenceNodeDraft.Step -> 1L
+                    is SequenceNodeDraft.Repeat ->
+                        Math.multiplyExact(
+                            node.value.repeatCount
+                                .toLong(),
+                            node.value.children.size
+                                .toLong(),
+                        )
+                }
+            Math.addExact(total, produced)
+        }
+
+    fun requireSupported(count: Long) {
+        require(count in 0L..MAX_SUPPORTED_RUNTIME_OCCURRENCES) {
+            "Runtime occurrence count exceeds the supported limit of $MAX_SUPPORTED_RUNTIME_OCCURRENCES"
+        }
+    }
+}
+
 class RuntimeOccurrenceMaterializer(
     private val nextOccurrenceId: () -> SequenceOccurrenceId,
 ) {
     fun materialize(snapshot: SequenceConfigSnapshot): List<RuntimeOccurrence> {
+        val count = RuntimeOccurrenceCardinalityPolicy.materializedCount(snapshot.nodes)
+        RuntimeOccurrenceCardinalityPolicy.requireSupported(count)
         SequenceConfigSnapshotValidator.requireValid(snapshot)
-        val count =
-            snapshot.nodes.fold(0L) { total, node ->
-                val produced =
-                    when (node) {
-                        is SequenceSnapshotActivityStep -> 1L
-                        is SequenceSnapshotRepeatBlock ->
-                            Math.multiplyExact(node.repeatCount.toLong(), node.children.size.toLong())
-                    }
-                Math.addExact(total, produced)
-            }
-        require(count <= Int.MAX_VALUE) { "Runtime occurrence count exceeds supported positions" }
 
         val ids = HashSet<SequenceOccurrenceId>(count.toInt())
         return buildList(count.toInt()) {

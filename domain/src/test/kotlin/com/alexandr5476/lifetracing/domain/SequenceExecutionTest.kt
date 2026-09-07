@@ -102,6 +102,38 @@ class SequenceExecutionTest {
     }
 
     @Test
+    fun runtimeOccurrenceCardinalityPolicyAcceptsItsLimitAndRejectsTheNextOccurrence() {
+        assertDoesNotThrow {
+            RuntimeOccurrenceCardinalityPolicy.requireSupported(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES.toLong(),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RuntimeOccurrenceCardinalityPolicy.requireSupported(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES.toLong() + 1,
+            )
+        }
+    }
+
+    @Test
+    fun materializerRejectsMaxIntSingleChildRepeatBeforeGeneratingOccurrenceIds() {
+        var generatedIds = 0
+
+        assertThrows(IllegalArgumentException::class.java) {
+            RuntimeOccurrenceMaterializer {
+                generatedIds += 1
+                SequenceOccurrenceId("occ-$generatedIds")
+            }.materialize(
+                snapshot(
+                    nodes = listOf(repeat("huge", 0, Int.MAX_VALUE, step("child", 0))),
+                ),
+            )
+        }
+
+        assertEquals(0, generatedIds)
+    }
+
+    @Test
     fun timelineUsesActiveUnionAndPauseComplementAcrossOverlapAdjacencyAndUnsortedInput() {
         val start = instant(0)
         val durations =

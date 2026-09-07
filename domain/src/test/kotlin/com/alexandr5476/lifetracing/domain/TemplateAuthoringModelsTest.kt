@@ -122,6 +122,31 @@ class TemplateAuthoringModelsTest {
     }
 
     @Test
+    fun `draft validation rejects an unstartable Repeat cardinality`() {
+        val step =
+            ActivityStepDraft(
+                DraftIdentity.New("step"),
+                0,
+                StepActivityDraft.Local(snapshotDraft()),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            TemplateAuthoringDraftValidator.requireValid(
+                SequenceTemplateDraft(
+                    "Sequence",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Repeat(
+                                SequenceRepeatBlockDraft(DraftIdentity.New("repeat"), 0, Int.MAX_VALUE, listOf(step)),
+                            ),
+                        ),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `propagation modes follow the whole-snapshot flag`() {
         assertTrue(TemplateAuthoringPolicy.shouldPropagate(false, LinkedStepPropagationMode.ONLY_UNMODIFIED))
         assertFalse(TemplateAuthoringPolicy.shouldPropagate(true, LinkedStepPropagationMode.ONLY_UNMODIFIED))

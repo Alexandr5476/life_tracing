@@ -91,6 +91,10 @@ Future occurrence reasons require a domain code, a later migration of the SQL `C
 
 `sequence_occurrences.repeat_iteration` is 1-based. Repeat ×N persists iterations `1..N`, never `0..N-1`; Repeat ×3 therefore stores iterations 1, 2, and 3.
 
+## Runtime Sequence occurrence cardinality
+
+A single SequenceExecution supports at most `MAX_SUPPORTED_RUNTIME_OCCURRENCES = 10_000` materialized occurrences. New Sequence authoring commits reject a greater total. The start/materialization boundary independently computes the total from frozen top-level Steps and Repeat child counts with checked `Long` arithmetic, and rejects a greater total before generating occurrence IDs, allocating occurrence collections, iterating Repeat instances, or persisting runtime state. This is a technical runtime limit only: Repeat provenance, identity, 1-based iteration, runtime position, and the persisted `repeat_count INTEGER` schema remain unchanged. Existing persisted Templates, snapshots, Plans, and migration-originated configurations may remain representable but are rejected normally if started above the bound.
+
 ## Live-runtime countdown boundary
 
 Activity/Sequence pre-start countdown is a preflight state outside durable Execution runtime in v1.
