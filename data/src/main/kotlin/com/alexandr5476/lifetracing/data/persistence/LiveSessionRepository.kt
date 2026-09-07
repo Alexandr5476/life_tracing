@@ -749,7 +749,7 @@ class LiveSessionRepository internal constructor(
         )
     }
 
-    private fun getActiveSessionLocked(): ActiveSession? {
+    internal fun getActiveSessionLocked(): ActiveSession? {
         val session = database.activeSessionDao().get() ?: return null
         when (session.kind) {
             ActiveSessionKind.ACTIVITY -> validateActivitySession(session)

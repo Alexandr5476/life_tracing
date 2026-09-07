@@ -211,7 +211,7 @@ class LibraryRepository internal constructor(
                         true
                     }
                 }
-            isLive && database.activeSessionDao().get() != null
+            isLive && liveSessions.getActiveSessionLocked() != null
         }
 
     fun createFolder(

@@ -72,6 +72,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.Collections
 import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
@@ -136,7 +137,7 @@ class LibraryRepositoryTest {
 
     @Test
     fun catalogTagHydrationChunksBothKindsAboveTheSafeBindCount() {
-        val tagQueries: MutableList<Pair<String, List<Any?>>> = mutableListOf()
+        val tagQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
         database.close()
         database =
             LifeTracingDatabase
@@ -158,16 +159,17 @@ class LibraryRepositoryTest {
         }
 
         val all = repository.getAll()
+        val observedTagQueries = synchronized(tagQueries) { tagQueries.toList() }
         assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Activity })
         assertEquals(itemCount, all.count { it.id is LibraryTemplateId.Sequence })
         assertTrue(all.all { TagId("tag") in it.tagIds })
         assertEquals(
             listOf(900, 1),
-            tagQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
+            observedTagQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
         )
         assertEquals(
             listOf(900, 1),
-            tagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
+            observedTagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
         )
     }
 
@@ -324,6 +326,24 @@ class LibraryRepositoryTest {
         assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
         assertNull(database.activeSessionDao().get())
         assertNull(database.activityTemplateDao().getUserState("mode-changed")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun launchConflictRejectsActivitySessionWhoseStateDisagreesWithExecution() {
+        val library = repository()
+        activity("target", "Target")
+        seedSnapshot("running-snapshot", "STOPWATCH")
+        standaloneExecution("running", "running-snapshot", "activity-series")
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO active_session VALUES (1, 'ACTIVITY', 'running', NULL, 'PAUSED', 0)",
+        )
+        val before = database.activeSessionDao().get()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            library.hasLiveLaunchConflict(LibraryTemplateId.Activity(ActivityTemplateId("target")), 1)
+        }
+
+        assertEquals(before, database.activeSessionDao().get())
     }
 
     @Test
