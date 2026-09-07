@@ -1,15 +1,22 @@
 package com.alexandr5476.lifetracing.library
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.Folder
@@ -21,9 +28,11 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
+import java.util.Locale
 
 class LibraryScreenPresentationTest {
     @get:Rule
@@ -90,6 +99,59 @@ class LibraryScreenPresentationTest {
         composeTestRule.onNodeWithText("Library / Root / Nested").assertIsDisplayed()
         composeTestRule.onNodeWithText("Search activity").assertIsDisplayed()
         composeTestRule.onNodeWithText("Search sequence").assertIsDisplayed()
+    }
+
+    @Test
+    fun russianFiltersWrapWithinACompactPhoneWidthAndRemainActionable() {
+        val russian = Locale.forLanguageTag("ru")
+        val configuration =
+            android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                setLocale(russian)
+            }
+        val context = composeTestRule.activity.createConfigurationContext(configuration)
+        val actions = mutableListOf<LibraryAction>()
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+            ) {
+                LifeTracingTheme {
+                    Box(Modifier.width(320.dp)) {
+                        LibraryScreen(
+                            state =
+                                LibraryPresentationState(
+                                    browse =
+                                        LibraryLoad.Content(
+                                            LibraryBrowse(
+                                                null,
+                                                emptyList(),
+                                                emptyList(),
+                                                LibraryContents(emptyList(), emptyList(), emptyList()),
+                                            ),
+                                        ),
+                                ),
+                            onAction = actions::add,
+                            onRouteBack = {},
+                        )
+                    }
+                }
+            }
+        }
+
+        val filters =
+            listOf(
+                context.getString(R.string.library_filter_all) to LibraryKindFilter.ALL,
+                context.getString(R.string.library_filter_activities) to LibraryKindFilter.ACTIVITIES,
+                context.getString(R.string.library_filter_sequences) to LibraryKindFilter.SEQUENCES,
+            )
+        val compactWidthPixels = 320 * context.resources.displayMetrics.density
+        filters.forEach { (label, filter) ->
+            val node = composeTestRule.onNodeWithText(label)
+            node.assertIsDisplayed()
+            assertTrue(node.fetchSemanticsNode().boundsInRoot.right <= compactWidthPixels)
+            node.performClick()
+            assertEquals(LibraryAction.SetFilter(filter), actions.last())
+        }
     }
 
     private fun folder(

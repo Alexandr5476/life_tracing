@@ -5,6 +5,8 @@ package com.alexandr5476.lifetracing.library
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -105,11 +107,15 @@ private fun Breadcrumb(path: List<Folder>) {
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun FilterRow(
     selected: LibraryKindFilter,
     onSelect: (LibraryKindFilter) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         LibraryKindFilter.entries.forEach { filter ->
             val label =
                 stringResource(

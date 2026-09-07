@@ -97,10 +97,7 @@ class LibraryController internal constructor(
     }
 
     private fun retry() {
-        when (val browse = mutableState.value.browse) {
-            is LibraryLoad.Content -> browse.value.folderId?.let(::loadFolder) ?: loadRoot()
-            else -> loadRoot()
-        }
+        mutableState.value.folderId?.let(::loadFolder) ?: loadRoot()
         if (mutableState.value.search is LibraryLoad.Failure) search(mutableState.value.query)
     }
 

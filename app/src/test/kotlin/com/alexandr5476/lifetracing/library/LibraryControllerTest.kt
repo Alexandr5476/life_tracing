@@ -9,6 +9,7 @@ import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -148,6 +149,123 @@ class LibraryControllerTest {
             controller.close()
         }
 
+    @Test
+    fun failedNestedFolderRetryReusesItsCanonicalFolderIdentity() =
+        runBlocking {
+            val root = folder("root", "Root")
+            val nested = folder("nested", "Nested", root.id)
+            var rootReads = 0
+            val pathReads = mutableListOf<FolderId>()
+            val contentReads = mutableListOf<FolderId>()
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        rootReads++
+                        LibraryRoot(LibraryContents(listOf(root), emptyList(), emptyList()), emptyList())
+                    },
+                    { id ->
+                        contentReads += id
+                        LibraryContents(emptyList(), emptyList(), emptyList())
+                    },
+                    { id ->
+                        pathReads += id
+                        if (pathReads.size == 1) error("nested read failed")
+                        listOf(root, nested)
+                    },
+                    { _, _ -> emptyList() },
+                )
+            controller.awaitBrowse()
+
+            controller.dispatch(LibraryAction.OpenFolder(nested.id))
+            controller.awaitBrowseFailure()
+            assertEquals(nested.id, controller.state.value.folderId)
+
+            controller.dispatch(LibraryAction.Retry)
+            val browse = controller.awaitBrowse { it.folderId == nested.id }
+
+            assertEquals(1, rootReads)
+            assertEquals(listOf(nested.id, nested.id), pathReads)
+            assertEquals(listOf(nested.id), contentReads)
+            assertEquals(listOf(root.id, nested.id), browse.path.map(Folder::id))
+            controller.close()
+        }
+
+    @Test
+    fun failedRootRetryReloadsRoot() =
+        runBlocking {
+            var rootReads = 0
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        rootReads++
+                        if (rootReads == 1) error("root read failed")
+                        LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList())
+                    },
+                    { error("unused folder contents") },
+                    { error("unused folder path") },
+                    { _, _ -> emptyList() },
+                )
+            controller.awaitBrowseFailure()
+            assertEquals(null, controller.state.value.folderId)
+
+            controller.dispatch(LibraryAction.Retry)
+            controller.awaitBrowse()
+
+            assertEquals(2, rootReads)
+            controller.close()
+        }
+
+    @Test
+    fun staleNestedRetryCannotReplaceANewerFolder() =
+        runBlocking {
+            val root = folder("root", "Root")
+            val nested = folder("nested", "Nested", root.id)
+            val newer = folder("newer", "Newer", root.id)
+            val retryPathStarted = CompletableDeferred<Unit>()
+            val releaseRetryPath = CompletableDeferred<List<Folder>>()
+            val staleContentsRead = CompletableDeferred<Unit>()
+            var nestedPathReads = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(root), emptyList(), emptyList()), emptyList()) },
+                    { id ->
+                        if (id == nested.id) staleContentsRead.complete(Unit)
+                        LibraryContents(emptyList(), emptyList(), emptyList())
+                    },
+                    { id ->
+                        when (id) {
+                            nested.id -> {
+                                nestedPathReads++
+                                if (nestedPathReads == 1) error("nested read failed")
+                                retryPathStarted.complete(Unit)
+                                releaseRetryPath.await()
+                            }
+                            newer.id -> listOf(root, newer)
+                            else -> error("unexpected folder")
+                        }
+                    },
+                    { _, _ -> emptyList() },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.OpenFolder(nested.id))
+            controller.awaitBrowseFailure()
+
+            controller.dispatch(LibraryAction.Retry)
+            retryPathStarted.await()
+            controller.dispatch(LibraryAction.OpenFolder(newer.id))
+            controller.awaitBrowse { it.folderId == newer.id }
+            releaseRetryPath.complete(listOf(root, nested))
+            staleContentsRead.await()
+
+            assertEquals(newer.id, controller.state.value.folderId)
+            assertEquals(newer.id, controller.currentBrowse().folderId)
+            assertEquals(2, nestedPathReads)
+            controller.close()
+        }
+
     @Suppress("LongParameterList")
     private fun controller(
         scope: CoroutineScope,
@@ -168,6 +286,11 @@ class LibraryControllerTest {
         withTimeout(2_000) {
             state.first { (it.browse as? LibraryLoad.Content)?.value?.let(predicate) == true }
         }.let { (it.browse as LibraryLoad.Content).value }
+
+    private suspend fun LibraryController.awaitBrowseFailure() =
+        withTimeout(2_000) { state.first { it.browse is LibraryLoad.Failure } }
+
+    private fun LibraryController.currentBrowse(): LibraryBrowse = (state.value.browse as LibraryLoad.Content).value
 
     private suspend fun LibraryController.awaitSearch(): List<LibraryTrackable> =
         withTimeout(2_000) { state.first { it.search is LibraryLoad.Content } }.let {
