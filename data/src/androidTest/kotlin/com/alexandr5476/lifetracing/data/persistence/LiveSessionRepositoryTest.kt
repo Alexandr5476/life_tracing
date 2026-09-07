@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
@@ -1735,6 +1736,101 @@ class LiveSessionRepositoryTest {
         assertNotNull(repository.getActiveSession())
     }
 
+    @Test
+    fun runtimeAddCapsPersistedActiveSequenceAndLegacyOverLimitRuntimeRemainsRecoverable() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "runtime-occurrence-limit-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seed(database)
+            repository = repository(database)
+            runtimeTemplate("runtime-limit-template", TimeTrackingMode.STOPWATCH)
+            val started =
+                repository.startSequenceFromSnapshot(
+                    SequenceSnapshotId("sequence-one-timer"),
+                    instant(0),
+                    instant(0),
+                    ZoneOffset.UTC,
+                )
+            addLegacyOccurrences(
+                started.execution.id.value,
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES - 1,
+            )
+
+            val allowed =
+                repository.runtimeAdd(
+                    ActivityEntrySource.Template(ActivityTemplateId("runtime-limit-template")),
+                    RuntimeInsertionPlacement.TO_END,
+                    instant(1),
+                )
+            val occurrencesAtLimit = database.sequenceExecutionDao().getOccurrences(started.execution.id.value)
+            val snapshotsAtLimit = count("activity_snapshots")
+            val recentAtLimit = database.activityTemplateDao().getUserState("runtime-limit-template")?.lastUsedAtMs
+
+            assertEquals(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES,
+                allowed.execution.occurrences.size,
+            )
+            assertEquals(RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES, occurrencesAtLimit.size)
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.runtimeAdd(
+                    ActivityEntrySource.Template(ActivityTemplateId("runtime-limit-template")),
+                    RuntimeInsertionPlacement.TO_END,
+                    instant(2),
+                )
+            }
+            assertEquals(snapshotsAtLimit, count("activity_snapshots"))
+            assertEquals(occurrencesAtLimit, database.sequenceExecutionDao().getOccurrences(started.execution.id.value))
+            assertEquals(
+                recentAtLimit,
+                database.activityTemplateDao().getUserState("runtime-limit-template")?.lastUsedAtMs,
+            )
+
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = repository(database, 100)
+            val recoveredAtLimit = activeSequence()
+            assertEquals(started.execution.id, recoveredAtLimit.execution.id)
+            assertEquals(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES,
+                recoveredAtLimit.execution.occurrences.size,
+            )
+
+            addLegacyOccurrences(
+                started.execution.id.value,
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES + 1,
+            )
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = repository(database, 200)
+            assertEquals(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES + 1,
+                activeSequence().execution.occurrences.size,
+            )
+            repository.reconcileActiveSession(instant(3))
+            repository.pauseActiveSequence(instant(4))
+            repository.resumeActiveSequence(instant(5))
+            assertEquals(
+                RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES + 1,
+                activeSequence().execution.occurrences.size,
+            )
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.runtimeAdd(
+                    ActivityEntrySource.Template(ActivityTemplateId("runtime-limit-template")),
+                    RuntimeInsertionPlacement.TO_END,
+                    instant(6),
+                )
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database = inMemoryDatabase()
+            repository = repository(database)
+        }
+    }
+
     private fun inMemoryDatabase() =
         LifeTracingDatabase
             .inMemoryBuilder(ApplicationProvider.getApplicationContext())
@@ -1876,6 +1972,39 @@ class LiveSessionRepositoryTest {
                 { ActivitySnapshotCategoryOptionId("runtime-option-${++option}") },
             ),
         )
+    }
+
+    private fun addLegacyOccurrences(
+        executionId: String,
+        targetCount: Int,
+    ) {
+        val existing = database.sequenceExecutionDao().getOccurrences(executionId)
+        val source = existing.single { it.status == "CURRENT" }
+        val sql = database.openHelper.writableDatabase
+        val insertOccurrenceSql =
+            """
+            INSERT INTO sequence_occurrences (
+                id, sequence_execution_id, source_sequence_snapshot_node_id, activity_snapshot_id,
+                runtime_position, repeat_source_snapshot_node_id, repeat_iteration, status,
+                entered_at_ms, completed_at_ms, completion_reason, is_runtime_added, is_deleted_from_history
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'NOT_STARTED', NULL, NULL, NULL, 0, 0)
+            """.trimIndent()
+        database.runInTransaction {
+            (existing.size until targetCount).forEach { position ->
+                sql.execSQL(
+                    insertOccurrenceSql,
+                    arrayOf<Any?>(
+                        "legacy-$executionId-$position",
+                        executionId,
+                        source.sourceSequenceSnapshotNodeId,
+                        source.activitySnapshotId,
+                        position,
+                        source.repeatSourceSnapshotNodeId,
+                        source.repeatIteration,
+                    ),
+                )
+            }
+        }
     }
 
     private fun runtimeTemplate(
