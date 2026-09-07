@@ -200,6 +200,11 @@ class LifeTracingRuntimeGraph internal constructor(
                         wallClock,
                         ZoneId::systemDefault,
                         CoroutinePreflightScheduler(scope),
+                        initialLiveConflict = { target ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
+                            }
+                        },
                     )
                 },
             )

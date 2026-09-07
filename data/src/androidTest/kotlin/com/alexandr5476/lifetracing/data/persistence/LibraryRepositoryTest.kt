@@ -293,6 +293,28 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun staleNoLiveTargetIsClassifiedBeforeItsCurrentModeAndInitialLiveEligibility() {
+        val library = repository()
+        activity("mode-changed", "Mode changed", mode = "STOPWATCH", revision = 2)
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("mode-changed"),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.hasLiveLaunchConflict(LibraryTemplateId.Activity(ActivityTemplateId("mode-changed")), 1)
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("mode-changed")?.lastUsedAtMs)
+    }
+
+    @Test
     fun folderMutationsRejectCyclesAndCorruptCycleReadsFailExplicitly() {
         val repository = repository()
         repository.createFolder(FolderId("a"), "A", null, instant(1))

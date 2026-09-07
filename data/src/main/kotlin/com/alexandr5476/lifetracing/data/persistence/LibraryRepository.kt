@@ -192,6 +192,28 @@ class LibraryRepository internal constructor(
             }
         }
 
+    /** Checks the current semantic target and live slot in one database transaction. */
+    fun hasLiveLaunchConflict(
+        id: LibraryTemplateId,
+        expectedRevision: Long,
+    ): Boolean =
+        transaction {
+            val isLive =
+                when (id) {
+                    is LibraryTemplateId.Activity -> {
+                        val template = requireActiveActivity(id.id)
+                        if (template.revision != expectedRevision) throw StaleLauncherTargetException()
+                        template.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING
+                    }
+                    is LibraryTemplateId.Sequence -> {
+                        val template = requireActiveSequence(id.id)
+                        if (template.revision != expectedRevision) throw StaleLauncherTargetException()
+                        true
+                    }
+                }
+            isLive && database.activeSessionDao().get() != null
+        }
+
     fun createFolder(
         id: FolderId,
         name: String,
@@ -450,10 +472,10 @@ class LibraryRepository internal constructor(
     ): ActivityExecution =
         transaction {
             val template = requireActiveActivity(templateId)
+            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             require(template.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick completion requires NO_LIVE_TRACKING"
             }
-            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             val snapshot = activitySnapshotFactory.fromTemplate(template, createdAt)
             database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val execution =

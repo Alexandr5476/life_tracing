@@ -18,7 +18,9 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class StartActivityControllerTest {
     @Test
@@ -447,6 +451,53 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun selectObservationBeforeTheDurableBoundaryCannotResetOrReplaceTheCommittingNoLiveWriter() =
+        runBlocking {
+            val observed = CountDownLatch(1)
+            val releaseSelect = CountDownLatch(1)
+            val writerGate = CompletableDeferred<Unit>()
+            val first = noLiveTarget("first").copy(startCountdown = Duration.ofSeconds(3))
+            val second = noLiveTarget("second")
+            val harness =
+                Harness().apply {
+                    this.writerGate = writerGate
+                    targetReader = { if (it == activityId("first")) first else second }
+                    onSelectObserved = { command ->
+                        if (command is LauncherCommandState.Preflight) {
+                            observed.countDown()
+                            check(releaseSelect.await(2, TimeUnit.SECONDS))
+                        }
+                    }
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("first"))
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitPreflight()
+
+            val selecting =
+                launch(Dispatchers.Default) {
+                    controller.dispatch(StartActivityAction.Select(activityId("second")))
+                }
+            assertTrue(observed.await(2, TimeUnit.SECONDS))
+            harness.scheduler.fireLatestTwice()
+            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            releaseSelect.countDown()
+            selecting.join()
+
+            assertEquals("first", controller.loadedTarget().name)
+            withTimeout(2_000) { while (harness.commands.isEmpty()) kotlinx.coroutines.yield() }
+            assertEquals(1, harness.commands.size)
+            assertEquals(
+                "first",
+                (harness.commands.single() as LauncherDurableCommand.CompleteNoLive).templateId.value,
+            )
+            writerGate.complete(Unit)
+            controller.awaitCommitted()
+            controller.close()
+        }
+
+    @Test
     fun staleDurableRevisionRehydratesBeforeAnotherLaunchCanUseTheNewConfiguration() =
         runBlocking {
             var reads = 0
@@ -475,6 +526,39 @@ class StartActivityControllerTest {
             controller.dispatch(StartActivityAction.Launch())
             controller.awaitCommitted()
             assertEquals(2L, (harness.commands.last() as LauncherDurableCommand.CompleteNoLive).expectedRevision)
+            controller.close()
+        }
+
+    @Test
+    fun staleInitialLiveClassificationRehydratesInsteadOfReportingConflict() =
+        runBlocking {
+            var reads = 0
+            val harness =
+                Harness().apply {
+                    live = true
+                    targetReader = {
+                        reads++
+                        if (reads == 1) {
+                            activityTarget("activity").copy(revision = 1)
+                        } else {
+                            noLiveTarget("activity").copy(revision = 2)
+                        }
+                    }
+                    initialLiveConflict = { throw StaleLauncherTargetException() }
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("activity"))
+            controller.dispatch(StartActivityAction.Launch())
+
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.selected as? LauncherLoad.Content)?.value?.revision == 2L &&
+                        it.command == LauncherCommandState.Idle
+                }
+            }
+            assertEquals(0, harness.commands.size)
+            assertTrue(controller.state.value.command !is LauncherCommandState.Conflict)
             controller.close()
         }
 
@@ -548,6 +632,8 @@ class StartActivityControllerTest {
         var reorderFailure: Exception? = null
         var coordinationFailure: Exception? = null
         var live = false
+        var initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null
+        var onSelectObserved: (LauncherCommandState) -> Unit = {}
         var target: LibraryLaunchTarget = activityTarget("activity")
         var searcher: suspend (String) -> List<LibraryTrackable> = { query ->
             searchQueries += query
@@ -606,6 +692,8 @@ class StartActivityControllerTest {
                 wall,
                 { ZoneOffset.UTC },
                 scheduler,
+                initialLiveConflict = initialLiveConflict,
+                onSelectObserved = onSelectObserved,
             )
     }
 

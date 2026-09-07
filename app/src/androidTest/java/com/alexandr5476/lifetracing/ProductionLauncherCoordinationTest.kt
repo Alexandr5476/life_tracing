@@ -11,6 +11,7 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
@@ -44,19 +45,130 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class ProductionLauncherCoordinationTest {
+    @Test
+    fun selectObservedBeforeTheBoundaryCannotCreateASecondNoLiveFactOrReplaceTheCommittedTarget() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, now)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val first =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "F1 first ${now.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.NO_LIVE_TRACKING,
+                        null,
+                        ActivityTemplateSettings(startCountdown = Duration.ofSeconds(1)),
+                    ),
+                    createdAt = now.minusSeconds(1),
+                )
+            val second =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "F1 second ${now.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.NO_LIVE_TRACKING,
+                        null,
+                    ),
+                    createdAt = now.minusMillis(500),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val selectObserved = CountDownLatch(1)
+            val releaseSelect = CountDownLatch(1)
+            val releaseWriter = kotlinx.coroutines.CompletableDeferred<Unit>()
+            lateinit var boundary: () -> Unit
+            var writers = 0
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(now),
+                    execute = { command ->
+                        writers++
+                        val committed = executeLauncherCommand(command, commands, library)
+                        releaseWriter.await()
+                        committed
+                    },
+                    scheduler =
+                        PreflightScheduler { _, callback ->
+                            boundary = callback
+                            PreflightHandle {}
+                        },
+                    onSelectObserved = { command ->
+                        if (command is LauncherCommandState.Preflight) {
+                            selectObserved.countDown()
+                            check(releaseSelect.await(5, TimeUnit.SECONDS))
+                        }
+                    },
+                )
+            try {
+                withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                controller.dispatch(StartActivityAction.Select(LibraryTemplateId.Activity(first.id)))
+                withTimeout(5_000) { controller.state.first { it.selected is LauncherLoad.Content } }
+                controller.dispatch(StartActivityAction.Launch())
+                withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Preflight } }
+
+                scope.launch {
+                    controller.dispatch(StartActivityAction.Select(LibraryTemplateId.Activity(second.id)))
+                }
+                assertTrue(selectObserved.await(5, TimeUnit.SECONDS))
+                boundary()
+                withTimeout(5_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+                releaseSelect.countDown()
+                withTimeout(5_000) { while (writers == 0) kotlinx.coroutines.yield() }
+                val selected = (controller.state.value.selected as LauncherLoad.Content).value
+                assertEquals(first.id, (selected.id as LibraryTemplateId.Activity).id)
+                assertEquals(1, writers)
+
+                releaseWriter.complete(Unit)
+                val committed =
+                    withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Committed } }
+                        .command as LauncherCommandState.Committed
+                val execution = committed.result as LauncherCommit.Activity
+                val reloadedLibrary = LibraryRepository.create(context)
+                val daily =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now, 100))
+                assertEquals(
+                    listOf(execution.executionId),
+                    daily.completedHistory.filterIsInstance<CompletedActivityHistoryRoot>().map { it.executionId },
+                )
+                assertEquals(
+                    LibraryTemplateId.Activity(first.id),
+                    reloadedLibrary.getRecent(100).first { it.id == LibraryTemplateId.Activity(first.id) }.id,
+                )
+                assertNull(live.getActiveSession())
+            } finally {
+                releaseSelect.countDown()
+                releaseWriter.complete(Unit)
+                controller.close()
+                scope.cancel()
+            }
+        }
+
     @Test
     fun concurrentProductionControllersClassifyTheDurableLoserAsLiveConflict() =
         runBlocking {
@@ -356,6 +468,8 @@ class ProductionLauncherCoordinationTest {
         wallClock: WallClock,
         execute: suspend (LauncherDurableCommand) -> LauncherCommit,
         coordinate: suspend () -> Unit = {},
+        scheduler: PreflightScheduler = PreflightScheduler { _, _ -> PreflightHandle {} },
+        onSelectObserved: (LauncherCommandState) -> Unit = {},
     ) = StartActivityController(
         scope,
         { emptyList() },
@@ -369,7 +483,9 @@ class ProductionLauncherCoordinationTest {
         coordinate,
         wallClock,
         { ZoneOffset.UTC },
-        PreflightScheduler { _, _ -> PreflightHandle {} },
+        scheduler,
+        initialLiveConflict = { target -> library.hasLiveLaunchConflict(target.id, target.revision) },
+        onSelectObserved = onSelectObserved,
     )
 
     private fun failingCoordinator(

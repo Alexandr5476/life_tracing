@@ -228,6 +228,8 @@ class StartActivityController internal constructor(
     private val zoneId: () -> ZoneId,
     private val preflightScheduler: PreflightScheduler,
     private val recentLimit: Int = DEFAULT_RECENT_LIMIT,
+    private val initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null,
+    private val onSelectObserved: (LauncherCommandState) -> Unit = {},
 ) {
     private val homeGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
@@ -391,6 +393,8 @@ class StartActivityController internal constructor(
     }
 
     private fun select(id: LibraryTemplateId) {
+        // A pre-lock observation is deliberately non-authoritative; the locked re-check decides.
+        onSelectObserved(mutableState.value.command)
         val generation = synchronized(lifecycleLock) { selectLocked(id) } ?: return
         readSelected(id, generation)
     }
@@ -470,7 +474,8 @@ class StartActivityController internal constructor(
         override: QuickMainValueOverride?,
     ) {
         try {
-            if (target.isLive && hasLiveSession()) {
+            val hasConflict = initialLiveConflict?.invoke(target) ?: (target.isLive && hasLiveSession())
+            if (hasConflict) {
                 publishAttempt(attemptId, LauncherCommandState.Conflict("Another live session is already active"))
                 return
             }
@@ -481,6 +486,8 @@ class StartActivityController internal constructor(
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (ignored: StaleLauncherTargetException) {
+            rehydrateTarget(target.id)
         } catch (failure: Exception) {
             publishAttempt(attemptId, LauncherCommandState.Rejected(failure.message()))
         }
@@ -593,7 +600,11 @@ class StartActivityController internal constructor(
     private fun rehydrateTarget(id: LibraryTemplateId) {
         val generation =
             synchronized(lifecycleLock) {
-                if (mutableState.value.command != LauncherCommandState.Committing) return
+                if (mutableState.value.command != LauncherCommandState.Committing &&
+                    mutableState.value.command != LauncherCommandState.Checking
+                ) {
+                    return
+                }
                 selectedTargetId = id
                 val next = targetGeneration.incrementAndGet()
                 mutableState.update { it.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle) }
