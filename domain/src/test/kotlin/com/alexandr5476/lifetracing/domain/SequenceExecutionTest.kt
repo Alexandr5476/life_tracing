@@ -134,6 +134,34 @@ class SequenceExecutionTest {
     }
 
     @Test
+    fun emptyRepeatSchedulesNoIterationsEvenAtMaxCount() {
+        assertEquals(IntRange.EMPTY, repeatIterations(emptyList(), Int.MAX_VALUE))
+    }
+
+    @Test
+    fun materializerSkipsHugeEmptyRepeatWithoutGeneratingItsOccurrenceIds() {
+        var generatedIds = 0
+
+        val occurrences =
+            RuntimeOccurrenceMaterializer {
+                generatedIds += 1
+                SequenceOccurrenceId("occ-$generatedIds")
+            }.materialize(
+                snapshot(
+                    nodes =
+                        listOf(
+                            step("ordinary", 0, "activity-ordinary"),
+                            repeat("empty", 1, Int.MAX_VALUE),
+                        ),
+                ),
+            )
+
+        assertEquals(listOf("ordinary"), occurrences.map { it.sourceSequenceSnapshotNodeId?.value })
+        assertEquals(listOf("occ-1"), occurrences.map { it.id.value })
+        assertEquals(1, generatedIds)
+    }
+
+    @Test
     fun timelineUsesActiveUnionAndPauseComplementAcrossOverlapAdjacencyAndUnsortedInput() {
         val start = instant(0)
         val durations =

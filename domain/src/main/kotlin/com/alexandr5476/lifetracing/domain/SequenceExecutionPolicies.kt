@@ -56,7 +56,7 @@ class RuntimeOccurrenceMaterializer(
                     is SequenceSnapshotActivityStep -> addOccurrence(node, null, null, ids)
                     is SequenceSnapshotRepeatBlock -> {
                         val children = node.children.sortedBy(SequenceSnapshotActivityStep::position)
-                        for (iteration in 1..node.repeatCount) {
+                        for (iteration in repeatIterations(children, node.repeatCount)) {
                             children.forEach { child ->
                                 addOccurrence(child, node.id, iteration, ids)
                             }
@@ -93,6 +93,11 @@ class RuntimeOccurrenceMaterializer(
         )
     }
 }
+
+internal fun repeatIterations(
+    children: List<SequenceSnapshotActivityStep>,
+    repeatCount: Int,
+): IntRange = if (children.isEmpty()) IntRange.EMPTY else 1..repeatCount
 
 object SequenceTimelineCalculator {
     fun calculate(
