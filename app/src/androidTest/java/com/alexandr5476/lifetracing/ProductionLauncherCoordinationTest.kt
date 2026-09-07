@@ -87,7 +87,7 @@ class ProductionLauncherCoordinationTest {
             val commands = ActivityCommandRepository.create(context)
             val initialCheckEntered = CompletableDeferred<Unit>()
             val releaseInitialCheck = CompletableDeferred<Unit>()
-            lateinit var boundary: () -> Unit
+            val boundary = CompletableDeferred<() -> Unit>()
             var writers = 0
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val controller =
@@ -102,7 +102,7 @@ class ProductionLauncherCoordinationTest {
                     },
                     scheduler =
                         PreflightScheduler { _, callback ->
-                            boundary = callback
+                            boundary.complete(callback)
                             PreflightHandle {}
                         },
                     initialLiveConflict = { target ->
@@ -144,7 +144,7 @@ class ProductionLauncherCoordinationTest {
 
                 controller.dispatch(StartActivityAction.Launch())
                 withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Preflight } }
-                boundary()
+                withTimeout(5_000) { boundary.await()() }
                 withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Committed } }
                 assertEquals(1, writers)
                 assertEquals(changed.revision, library.getLaunchTarget(LibraryTemplateId.Activity(initial.id)).revision)
@@ -197,7 +197,7 @@ class ProductionLauncherCoordinationTest {
             val selectObserved = CountDownLatch(1)
             val releaseSelect = CountDownLatch(1)
             val releaseWriter = kotlinx.coroutines.CompletableDeferred<Unit>()
-            lateinit var boundary: () -> Unit
+            val boundary = CompletableDeferred<() -> Unit>()
             var writers = 0
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val controller =
@@ -214,7 +214,7 @@ class ProductionLauncherCoordinationTest {
                     },
                     scheduler =
                         PreflightScheduler { _, callback ->
-                            boundary = callback
+                            boundary.complete(callback)
                             PreflightHandle {}
                         },
                     onSelectObserved = { command ->
@@ -235,7 +235,7 @@ class ProductionLauncherCoordinationTest {
                     controller.dispatch(StartActivityAction.Select(LibraryTemplateId.Activity(second.id)))
                 }
                 assertTrue(selectObserved.await(5, TimeUnit.SECONDS))
-                boundary()
+                withTimeout(5_000) { boundary.await()() }
                 withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
                 releaseSelect.countDown()
                 withTimeout(5_000) { while (writers == 0) kotlinx.coroutines.yield() }
