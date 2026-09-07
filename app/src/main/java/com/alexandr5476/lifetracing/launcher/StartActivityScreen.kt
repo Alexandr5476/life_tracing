@@ -252,8 +252,8 @@ private fun CommandPresentation(
 ) {
     when (command) {
         LauncherCommandState.Idle -> Unit
-        LauncherCommandState.Checking -> LauncherCard { Text(stringResource(R.string.launcher_checking)) }
-        LauncherCommandState.Committing -> LauncherCard { Text(stringResource(R.string.launcher_committing)) }
+        is LauncherCommandState.Checking -> LauncherCard { Text(stringResource(R.string.launcher_checking)) }
+        is LauncherCommandState.Committing -> LauncherCard { Text(stringResource(R.string.launcher_committing)) }
         is LauncherCommandState.Preflight -> PreflightCard(command, selectedTargetName, onAction)
         is LauncherCommandState.Conflict ->
             LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {

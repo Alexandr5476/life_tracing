@@ -259,7 +259,7 @@ class StartActivityScreenPresentationTest {
             .onNodeWithText(
                 text(com.alexandr5476.lifetracing.R.string.launcher_rejected),
             ).assertIsDisplayed()
-        state = state.copy(command = LauncherCommandState.Committing)
+        state = state.copy(command = LauncherCommandState.Committing(1))
         composeTestRule
             .onNodeWithText(
                 text(com.alexandr5476.lifetracing.R.string.launcher_committing),

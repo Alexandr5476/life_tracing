@@ -78,7 +78,9 @@ sealed interface LauncherCommit {
 sealed interface LauncherCommandState {
     data object Idle : LauncherCommandState
 
-    data object Checking : LauncherCommandState
+    data class Checking(
+        val attemptId: Long,
+    ) : LauncherCommandState
 
     data class Preflight(
         val attemptId: Long,
@@ -88,7 +90,9 @@ sealed interface LauncherCommandState {
         val endsAt: Instant,
     ) : LauncherCommandState
 
-    data object Committing : LauncherCommandState
+    data class Committing(
+        val attemptId: Long,
+    ) : LauncherCommandState
 
     data class Conflict(
         val message: String,
@@ -299,8 +303,8 @@ class StartActivityController internal constructor(
                 is LauncherCommandState.CommittedCoordinationFailure,
                 -> LauncherRouteExitDecision.DELIVER_COMMIT
 
-                LauncherCommandState.Committing -> LauncherRouteExitDecision.WAIT_FOR_COMMIT
-                LauncherCommandState.Checking,
+                is LauncherCommandState.Committing -> LauncherRouteExitDecision.WAIT_FOR_COMMIT
+                is LauncherCommandState.Checking,
                 is LauncherCommandState.Preflight,
                 -> {
                     cancelPendingLaunchLocked()
@@ -422,7 +426,7 @@ class StartActivityController internal constructor(
 
     private fun selectLocked(id: LibraryTemplateId): Long? {
         when (mutableState.value.command) {
-            LauncherCommandState.Committing,
+            is LauncherCommandState.Committing,
             is LauncherCommandState.Committed,
             is LauncherCommandState.CommittedCoordinationFailure,
             -> return null
@@ -463,7 +467,7 @@ class StartActivityController internal constructor(
                 return
             }
             val attemptId = attemptGeneration.incrementAndGet()
-            mutableState.update { it.copy(command = LauncherCommandState.Checking) }
+            mutableState.update { it.copy(command = LauncherCommandState.Checking(attemptId)) }
             pendingLaunchJob = scope.launch { prepareLaunch(attemptId, target, override) }
         }
     }
@@ -476,7 +480,11 @@ class StartActivityController internal constructor(
         try {
             val hasConflict = initialLiveConflict?.invoke(target) ?: (target.isLive && hasLiveSession())
             if (hasConflict) {
-                publishAttempt(attemptId, LauncherCommandState.Conflict("Another live session is already active"))
+                publishAttempt(
+                    attemptId,
+                    { it is LauncherCommandState.Checking && it.attemptId == attemptId },
+                    LauncherCommandState.Conflict("Another live session is already active"),
+                )
                 return
             }
             if (target.startCountdown.isZero) {
@@ -487,9 +495,13 @@ class StartActivityController internal constructor(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (ignored: StaleLauncherTargetException) {
-            rehydrateTarget(target.id)
+            rehydrateTarget(attemptId, target.id, checkingAttempt(attemptId))
         } catch (failure: Exception) {
-            publishAttempt(attemptId, LauncherCommandState.Rejected(failure.message()))
+            publishAttempt(
+                attemptId,
+                checkingAttempt(attemptId),
+                LauncherCommandState.Rejected(failure.message()),
+            )
         }
     }
 
@@ -507,14 +519,17 @@ class StartActivityController internal constructor(
                 startedAt,
                 startedAt.plus(target.startCountdown),
             )
-        if (!publishAttempt(attemptId, preflight)) return
+        if (!publishAttempt(attemptId, checkingAttempt(attemptId), preflight)) return
         val handle =
             preflightScheduler.schedule(target.startCountdown) {
                 beginDurable(attemptId, target, override, fromPreflight = true)
             }
         synchronized(lifecycleLock) {
             val current = mutableState.value.command
-            if (current is LauncherCommandState.Preflight && current.attemptId == attemptId) {
+            if (attemptGeneration.get() == attemptId &&
+                current is LauncherCommandState.Preflight &&
+                current.attemptId == attemptId
+            ) {
                 preflightHandle = handle
             } else {
                 handle.cancel()
@@ -534,17 +549,18 @@ class StartActivityController internal constructor(
                 if (fromPreflight) {
                     current is LauncherCommandState.Preflight && current.attemptId == attemptId
                 } else {
-                    current == LauncherCommandState.Checking
+                    current is LauncherCommandState.Checking && current.attemptId == attemptId
                 }
             if (!expected || attemptGeneration.get() != attemptId || closed || !visible) return
             preflightHandle?.cancel()
             preflightHandle = null
-            mutableState.update { it.copy(command = LauncherCommandState.Committing) }
-            pendingLaunchJob = scope.launch { commit(target, override) }
+            mutableState.update { it.copy(command = LauncherCommandState.Committing(attemptId)) }
+            pendingLaunchJob = scope.launch { commit(attemptId, target, override) }
         }
     }
 
     private suspend fun commit(
+        attemptId: Long,
         target: LibraryLaunchTarget,
         override: QuickMainValueOverride?,
     ) {
@@ -566,43 +582,51 @@ class StartActivityController internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (conflict: LiveSessionConflictException) {
-                publishCommitResult(LauncherCommandState.Conflict(conflict.message()))
+                publishCommitResult(attemptId, LauncherCommandState.Conflict(conflict.message()))
                 return
             } catch (ignored: StaleLauncherTargetException) {
-                rehydrateTarget(target.id)
+                rehydrateTarget(attemptId, target.id, committingAttempt(attemptId))
                 return
             } catch (failure: Exception) {
-                publishCommitResult(LauncherCommandState.Rejected(failure.message()))
+                publishCommitResult(attemptId, LauncherCommandState.Rejected(failure.message()))
                 return
             }
         if (!committed.isLive) {
-            publishCommitResult(LauncherCommandState.Committed(committed))
+            publishCommitResult(attemptId, LauncherCommandState.Committed(committed))
             return
         }
         try {
             coordinateRuntimeStateChanged()
-            publishCommitResult(LauncherCommandState.Committed(committed))
+            publishCommitResult(attemptId, LauncherCommandState.Committed(committed))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            publishCommitResult(LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()))
+            publishCommitResult(
+                attemptId,
+                LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()),
+            )
         }
     }
 
-    private fun publishCommitResult(command: LauncherCommandState) {
+    private fun publishCommitResult(
+        attemptId: Long,
+        command: LauncherCommandState,
+    ) {
         synchronized(lifecycleLock) {
-            if (mutableState.value.command == LauncherCommandState.Committing) {
+            if (attemptGeneration.get() == attemptId && committingAttempt(attemptId)(mutableState.value.command)) {
                 mutableState.update { it.copy(command = command) }
             }
         }
     }
 
-    private fun rehydrateTarget(id: LibraryTemplateId) {
+    private fun rehydrateTarget(
+        attemptId: Long,
+        id: LibraryTemplateId,
+        expected: (LauncherCommandState) -> Boolean,
+    ) {
         val generation =
             synchronized(lifecycleLock) {
-                if (mutableState.value.command != LauncherCommandState.Committing &&
-                    mutableState.value.command != LauncherCommandState.Checking
-                ) {
+                if (attemptGeneration.get() != attemptId || !expected(mutableState.value.command)) {
                     return
                 }
                 selectedTargetId = id
@@ -631,7 +655,7 @@ class StartActivityController internal constructor(
 
     private fun cancelPendingLaunchLocked() {
         val command = mutableState.value.command
-        if (command != LauncherCommandState.Checking && command !is LauncherCommandState.Preflight) return
+        if (command !is LauncherCommandState.Checking && command !is LauncherCommandState.Preflight) return
         attemptGeneration.incrementAndGet()
         pendingLaunchJob?.cancel()
         pendingLaunchJob = null
@@ -642,15 +666,26 @@ class StartActivityController internal constructor(
 
     private fun publishAttempt(
         attemptId: Long,
+        expected: (LauncherCommandState) -> Boolean,
         command: LauncherCommandState,
     ): Boolean =
         synchronized(lifecycleLock) {
-            if (attemptGeneration.get() != attemptId || closed || !visible) {
+            if (attemptGeneration.get() != attemptId || !expected(mutableState.value.command) || closed || !visible) {
                 false
             } else {
                 mutableState.update { it.copy(command = command) }
                 true
             }
+        }
+
+    private fun checkingAttempt(attemptId: Long): (LauncherCommandState) -> Boolean =
+        { state ->
+            state is LauncherCommandState.Checking && state.attemptId == attemptId
+        }
+
+    private fun committingAttempt(attemptId: Long): (LauncherCommandState) -> Boolean =
+        { state ->
+            state is LauncherCommandState.Committing && state.attemptId == attemptId
         }
 
     private fun validateOverride(

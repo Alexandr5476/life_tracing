@@ -19,9 +19,11 @@ import com.alexandr5476.lifetracing.domain.WallClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotSame
@@ -35,6 +37,7 @@ import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+@Suppress("LargeClass") // Launcher boundary scenarios share one focused harness.
 class StartActivityControllerTest {
     @Test
     fun homeUsesBoundedRecentOrderedPinnedAndRetryWithoutHydratingTargets() =
@@ -306,7 +309,7 @@ class StartActivityControllerTest {
             first.controller.awaitHome()
             first.controller.selectAndAwait(activityId("quick"))
             first.controller.dispatch(StartActivityAction.Launch())
-            withTimeout(2_000) { first.controller.state.first { it.command == LauncherCommandState.Committing } }
+            withTimeout(2_000) { first.controller.state.first { it.command is LauncherCommandState.Committing } }
 
             val recreated = owner.acquire { error("A retained commit must not create another controller") }
             assertSame(first.controller, recreated.controller)
@@ -346,7 +349,7 @@ class StartActivityControllerTest {
             }
 
             harness.scheduler.fireLatestTwice()
-            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
             renderedExit()
             assertEquals(0, backs)
             assertEquals(0, handoffs)
@@ -437,7 +440,7 @@ class StartActivityControllerTest {
             controller.awaitPreflight()
 
             harness.scheduler.fireLatestTwice()
-            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
             controller.dispatch(StartActivityAction.Select(activityId("second")))
             assertEquals("first", controller.loadedTarget().name)
             withTimeout(2_000) { while (harness.commands.isEmpty()) kotlinx.coroutines.yield() }
@@ -481,7 +484,7 @@ class StartActivityControllerTest {
                 }
             assertTrue(observed.await(2, TimeUnit.SECONDS))
             harness.scheduler.fireLatestTwice()
-            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
             releaseSelect.countDown()
             selecting.join()
 
@@ -559,6 +562,53 @@ class StartActivityControllerTest {
             }
             assertEquals(0, harness.commands.size)
             assertTrue(controller.state.value.command !is LauncherCommandState.Conflict)
+            controller.close()
+        }
+
+    @Test
+    fun supersededInitialStaleOutcomeCannotReplaceOrPublishOverTheCurrentNoLiveCommit() =
+        runBlocking {
+            val releaseStaleAttempt = CompletableDeferred<Unit>()
+            val staleAttemptEntered = CompletableDeferred<Unit>()
+            val writerGate = CompletableDeferred<Unit>()
+            val first = noLiveTarget("first")
+            val second = noLiveTarget("second")
+            val harness =
+                Harness().apply {
+                    this.writerGate = writerGate
+                    targetReader = { if (it == activityId("first")) first else second }
+                    initialLiveConflict = { target ->
+                        if (target.id == activityId("first")) {
+                            staleAttemptEntered.complete(Unit)
+                            withContext(NonCancellable) { releaseStaleAttempt.await() }
+                            throw StaleLauncherTargetException()
+                        }
+                        false
+                    }
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("first"))
+            controller.dispatch(StartActivityAction.Launch())
+            staleAttemptEntered.await()
+
+            controller.selectAndAwait(activityId("second"))
+            controller.dispatch(StartActivityAction.Launch())
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
+            withTimeout(2_000) { while (harness.commands.isEmpty()) kotlinx.coroutines.yield() }
+            releaseStaleAttempt.complete(Unit)
+            kotlinx.coroutines.yield()
+
+            assertEquals("second", controller.loadedTarget().name)
+            assertTrue(controller.state.value.command is LauncherCommandState.Committing)
+            assertEquals(1, harness.commands.size)
+            assertEquals(
+                "second",
+                (harness.commands.single() as LauncherDurableCommand.CompleteNoLive).templateId.value,
+            )
+            writerGate.complete(Unit)
+            controller.awaitCommitted()
+            assertEquals(1, harness.commands.size)
             controller.close()
         }
 
