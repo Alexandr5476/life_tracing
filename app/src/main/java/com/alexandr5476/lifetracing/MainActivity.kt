@@ -24,6 +24,7 @@ import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
+import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -53,10 +54,14 @@ data object DailyRoot : NavKey
 @Serializable
 data object StartActivityRoot : NavKey
 
+/** Navigation identity only: Library reads its canonical catalog on entry. */
+@Serializable
+data object LibraryRoot : NavKey
+
 internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
 @Composable
-@Suppress("FunctionNaming")
+@Suppress("FunctionNaming", "LongMethod")
 internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
@@ -88,6 +93,7 @@ internal fun LifeTracingApp(
                                     launcherSessions.acquire(runtimeGraph::createStartActivityController)
                                     backStack.openStartActivity()
                                 },
+                                onLibrary = { backStack.openLibrary() },
                             )
                         }
                         entry<StartActivityRoot> {
@@ -110,6 +116,13 @@ internal fun LifeTracingApp(
                                 )
                             }
                         }
+                        entry<LibraryRoot> {
+                            val libraryController = remember { runtimeGraph.createLibraryController() }
+                            LibraryRoute(
+                                controller = libraryController,
+                                onBack = backStack::removeLibrary,
+                            )
+                        }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
                 popTransitionSpec = { lifeTracingNavigationTransition() },
@@ -127,6 +140,14 @@ internal fun MutableList<NavKey>.openStartActivity() {
 
 internal fun MutableList<NavKey>.removeStartActivity() {
     if (lastOrNull() is StartActivityRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openLibrary() {
+    if (lastOrNull() !is LibraryRoot) add(LibraryRoot)
+}
+
+internal fun MutableList<NavKey>.removeLibrary() {
+    if (lastOrNull() is LibraryRoot) removeAt(lastIndex)
 }
 
 /** A restored launcher route has no durable command state and must never acquire a new controller. */

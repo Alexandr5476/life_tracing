@@ -67,13 +67,19 @@ import java.time.format.FormatStyle
 fun DailyRoute(
     controller: DailyController,
     onStartActivity: () -> Unit = {},
+    onLibrary: () -> Unit = {},
 ) {
     DisposableEffect(controller) {
         controller.onRouteEntered()
         onDispose { controller.dispatch(DailyAction.Hidden) }
     }
     val state by controller.state.collectAsState()
-    DailyScreen(state = state, onAction = controller::dispatch, onStartActivity = onStartActivity)
+    DailyScreen(
+        state = state,
+        onAction = controller::dispatch,
+        onStartActivity = onStartActivity,
+        onLibrary = onLibrary,
+    )
 }
 
 @Composable
@@ -82,6 +88,7 @@ internal fun DailyScreen(
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long? = null,
     onStartActivity: () -> Unit = {},
+    onLibrary: () -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -93,7 +100,7 @@ internal fun DailyScreen(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity)
+            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary)
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
@@ -111,6 +118,7 @@ private fun DateHeader(
     relation: DailyDateRelation,
     onAction: (DailyAction) -> Unit,
     onStartActivity: () -> Unit,
+    onLibrary: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -139,6 +147,9 @@ private fun DateHeader(
                 LifeTracingPrimaryButton(onClick = onStartActivity) {
                     Text(stringResource(R.string.daily_start_activity))
                 }
+            }
+            LifeTracingSecondaryButton(onClick = onLibrary) {
+                Text(stringResource(R.string.daily_library))
             }
         }
         TextButton(

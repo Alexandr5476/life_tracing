@@ -7,6 +7,7 @@ import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.LibraryContents
+import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
@@ -16,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityController
+import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.InProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.RuntimeDeadlineScheduler
@@ -38,6 +40,7 @@ import java.time.ZoneOffset
 
 class LifeTracingRuntimeGraphTest {
     @Test
+    @Suppress("LongMethod")
     fun runtimeRecoveryLeavesDailyIdleUntilItsFirstAcquisition() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -70,6 +73,15 @@ class LifeTracingRuntimeGraphTest {
                     {
                         launcherCreations++
                         launcher(scope)
+                    },
+                    {
+                        LibraryController(
+                            scope,
+                            { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                            { error("unused folder reader") },
+                            { error("unused path reader") },
+                            { _, _ -> emptyList() },
+                        )
                     },
                 )
 

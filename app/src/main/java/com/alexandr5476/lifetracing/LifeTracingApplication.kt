@@ -21,6 +21,7 @@ import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
 import com.alexandr5476.lifetracing.launcher.StartActivityController
 import com.alexandr5476.lifetracing.launcher.toEntryValue
+import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -72,11 +73,14 @@ class LifeTracingRuntimeGraph internal constructor(
     val coordinator: AndroidRuntimeCoordinator,
     private val dailyControllerOwner: DailyControllerOwner,
     private val startActivityControllerFactory: () -> StartActivityController,
+    private val libraryControllerFactory: () -> LibraryController,
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
 
     fun createStartActivityController(): StartActivityController = startActivityControllerFactory()
+
+    fun createLibraryController(): LibraryController = libraryControllerFactory()
 
     companion object {
         @Volatile
@@ -203,6 +207,31 @@ class LifeTracingRuntimeGraph internal constructor(
                         initialLiveConflict = { target ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
+                            }
+                        },
+                    )
+                },
+                {
+                    LibraryController(
+                        scope,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getRoot()
+                            }
+                        },
+                        { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getFolderContents(folderId)
+                            }
+                        },
+                        { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getFolderPath(folderId)
+                            }
+                        },
+                        { query, filter ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.search(query, filter)
                             }
                         },
                     )

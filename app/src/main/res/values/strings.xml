@@ -107,4 +107,25 @@
     <string name="launcher_committed_coordination">Saved. Runtime coordination will recover.</string>
     <string name="launcher_invalid_number">Enter a valid number.</string>
     <string name="launcher_complete">Complete</string>
+    <string name="daily_library">Library</string>
+    <string name="library_title">Library</string>
+    <string name="library_back">Back</string>
+    <string name="library_root">Library</string>
+    <string name="library_search_hint">Search library</string>
+    <string name="library_filter_all">All</string>
+    <string name="library_filter_activities">Activities</string>
+    <string name="library_filter_sequences">Sequences</string>
+    <string name="library_loading">Loading Library</string>
+    <string name="library_load_failure">Library could not be refreshed.</string>
+    <string name="library_retry">Retry</string>
+    <string name="library_pinned">Pinned</string>
+    <string name="library_folders">Folders</string>
+    <string name="library_all">All</string>
+    <string name="library_empty">This location is empty.</string>
+    <string name="library_search_loading">Searching…</string>
+    <string name="library_search_failure">Search could not be completed.</string>
+    <string name="library_search_empty">No matching templates.</string>
+    <string name="library_search_results">Search results</string>
+    <string name="library_activity">Activity</string>
+    <string name="library_sequence">Sequence</string>
 </resources>

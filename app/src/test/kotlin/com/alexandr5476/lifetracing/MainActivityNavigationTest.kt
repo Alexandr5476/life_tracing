@@ -36,4 +36,16 @@ class MainActivityNavigationTest {
 
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    @Test
+    fun libraryUsesTheExistingDailyBackStackWithoutChangingLauncherSemantics() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openLibrary()
+        backStack.openLibrary()
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.removeLibrary()
+        assertEquals(listOf(DailyRoot), backStack)
+    }
 }

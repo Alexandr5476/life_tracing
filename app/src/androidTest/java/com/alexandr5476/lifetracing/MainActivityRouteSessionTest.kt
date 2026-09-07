@@ -1,6 +1,8 @@
 package com.alexandr5476.lifetracing
 
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
@@ -55,5 +57,19 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.startActivityRouteSessions.activeSession == null
         }
+    }
+
+    @Test
+    fun productionLibraryEntersAndPopsOnTheExistingDailyStack() {
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule
+            .onAllNodesWithText(composeTestRule.activity.getString(R.string.library_title))[0]
+            .assertIsDisplayed()
+
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).assertIsDisplayed()
     }
 }

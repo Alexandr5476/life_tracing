@@ -107,4 +107,25 @@
     <string name="launcher_committed_coordination">Сохранено. Координация будет восстановлена.</string>
     <string name="launcher_invalid_number">Введите корректное число.</string>
     <string name="launcher_complete">Завершить</string>
+    <string name="daily_library">Библиотека</string>
+    <string name="library_title">Библиотека</string>
+    <string name="library_back">Назад</string>
+    <string name="library_root">Библиотека</string>
+    <string name="library_search_hint">Поиск в библиотеке</string>
+    <string name="library_filter_all">Все</string>
+    <string name="library_filter_activities">Действия</string>
+    <string name="library_filter_sequences">Последовательности</string>
+    <string name="library_loading">Загрузка библиотеки</string>
+    <string name="library_load_failure">Не удалось обновить библиотеку.</string>
+    <string name="library_retry">Повторить</string>
+    <string name="library_pinned">Закреплённые</string>
+    <string name="library_folders">Папки</string>
+    <string name="library_all">Все</string>
+    <string name="library_empty">В этом месте пока ничего нет.</string>
+    <string name="library_search_loading">Поиск…</string>
+    <string name="library_search_failure">Не удалось выполнить поиск.</string>
+    <string name="library_search_empty">Ничего не найдено.</string>
+    <string name="library_search_results">Результаты поиска</string>
+    <string name="library_activity">Действие</string>
+    <string name="library_sequence">Последовательность</string>
 </resources>

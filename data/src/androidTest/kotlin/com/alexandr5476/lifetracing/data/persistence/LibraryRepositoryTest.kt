@@ -136,6 +136,29 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun freshCanonicalRepositoryReadKeepsActiveCatalogFolderPathAndPinnedRanks() {
+        val writer = repository()
+        writer.createFolder(FolderId("root"), "Root", null, instant(1))
+        writer.createFolder(FolderId("nested"), "Nested", FolderId("root"), instant(2))
+        activity("activity-root", "Activity root", pinned = 20)
+        sequence("sequence-root", "Sequence root", pinned = 10)
+        activity("activity-nested", "Activity nested", folder = "nested")
+        sequence("sequence-archived", "Archived", deleted = 3)
+
+        val reloaded = repository()
+        val root = reloaded.getRoot()
+        val nested = reloaded.getFolderContents(FolderId("nested"))
+
+        assertEquals(listOf("sequence-root", "activity-root"), root.pinned.map { it.id.value })
+        assertEquals(listOf("root"), root.contents.folders.map { it.id.value })
+        assertEquals(listOf("activity-root"), root.contents.activities.map { it.id.value })
+        assertEquals(listOf("sequence-root"), root.contents.sequences.map { it.id.value })
+        assertEquals(listOf("root", "nested"), reloaded.getFolderPath(FolderId("nested")).map { it.id.value })
+        assertEquals(listOf("activity-nested"), nested.activities.map { it.id.value })
+        assertTrue(reloaded.search("Archived").isEmpty())
+    }
+
+    @Test
     fun catalogTagHydrationChunksBothKindsAboveTheSafeBindCount() {
         val tagQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
         database.close()
