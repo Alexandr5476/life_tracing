@@ -66,6 +66,13 @@ subprojects {
     }
 }
 
+project(":app") {
+    tasks.matching { it.name == "pixel2Api35Setup" }.configureEach {
+        // Both modules use the same named AVD; concurrent setup races for its single emulator.
+        mustRunAfter(":data:pixel2Api35DebugAndroidTest")
+    }
+}
+
 tasks.register("coverageReport") {
     group = "verification"
     description = "Generates human-readable Kover coverage reports for every module."
