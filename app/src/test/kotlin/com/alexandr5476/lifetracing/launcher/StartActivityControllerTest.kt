@@ -36,6 +36,8 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @Suppress("LargeClass") // Launcher boundary scenarios share one focused harness.
 class StartActivityControllerTest {
@@ -119,6 +121,94 @@ class StartActivityControllerTest {
                     .name,
             )
             assertEquals("new", controller.loadedSearch().single().name)
+            controller.close()
+        }
+
+    @Test
+    fun searchPublicationCannotReplaceNewQueryAfterItsReadCompletes() =
+        runBlocking {
+            val newResults = CompletableDeferred<List<LibraryTrackable>>()
+            val gate = PublicationGate()
+            val harness = Harness()
+            harness.searcher = { query ->
+                if (query == "old") listOf(trackable("old result")) else newResults.await()
+            }
+            harness.onReadPublicationChecked = gate::beforeArbitration
+            harness.onReadPublicationArbitrated = gate::afterArbitration
+            val controller = harness.controller(CoroutineScope(Dispatchers.Default))
+            controller.awaitHome()
+
+            gate.arm(LauncherReadChannel.SEARCH)
+            controller.dispatch(StartActivityAction.Search("old"))
+            gate.awaitEntry()
+            controller.dispatch(StartActivityAction.Search("new"))
+            assertEquals("new", controller.state.value.searchQuery)
+            assertTrue(controller.state.value.search is LauncherLoad.Loading)
+
+            gate.release()
+            gate.awaitArbitration()
+            assertEquals("new", controller.state.value.searchQuery)
+            assertTrue(controller.state.value.search is LauncherLoad.Loading)
+
+            newResults.complete(listOf(trackable("new result")))
+            controller.awaitSearch("new result")
+            controller.close()
+        }
+
+    @Test
+    fun sharedReadPublicationArbitrationProtectsHomeBrowseAndSelectedTarget() =
+        runBlocking {
+            val homeCalls = AtomicInteger()
+            val newHome = CompletableDeferred<List<LibraryTrackable>>()
+            val newBrowse = CompletableDeferred<LibraryContents>()
+            val newTarget = CompletableDeferred<LibraryLaunchTarget>()
+            val gate = PublicationGate()
+            val harness = Harness()
+            harness.recentReader = {
+                when (homeCalls.incrementAndGet()) {
+                    1 -> listOf(trackable("initial home"))
+                    2 -> listOf(trackable("old home"))
+                    else -> newHome.await()
+                }
+            }
+            harness.browser = { folder ->
+                if (folder?.value == "old") contents("old browse") else newBrowse.await()
+            }
+            harness.targetReader = { id ->
+                if (id.value == "old") activityTarget("old target") else newTarget.await()
+            }
+            harness.onReadPublicationChecked = gate::beforeArbitration
+            harness.onReadPublicationArbitrated = gate::afterArbitration
+            val controller = harness.controller(CoroutineScope(Dispatchers.Default))
+            controller.awaitHome()
+            gate.arm(LauncherReadChannel.HOME)
+            controller.onVisible()
+            gate.awaitEntry()
+            controller.onVisible()
+            gate.release()
+            gate.awaitArbitration()
+            assertTrue(controller.state.value.home is LauncherLoad.Loading)
+            newHome.complete(listOf(trackable("new home")))
+            controller.awaitHome("new home")
+            gate.arm(LauncherReadChannel.BROWSE)
+            controller.dispatch(StartActivityAction.Browse(FolderId("old")))
+            gate.awaitEntry()
+            controller.dispatch(StartActivityAction.Browse(null))
+            gate.release()
+            gate.awaitArbitration()
+            assertEquals(null, controller.state.value.browseFolderId)
+            assertTrue(controller.state.value.browse is LauncherLoad.Loading)
+            newBrowse.complete(contents("new browse"))
+            controller.awaitBrowse("new browse")
+            gate.arm(LauncherReadChannel.SELECTED)
+            controller.dispatch(StartActivityAction.Select(activityId("old")))
+            gate.awaitEntry()
+            controller.dispatch(StartActivityAction.Select(activityId("new")))
+            gate.release()
+            gate.awaitArbitration()
+            assertTrue(controller.state.value.selected is LauncherLoad.Loading)
+            newTarget.complete(activityTarget("new target"))
+            controller.awaitTarget("new target")
             controller.close()
         }
 
@@ -676,6 +766,7 @@ class StartActivityControllerTest {
         var coordinationCalls = 0
         var liveChecks = 0
         var homeFailure: Exception? = null
+        var recentReader: suspend () -> List<LibraryTrackable> = { listOf(trackable("recent")) }
         var writerFailure: Exception? = null
         var writerGate: CompletableDeferred<Unit>? = null
         var reorderGate: CompletableDeferred<Unit>? = null
@@ -684,6 +775,8 @@ class StartActivityControllerTest {
         var live = false
         var initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null
         var onSelectObserved: (LauncherCommandState) -> Unit = {}
+        var onReadPublicationChecked: (LauncherReadChannel) -> Unit = {}
+        var onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {}
         var target: LibraryLaunchTarget = activityTarget("activity")
         var searcher: suspend (String) -> List<LibraryTrackable> = { query ->
             searchQueries += query
@@ -704,7 +797,7 @@ class StartActivityControllerTest {
                 { limit ->
                     recentLimits += limit
                     homeFailure?.let { throw it }
-                    listOf(trackable("recent"))
+                    recentReader()
                 },
                 {
                     pinnedReads++
@@ -744,6 +837,8 @@ class StartActivityControllerTest {
                 scheduler,
                 initialLiveConflict = initialLiveConflict,
                 onSelectObserved = onSelectObserved,
+                onReadPublicationChecked = onReadPublicationChecked,
+                onReadPublicationArbitrated = onReadPublicationArbitrated,
             )
     }
 
@@ -785,8 +880,52 @@ class StartActivityControllerTest {
         override fun now(): Instant = value
     }
 
+    private class PublicationGate {
+        private var channel: LauncherReadChannel? = null
+        private var entered = CountDownLatch(0)
+        private var released = CountDownLatch(0)
+        private var arbitrated = CountDownLatch(0)
+        private val armed = AtomicBoolean(false)
+
+        fun arm(channel: LauncherReadChannel) {
+            this.channel = channel
+            entered = CountDownLatch(1)
+            released = CountDownLatch(1)
+            arbitrated = CountDownLatch(1)
+            armed.set(true)
+        }
+
+        fun beforeArbitration(channel: LauncherReadChannel) {
+            if (channel == this.channel && armed.compareAndSet(true, false)) {
+                entered.countDown()
+                check(released.await(2, TimeUnit.SECONDS)) { "Publication gate timed out" }
+            }
+        }
+
+        fun afterArbitration(channel: LauncherReadChannel) {
+            if (channel == this.channel && !armed.get()) arbitrated.countDown()
+        }
+
+        fun awaitEntry() = check(entered.await(2, TimeUnit.SECONDS)) { "Publication did not reach the gate" }
+
+        fun release() = released.countDown()
+
+        fun awaitArbitration() = check(arbitrated.await(2, TimeUnit.SECONDS)) { "Publication did not arbitrate" }
+    }
+
     private suspend fun StartActivityController.awaitHome() =
         withTimeout(2_000) { state.first { it.home is LauncherLoad.Content } }
+
+    private suspend fun StartActivityController.awaitHome(name: String) =
+        withTimeout(2_000) {
+            state.first {
+                (it.home as? LauncherLoad.Content)
+                    ?.value
+                    ?.recent
+                    ?.single()
+                    ?.name == name
+            }
+        }
 
     private suspend fun StartActivityController.awaitHomeFailure() =
         withTimeout(2_000) { state.first { it.home is LauncherLoad.Failure } }

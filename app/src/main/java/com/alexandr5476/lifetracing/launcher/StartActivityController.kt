@@ -118,6 +118,13 @@ internal enum class LauncherRouteExitDecision {
     DELIVER_COMMIT,
 }
 
+internal enum class LauncherReadChannel {
+    HOME,
+    SEARCH,
+    BROWSE,
+    SELECTED,
+}
+
 data class StartActivityState(
     val home: LauncherLoad<LauncherHome> = LauncherLoad.Loading,
     val searchQuery: String = "",
@@ -234,6 +241,8 @@ class StartActivityController internal constructor(
     private val recentLimit: Int = DEFAULT_RECENT_LIMIT,
     private val initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null,
     private val onSelectObserved: (LauncherCommandState) -> Unit = {},
+    private val onReadPublicationChecked: (LauncherReadChannel) -> Unit = {},
+    private val onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {},
 ) {
     private val homeGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
@@ -241,6 +250,7 @@ class StartActivityController internal constructor(
     private val targetGeneration = AtomicLong()
     private val attemptGeneration = AtomicLong()
     private val lifecycleLock = Any()
+    private val readPublicationLock = Any()
     private val mutableState = MutableStateFlow(StartActivityState())
     val state: StateFlow<StartActivityState> = mutableState
 
@@ -286,12 +296,14 @@ class StartActivityController internal constructor(
     }
 
     fun close() {
-        closed = true
+        synchronized(readPublicationLock) {
+            closed = true
+            homeGeneration.incrementAndGet()
+            searchGeneration.incrementAndGet()
+            browseGeneration.incrementAndGet()
+            targetGeneration.incrementAndGet()
+        }
         visible = false
-        homeGeneration.incrementAndGet()
-        searchGeneration.incrementAndGet()
-        browseGeneration.incrementAndGet()
-        targetGeneration.incrementAndGet()
         abandonPendingLaunch()
     }
 
@@ -332,65 +344,79 @@ class StartActivityController internal constructor(
     private var selectedTargetId: LibraryTemplateId? = null
 
     private fun refreshHome() {
-        if (closed) return
-        val generation = homeGeneration.incrementAndGet()
-        mutableState.update { it.copy(home = LauncherLoad.Loading) }
+        val generation =
+            synchronized(readPublicationLock) {
+                if (closed) return
+                homeGeneration.incrementAndGet().also {
+                    mutableState.update { state -> state.copy(home = LauncherLoad.Loading) }
+                }
+            }
         scope.launch {
             try {
                 val home = LauncherHome(readRecent(recentLimit), readPinned())
-                if (homeGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(home = LauncherLoad.Content(home)) }
+                publishRead(generation, homeGeneration, LauncherReadChannel.HOME) { state ->
+                    state.copy(home = LauncherLoad.Content(home))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (homeGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(home = LauncherLoad.Failure(failure.message())) }
+                publishRead(generation, homeGeneration, LauncherReadChannel.HOME) { state ->
+                    state.copy(home = LauncherLoad.Failure(failure.message()))
                 }
             }
         }
     }
 
     private fun search(query: String) {
-        val generation = searchGeneration.incrementAndGet()
-        mutableState.update {
-            it.copy(
-                searchQuery = query,
-                search = if (query.isBlank()) LauncherLoad.Idle else LauncherLoad.Loading,
-            )
-        }
+        val generation =
+            synchronized(readPublicationLock) {
+                searchGeneration.incrementAndGet().also {
+                    mutableState.update { state ->
+                        state.copy(
+                            searchQuery = query,
+                            search = if (query.isBlank()) LauncherLoad.Idle else LauncherLoad.Loading,
+                        )
+                    }
+                }
+            }
         if (query.isBlank() || closed) return
         scope.launch {
             try {
                 val results = searchLibrary(query)
-                if (searchGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(search = LauncherLoad.Content(results)) }
+                publishRead(generation, searchGeneration, LauncherReadChannel.SEARCH) { state ->
+                    state.copy(search = LauncherLoad.Content(results))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (searchGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(search = LauncherLoad.Failure(failure.message())) }
+                publishRead(generation, searchGeneration, LauncherReadChannel.SEARCH) { state ->
+                    state.copy(search = LauncherLoad.Failure(failure.message()))
                 }
             }
         }
     }
 
     private fun browse(folderId: FolderId?) {
-        val generation = browseGeneration.incrementAndGet()
-        mutableState.update { it.copy(browseFolderId = folderId, browse = LauncherLoad.Loading) }
+        val generation =
+            synchronized(readPublicationLock) {
+                browseGeneration.incrementAndGet().also {
+                    mutableState.update { state ->
+                        state.copy(browseFolderId = folderId, browse = LauncherLoad.Loading)
+                    }
+                }
+            }
         if (closed) return
         scope.launch {
             try {
                 val contents = browseLibrary(folderId)
-                if (browseGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(browse = LauncherLoad.Content(contents)) }
+                publishRead(generation, browseGeneration, LauncherReadChannel.BROWSE) { state ->
+                    state.copy(browse = LauncherLoad.Content(contents))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (browseGeneration.get() == generation && !closed) {
-                    mutableState.update { it.copy(browse = LauncherLoad.Failure(failure.message())) }
+                publishRead(generation, browseGeneration, LauncherReadChannel.BROWSE) { state ->
+                    state.copy(browse = LauncherLoad.Failure(failure.message()))
                 }
             }
         }
@@ -411,14 +437,14 @@ class StartActivityController internal constructor(
         scope.launch {
             try {
                 val target = readTarget(id)
-                if (targetGeneration.get() == generation && selectedTargetId == id && !closed) {
-                    mutableState.update { it.copy(selected = LauncherLoad.Content(target)) }
+                publishRead(generation, targetGeneration, LauncherReadChannel.SELECTED) { state ->
+                    state.copy(selected = LauncherLoad.Content(target))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (targetGeneration.get() == generation && selectedTargetId == id && !closed) {
-                    mutableState.update { it.copy(selected = LauncherLoad.Failure(failure.message())) }
+                publishRead(generation, targetGeneration, LauncherReadChannel.SELECTED) { state ->
+                    state.copy(selected = LauncherLoad.Failure(failure.message()))
                 }
             }
         }
@@ -433,10 +459,31 @@ class StartActivityController internal constructor(
 
             else -> cancelPendingLaunchLocked()
         }
-        selectedTargetId = id
-        val generation = targetGeneration.incrementAndGet()
-        mutableState.update { it.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle) }
-        return generation
+        return synchronized(readPublicationLock) {
+            selectedTargetId = id
+            targetGeneration.incrementAndGet().also {
+                mutableState.update { state ->
+                    state.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle)
+                }
+            }
+        }
+    }
+
+    private fun publishRead(
+        generation: Long,
+        currentGeneration: AtomicLong,
+        channel: LauncherReadChannel,
+        transform: (StartActivityState) -> StartActivityState,
+    ) {
+        if (closed || currentGeneration.get() != generation) return
+        // This observation is deliberately non-authoritative; ownership and publication share the lock below.
+        onReadPublicationChecked(channel)
+        synchronized(readPublicationLock) {
+            if (!closed && currentGeneration.get() == generation) {
+                mutableState.update(transform)
+            }
+        }
+        onReadPublicationArbitrated(channel)
     }
 
     private fun reorder(ids: List<LibraryTemplateId>) {

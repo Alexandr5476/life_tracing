@@ -1133,6 +1133,61 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun oversizedPersistedSequenceDuplicateIsRejectedWithoutResidueAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "oversized-sequence-duplicate-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seedSnapshot("step", "STOPWATCH")
+            sequence(
+                "oversized",
+                "Oversized",
+                nodes =
+                    listOf(
+                        SequenceNodeEntity("repeat", "oversized", "REPEAT", null, 0, null, Int.MAX_VALUE),
+                        SequenceNodeEntity("step", "oversized", "STEP", "repeat", 0, "step", null),
+                    ),
+            )
+            val source =
+                requireNotNull(database.sequenceTemplateDao().getAggregate("oversized")).toDomain()
+            val counts =
+                listOf("sequence_templates", "sequence_nodes", "sequence_template_user_state", "statistics_series")
+                    .associateWith(::count)
+
+            fun assertUnchanged() {
+                assertEquals(
+                    source,
+                    requireNotNull(database.sequenceTemplateDao().getAggregate("oversized")).toDomain(),
+                )
+                counts.forEach { (table, expected) -> assertEquals(expected, count(table)) }
+            }
+
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().duplicateSequenceTemplate(SequenceTemplateId("oversized"), instant(10))
+            }
+            assertUnchanged()
+
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            assertUnchanged()
+            assertThrows(IllegalArgumentException::class.java) {
+                repository().duplicateSequenceTemplate(SequenceTemplateId("oversized"), instant(20))
+            }
+            assertUnchanged()
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database =
+                LifeTracingDatabase
+                    .inMemoryBuilder(context)
+                    .allowMainThreadQueries()
+                    .build()
+        }
+    }
+
+    @Test
     fun liveConflictRollsBackRequestedSnapshotAndRecentWithoutTouchingTheWinner() {
         activity("winner", "Winner")
         activity("loser", "Loser")

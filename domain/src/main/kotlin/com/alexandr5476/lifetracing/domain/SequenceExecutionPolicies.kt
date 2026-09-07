@@ -34,6 +34,17 @@ object RuntimeOccurrenceCardinalityPolicy {
             Math.addExact(total, produced)
         }
 
+    fun templateMaterializedCount(nodes: List<SequenceNode>): Long =
+        nodes.fold(0L) { total, node ->
+            val produced =
+                when (node) {
+                    is ActivityStep -> 1L
+                    is SequenceRepeatBlock ->
+                        Math.multiplyExact(node.repeatCount.toLong(), node.children.size.toLong())
+                }
+            Math.addExact(total, produced)
+        }
+
     fun requireSupported(count: Long) {
         require(count in 0L..MAX_SUPPORTED_RUNTIME_OCCURRENCES) {
             "Runtime occurrence count exceeds the supported limit of $MAX_SUPPORTED_RUNTIME_OCCURRENCES"

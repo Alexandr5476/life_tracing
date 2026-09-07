@@ -33,6 +33,7 @@ import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceNode
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
@@ -552,6 +553,9 @@ class LibraryRepository internal constructor(
     ): SequenceTemplate =
         transaction {
             val source = requireActiveSequence(sourceId)
+            RuntimeOccurrenceCardinalityPolicy.requireSupported(
+                RuntimeOccurrenceCardinalityPolicy.templateMaterializedCount(source.nodes),
+            )
             val id = nextSequenceTemplateId()
             val seriesId = nextStatisticsSeriesId()
             val duplicate =
