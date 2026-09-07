@@ -52,6 +52,7 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateRevisionPolicy
 import com.alexandr5476.lifetracing.domain.SequenceTemplateUserState
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsSeries
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
@@ -175,6 +176,7 @@ class LibraryRepository internal constructor(
                                 field.defaultNumberScaled,
                             )
                         },
+                        template.revision,
                     )
                 }
                 is LibraryTemplateId.Sequence -> {
@@ -184,6 +186,7 @@ class LibraryRepository internal constructor(
                         id,
                         template.name,
                         first.overrides.startCountdown ?: template.settings.sequenceStartCountdown,
+                        template.revision,
                     )
                 }
             }
@@ -443,12 +446,14 @@ class LibraryRepository internal constructor(
         createdAt: Instant,
         zoneId: ZoneId,
         valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+        expectedRevision: Long? = null,
     ): ActivityExecution =
         transaction {
             val template = requireActiveActivity(templateId)
             require(template.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick completion requires NO_LIVE_TRACKING"
             }
+            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             val snapshot = activitySnapshotFactory.fromTemplate(template, createdAt)
             database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val execution =
@@ -470,9 +475,11 @@ class LibraryRepository internal constructor(
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
+        expectedRevision: Long? = null,
     ): SequenceRuntimeState =
         transaction {
             val template = requireActiveSequence(templateId)
+            if (expectedRevision != null && template.revision != expectedRevision) throw StaleLauncherTargetException()
             val snapshot = sequenceSnapshotFactory.fromTemplate(template, activityModes(template), createdAt)
             database.sequenceSnapshotDao().insertAggregate(snapshot.toEntityAggregate())
             val state = liveSessions.startSequenceFromSnapshot(snapshot.id, startedAt, createdAt, zoneId)

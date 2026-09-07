@@ -44,6 +44,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TagId
 import org.junit.After
@@ -207,6 +208,88 @@ class LibraryRepositoryTest {
         assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
         assertNull(database.activityTemplateDao().getUserState("activity")?.lastUsedAtMs)
         assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun staleLauncherRevisionsRollbackAllWriterResidueAndAcceptedSnapshotsKeepAuthorizedRevision() {
+        val library = repository()
+        activity("timed", "Timed", revision = 2)
+        activity("quick", "Quick", mode = "NO_LIVE_TRACKING", revision = 2)
+        seedSnapshot("step", "STOPWATCH")
+        sequence(
+            "sequence",
+            "Sequence",
+            revision = 2,
+            nodes = listOf(step("step-node", "sequence", "step")),
+        )
+        val commands = activityCommands()
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            commands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 1,
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("command-snapshot-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("timed")?.lastUsedAtMs)
+
+        val timed =
+            commands.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("timed")),
+                instant(11),
+                instant(11),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 2,
+            )
+        assertEquals(2L, database.activitySnapshotDao().getById(timed.snapshotId.value)?.sourceRevision)
+        liveForExistingDatabase().completeActiveActivity(instant(12))
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("quick"),
+                instant(13),
+                instant(13),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertNull(database.activitySnapshotDao().getById("activity-launch-1"))
+        assertNull(database.activityTemplateDao().getUserState("quick")?.lastUsedAtMs)
+        val quick =
+            library.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("quick"),
+                instant(14),
+                instant(14),
+                ZoneOffset.UTC,
+                expectedRevision = 2,
+            )
+        assertEquals(2L, database.activitySnapshotDao().getById(quick.snapshotId.value)?.sourceRevision)
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            library.startSequenceFromTemplate(
+                SequenceTemplateId("sequence"),
+                instant(15),
+                instant(15),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertNull(database.sequenceSnapshotDao().getById("sequence-launch-1"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
+        val launched =
+            library.startSequenceFromTemplate(
+                SequenceTemplateId("sequence"),
+                instant(16),
+                instant(16),
+                ZoneOffset.UTC,
+                expectedRevision = 2,
+            )
+        assertEquals(2L, database.sequenceSnapshotDao().getById(launched.execution.snapshotId.value)?.sourceRevision)
     }
 
     @Test

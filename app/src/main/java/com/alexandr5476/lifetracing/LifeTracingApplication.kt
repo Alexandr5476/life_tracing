@@ -220,6 +220,7 @@ internal fun executeLauncherCommand(
                     command.at,
                     command.at,
                     command.zoneId,
+                    expectedTemplateRevision = command.expectedRevision,
                 )
             LauncherCommit.Activity(execution.id, true)
         }
@@ -241,6 +242,7 @@ internal fun executeLauncherCommand(
                     command.at,
                     command.zoneId,
                     overrides,
+                    command.expectedRevision,
                 )
             LauncherCommit.Activity(execution.id, false)
         }
@@ -251,6 +253,7 @@ internal fun executeLauncherCommand(
                     command.at,
                     command.at,
                     command.zoneId,
+                    command.expectedRevision,
                 )
             LauncherCommit.Sequence(state.execution.id)
         }

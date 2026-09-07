@@ -34,6 +34,7 @@ import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
@@ -57,9 +58,10 @@ class ActivityCommandRepository internal constructor(
         createdAt: Instant,
         eventZoneId: ZoneId,
         valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+        expectedTemplateRevision: Long? = null,
     ): ActivityExecution =
         transaction {
-            val prepared = prepare(source, createdAt)
+            val prepared = prepare(source, createdAt, expectedTemplateRevision)
             require(prepared.snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "NO_LIVE_TRACKING Activity cannot start live"
             }
@@ -271,6 +273,7 @@ class ActivityCommandRepository internal constructor(
     private fun prepare(
         source: ActivityEntrySource,
         createdAt: Instant,
+        expectedTemplateRevision: Long? = null,
     ): PreparedSource =
         when (source) {
             is ActivityEntrySource.Template -> {
@@ -279,6 +282,9 @@ class ActivityCommandRepository internal constructor(
                         "Unknown ActivityTemplate: ${source.id.value}"
                     }.toDomain()
                 require(template.deletedAt == null) { "Archived ActivityTemplate cannot be used directly" }
+                if (expectedTemplateRevision != null && template.revision != expectedTemplateRevision) {
+                    throw StaleLauncherTargetException()
+                }
                 val snapshot = snapshotFactory.fromTemplate(template, createdAt)
                 database.activitySnapshotDao().insertAggregate(snapshot.toEntityAggregate())
                 PreparedSource(snapshot, directTemplateId = source.id.value)

@@ -108,6 +108,7 @@ sealed interface LibraryLaunchTarget {
     val id: LibraryTemplateId
     val name: String
     val startCountdown: Duration
+    val revision: Long
 
     data class Activity(
         override val id: LibraryTemplateId.Activity,
@@ -115,14 +116,18 @@ sealed interface LibraryLaunchTarget {
         override val startCountdown: Duration,
         val timeTrackingMode: TimeTrackingMode,
         val mainValue: ActivityLaunchMainValue?,
+        override val revision: Long = 1,
     ) : LibraryLaunchTarget
 
     data class Sequence(
         override val id: LibraryTemplateId.Sequence,
         override val name: String,
         override val startCountdown: Duration,
+        override val revision: Long = 1,
     ) : LibraryLaunchTarget
 }
+
+class StaleLauncherTargetException : IllegalStateException("Launcher target is stale")
 
 data class ActivityLaunchMainValue(
     val fieldId: ActivityTemplateFieldId,

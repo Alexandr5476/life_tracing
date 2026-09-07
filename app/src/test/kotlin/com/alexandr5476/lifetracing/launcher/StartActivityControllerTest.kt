@@ -13,6 +13,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import kotlinx.coroutines.CompletableDeferred
@@ -384,6 +385,96 @@ class StartActivityControllerTest {
             assertEquals(1, backs)
             assertEquals(LauncherCommandState.Idle, controller.state.value.command)
             assertTrue(harness.commands.isEmpty())
+            controller.close()
+        }
+
+    @Test
+    fun selectFirstInvalidatesNoLivePreflightBeforeItsDurableBoundaryThenAllowsTheNewTarget() =
+        runBlocking {
+            val first = noLiveTarget("first").copy(startCountdown = Duration.ofSeconds(3))
+            val second = noLiveTarget("second")
+            val harness = Harness().apply { targetReader = { if (it == activityId("first")) first else second } }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("first"))
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitPreflight()
+
+            controller.dispatch(StartActivityAction.Select(activityId("second")))
+            harness.scheduler.fireLatestTwice()
+            controller.awaitTarget("second")
+            assertTrue(harness.commands.isEmpty())
+
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitCommitted()
+            assertEquals(1, harness.commands.size)
+            assertEquals(
+                "second",
+                (harness.commands.single() as LauncherDurableCommand.CompleteNoLive).templateId.value,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun durableBoundaryFirstKeepsNoLiveCommitOwnedByTheOriginalSelection() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val first = noLiveTarget("first").copy(startCountdown = Duration.ofSeconds(3))
+            val second = noLiveTarget("second")
+            val harness =
+                Harness().apply {
+                    writerGate = gate
+                    targetReader = { if (it == activityId("first")) first else second }
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("first"))
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitPreflight()
+
+            harness.scheduler.fireLatestTwice()
+            withTimeout(2_000) { controller.state.first { it.command == LauncherCommandState.Committing } }
+            controller.dispatch(StartActivityAction.Select(activityId("second")))
+            assertEquals("first", controller.loadedTarget().name)
+            withTimeout(2_000) { while (harness.commands.isEmpty()) kotlinx.coroutines.yield() }
+
+            gate.complete(Unit)
+            controller.awaitCommitted()
+            controller.dispatch(StartActivityAction.Select(activityId("second")))
+            assertEquals("first", controller.loadedTarget().name)
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun staleDurableRevisionRehydratesBeforeAnotherLaunchCanUseTheNewConfiguration() =
+        runBlocking {
+            var reads = 0
+            val harness =
+                Harness().apply {
+                    writerFailure = StaleLauncherTargetException()
+                    targetReader = {
+                        reads++
+                        noLiveTarget("quick").copy(revision = reads.toLong())
+                    }
+                }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.selectAndAwait(activityId("quick"))
+            controller.dispatch(StartActivityAction.Launch())
+            withTimeout(2_000) { while (harness.commands.isEmpty()) kotlinx.coroutines.yield() }
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.selected as? LauncherLoad.Content)?.value?.revision == 2L &&
+                        it.command == LauncherCommandState.Idle
+                }
+            }
+            assertEquals(1L, (harness.commands.single() as LauncherDurableCommand.CompleteNoLive).expectedRevision)
+
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.Launch())
+            controller.awaitCommitted()
+            assertEquals(2L, (harness.commands.last() as LauncherDurableCommand.CompleteNoLive).expectedRevision)
             controller.close()
         }
 

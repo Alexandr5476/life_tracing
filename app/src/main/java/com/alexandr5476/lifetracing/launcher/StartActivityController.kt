@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import kotlinx.coroutines.CancellationException
@@ -163,6 +164,7 @@ internal sealed interface LauncherDurableCommand {
 
     data class StartActivity(
         val templateId: com.alexandr5476.lifetracing.domain.ActivityTemplateId,
+        val expectedRevision: Long,
         override val at: Instant,
         override val zoneId: ZoneId,
     ) : LauncherDurableCommand
@@ -170,12 +172,14 @@ internal sealed interface LauncherDurableCommand {
     data class CompleteNoLive(
         val templateId: com.alexandr5476.lifetracing.domain.ActivityTemplateId,
         val override: QuickMainValueOverride?,
+        val expectedRevision: Long,
         override val at: Instant,
         override val zoneId: ZoneId,
     ) : LauncherDurableCommand
 
     data class StartSequence(
         val templateId: com.alexandr5476.lifetracing.domain.SequenceTemplateId,
+        val expectedRevision: Long,
         override val at: Instant,
         override val zoneId: ZoneId,
     ) : LauncherDurableCommand
@@ -387,11 +391,14 @@ class StartActivityController internal constructor(
     }
 
     private fun select(id: LibraryTemplateId) {
-        if (mutableState.value.command == LauncherCommandState.Committing) return
-        abandonPendingLaunch()
-        selectedTargetId = id
-        val generation = targetGeneration.incrementAndGet()
-        mutableState.update { it.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle) }
+        val generation = synchronized(lifecycleLock) { selectLocked(id) } ?: return
+        readSelected(id, generation)
+    }
+
+    private fun readSelected(
+        id: LibraryTemplateId,
+        generation: Long,
+    ) {
         if (closed) return
         scope.launch {
             try {
@@ -407,6 +414,21 @@ class StartActivityController internal constructor(
                 }
             }
         }
+    }
+
+    private fun selectLocked(id: LibraryTemplateId): Long? {
+        when (mutableState.value.command) {
+            LauncherCommandState.Committing,
+            is LauncherCommandState.Committed,
+            is LauncherCommandState.CommittedCoordinationFailure,
+            -> return null
+
+            else -> cancelPendingLaunchLocked()
+        }
+        selectedTargetId = id
+        val generation = targetGeneration.incrementAndGet()
+        mutableState.update { it.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle) }
+        return generation
     }
 
     private fun reorder(ids: List<LibraryTemplateId>) {
@@ -524,11 +546,12 @@ class StartActivityController internal constructor(
             when (target) {
                 is LibraryLaunchTarget.Activity ->
                     if (target.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
-                        LauncherDurableCommand.CompleteNoLive(target.id.id, override, now, zoneId())
+                        LauncherDurableCommand.CompleteNoLive(target.id.id, override, target.revision, now, zoneId())
                     } else {
-                        LauncherDurableCommand.StartActivity(target.id.id, now, zoneId())
+                        LauncherDurableCommand.StartActivity(target.id.id, target.revision, now, zoneId())
                     }
-                is LibraryLaunchTarget.Sequence -> LauncherDurableCommand.StartSequence(target.id.id, now, zoneId())
+                is LibraryLaunchTarget.Sequence ->
+                    LauncherDurableCommand.StartSequence(target.id.id, target.revision, now, zoneId())
             }
         val committed =
             try {
@@ -536,28 +559,47 @@ class StartActivityController internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (conflict: LiveSessionConflictException) {
-                mutableState.update { it.copy(command = LauncherCommandState.Conflict(conflict.message())) }
+                publishCommitResult(LauncherCommandState.Conflict(conflict.message()))
+                return
+            } catch (ignored: StaleLauncherTargetException) {
+                rehydrateTarget(target.id)
                 return
             } catch (failure: Exception) {
-                mutableState.update { it.copy(command = LauncherCommandState.Rejected(failure.message())) }
+                publishCommitResult(LauncherCommandState.Rejected(failure.message()))
                 return
             }
         if (!committed.isLive) {
-            mutableState.update { it.copy(command = LauncherCommandState.Committed(committed)) }
+            publishCommitResult(LauncherCommandState.Committed(committed))
             return
         }
         try {
             coordinateRuntimeStateChanged()
-            mutableState.update { it.copy(command = LauncherCommandState.Committed(committed)) }
+            publishCommitResult(LauncherCommandState.Committed(committed))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            mutableState.update {
-                it.copy(
-                    command = LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()),
-                )
+            publishCommitResult(LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()))
+        }
+    }
+
+    private fun publishCommitResult(command: LauncherCommandState) {
+        synchronized(lifecycleLock) {
+            if (mutableState.value.command == LauncherCommandState.Committing) {
+                mutableState.update { it.copy(command = command) }
             }
         }
+    }
+
+    private fun rehydrateTarget(id: LibraryTemplateId) {
+        val generation =
+            synchronized(lifecycleLock) {
+                if (mutableState.value.command != LauncherCommandState.Committing) return
+                selectedTargetId = id
+                val next = targetGeneration.incrementAndGet()
+                mutableState.update { it.copy(selected = LauncherLoad.Loading, command = LauncherCommandState.Idle) }
+                next
+            }
+        readSelected(id, generation)
     }
 
     private fun retryLaunch() {
