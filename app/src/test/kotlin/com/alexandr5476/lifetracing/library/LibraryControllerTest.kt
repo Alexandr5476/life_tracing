@@ -666,6 +666,184 @@ class LibraryControllerTest {
             controller.close()
         }
 
+    @Test
+    fun archiveActionsUseTheTemplateKindAndRefreshCanonicalBrowseAndSearch() =
+        runBlocking {
+            val activity = activity("activity", "Match activity")
+            val sequence = sequence("sequence", "Match sequence")
+            var catalog = listOf(activity, sequence)
+            val mutations = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        LibraryRoot(
+                            LibraryContents(emptyList(), catalog.filterActivities(), catalog.filterSequences()),
+                            emptyList(),
+                        )
+                    },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { query, _ -> catalog.filter { it.name.contains(query) } },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    { mutation ->
+                        mutations += mutation
+                        val archivedId = (mutation as LibraryMutation.ArchiveTemplate).id
+                        catalog = catalog.filterNot { it.id == archivedId }
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.Search("Match"))
+            controller.awaitSearch { it.size == 2 }
+
+            controller.dispatch(LibraryAction.ArchiveTemplate(activity.id))
+            controller.awaitBrowse { it.contents.activities.isEmpty() }
+            controller.awaitSearch { it.map(LibraryTrackable::id) == listOf(sequence.id) }
+            controller.dispatch(LibraryAction.ArchiveTemplate(sequence.id))
+            controller.awaitBrowse { it.contents.sequences.isEmpty() }
+
+            assertEquals(
+                listOf(
+                    LibraryMutation.ArchiveTemplate(activity.id, Instant.EPOCH),
+                    LibraryMutation.ArchiveTemplate(sequence.id, Instant.EPOCH),
+                ),
+                mutations,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun folderDeleteInspectionUsesCanonicalContentsAndLinearNonDescendantCatalog() =
+        runBlocking {
+            val source = folder("source", "Source")
+            val child = folder("child", "Child", source.id)
+            val grandchild = folder("grandchild", "Grandchild", child.id)
+            val destination = folder("destination", "Destination")
+            val contents = LibraryContents(listOf(child), listOf(activity("activity", "Activity")), emptyList())
+            var reads = 0
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        LibraryRoot(
+                            LibraryContents(listOf(source, destination), emptyList(), emptyList()),
+                            emptyList(),
+                        )
+                    },
+                    {
+                        reads++
+                        assertEquals(source.id, it)
+                        contents
+                    },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source, child, grandchild, destination), emptyList()) },
+                )
+            controller.awaitBrowse()
+            controller.awaitOrganization()
+
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            val options = controller.awaitFolderDeletion()
+
+            assertFalse(options.isEmpty)
+            assertEquals(listOf(destination.id), options.destinations.map(Folder::id))
+            assertEquals(1, reads)
+            controller.dispatch(LibraryAction.DismissFolderDeletion)
+            assertNull(controller.state.value.folderDeletion)
+            controller.close()
+        }
+
+    @Test
+    fun emptyFolderRequiresInspectionBeforeItsSingleTransactionalDelete() =
+        runBlocking {
+            val folder = folder("empty", "Empty")
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val mutations = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
+                    { LibraryContents(emptyList(), emptyList(), emptyList()) },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(folder), emptyList()) },
+                    {
+                        mutations += it
+                        started.complete(Unit)
+                        release.await()
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
+            kotlinx.coroutines.yield()
+            assertTrue(mutations.isEmpty())
+
+            controller.dispatch(LibraryAction.RequestFolderDeletion(folder))
+            assertTrue(controller.awaitFolderDeletion().isEmpty)
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
+            started.await()
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
+            release.complete(Unit)
+            withTimeout(2_000) { controller.state.first { mutations.isNotEmpty() && !it.isMutating } }
+
+            assertEquals(
+                listOf(LibraryMutation.DeleteFolderMovingContents(folder.id, null, Instant.EPOCH)),
+                mutations,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun nonEmptyFolderAcceptsOnlyAnExplicitInspectedDispositionAndBlocksDuplicateConfirmation() =
+        runBlocking {
+            val source = folder("source", "Source")
+            val destination = folder("destination", "Destination")
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val mutations = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        LibraryRoot(
+                            LibraryContents(listOf(source, destination), emptyList(), emptyList()),
+                            emptyList(),
+                        )
+                    },
+                    { LibraryContents(emptyList(), emptyList(), listOf(sequence("nested", "Nested"))) },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source, destination), emptyList()) },
+                    {
+                        mutations += it
+                        started.complete(Unit)
+                        release.await()
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.DeleteFolderAndArchiveContents(source.id))
+            kotlinx.coroutines.yield()
+            assertTrue(mutations.isEmpty())
+
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            assertFalse(controller.awaitFolderDeletion().isEmpty)
+            controller.dispatch(LibraryAction.DeleteFolderMovingContents(source.id, destination.id))
+            started.await()
+            controller.dispatch(LibraryAction.DeleteFolderMovingContents(source.id, destination.id))
+            release.complete(Unit)
+            withTimeout(2_000) { controller.state.first { !it.isMutating } }
+
+            assertEquals(
+                listOf(LibraryMutation.DeleteFolderMovingContents(source.id, destination.id, Instant.EPOCH)),
+                mutations,
+            )
+            controller.close()
+        }
+
     @Suppress("LongParameterList")
     private fun controller(
         scope: CoroutineScope,
@@ -697,6 +875,11 @@ class LibraryControllerTest {
     private suspend fun LibraryController.awaitOrganizationFailure() =
         withTimeout(2_000) { state.first { it.organization is LibraryLoad.Failure } }
 
+    private suspend fun LibraryController.awaitFolderDeletion(): LibraryFolderDeletionOptions =
+        withTimeout(2_000) {
+            state.first { it.folderDeletion?.options is LibraryLoad.Content }
+        }.folderDeletion!!.let { (it.options as LibraryLoad.Content).value }
+
     private fun LibraryController.currentBrowse(): LibraryBrowse = (state.value.browse as LibraryLoad.Content).value
 
     private suspend fun LibraryController.awaitSearch(
@@ -709,6 +892,8 @@ class LibraryControllerTest {
         }
 
     private fun List<LibraryTrackable>.filterActivities() = filter { it.id is LibraryTemplateId.Activity }
+
+    private fun List<LibraryTrackable>.filterSequences() = filter { it.id is LibraryTemplateId.Sequence }
 
     private fun folder(
         id: String,

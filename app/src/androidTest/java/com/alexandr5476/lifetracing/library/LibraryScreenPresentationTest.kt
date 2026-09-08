@@ -246,6 +246,14 @@ class LibraryScreenPresentationTest {
         verifyCompactFolderOrganization(Locale.forLanguageTag("ru"))
     }
 
+    @Test
+    fun englishDestructiveLifecycleIsExplicitAtCompactWidth() = verifyCompactDestructiveLifecycle(Locale.ENGLISH)
+
+    @Test
+    fun russianDestructiveLifecycleIsExplicitAtCompactWidth() {
+        verifyCompactDestructiveLifecycle(Locale.forLanguageTag("ru"))
+    }
+
     private fun verifyCompactOrganization(locale: Locale) {
         val configuration =
             android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
@@ -387,11 +395,136 @@ class LibraryScreenPresentationTest {
         assertEquals(LibraryAction.MoveFolder(source.id, destination.id), actions.last())
     }
 
+    private fun verifyCompactDestructiveLifecycle(locale: Locale) {
+        val configuration =
+            android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                setLocale(locale)
+            }
+        val context = composeTestRule.activity.createConfigurationContext(configuration)
+        val source = folder("delete-source", "Delete source")
+        val destination = folder("delete-destination", "Delete destination")
+        val activity = trackable("Delete activity", false)
+        val actions = mutableListOf<LibraryAction>()
+        var state by mutableStateOf(
+            LibraryPresentationState(
+                browse =
+                    LibraryLoad.Content(
+                        LibraryBrowse(
+                            null,
+                            emptyList(),
+                            emptyList(),
+                            LibraryContents(listOf(source), listOf(activity), emptyList()),
+                        ),
+                    ),
+                organization = LibraryLoad.Content(LibraryOrganization(listOf(source, destination), emptyList())),
+            ),
+        )
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+            ) {
+                LifeTracingTheme {
+                    Box(Modifier.width(320.dp)) {
+                        LibraryScreen(state, actions::add, onRouteBack = {})
+                    }
+                }
+            }
+        }
+        val widthPixels = 320 * context.resources.displayMetrics.density
+        val organize = context.getString(R.string.library_organize)
+        val delete = context.getString(R.string.library_delete)
+        val dialogContext = composeTestRule.activity
+
+        clickInside(composeTestRule.onAllNodesWithText(organize)[1], widthPixels)
+        clickInside(composeTestRule.onNodeWithText(delete), widthPixels)
+        composeTestRule
+            .onNodeWithText(dialogContext.getString(R.string.library_archive_template_title))
+            .assertIsDisplayed()
+        clickDialogInside(
+            composeTestRule.onNodeWithText(dialogContext.getString(R.string.library_archive)),
+            widthPixels,
+        )
+        assertEquals(LibraryAction.ArchiveTemplate(activity.id), actions.last())
+
+        clickInside(composeTestRule.onAllNodesWithText(organize)[0], widthPixels)
+        clickInside(composeTestRule.onAllNodesWithText(delete)[0], widthPixels)
+        assertEquals(LibraryAction.RequestFolderDeletion(source), actions.last())
+        state =
+            state.copy(
+                folderDeletion =
+                    LibraryFolderDeletion(
+                        source,
+                        LibraryLoad.Content(LibraryFolderDeletionOptions(true, listOf(destination))),
+                    ),
+            )
+        composeTestRule
+            .onNodeWithText(dialogContext.getString(R.string.library_delete_empty_folder_message, source.name))
+            .assertIsDisplayed()
+        clickDialogInside(
+            composeTestRule.onNodeWithText(dialogContext.getString(R.string.library_delete_folder)),
+            widthPixels,
+        )
+        assertEquals(LibraryAction.DeleteEmptyFolder(source.id), actions.last())
+
+        state =
+            state.copy(
+                folderDeletion =
+                    LibraryFolderDeletion(
+                        source,
+                        LibraryLoad.Content(LibraryFolderDeletionOptions(false, listOf(destination))),
+                    ),
+            )
+        clickDialogInside(
+            composeTestRule.onNodeWithText(dialogContext.getString(R.string.library_move_contents)),
+            widthPixels,
+        )
+        clickDialogInside(composeTestRule.onNodeWithText(destination.name), widthPixels)
+        assertEquals(LibraryAction.DeleteFolderMovingContents(source.id, destination.id), actions.last())
+
+        state = state.copy(folderDeletion = null)
+        composeTestRule.waitForIdle()
+        state =
+            state.copy(
+                folderDeletion =
+                    LibraryFolderDeletion(
+                        source,
+                        LibraryLoad.Content(LibraryFolderDeletionOptions(false, listOf(destination))),
+                    ),
+            )
+        val countBeforeDisposition = actions.size
+        clickDialogInside(
+            composeTestRule.onNodeWithText(dialogContext.getString(R.string.library_delete_contents)),
+            widthPixels,
+        )
+        assertEquals(countBeforeDisposition, actions.size)
+        composeTestRule
+            .onNodeWithText(dialogContext.getString(R.string.library_delete_contents_title))
+            .assertIsDisplayed()
+        clickDialogInside(
+            composeTestRule.onNodeWithText(dialogContext.getString(R.string.library_delete_contents)),
+            widthPixels,
+        )
+        assertEquals(LibraryAction.DeleteFolderAndArchiveContents(source.id), actions.last())
+    }
+
     private fun clickInside(
         node: SemanticsNodeInteraction,
         widthPixels: Float,
     ) {
         assertActionInside(node, widthPixels)
+        node.performClick()
+    }
+
+    private fun clickDialogInside(
+        node: SemanticsNodeInteraction,
+        widthPixels: Float,
+    ) {
+        node.assertIsDisplayed()
+        val bounds = node.fetchSemanticsNode().boundsInRoot
+        assertTrue(bounds.left >= 0f)
+        assertTrue(bounds.right <= widthPixels)
+        assertTrue(node.fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
         node.performClick()
     }
 

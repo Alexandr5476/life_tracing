@@ -255,43 +255,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         { mutation ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                when (mutation) {
-                                    is LibraryMutation.CreateFolder ->
-                                        libraryRepository.createFolder(
-                                            mutation.id,
-                                            mutation.name,
-                                            mutation.parentId,
-                                            mutation.at,
-                                        )
-                                    is LibraryMutation.RenameFolder ->
-                                        libraryRepository.renameFolder(mutation.id, mutation.name, mutation.at)
-                                    is LibraryMutation.MoveFolder ->
-                                        libraryRepository.moveFolder(mutation.id, mutation.parentId, mutation.at)
-                                    is LibraryMutation.MoveTemplate ->
-                                        libraryRepository.moveTemplatesToFolder(
-                                            listOf(mutation.id),
-                                            mutation.folderId,
-                                            mutation.at,
-                                        )
-                                    is LibraryMutation.CreateAndAssignTag ->
-                                        libraryRepository.createTagAndAssign(
-                                            mutation.id,
-                                            mutation.name,
-                                            mutation.templateId,
-                                            mutation.at,
-                                        )
-                                    is LibraryMutation.AssignTag ->
-                                        libraryRepository.addTag(mutation.templateId, mutation.tagId)
-                                    is LibraryMutation.UnassignTag ->
-                                        libraryRepository.removeTag(mutation.templateId, mutation.tagId)
-                                    is LibraryMutation.SetPinned ->
-                                        if (mutation.pinned) {
-                                            libraryRepository.pin(mutation.templateId)
-                                        } else {
-                                            libraryRepository.unpin(mutation.templateId)
-                                        }
-                                    is LibraryMutation.ReorderPinned -> libraryRepository.reorderPinned(mutation.ids)
-                                }
+                                executeLibraryMutation(mutation, libraryRepository)
                             }
                         },
                     )
@@ -374,6 +338,45 @@ internal fun executeLauncherCommand(
             LauncherCommit.Sequence(state.execution.id)
         }
     }
+
+@Suppress("CyclomaticComplexMethod") // Exhaustive routing stays at the composition boundary.
+internal fun executeLibraryMutation(
+    mutation: LibraryMutation,
+    libraryRepository: LibraryRepository,
+) {
+    when (mutation) {
+        is LibraryMutation.CreateFolder ->
+            libraryRepository.createFolder(mutation.id, mutation.name, mutation.parentId, mutation.at)
+        is LibraryMutation.RenameFolder ->
+            libraryRepository.renameFolder(mutation.id, mutation.name, mutation.at)
+        is LibraryMutation.MoveFolder ->
+            libraryRepository.moveFolder(mutation.id, mutation.parentId, mutation.at)
+        is LibraryMutation.MoveTemplate ->
+            libraryRepository.moveTemplatesToFolder(listOf(mutation.id), mutation.folderId, mutation.at)
+        is LibraryMutation.CreateAndAssignTag ->
+            libraryRepository.createTagAndAssign(mutation.id, mutation.name, mutation.templateId, mutation.at)
+        is LibraryMutation.AssignTag -> libraryRepository.addTag(mutation.templateId, mutation.tagId)
+        is LibraryMutation.UnassignTag -> libraryRepository.removeTag(mutation.templateId, mutation.tagId)
+        is LibraryMutation.SetPinned ->
+            if (mutation.pinned) {
+                libraryRepository.pin(mutation.templateId)
+            } else {
+                libraryRepository.unpin(mutation.templateId)
+            }
+        is LibraryMutation.ReorderPinned -> libraryRepository.reorderPinned(mutation.ids)
+        is LibraryMutation.ArchiveTemplate ->
+            when (val id = mutation.id) {
+                is com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity ->
+                    libraryRepository.archiveActivityTemplate(id.id, mutation.at)
+                is com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence ->
+                    libraryRepository.archiveSequenceTemplate(id.id, mutation.at)
+            }
+        is LibraryMutation.DeleteFolderMovingContents ->
+            libraryRepository.deleteFolderMovingContents(mutation.id, mutation.destinationId, mutation.at)
+        is LibraryMutation.DeleteFolderAndArchiveContents ->
+            libraryRepository.deleteFolderAndArchiveContents(mutation.id, mutation.at)
+    }
+}
 
 internal class DailyControllerOwner(
     factory: () -> DailyController,

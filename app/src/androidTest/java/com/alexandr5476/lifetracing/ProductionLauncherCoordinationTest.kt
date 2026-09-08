@@ -73,6 +73,87 @@ import java.util.concurrent.atomic.AtomicBoolean
 @RunWith(AndroidJUnit4::class)
 class ProductionLauncherCoordinationTest {
     @Test
+    fun loadedTimedNoLiveAndSequenceTargetsArchivedBeforeCommitLeaveNoRuntimeOrRecentResidue() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val suffix = now.toEpochMilli()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, now)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val timed =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S4 timed $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = now.minusSeconds(4),
+                )
+            val noLive =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S4 no-live $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(3),
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "S4 sequence $suffix",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(timed.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = now.minusSeconds(2),
+                )
+            val targets =
+                listOf(
+                    LibraryTemplateId.Activity(timed.id),
+                    LibraryTemplateId.Activity(noLive.id),
+                    LibraryTemplateId.Sequence(sequence.id),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+
+            targets.forEachIndexed { index, id ->
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                var writers = 0
+                val controller =
+                    controller(
+                        scope,
+                        library,
+                        live,
+                        FixedWallClock(now),
+                        execute = { command ->
+                            writers++
+                            executeLauncherCommand(command, commands, library)
+                        },
+                        initialLiveConflict = { false },
+                    )
+                try {
+                    withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                    controller.dispatch(StartActivityAction.Select(id))
+                    withTimeout(5_000) { controller.state.first { it.selected is LauncherLoad.Content } }
+                    executeLibraryMutation(LibraryMutation.ArchiveTemplate(id, now.plusMillis(index.toLong())), library)
+
+                    controller.dispatch(StartActivityAction.Launch())
+                    withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Rejected } }
+
+                    assertEquals(1, writers)
+                    assertNull(live.getActiveSession())
+                    assertTrue(library.getRecent(100).none { it.id == id })
+                } finally {
+                    controller.close()
+                    scope.cancel()
+                    clearLiveSession(live, now.plusSeconds(1))
+                }
+            }
+        }
+
+    @Test
     fun realSemanticSaveRehydratesTheLauncherBeforeTheOldNoLiveBoundaryCanPersist() =
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()

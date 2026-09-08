@@ -9,6 +9,7 @@ package com.alexandr5476.lifetracing.library
 
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
+import com.alexandr5476.lifetracing.domain.FolderTreeValidator
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryRoot
@@ -51,6 +52,16 @@ data class LibraryOrganization(
     val tags: List<Tag>,
 )
 
+data class LibraryFolderDeletionOptions(
+    val isEmpty: Boolean,
+    val destinations: List<Folder>,
+)
+
+data class LibraryFolderDeletion(
+    val folder: Folder,
+    val options: LibraryLoad<LibraryFolderDeletionOptions> = LibraryLoad.Loading,
+)
+
 data class LibraryPresentationState(
     val browse: LibraryLoad<LibraryBrowse> = LibraryLoad.Loading,
     val folderId: FolderId? = null,
@@ -58,6 +69,7 @@ data class LibraryPresentationState(
     val filter: LibraryKindFilter = LibraryKindFilter.ALL,
     val search: LibraryLoad<List<LibraryTrackable>>? = null,
     val organization: LibraryLoad<LibraryOrganization> = LibraryLoad.Loading,
+    val folderDeletion: LibraryFolderDeletion? = null,
     val mutationFailure: String? = null,
     val isMutating: Boolean = false,
 )
@@ -123,6 +135,29 @@ sealed interface LibraryAction {
     data class ReorderPinned(
         val ids: List<LibraryTemplateId>,
     ) : LibraryAction
+
+    data class ArchiveTemplate(
+        val id: LibraryTemplateId,
+    ) : LibraryAction
+
+    data class RequestFolderDeletion(
+        val folder: Folder,
+    ) : LibraryAction
+
+    data object DismissFolderDeletion : LibraryAction
+
+    data class DeleteEmptyFolder(
+        val id: FolderId,
+    ) : LibraryAction
+
+    data class DeleteFolderMovingContents(
+        val id: FolderId,
+        val destinationId: FolderId?,
+    ) : LibraryAction
+
+    data class DeleteFolderAndArchiveContents(
+        val id: FolderId,
+    ) : LibraryAction
 }
 
 sealed interface LibraryMutation {
@@ -176,6 +211,22 @@ sealed interface LibraryMutation {
     data class ReorderPinned(
         val ids: List<LibraryTemplateId>,
     ) : LibraryMutation
+
+    data class ArchiveTemplate(
+        val id: LibraryTemplateId,
+        val at: Instant,
+    ) : LibraryMutation
+
+    data class DeleteFolderMovingContents(
+        val id: FolderId,
+        val destinationId: FolderId?,
+        val at: Instant,
+    ) : LibraryMutation
+
+    data class DeleteFolderAndArchiveContents(
+        val id: FolderId,
+        val at: Instant,
+    ) : LibraryMutation
 }
 
 class LibraryController internal constructor(
@@ -192,6 +243,7 @@ class LibraryController internal constructor(
 ) {
     private val browseGeneration = AtomicLong()
     private val organizationGeneration = AtomicLong()
+    private val folderDeletionGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
     private val mutationInFlight = AtomicBoolean()
     private val mutableState = MutableStateFlow(LibraryPresentationState())
@@ -224,6 +276,13 @@ class LibraryController internal constructor(
             is LibraryAction.UnassignTag -> mutate(LibraryMutation.UnassignTag(action.templateId, action.tagId))
             is LibraryAction.SetPinned -> mutate(LibraryMutation.SetPinned(action.templateId, action.pinned))
             is LibraryAction.ReorderPinned -> mutate(LibraryMutation.ReorderPinned(action.ids))
+            is LibraryAction.ArchiveTemplate -> mutate(LibraryMutation.ArchiveTemplate(action.id, now()))
+            is LibraryAction.RequestFolderDeletion -> requestFolderDeletion(action.folder)
+            LibraryAction.DismissFolderDeletion -> dismissFolderDeletion()
+            is LibraryAction.DeleteEmptyFolder -> deleteEmptyFolder(action.id)
+            is LibraryAction.DeleteFolderMovingContents ->
+                deleteFolderMovingContents(action.id, action.destinationId)
+            is LibraryAction.DeleteFolderAndArchiveContents -> deleteFolderAndArchiveContents(action.id)
         }
     }
 
@@ -231,6 +290,7 @@ class LibraryController internal constructor(
         closed = true
         browseGeneration.incrementAndGet()
         organizationGeneration.incrementAndGet()
+        folderDeletionGeneration.incrementAndGet()
         searchGeneration.incrementAndGet()
     }
 
@@ -339,6 +399,86 @@ class LibraryController internal constructor(
                     }
                 }
             }
+        }
+    }
+
+    private fun requestFolderDeletion(folder: Folder) {
+        if (closed || mutableState.value.isMutating) return
+        val generation = folderDeletionGeneration.incrementAndGet()
+        mutableState.update { it.copy(folderDeletion = LibraryFolderDeletion(folder)) }
+        scope.launch {
+            try {
+                val contents = readFolderContents(folder.id)
+                val folders = readOrganization().folders
+                val forbidden =
+                    FolderTreeValidator.forbiddenDestinations(
+                        folder.id,
+                        folders.associate { it.id to it.parentFolderId },
+                    )
+                val options =
+                    LibraryFolderDeletionOptions(
+                        contents.folders.isEmpty() && contents.activities.isEmpty() && contents.sequences.isEmpty(),
+                        folders.filterNot { it.id in forbidden },
+                    )
+                if (!closed && generation == folderDeletionGeneration.get()) {
+                    mutableState.update {
+                        it.copy(folderDeletion = LibraryFolderDeletion(folder, LibraryLoad.Content(options)))
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (!closed && generation == folderDeletionGeneration.get()) {
+                    mutableState.update {
+                        it.copy(
+                            folderDeletion =
+                                LibraryFolderDeletion(
+                                    folder,
+                                    LibraryLoad.Failure(failure.message ?: "Unknown error"),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun dismissFolderDeletion() {
+        folderDeletionGeneration.incrementAndGet()
+        mutableState.update { it.copy(folderDeletion = null) }
+    }
+
+    private fun deleteEmptyFolder(id: FolderId) {
+        val deletion = inspectedFolderDeletion(id) ?: return
+        if (!deletion.isEmpty) return
+        dismissFolderDeletion()
+        mutate(LibraryMutation.DeleteFolderMovingContents(id, null, now()))
+    }
+
+    private fun deleteFolderMovingContents(
+        id: FolderId,
+        destinationId: FolderId?,
+    ) {
+        val deletion = inspectedFolderDeletion(id) ?: return
+        if (deletion.isEmpty || destinationId != null && deletion.destinations.none { it.id == destinationId }) return
+        dismissFolderDeletion()
+        mutate(LibraryMutation.DeleteFolderMovingContents(id, destinationId, now()))
+    }
+
+    private fun deleteFolderAndArchiveContents(id: FolderId) {
+        val deletion = inspectedFolderDeletion(id) ?: return
+        if (deletion.isEmpty) return
+        dismissFolderDeletion()
+        mutate(LibraryMutation.DeleteFolderAndArchiveContents(id, now()))
+    }
+
+    private fun inspectedFolderDeletion(id: FolderId): LibraryFolderDeletionOptions? {
+        val state = mutableState.value
+        val deletion = state.folderDeletion
+        return if (state.isMutating || deletion?.folder?.id != id) {
+            null
+        } else {
+            (deletion.options as? LibraryLoad.Content)?.value
         }
     }
 

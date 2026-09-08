@@ -122,6 +122,7 @@ internal fun LibraryScreen(
             }
             state.mutationFailure?.let { FailureCard(R.string.library_mutation_failure, onAction) }
         }
+        state.folderDeletion?.let { FolderDeletionDialog(it, state.isMutating, onAction) }
     }
 }
 
@@ -454,6 +455,43 @@ private fun OrganizationActions(
             Text(stringResource(if (assigned) R.string.library_remove_tag else R.string.library_add_tag, tag.name))
         }
     }
+    TemplateArchiveAction(item, isMutating, onAction)
+}
+
+@Composable
+private fun TemplateArchiveAction(
+    item: LibraryTrackable,
+    isMutating: Boolean,
+    onAction: (LibraryAction) -> Unit,
+) {
+    var open by remember(item.id) { mutableStateOf(false) }
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(stringResource(R.string.library_archive_template_title)) },
+            text = { Text(stringResource(R.string.library_archive_template_message, item.name)) },
+            confirmButton = {
+                TextButton(
+                    enabled = !isMutating,
+                    onClick = {
+                        onAction(LibraryAction.ArchiveTemplate(item.id))
+                        open = false
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.library_archive),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { open = false }) { Text(stringResource(R.string.library_cancel)) }
+            },
+        )
+    }
+    TextButton(enabled = !isMutating, onClick = { open = true }) {
+        Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error)
+    }
 }
 
 @Composable
@@ -501,6 +539,161 @@ private fun FolderRow(
                 Text(stringResource(R.string.library_move_to_folder, destination.name))
             }
         }
+    TextButton(
+        enabled = !isMutating,
+        onClick = { onAction(LibraryAction.RequestFolderDeletion(folder)) },
+    ) {
+        Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error)
+    }
+}
+
+private enum class FolderDeleteStage { DISPOSITION, MOVE_CONTENTS, DELETE_CONTENTS }
+
+@Composable
+private fun FolderDeletionDialog(
+    deletion: LibraryFolderDeletion,
+    isMutating: Boolean,
+    onAction: (LibraryAction) -> Unit,
+) {
+    val options = deletion.options
+    var stage by remember(deletion.folder.id, options) { mutableStateOf(FolderDeleteStage.DISPOSITION) }
+    val dismiss = { onAction(LibraryAction.DismissFolderDeletion) }
+    when (options) {
+        LibraryLoad.Loading ->
+            AlertDialog(
+                onDismissRequest = dismiss,
+                title = { Text(stringResource(R.string.library_delete_folder_title)) },
+                text = { Text(stringResource(R.string.library_delete_folder_inspecting)) },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = dismiss) { Text(stringResource(R.string.library_cancel)) }
+                },
+            )
+        is LibraryLoad.Failure ->
+            AlertDialog(
+                onDismissRequest = dismiss,
+                title = { Text(stringResource(R.string.library_delete_folder_title)) },
+                text = { Text(stringResource(R.string.library_delete_folder_inspection_failure)) },
+                confirmButton = {
+                    TextButton(onClick = { onAction(LibraryAction.RequestFolderDeletion(deletion.folder)) }) {
+                        Text(stringResource(R.string.library_retry))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = dismiss) { Text(stringResource(R.string.library_cancel)) }
+                },
+            )
+        is LibraryLoad.Content ->
+            if (options.value.isEmpty) {
+                EmptyFolderDeletionDialog(deletion.folder, isMutating, dismiss, onAction)
+            } else {
+                NonEmptyFolderDeletionDialog(deletion.folder, options.value, stage, { stage = it }, dismiss, onAction)
+            }
+    }
+}
+
+@Composable
+private fun EmptyFolderDeletionDialog(
+    folder: Folder,
+    isMutating: Boolean,
+    onDismiss: () -> Unit,
+    onAction: (LibraryAction) -> Unit,
+) = AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.library_delete_folder_title)) },
+    text = { Text(stringResource(R.string.library_delete_empty_folder_message, folder.name)) },
+    confirmButton = {
+        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.DeleteEmptyFolder(folder.id)) }) {
+            Text(stringResource(R.string.library_delete_folder), color = MaterialTheme.colorScheme.error)
+        }
+    },
+    dismissButton = {
+        TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
+    },
+)
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+@Suppress("LongMethod") // The three explicit destructive dialog stages remain adjacent and visible.
+private fun NonEmptyFolderDeletionDialog(
+    folder: Folder,
+    options: LibraryFolderDeletionOptions,
+    stage: FolderDeleteStage,
+    onStage: (FolderDeleteStage) -> Unit,
+    onDismiss: () -> Unit,
+    onAction: (LibraryAction) -> Unit,
+) {
+    when (stage) {
+        FolderDeleteStage.DISPOSITION ->
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(stringResource(R.string.library_delete_non_empty_folder_title)) },
+                text = { Text(stringResource(R.string.library_delete_non_empty_folder_message, folder.name)) },
+                confirmButton = {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                        TextButton(onClick = { onStage(FolderDeleteStage.MOVE_CONTENTS) }) {
+                            Text(stringResource(R.string.library_move_contents))
+                        }
+                        TextButton(onClick = { onStage(FolderDeleteStage.DELETE_CONTENTS) }) {
+                            Text(
+                                stringResource(R.string.library_delete_contents),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
+                },
+            )
+        FolderDeleteStage.MOVE_CONTENTS ->
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(stringResource(R.string.library_move_contents_title)) },
+                text = {
+                    Column {
+                        Text(stringResource(R.string.library_move_contents_message))
+                        TextButton(
+                            onClick = {
+                                onAction(LibraryAction.DeleteFolderMovingContents(folder.id, null))
+                            },
+                        ) { Text(stringResource(R.string.library_root)) }
+                        options.destinations.forEach { destination ->
+                            TextButton(
+                                onClick = {
+                                    onAction(
+                                        LibraryAction.DeleteFolderMovingContents(folder.id, destination.id),
+                                    )
+                                },
+                            ) { Text(destination.name) }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
+                },
+            )
+        FolderDeleteStage.DELETE_CONTENTS ->
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(stringResource(R.string.library_delete_contents_title)) },
+                text = { Text(stringResource(R.string.library_delete_contents_message, folder.name)) },
+                confirmButton = {
+                    TextButton(
+                        onClick = { onAction(LibraryAction.DeleteFolderAndArchiveContents(folder.id)) },
+                    ) {
+                        Text(
+                            stringResource(R.string.library_delete_contents),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
+                },
+            )
+    }
 }
 
 @Composable
