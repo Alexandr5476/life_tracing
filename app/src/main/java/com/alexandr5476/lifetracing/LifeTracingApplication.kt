@@ -371,6 +371,8 @@ internal fun executeLibraryMutation(
                 is com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence ->
                     libraryRepository.archiveSequenceTemplate(id.id, mutation.at)
             }
+        is LibraryMutation.DeleteEmptyFolder ->
+            libraryRepository.deleteEmptyFolder(mutation.id, mutation.at)
         is LibraryMutation.DeleteFolderMovingContents ->
             libraryRepository.deleteFolderMovingContents(mutation.id, mutation.destinationId, mutation.at)
         is LibraryMutation.DeleteFolderAndArchiveContents ->

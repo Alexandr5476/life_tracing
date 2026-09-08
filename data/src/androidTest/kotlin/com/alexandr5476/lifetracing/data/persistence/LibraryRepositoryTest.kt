@@ -880,7 +880,7 @@ class LibraryRepositoryTest {
         assertNull(database.activityTemplateDao().getById("move-root-activity")?.folderId)
 
         repository.createFolder(FolderId("empty"), "Empty", null, instant(5))
-        repository.deleteFolderMovingContents(FolderId("empty"), null, instant(6))
+        repository.deleteEmptyFolder(FolderId("empty"), instant(6))
         assertNull(database.folderDao().getById("empty"))
 
         repository.createFolder(FolderId("delete"), "Delete", null, instant(6))
@@ -956,6 +956,119 @@ class LibraryRepositoryTest {
             "archive-rollback",
             database.sequenceTemplateDao().getById("archive-rollback-sequence")?.folderId,
         )
+    }
+
+    @Test
+    fun emptyFolderDeleteRejectsNewAndHiddenDurableContentsWithoutMutation() {
+        val repository = repository()
+        repository.createFolder(FolderId("template-folder"), "Template folder", null, instant(1))
+        repository.createFolder(FolderId("child-folder"), "Child folder", null, instant(1))
+        repository.createFolder(FolderId("archived-folder"), "Archived folder", null, instant(1))
+        repository.createFolder(FolderId("archived-sequence-folder"), "Archived sequence folder", null, instant(1))
+        assertTrue(repository.getFolderContents(FolderId("template-folder")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("child-folder")).folders.isEmpty())
+
+        activity("arrived", "Arrived", folder = "template-folder", revision = 7)
+        repository.createFolder(FolderId("arrived-child"), "Arrived child", FolderId("child-folder"), instant(2))
+        activity("hidden", "Hidden", folder = "archived-folder", deleted = 2, revision = 9)
+        sequence("hidden-sequence", "Hidden sequence", folder = "archived-sequence-folder", deleted = 2, revision = 11)
+        assertTrue(repository.getFolderContents(FolderId("archived-folder")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("archived-sequence-folder")).sequences.isEmpty())
+
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("template-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("child-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("archived-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("archived-sequence-folder"), instant(3))
+        }
+
+        assertNotNull(database.folderDao().getById("template-folder"))
+        assertEquals("template-folder", database.activityTemplateDao().getById("arrived")?.folderId)
+        assertNull(database.activityTemplateDao().getById("arrived")?.deletedAtMs)
+        assertNotNull(database.folderDao().getById("child-folder"))
+        assertEquals("child-folder", database.folderDao().getById("arrived-child")?.parentFolderId)
+        assertNotNull(database.folderDao().getById("archived-folder"))
+        assertEquals("archived-folder", database.activityTemplateDao().getById("hidden")?.folderId)
+        assertEquals(2L, database.activityTemplateDao().getById("hidden")?.deletedAtMs)
+        assertEquals(9L, database.activityTemplateDao().getById("hidden")?.revision)
+        assertEquals("hidden-series", database.activityTemplateDao().getById("hidden")?.statisticsSeriesId)
+        assertNotNull(database.folderDao().getById("archived-sequence-folder"))
+        assertEquals(
+            "archived-sequence-folder",
+            database.sequenceTemplateDao().getById("hidden-sequence")?.folderId,
+        )
+        assertEquals(2L, database.sequenceTemplateDao().getById("hidden-sequence")?.deletedAtMs)
+        assertEquals(11L, database.sequenceTemplateDao().getById("hidden-sequence")?.revision)
+        assertEquals(
+            "hidden-sequence-series",
+            database.sequenceTemplateDao().getById("hidden-sequence")?.statisticsSeriesId,
+        )
+    }
+
+    @Test
+    fun folderSubtreeArchiveChunksSafeBindSetsAndPreservesIdentity() {
+        val archiveQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
+        rebuildDatabaseWithQueryCallback(archiveQueries)
+        val repository = repository()
+        insertWideFolderSubtree("large", 900)
+        activity("large-activity", "Large activity", folder = "large-child-0", revision = 7)
+        sequence("large-sequence", "Large sequence", folder = "large-child-899", revision = 9)
+
+        repository.deleteFolderAndArchiveContents(FolderId("large"), instant(5))
+
+        assertTrue(database.folderDao().getSubtree("large").isEmpty())
+        assertEquals(5L, database.activityTemplateDao().getById("large-activity")?.deletedAtMs)
+        assertNull(database.activityTemplateDao().getById("large-activity")?.folderId)
+        assertEquals(7L, database.activityTemplateDao().getById("large-activity")?.revision)
+        assertEquals(
+            "large-activity-series",
+            database.activityTemplateDao().getById("large-activity")?.statisticsSeriesId,
+        )
+        assertEquals(5L, database.sequenceTemplateDao().getById("large-sequence")?.deletedAtMs)
+        assertNull(database.sequenceTemplateDao().getById("large-sequence")?.folderId)
+        assertEquals(9L, database.sequenceTemplateDao().getById("large-sequence")?.revision)
+        assertEquals(
+            "large-sequence-series",
+            database.sequenceTemplateDao().getById("large-sequence")?.statisticsSeriesId,
+        )
+        assertArchiveBindChunks(archiveQueries)
+    }
+
+    @Test
+    fun largeFolderSubtreeArchiveRollsBackEarlierChunksWhenFolderDeleteFails() {
+        val archiveQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
+        rebuildDatabaseWithQueryCallback(archiveQueries)
+        val repository = repository()
+        insertWideFolderSubtree("large-rollback", 900)
+        activity("large-rollback-activity", "Rollback activity", folder = "large-rollback-child-0")
+        sequence("large-rollback-sequence", "Rollback sequence", folder = "large-rollback-child-899")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_large_folder_delete BEFORE DELETE ON folders " +
+                "WHEN OLD.id = 'large-rollback' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+
+        assertThrows(SQLiteException::class.java) {
+            repository.deleteFolderAndArchiveContents(FolderId("large-rollback"), instant(5))
+        }
+
+        assertEquals(901, database.folderDao().getSubtree("large-rollback").size)
+        assertNull(database.activityTemplateDao().getById("large-rollback-activity")?.deletedAtMs)
+        assertEquals(
+            "large-rollback-child-0",
+            database.activityTemplateDao().getById("large-rollback-activity")?.folderId,
+        )
+        assertNull(database.sequenceTemplateDao().getById("large-rollback-sequence")?.deletedAtMs)
+        assertEquals(
+            "large-rollback-child-899",
+            database.sequenceTemplateDao().getById("large-rollback-sequence")?.folderId,
+        )
+        assertArchiveBindChunks(archiveQueries)
     }
 
     @Test
@@ -1600,6 +1713,47 @@ class LibraryRepositoryTest {
             { SequenceTemplateCategoryOptionId("sequence-copy-option-${++sequenceOption}") },
             { SequenceNodeId("sequence-copy-node-${++sequenceNode}") },
             { StatisticsSeriesId("copy-series-${++series}") },
+        )
+    }
+
+    private fun rebuildDatabaseWithQueryCallback(queries: MutableList<Pair<String, List<Any?>>>) {
+        database.close()
+        database =
+            LifeTracingDatabase
+                .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .setQueryCallback(
+                    RoomDatabase.QueryCallback { sql, bindArgs -> queries += sql to bindArgs },
+                    Executor { command -> command.run() },
+                ).allowMainThreadQueries()
+                .build()
+    }
+
+    private fun insertWideFolderSubtree(
+        root: String,
+        childCount: Int,
+    ) {
+        database.runInTransaction {
+            database.folderDao().insert(FolderEntity(root, root, null, 0, 0))
+            repeat(childCount) { index ->
+                val id = "$root-child-$index"
+                database.folderDao().insert(FolderEntity(id, id, root, 0, 0))
+            }
+        }
+    }
+
+    private fun assertArchiveBindChunks(queries: List<Pair<String, List<Any?>>>) {
+        val archiveQueries = synchronized(queries) { queries.toList() }
+        assertEquals(
+            listOf(900, 1),
+            archiveQueries
+                .filter { "UPDATE activity_templates SET deleted_at_ms" in it.first }
+                .map { it.second.size - 1 },
+        )
+        assertEquals(
+            listOf(900, 1),
+            archiveQueries
+                .filter { "UPDATE sequence_templates SET deleted_at_ms" in it.first }
+                .map { it.second.size - 1 },
         )
     }
 

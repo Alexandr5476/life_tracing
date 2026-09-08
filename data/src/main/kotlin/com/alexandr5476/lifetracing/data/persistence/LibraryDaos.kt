@@ -77,6 +77,14 @@ internal interface FolderDao {
 
     @Query("DELETE FROM folders WHERE id = :id")
     fun deleteById(id: String): Int
+
+    @Query(
+        "DELETE FROM folders WHERE id = :id " +
+            "AND NOT EXISTS (SELECT 1 FROM folders WHERE parent_folder_id = :id) " +
+            "AND NOT EXISTS (SELECT 1 FROM activity_templates WHERE folder_id = :id) " +
+            "AND NOT EXISTS (SELECT 1 FROM sequence_templates WHERE folder_id = :id)",
+    )
+    fun deleteEmptyById(id: String): Int
 }
 
 @Dao

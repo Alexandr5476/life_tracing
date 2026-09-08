@@ -217,6 +217,11 @@ sealed interface LibraryMutation {
         val at: Instant,
     ) : LibraryMutation
 
+    data class DeleteEmptyFolder(
+        val id: FolderId,
+        val at: Instant,
+    ) : LibraryMutation
+
     data class DeleteFolderMovingContents(
         val id: FolderId,
         val destinationId: FolderId?,
@@ -452,7 +457,7 @@ class LibraryController internal constructor(
         val deletion = inspectedFolderDeletion(id) ?: return
         if (!deletion.isEmpty) return
         dismissFolderDeletion()
-        mutate(LibraryMutation.DeleteFolderMovingContents(id, null, now()))
+        mutate(LibraryMutation.DeleteEmptyFolder(id, now()))
     }
 
     private fun deleteFolderMovingContents(

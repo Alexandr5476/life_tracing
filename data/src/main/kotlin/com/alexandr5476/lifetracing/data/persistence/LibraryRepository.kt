@@ -289,6 +289,18 @@ class LibraryRepository internal constructor(
         }
     }
 
+    fun deleteEmptyFolder(
+        folderId: FolderId,
+        at: Instant,
+    ) {
+        transaction {
+            val current = requireFolder(folderId)
+            require(at >= current.updatedAt) { "Folder update time is out of order" }
+            getFolderPath(folderId)
+            check(database.folderDao().deleteEmptyById(folderId.value) == 1) { "Folder is not empty" }
+        }
+    }
+
     fun deleteFolderAndArchiveContents(
         folderId: FolderId,
         at: Instant,
@@ -299,8 +311,12 @@ class LibraryRepository internal constructor(
             val subtree = database.folderDao().getSubtree(folderId.value)
             require(subtree.any { it.id == folderId.value }) { "Unknown Folder: ${folderId.value}" }
             val ids = subtree.map(FolderEntity::id)
-            database.libraryDao().archiveActivitiesInFolders(ids, at.toEpochMilli())
-            database.libraryDao().archiveSequencesInFolders(ids, at.toEpochMilli())
+            ids.chunked(SQLITE_SAFE_BIND_COUNT).forEach {
+                database.libraryDao().archiveActivitiesInFolders(it, at.toEpochMilli())
+            }
+            ids.chunked(SQLITE_SAFE_BIND_COUNT).forEach {
+                database.libraryDao().archiveSequencesInFolders(it, at.toEpochMilli())
+            }
             deletionOrder(subtree).forEach { id -> check(database.folderDao().deleteById(id) == 1) }
         }
     }

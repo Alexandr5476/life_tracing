@@ -790,9 +790,44 @@ class LibraryControllerTest {
             withTimeout(2_000) { controller.state.first { mutations.isNotEmpty() && !it.isMutating } }
 
             assertEquals(
-                listOf(LibraryMutation.DeleteFolderMovingContents(folder.id, null, Instant.EPOCH)),
+                listOf(LibraryMutation.DeleteEmptyFolder(folder.id, Instant.EPOCH)),
                 mutations,
             )
+            controller.close()
+        }
+
+    @Test
+    fun staleEmptyFolderConfirmationUsesGuardedWriterAndCanBeReinspected() =
+        runBlocking {
+            val folder = folder("empty", "Empty")
+            val arrived = activity("arrived", "Arrived")
+            var contents = LibraryContents(emptyList(), emptyList(), emptyList())
+            val mutations = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
+                    { contents },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(folder), emptyList()) },
+                    { mutation ->
+                        mutations += mutation
+                        error("Folder is not empty")
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.RequestFolderDeletion(folder))
+            assertTrue(controller.awaitFolderDeletion().isEmpty)
+
+            contents = LibraryContents(emptyList(), listOf(arrived), emptyList())
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
+            withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationFailure != null } }
+            assertEquals(listOf(LibraryMutation.DeleteEmptyFolder(folder.id, Instant.EPOCH)), mutations)
+
+            controller.dispatch(LibraryAction.RequestFolderDeletion(folder))
+            assertFalse(controller.awaitFolderDeletion().isEmpty)
             controller.close()
         }
 
