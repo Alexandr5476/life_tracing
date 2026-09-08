@@ -204,4 +204,5 @@
     <string name="activity_editor_discard_message">Несохранённые изменения будут потеряны.</string>
     <string name="activity_editor_discard">Отменить</string>
     <string name="activity_editor_continue_editing">Продолжить редактирование</string>
+    <string name="library_quick_start">Начать</string>
 </resources>

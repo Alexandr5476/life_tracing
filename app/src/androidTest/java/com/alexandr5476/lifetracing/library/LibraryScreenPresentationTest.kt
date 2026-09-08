@@ -110,6 +110,7 @@ class LibraryScreenPresentationTest {
         val activity = trackable("Editable activity", false)
         val sequence = trackable("Sequence without editor", true)
         val opened = mutableListOf<ActivityTemplateId>()
+        val quickStarts = mutableListOf<LibraryTemplateId>()
         composeTestRule.setContent {
             LifeTracingTheme {
                 LibraryScreen(
@@ -127,6 +128,7 @@ class LibraryScreenPresentationTest {
                         ),
                     onAction = {},
                     onOpenActivity = opened::add,
+                    onQuickStart = quickStarts::add,
                     onRouteBack = {},
                 )
             }
@@ -142,6 +144,11 @@ class LibraryScreenPresentationTest {
                 .config
                 .contains(SemanticsActions.OnClick),
         )
+        composeTestRule.onAllNodesWithText(text(R.string.library_quick_start))[0].performClick()
+        composeTestRule.onAllNodesWithText(text(R.string.library_quick_start))[1].performClick()
+
+        assertEquals(listOf(activity.id, sequence.id), quickStarts)
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
     }
 
     @Test
@@ -267,6 +274,7 @@ class LibraryScreenPresentationTest {
         val unpinned = trackable("Unpinned activity", false)
         val actions = mutableListOf<LibraryAction>()
         val opened = mutableListOf<ActivityTemplateId>()
+        val quickStarts = mutableListOf<LibraryTemplateId>()
         composeTestRule.setContent {
             CompositionLocalProvider(
                 LocalConfiguration provides configuration,
@@ -293,6 +301,7 @@ class LibraryScreenPresentationTest {
                                 ),
                             onAction = actions::add,
                             onOpenActivity = opened::add,
+                            onQuickStart = quickStarts::add,
                             onRouteBack = {},
                         )
                     }
@@ -304,7 +313,11 @@ class LibraryScreenPresentationTest {
         val unpin = context.getString(R.string.library_unpin)
         val moveRoot = context.getString(R.string.library_move_to_root)
         val moveDestination = context.getString(R.string.library_move_to_folder, destination.name)
+        val quickStart = context.getString(R.string.library_quick_start)
 
+        clickInside(composeTestRule.onAllNodesWithText(quickStart)[0], widthPixels)
+        clickInside(composeTestRule.onAllNodesWithText(quickStart)[1], widthPixels)
+        assertEquals(listOf(activity.id, sequence.id), quickStarts)
         clickInside(composeTestRule.onAllNodesWithText(organize)[0], widthPixels)
         assertTrue(opened.isEmpty())
         clickInside(composeTestRule.onAllNodesWithText(unpin)[0], widthPixels)

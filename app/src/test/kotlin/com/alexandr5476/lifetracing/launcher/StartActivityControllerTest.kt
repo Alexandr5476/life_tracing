@@ -386,6 +386,24 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun libraryPrimingSelectsExactlyOnceOnTheRetainedSession() =
+        runBlocking {
+            val harness = Harness().apply { target = sequenceTarget("sequence") }
+            val owner = StartActivityRouteSessionOwner()
+            val session = owner.acquire { harness.controller(this) }
+            session.controller.awaitHome()
+
+            session.primeInitialSelection(sequenceId("sequence"))
+            session.primeInitialSelection(activityId("ignored"))
+            session.controller.awaitTarget("sequence")
+
+            assertEquals(listOf(sequenceId("sequence")), harness.targetReads)
+            assertEquals(sequenceId("sequence"), session.interaction.pendingSelectionId)
+            assertSame(session, owner.acquire { error("Library must retain its launcher session") })
+            owner.release(session)
+        }
+
+    @Test
     fun routeSessionRetainsNoLiveCommitObservationAndTerminalDeliveryAcrossHostRecreation() =
         runBlocking {
             val gate = CompletableDeferred<Unit>()

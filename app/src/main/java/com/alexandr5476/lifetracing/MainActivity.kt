@@ -129,6 +129,7 @@ internal fun LifeTracingApp(
                                         launcherSessions.release(session)
                                         backStack.completeStartActivity {
                                             controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
+                                            libraryRefreshGeneration++
                                         }
                                     },
                                 )
@@ -148,6 +149,12 @@ internal fun LifeTracingApp(
                                 onBack = backStack::removeLibrary,
                                 onCreateActivity = backStack::openNewActivityTemplateEditor,
                                 onOpenActivity = { id -> backStack.openExistingActivityTemplateEditor(id.value) },
+                                onQuickStart = { id ->
+                                    launcherSessions
+                                        .acquire(runtimeGraph::createStartActivityController)
+                                        .primeInitialSelection(id)
+                                    backStack.openStartActivity()
+                                },
                             )
                         }
                         entry<NewActivityTemplateEditor> {

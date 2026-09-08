@@ -66,7 +66,17 @@ internal class StartActivityRouteSession(
     val controller: StartActivityController,
     val exitPolicy: LauncherRouteExitPolicy,
     val interaction: StartActivityRouteInteraction = StartActivityRouteInteraction(),
-)
+) {
+    private var initialSelectionPrimed = false
+
+    /** A Library entry gets one selection dispatch before its route is composed. */
+    fun primeInitialSelection(id: LibraryTemplateId) {
+        if (initialSelectionPrimed) return
+        initialSelectionPrimed = true
+        interaction.select(id)
+        controller.dispatch(StartActivityAction.Select(id))
+    }
+}
 
 internal data class LauncherBreadcrumb(
     val id: FolderId,

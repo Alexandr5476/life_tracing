@@ -129,6 +129,7 @@
     <string name="library_activity">Activity</string>
     <string name="library_sequence">Sequence</string>
     <string name="library_new_activity">New activity</string>
+    <string name="library_quick_start">Start</string>
     <string name="library_mutation_failure">Library changes could not be saved.</string>
     <string name="library_organization_loading">Loading organization controls…</string>
     <string name="library_organization_failure">Organization controls could not be loaded.</string>

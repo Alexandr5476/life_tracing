@@ -50,6 +50,16 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun libraryQuickStartKeepsTheRetainedLibraryEntryUnderTheLauncher() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
+
+        backStack.openStartActivity()
+        backStack.completeStartActivity {}
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
+
+    @Test
     fun committedEditorRefreshesAndPopsExactlyOnce() {
         val backStack: MutableList<NavKey> =
             mutableListOf(DailyRoot, LibraryRoot, ExistingActivityTemplateEditor("activity"))

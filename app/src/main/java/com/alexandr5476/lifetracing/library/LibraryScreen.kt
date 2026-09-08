@@ -28,7 +28,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +51,7 @@ fun LibraryRoute(
     onBack: () -> Unit,
     onCreateActivity: () -> Unit = {},
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
+    onQuickStart: (LibraryTemplateId) -> Unit = {},
 ) {
     val state by controller.state.collectAsState()
     LibraryScreen(
@@ -60,6 +60,7 @@ fun LibraryRoute(
         onRouteBack = onBack,
         onCreateActivity = onCreateActivity,
         onOpenActivity = onOpenActivity,
+        onQuickStart = onQuickStart,
     )
 }
 
@@ -69,6 +70,7 @@ internal fun LibraryScreen(
     onAction: (LibraryAction) -> Unit,
     onCreateActivity: () -> Unit = {},
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
+    onQuickStart: (LibraryTemplateId) -> Unit = {},
     onRouteBack: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -105,6 +107,7 @@ internal fun LibraryScreen(
                     state.isMutating,
                     onAction,
                     onOpenActivity,
+                    onQuickStart,
                 )
             } else {
                 SearchContent(
@@ -113,6 +116,7 @@ internal fun LibraryScreen(
                     state.isMutating,
                     onAction,
                     onOpenActivity,
+                    onQuickStart,
                 )
             }
             when (state.organization) {
@@ -180,6 +184,7 @@ private fun BrowseContent(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     when (load) {
         LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_loading)) }
@@ -189,7 +194,15 @@ private fun BrowseContent(
             val pinned = browse.pinned.filtered(filter)
             val items = browse.contents.trackables().filtered(filter)
             if (browse.pinned.isNotEmpty()) {
-                PinnedSection(browse.pinned, filter, organization, isMutating, onAction, onOpenActivity)
+                PinnedSection(
+                    browse.pinned,
+                    filter,
+                    organization,
+                    isMutating,
+                    onAction,
+                    onOpenActivity,
+                    onQuickStart,
+                )
             }
             FolderSection(browse.contents.folders, organization, isMutating, onAction)
             if (items.isNotEmpty()) {
@@ -200,6 +213,7 @@ private fun BrowseContent(
                     isMutating,
                     onAction,
                     onOpenActivity,
+                    onQuickStart,
                 )
             }
             if (pinned.isEmpty() && browse.contents.folders.isEmpty() && items.isEmpty()) {
@@ -216,6 +230,7 @@ private fun SearchContent(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     when (load) {
         LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_search_loading)) }
@@ -231,6 +246,7 @@ private fun SearchContent(
                     isMutating,
                     onAction,
                     onOpenActivity,
+                    onQuickStart,
                 )
             }
         }
@@ -281,9 +297,12 @@ private fun TrackableSection(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     SectionTitle(title)
-    items.forEach { TrackableRow(it, organization, isMutating, onAction, onOpenActivity) }
+    items.forEach {
+        TrackableRow(it, organization, isMutating, onAction, onOpenActivity, onQuickStart)
+    }
 }
 
 @Composable
@@ -295,6 +314,7 @@ private fun PinnedSection(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     var showOrdering by remember { mutableStateOf(false) }
     FlowRow(
@@ -308,7 +328,7 @@ private fun PinnedSection(
         }
     }
     allPinned.filtered(filter).forEach { item ->
-        TrackableRow(item, organization, isMutating, onAction, onOpenActivity)
+        TrackableRow(item, organization, isMutating, onAction, onOpenActivity, onQuickStart)
     }
     if (showOrdering) {
         allPinned.forEachIndexed { index, item ->
@@ -349,42 +369,52 @@ private fun PinnedSection(
 }
 
 @Composable
+@Suppress("LongMethod") // Row actions remain adjacent so their independent hit targets stay visible.
 private fun TrackableRow(
     item: LibraryTrackable,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
-    val shape = MaterialTheme.shapes.medium
     var showOrganization by remember(item.id) { mutableStateOf(false) }
     Card(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .then(
-                    if (activityId != null) {
-                        Modifier.clip(shape).clickable { onOpenActivity(activityId.id) }
-                    } else {
-                        Modifier
-                    },
-                ),
+        modifier = Modifier.fillMaxWidth(),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = shape,
+        shape = MaterialTheme.shapes.medium,
     ) {
         Column(
             modifier = Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.xSmall),
         ) {
-            Text(
-                item.name,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    item.name,
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .then(
+                                if (activityId != null) {
+                                    Modifier.clickable { onOpenActivity(activityId.id) }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                LifeTracingPrimaryButton(onClick = { onQuickStart(item.id) }) {
+                    Text(stringResource(R.string.library_quick_start))
+                }
+            }
             TextButton(onClick = { showOrganization = !showOrganization }) {
                 Text(stringResource(R.string.library_organize))
             }
