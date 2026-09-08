@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -28,6 +29,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -99,6 +101,45 @@ class LibraryScreenPresentationTest {
         composeTestRule.onNodeWithText("Library / Root / Nested").assertIsDisplayed()
         composeTestRule.onNodeWithText("Search activity").assertIsDisplayed()
         composeTestRule.onNodeWithText("Search sequence").assertIsDisplayed()
+    }
+
+    @Test
+    fun activityRowsOpenTheEditorWhileSequenceRowsRemainNonEditorActions() {
+        val activity = trackable("Editable activity", false)
+        val sequence = trackable("Sequence without editor", true)
+        val opened = mutableListOf<ActivityTemplateId>()
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                LibraryScreen(
+                    state =
+                        LibraryPresentationState(
+                            browse =
+                                LibraryLoad.Content(
+                                    LibraryBrowse(
+                                        null,
+                                        emptyList(),
+                                        emptyList(),
+                                        LibraryContents(emptyList(), listOf(activity), listOf(sequence)),
+                                    ),
+                                ),
+                        ),
+                    onAction = {},
+                    onOpenActivity = opened::add,
+                    onRouteBack = {},
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Editable activity").performClick()
+
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+        assertFalse(
+            composeTestRule
+                .onNodeWithText("Sequence without editor")
+                .fetchSemanticsNode()
+                .config
+                .contains(SemanticsActions.OnClick),
+        )
     }
 
     @Test

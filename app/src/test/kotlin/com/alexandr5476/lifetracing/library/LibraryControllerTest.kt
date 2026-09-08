@@ -150,6 +150,115 @@ class LibraryControllerTest {
         }
 
     @Test
+    fun refreshReReadsBrowseAndActiveSearchWithItsCurrentFilter() =
+        runBlocking {
+            var browseReads = 0
+            var catalog = listOf(activity("old", "Match old"), sequence("sequence", "Match sequence"))
+            val searchCalls = mutableListOf<Pair<String, LibraryKindFilter>>()
+            val controller =
+                controller(
+                    this,
+                    rootProvider = {
+                        browseReads++
+                        LibraryRoot(LibraryContents(emptyList(), catalog.filterActivities(), emptyList()), emptyList())
+                    },
+                    search = { query, filter ->
+                        searchCalls += query to filter
+                        catalog.filter { item ->
+                            item.name.contains(query, ignoreCase = true) &&
+                                (filter != LibraryKindFilter.ACTIVITIES || item.id is LibraryTemplateId.Activity)
+                        }
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.Search("Match"))
+            controller.awaitSearch { it.any { item -> item.id.value == "old" } }
+            controller.dispatch(LibraryAction.SetFilter(LibraryKindFilter.ACTIVITIES))
+            controller.awaitSearch { it.size == 1 && it.single().id.value == "old" }
+
+            catalog = listOf(activity("old", "Renamed"), activity("new", "Match new"))
+            controller.dispatch(LibraryAction.Refresh)
+
+            assertEquals(
+                listOf("new"),
+                controller.awaitSearch { it.singleOrNull()?.id?.value == "new" }.map { it.id.value },
+            )
+            assertEquals(2, browseReads)
+            assertEquals(LibraryKindFilter.ACTIVITIES, controller.state.value.filter)
+            assertEquals("Match" to LibraryKindFilter.ACTIVITIES, searchCalls.last())
+            controller.close()
+        }
+
+    @Test
+    fun refreshKeepsTheCurrentFolderBrowseLocation() =
+        runBlocking {
+            val folder = folder("folder", "Folder")
+            var folderReads = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
+                    {
+                        folderReads++
+                        LibraryContents(emptyList(), listOf(activity("activity", "Version $folderReads")), emptyList())
+                    },
+                    { listOf(folder) },
+                    { _, _ -> emptyList() },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.OpenFolder(folder.id))
+            controller.awaitBrowse {
+                it.contents.activities
+                    .singleOrNull()
+                    ?.name == "Version 1"
+            }
+
+            controller.dispatch(LibraryAction.Refresh)
+
+            val refreshed =
+                controller.awaitBrowse {
+                    it.contents.activities
+                        .singleOrNull()
+                        ?.name == "Version 2"
+                }
+            assertEquals(folder.id, refreshed.folderId)
+            assertEquals(folder.id, controller.state.value.folderId)
+            controller.close()
+        }
+
+    @Test
+    fun staleRefreshSearchCannotReplaceANewerQuery() =
+        runBlocking {
+            val bothOldSearchesStarted = CompletableDeferred<Unit>()
+            val releaseOldSearches = CompletableDeferred<Unit>()
+            var oldSearches = 0
+            val controller =
+                controller(
+                    this,
+                    search = { query, _ ->
+                        if (query == "old") {
+                            oldSearches++
+                            if (oldSearches == 2) bothOldSearchesStarted.complete(Unit)
+                            releaseOldSearches.await()
+                        }
+                        listOf(activity(query, query))
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.Search("old"))
+            controller.dispatch(LibraryAction.Refresh)
+            bothOldSearchesStarted.await()
+
+            controller.dispatch(LibraryAction.Search("new"))
+            controller.awaitSearch { it.singleOrNull()?.name == "new" }
+            releaseOldSearches.complete(Unit)
+
+            assertEquals("new", controller.state.value.query)
+            assertEquals("new", controller.awaitSearch().single().name)
+            controller.close()
+        }
+
+    @Test
     fun failedNestedFolderRetryReusesItsCanonicalFolderIdentity() =
         runBlocking {
             val root = folder("root", "Root")
@@ -292,10 +401,16 @@ class LibraryControllerTest {
 
     private fun LibraryController.currentBrowse(): LibraryBrowse = (state.value.browse as LibraryLoad.Content).value
 
-    private suspend fun LibraryController.awaitSearch(): List<LibraryTrackable> =
-        withTimeout(2_000) { state.first { it.search is LibraryLoad.Content } }.let {
+    private suspend fun LibraryController.awaitSearch(
+        predicate: (List<LibraryTrackable>) -> Boolean = { true },
+    ): List<LibraryTrackable> =
+        withTimeout(2_000) {
+            state.first { (it.search as? LibraryLoad.Content)?.value?.let(predicate) == true }
+        }.let {
             (it.search as LibraryLoad.Content).value
         }
+
+    private fun List<LibraryTrackable>.filterActivities() = filter { it.id is LibraryTemplateId.Activity }
 
     private fun folder(
         id: String,

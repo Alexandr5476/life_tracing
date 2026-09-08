@@ -15,9 +15,11 @@ class LauncherNumberFormatTest {
         assertEquals("", formatLauncherNumber(null, 3))
         assertEquals("1.23", formatLauncherNumber(1_234, 2))
         assertEquals(12_345, parseLauncherNumber("12,345", 3))
+        assertEquals(1_230, parseLauncherNumber("1.23", 2))
         assertEquals(0, parseLauncherNumber("0", 0))
         assertEquals(-1_200, parseLauncherNumber("-1.2", 3))
         assertNull(parseLauncherNumber("1.234", 2))
+        assertNull(parseLauncherNumber("1.2345", null))
         assertNull(parseLauncherNumber("not a number", 3))
     }
 

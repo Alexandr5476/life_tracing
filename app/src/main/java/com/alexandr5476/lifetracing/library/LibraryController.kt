@@ -46,6 +46,8 @@ data class LibraryPresentationState(
 sealed interface LibraryAction {
     data object Retry : LibraryAction
 
+    data object Refresh : LibraryAction
+
     data object Back : LibraryAction
 
     data class OpenFolder(
@@ -83,6 +85,7 @@ class LibraryController internal constructor(
     fun dispatch(action: LibraryAction) {
         when (action) {
             LibraryAction.Retry -> retry()
+            LibraryAction.Refresh -> refresh()
             LibraryAction.Back -> back()
             is LibraryAction.OpenFolder -> loadFolder(action.id)
             is LibraryAction.Search -> search(action.query)
@@ -99,6 +102,13 @@ class LibraryController internal constructor(
     private fun retry() {
         mutableState.value.folderId?.let(::loadFolder) ?: loadRoot()
         if (mutableState.value.search is LibraryLoad.Failure) search(mutableState.value.query)
+    }
+
+    private fun refresh() {
+        mutableState.value.folderId?.let(::loadFolder) ?: loadRoot()
+        mutableState.value.query
+            .takeIf(String::isNotBlank)
+            ?.let(::search)
     }
 
     private fun back() {

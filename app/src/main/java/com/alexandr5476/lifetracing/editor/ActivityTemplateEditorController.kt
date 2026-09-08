@@ -93,18 +93,47 @@ class ActivityTemplateEditorController internal constructor(
         closed = true
     }
 
-    fun retry() = load()
+    fun retry() {
+        if (!closed && !saving.get()) load()
+    }
 
     fun updateDraft(transform: (ActivityTemplateDraft) -> ActivityTemplateDraft) {
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready ?: return
-        if (saving.get()) return
-        val draft = normalizeDraft(ready.draft, transform(ready.draft))
+        if (closed || saving.get()) return
+        val proposed = transform(ready.draft)
+        val draft = normalizeDraft(ready.draft, proposed)
+        val replacementKeys =
+            proposed.fields
+                .zip(draft.fields)
+                .mapNotNull { (before, after) ->
+                    if (before.identity != after.identity &&
+                        before.type == CustomFieldType.NUMBER &&
+                        after.type == CustomFieldType.NUMBER
+                    ) {
+                        before.identity.editorKey() to after.identity.editorKey()
+                    } else {
+                        null
+                    }
+                }.toMap()
+        val numberKeys =
+            draft.fields
+                .filter { it.type == CustomFieldType.NUMBER }
+                .map { it.identity.editorKey() }
+                .toSet()
         mutableState.update {
             it.copy(
                 load = ready.copy(draft = draft),
                 save = ActivityTemplateEditorSave.Idle,
                 timerTargetText = if (draft.timeTrackingMode == TimeTrackingMode.TIMER) it.timerTargetText else "",
                 timerTargetError = draft.timeTrackingMode == TimeTrackingMode.TIMER && draft.timerTarget == null,
+                numberDefaultTexts =
+                    it.numberDefaultTexts
+                        .mapKeys { (key, _) -> replacementKeys[key] ?: key }
+                        .filterKeys(numberKeys::contains),
+                invalidNumberFields =
+                    it.invalidNumberFields
+                        .map { replacementKeys[it] ?: it }
+                        .filterTo(mutableSetOf(), numberKeys::contains),
             )
         }
     }
@@ -128,7 +157,7 @@ class ActivityTemplateEditorController internal constructor(
         text: String,
         parse: (String, Int?) -> Long?,
     ) {
-        val key = field.identity.key()
+        val key = field.identity.editorKey()
         val number = parse(text, field.displayPrecision)
         if (text.isBlank() || number != null) {
             updateDraft { draft -> draft.withField(field.identity) { it.copy(defaultNumberScaled = number) } }
@@ -157,7 +186,7 @@ class ActivityTemplateEditorController internal constructor(
         updateDraft { draft ->
             draft.withField(field.identity) { it.copy(displayPrecision = precision) }
         }
-        val key = field.identity.key()
+        val key = field.identity.editorKey()
         val invalid = !isRepresentableAtPrecision(field.defaultNumberScaled, precision)
         mutableState.update {
             it.copy(
@@ -174,6 +203,7 @@ class ActivityTemplateEditorController internal constructor(
     }
 
     fun requestBack(onExit: () -> Unit) {
+        if (saving.get()) return
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready
         val hasUnsavedInput = mutableState.value.invalidNumberFields.isNotEmpty()
         if (ready == null || (ready.draft == ready.original && !hasUnsavedInput)) {
@@ -188,12 +218,14 @@ class ActivityTemplateEditorController internal constructor(
     }
 
     fun discard(onExit: () -> Unit) {
+        if (saving.get()) return
         mutableState.update { it.copy(discardConfirmationVisible = false) }
         onExit()
     }
 
     fun save() {
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready ?: return
+        if (closed) return
         if (mutableState.value.timerTargetError || mutableState.value.invalidNumberFields.isNotEmpty()) return
         if (!saving.compareAndSet(false, true)) return
         val validationFailure =
@@ -338,12 +370,6 @@ class ActivityTemplateEditorController internal constructor(
         identity: DraftIdentity<ActivityTemplateFieldId>,
         transform: (ActivityFieldDraft) -> ActivityFieldDraft,
     ) = copy(fields = fields.map { if (it.identity == identity) transform(it) else it })
-
-    private fun DraftIdentity<*>.key() =
-        when (this) {
-            is DraftIdentity.Existing -> "existing-$id"
-            is DraftIdentity.New -> "new-$key"
-        }
 
     private fun isRepresentableAtPrecision(
         value: Long?,

@@ -25,6 +25,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -228,13 +229,14 @@ private fun TrackableRow(
     onOpenActivity: (ActivityTemplateId) -> Unit,
 ) {
     val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
+    val shape = MaterialTheme.shapes.medium
     Card(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .then(
                     if (activityId != null) {
-                        Modifier.clickable { onOpenActivity(activityId.id) }
+                        Modifier.clip(shape).clickable { onOpenActivity(activityId.id) }
                     } else {
                         Modifier
                     },
@@ -242,6 +244,7 @@ private fun TrackableRow(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = shape,
     ) {
         Column(
             modifier = Modifier.padding(MaterialTheme.spacing.medium),

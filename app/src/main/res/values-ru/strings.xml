@@ -156,7 +156,7 @@
     <string name="activity_editor_number_invalid">Введите допустимое число с этой точностью.</string>
     <string name="activity_editor_main_value">Основное значение</string>
     <string name="activity_editor_option">Вариант</string>
-    <string name="activity_editor_default_selected">По умолчанию</string>
+    <string name="activity_editor_clear_default">Без значения по умолчанию</string>
     <string name="activity_editor_make_default">Сделать по умолчанию</string>
     <string name="activity_editor_add_option">Добавить вариант</string>
     <string name="activity_editor_done">Готово</string>

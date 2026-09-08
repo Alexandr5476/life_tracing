@@ -1,10 +1,13 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @file:Suppress("CyclomaticComplexMethod", "FunctionNaming", "LongMethod", "MagicNumber", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing.editor
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,6 +50,7 @@ fun ActivityTemplateEditorRoute(
 ) {
     DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
+    BackHandler { controller.requestBack(onBack) }
     ActivityTemplateEditorScreen(state, controller, onBack)
 }
 
@@ -150,7 +154,10 @@ private fun EditorForm(
     EditorCard {
         Text(stringResource(R.string.activity_editor_fields), style = MaterialTheme.typography.titleMedium)
         draft.fields.forEachIndexed { index, field -> FieldEditor(index, field, state, controller) }
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        ) {
             CustomFieldType.entries.forEach { type ->
                 LifeTracingSecondaryButton(onClick = {
                     controller.updateDraft {
@@ -231,7 +238,10 @@ private fun FieldEditor(
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_field_name)) },
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         CustomFieldType.entries.forEach { type ->
             val selected = field.type == type
             val action = { controller.updateDraft { it.withFieldAt(index) { value -> value.copy(type = type) } } }
@@ -368,7 +378,12 @@ private fun CategoryFieldEditor(
         }
         LifeTracingSecondaryButton(onClick = {
             controller.updateDraft { draft ->
-                draft.withFieldAt(index) { it.copy(defaultCategoryOption = option.identity) }
+                draft.withFieldAt(index) {
+                    it.copy(
+                        defaultCategoryOption =
+                            option.identity.takeUnless { identity -> identity == field.defaultCategoryOption },
+                    )
+                }
             }
         }) {
             Text(
@@ -376,7 +391,7 @@ private fun CategoryFieldEditor(
                     if (field.defaultCategoryOption ==
                         option.identity
                     ) {
-                        R.string.activity_editor_default_selected
+                        R.string.activity_editor_clear_default
                     } else {
                         R.string.activity_editor_make_default
                     },

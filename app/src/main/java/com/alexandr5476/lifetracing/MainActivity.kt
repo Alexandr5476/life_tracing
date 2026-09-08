@@ -135,7 +135,9 @@ internal fun LifeTracingApp(
                             val libraryController = remember { runtimeGraph.createLibraryController() }
                             LaunchedEffect(libraryRefreshGeneration) {
                                 if (libraryRefreshGeneration > 0) {
-                                    libraryController.dispatch(com.alexandr5476.lifetracing.library.LibraryAction.Retry)
+                                    libraryController.dispatch(
+                                        com.alexandr5476.lifetracing.library.LibraryAction.Refresh,
+                                    )
                                 }
                             }
                             LibraryRoute(
