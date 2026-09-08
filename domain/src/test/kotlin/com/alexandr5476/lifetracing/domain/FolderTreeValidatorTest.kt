@@ -56,6 +56,23 @@ class FolderTreeValidatorTest {
     }
 
     @Test
+    fun `forbidden destinations use one catalog pass for a deep subtree`() {
+        val deepParents =
+            (1..1_000).associate { depth ->
+                FolderId("folder-$depth") to if (depth == 1) null else FolderId("folder-${depth - 1}")
+            }
+        val noPerDestinationLookup =
+            object : Map<FolderId, FolderId?> by deepParents {
+                override fun get(key: FolderId): FolderId? = error("ancestor lookup is quadratic over a deep catalog")
+            }
+
+        assertEquals(
+            deepParents.keys,
+            FolderTreeValidator.forbiddenDestinations(FolderId("folder-1"), noPerDestinationLookup),
+        )
+    }
+
+    @Test
     fun `path is root first and corrupt cycles fail explicitly`() {
         val folders =
             parents.mapValues { (id, parent) -> Folder(id, id.value, parent, Instant.EPOCH, Instant.EPOCH) }

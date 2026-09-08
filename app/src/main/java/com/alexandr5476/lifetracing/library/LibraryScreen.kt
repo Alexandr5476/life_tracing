@@ -115,6 +115,11 @@ internal fun LibraryScreen(
                     onOpenActivity,
                 )
             }
+            when (state.organization) {
+                LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_organization_loading)) }
+                is LibraryLoad.Failure -> FailureCard(R.string.library_organization_failure, onAction)
+                is LibraryLoad.Content -> Unit
+            }
             state.mutationFailure?.let { FailureCard(R.string.library_mutation_failure, onAction) }
         }
     }
@@ -243,13 +248,18 @@ private fun FailureCard(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun FolderSection(
     folders: List<Folder>,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
 ) = LibraryCard {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         SectionTitle(R.string.library_folders)
         FolderNameAction(
             label = R.string.library_create_folder,
@@ -276,6 +286,7 @@ private fun TrackableSection(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun PinnedSection(
     allPinned: List<LibraryTrackable>,
     filter: LibraryKindFilter,
@@ -285,7 +296,11 @@ private fun PinnedSection(
     onOpenActivity: (ActivityTemplateId) -> Unit,
 ) = LibraryCard {
     var showOrdering by remember { mutableStateOf(false) }
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         SectionTitle(R.string.library_pinned)
         TextButton(onClick = { showOrdering = !showOrdering }) {
             Text(stringResource(R.string.library_reorder_pinned))
@@ -295,33 +310,37 @@ private fun PinnedSection(
         TrackableRow(item, organization, isMutating, onAction, onOpenActivity)
     }
     if (showOrdering) {
-        allPinned.forEach { item ->
-            val index = allPinned.indexOfFirst { it.id == item.id }
-            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                Text(item.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (index > 0) {
-                    TextButton(
-                        enabled = !isMutating,
-                        onClick = {
-                            onAction(
-                                LibraryAction.ReorderPinned(
-                                    allPinned.move(index, index - 1).map(LibraryTrackable::id),
-                                ),
-                            )
-                        },
-                    ) { Text(stringResource(R.string.library_move_up)) }
-                }
-                if (index < allPinned.lastIndex) {
-                    TextButton(
-                        enabled = !isMutating,
-                        onClick = {
-                            onAction(
-                                LibraryAction.ReorderPinned(
-                                    allPinned.move(index, index + 1).map(LibraryTrackable::id),
-                                ),
-                            )
-                        },
-                    ) { Text(stringResource(R.string.library_move_down)) }
+        allPinned.forEachIndexed { index, item ->
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                ) {
+                    if (index > 0) {
+                        TextButton(
+                            enabled = !isMutating,
+                            onClick = {
+                                onAction(
+                                    LibraryAction.ReorderPinned(
+                                        allPinned.move(index, index - 1).map(LibraryTrackable::id),
+                                    ),
+                                )
+                            },
+                        ) { Text(stringResource(R.string.library_move_up)) }
+                    }
+                    if (index < allPinned.lastIndex) {
+                        TextButton(
+                            enabled = !isMutating,
+                            onClick = {
+                                onAction(
+                                    LibraryAction.ReorderPinned(
+                                        allPinned.move(index, index + 1).map(LibraryTrackable::id),
+                                    ),
+                                )
+                            },
+                        ) { Text(stringResource(R.string.library_move_down)) }
+                    }
                 }
             }
         }
@@ -359,17 +378,14 @@ private fun TrackableRow(
             modifier = Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.xSmall),
         ) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(
-                    item.name,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                TextButton(onClick = { showOrganization = !showOrganization }) {
-                    Text(stringResource(R.string.library_organize))
-                }
+            Text(
+                item.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = { showOrganization = !showOrganization }) {
+                Text(stringResource(R.string.library_organize))
             }
             Text(
                 stringResource(
@@ -391,6 +407,7 @@ private fun TrackableRow(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun OrganizationActions(
     item: LibraryTrackable,
     organization: LibraryLoad<LibraryOrganization>,
@@ -398,7 +415,10 @@ private fun OrganizationActions(
     onAction: (LibraryAction) -> Unit,
 ) {
     val catalog = (organization as? LibraryLoad.Content)?.value ?: return
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         TextButton(
             enabled = !isMutating,
             onClick = { onAction(LibraryAction.SetPinned(item.id, item.pinnedRank == null)) },
@@ -437,6 +457,7 @@ private fun OrganizationActions(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun FolderRow(
     folder: Folder,
     organization: LibraryLoad<LibraryOrganization>,
@@ -444,7 +465,11 @@ private fun FolderRow(
     onAction: (LibraryAction) -> Unit,
 ) {
     var showOrganization by remember(folder.id) { mutableStateOf(false) }
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         TextButton(onClick = { onAction(LibraryAction.OpenFolder(folder.id)) }) { Text(folder.name) }
         TextButton(onClick = { showOrganization = !showOrganization }) {
             Text(stringResource(R.string.library_organize))
@@ -452,7 +477,11 @@ private fun FolderRow(
     }
     if (!showOrganization) return
     val folders = (organization as? LibraryLoad.Content)?.value?.folders ?: return
-    val parents = folders.associate { it.id to it.parentFolderId }
+    val forbidden =
+        FolderTreeValidator.forbiddenDestinations(
+            folder.id,
+            folders.associate { it.id to it.parentFolderId },
+        )
     FolderNameAction(
         label = R.string.library_rename_folder,
         confirm = R.string.library_rename,
@@ -463,7 +492,7 @@ private fun FolderRow(
         Text(stringResource(R.string.library_move_to_root))
     }
     folders
-        .filter { destination -> FolderTreeValidator.canMove(folder.id, destination.id, parents) }
+        .filterNot { it.id in forbidden }
         .forEach { destination ->
             TextButton(
                 enabled = !isMutating,

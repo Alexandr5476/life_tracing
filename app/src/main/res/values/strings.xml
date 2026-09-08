@@ -130,6 +130,8 @@
     <string name="library_sequence">Sequence</string>
     <string name="library_new_activity">New activity</string>
     <string name="library_mutation_failure">Library changes could not be saved.</string>
+    <string name="library_organization_loading">Loading organization controls…</string>
+    <string name="library_organization_failure">Organization controls could not be loaded.</string>
     <string name="library_organize">Organize</string>
     <string name="library_create_folder">New folder</string>
     <string name="library_rename_folder">Rename folder</string>

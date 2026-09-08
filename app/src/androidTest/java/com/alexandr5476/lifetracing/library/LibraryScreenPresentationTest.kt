@@ -11,12 +11,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
@@ -65,7 +67,7 @@ class LibraryScreenPresentationTest {
         composeTestRule.onAllNodesWithText("Sequence")[0].assertIsDisplayed()
         composeTestRule.onAllNodesWithText("Catalog activity alpha")[0].assertIsDisplayed()
         composeTestRule.onNodeWithText("Archived").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Projects").performClick()
+        composeTestRule.onNodeWithText("Projects").performScrollTo().performClick()
         assertEquals(LibraryAction.OpenFolder(folder.id), actions.last())
         composeTestRule.onNodeWithText(text(R.string.library_filter_sequences)).performClick()
         assertEquals(LibraryAction.SetFilter(LibraryKindFilter.SEQUENCES), actions.last())
@@ -193,6 +195,216 @@ class LibraryScreenPresentationTest {
             node.performClick()
             assertEquals(LibraryAction.SetFilter(filter), actions.last())
         }
+    }
+
+    @Test
+    fun organizationLoadFailureIsVisibleAndRetryable() {
+        val actions = mutableListOf<LibraryAction>()
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                LibraryScreen(
+                    state =
+                        LibraryPresentationState(
+                            browse =
+                                LibraryLoad.Content(
+                                    LibraryBrowse(
+                                        null,
+                                        emptyList(),
+                                        emptyList(),
+                                        LibraryContents(emptyList(), emptyList(), emptyList()),
+                                    ),
+                                ),
+                            organization = LibraryLoad.Failure("failed"),
+                        ),
+                    onAction = actions::add,
+                    onRouteBack = {},
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText(text(R.string.library_organization_failure)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.library_retry)).performClick()
+
+        assertEquals(LibraryAction.Retry, actions.last())
+    }
+
+    @Test
+    fun englishOrganizationControlsRemainActionableAtCompactWidth() = verifyCompactOrganization(Locale.ENGLISH)
+
+    @Test
+    fun russianOrganizationControlsRemainActionableAtCompactWidth() {
+        verifyCompactOrganization(Locale.forLanguageTag("ru"))
+    }
+
+    @Test
+    fun englishFolderOrganizationControlsRemainActionableAtCompactWidth() {
+        verifyCompactFolderOrganization(Locale.ENGLISH)
+    }
+
+    @Test
+    fun russianFolderOrganizationControlsRemainActionableAtCompactWidth() {
+        verifyCompactFolderOrganization(Locale.forLanguageTag("ru"))
+    }
+
+    private fun verifyCompactOrganization(locale: Locale) {
+        val configuration =
+            android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                setLocale(locale)
+            }
+        val context = composeTestRule.activity.createConfigurationContext(configuration)
+        val source = folder("source", "Source")
+        val destination = folder("destination", "Destination")
+        val activity = trackable("Compact activity", false).copy(pinnedRank = 0)
+        val sequence = trackable("Compact sequence", true).copy(pinnedRank = 1)
+        val unpinned = trackable("Unpinned activity", false)
+        val actions = mutableListOf<LibraryAction>()
+        val opened = mutableListOf<ActivityTemplateId>()
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+            ) {
+                LifeTracingTheme {
+                    Box(Modifier.width(320.dp)) {
+                        LibraryScreen(
+                            state =
+                                LibraryPresentationState(
+                                    browse =
+                                        LibraryLoad.Content(
+                                            LibraryBrowse(
+                                                null,
+                                                emptyList(),
+                                                listOf(activity, sequence),
+                                                LibraryContents(listOf(source), listOf(unpinned), emptyList()),
+                                            ),
+                                        ),
+                                    organization =
+                                        LibraryLoad.Content(
+                                            LibraryOrganization(listOf(source, destination), emptyList()),
+                                        ),
+                                ),
+                            onAction = actions::add,
+                            onOpenActivity = opened::add,
+                            onRouteBack = {},
+                        )
+                    }
+                }
+            }
+        }
+        val widthPixels = 320 * context.resources.displayMetrics.density
+        val organize = context.getString(R.string.library_organize)
+        val unpin = context.getString(R.string.library_unpin)
+        val moveRoot = context.getString(R.string.library_move_to_root)
+        val moveDestination = context.getString(R.string.library_move_to_folder, destination.name)
+
+        clickInside(composeTestRule.onAllNodesWithText(organize)[0], widthPixels)
+        assertTrue(opened.isEmpty())
+        clickInside(composeTestRule.onAllNodesWithText(unpin)[0], widthPixels)
+        assertEquals(LibraryAction.SetPinned(activity.id, false), actions.last())
+        assertTrue(opened.isEmpty())
+        clickInside(composeTestRule.onAllNodesWithText(moveRoot)[0], widthPixels)
+        assertEquals(LibraryAction.MoveTemplate(activity.id, null), actions.last())
+        clickInside(composeTestRule.onAllNodesWithText(moveDestination)[0], widthPixels)
+        assertEquals(LibraryAction.MoveTemplate(activity.id, destination.id), actions.last())
+
+        assertFalse(
+            composeTestRule
+                .onNodeWithText(sequence.name)
+                .fetchSemanticsNode()
+                .config
+                .contains(SemanticsActions.OnClick),
+        )
+        clickInside(composeTestRule.onAllNodesWithText(organize)[1], widthPixels)
+        clickInside(composeTestRule.onAllNodesWithText(unpin)[1], widthPixels)
+        assertEquals(LibraryAction.SetPinned(sequence.id, false), actions.last())
+
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_reorder_pinned)), widthPixels)
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_move_down)), widthPixels)
+        assertEquals(LibraryAction.ReorderPinned(listOf(sequence.id, activity.id)), actions.last())
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_move_up)), widthPixels)
+        assertEquals(LibraryAction.ReorderPinned(listOf(sequence.id, activity.id)), actions.last())
+
+        clickInside(composeTestRule.onAllNodesWithText(organize)[3], widthPixels)
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_pin)), widthPixels)
+        assertEquals(LibraryAction.SetPinned(unpinned.id, true), actions.last())
+        assertTrue(opened.isEmpty())
+    }
+
+    private fun verifyCompactFolderOrganization(locale: Locale) {
+        val configuration =
+            android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                setLocale(locale)
+            }
+        val context = composeTestRule.activity.createConfigurationContext(configuration)
+        val source = folder("folder-source", "Source")
+        val destination = folder("folder-destination", "Destination")
+        val actions = mutableListOf<LibraryAction>()
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+            ) {
+                LifeTracingTheme {
+                    Box(Modifier.width(320.dp)) {
+                        LibraryScreen(
+                            state =
+                                LibraryPresentationState(
+                                    browse =
+                                        LibraryLoad.Content(
+                                            LibraryBrowse(
+                                                null,
+                                                emptyList(),
+                                                emptyList(),
+                                                LibraryContents(listOf(source), emptyList(), emptyList()),
+                                            ),
+                                        ),
+                                    organization =
+                                        LibraryLoad.Content(
+                                            LibraryOrganization(listOf(source, destination), emptyList()),
+                                        ),
+                                ),
+                            onAction = actions::add,
+                            onRouteBack = {},
+                        )
+                    }
+                }
+            }
+        }
+        val widthPixels = 320 * context.resources.displayMetrics.density
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_organize)), widthPixels)
+        assertActionInside(
+            composeTestRule.onNodeWithText(context.getString(R.string.library_rename_folder)),
+            widthPixels,
+        )
+        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_move_to_root)), widthPixels)
+        assertEquals(LibraryAction.MoveFolder(source.id, null), actions.last())
+        clickInside(
+            composeTestRule.onNodeWithText(
+                context.getString(R.string.library_move_to_folder, destination.name),
+            ),
+            widthPixels,
+        )
+        assertEquals(LibraryAction.MoveFolder(source.id, destination.id), actions.last())
+    }
+
+    private fun clickInside(
+        node: SemanticsNodeInteraction,
+        widthPixels: Float,
+    ) {
+        assertActionInside(node, widthPixels)
+        node.performClick()
+    }
+
+    private fun assertActionInside(
+        node: SemanticsNodeInteraction,
+        widthPixels: Float,
+    ) {
+        node.performScrollTo()
+        node.assertIsDisplayed()
+        val bounds = node.fetchSemanticsNode().boundsInRoot
+        assertTrue(bounds.left >= 0f)
+        assertTrue(bounds.right <= widthPixels)
+        assertTrue(node.fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
     }
 
     private fun folder(

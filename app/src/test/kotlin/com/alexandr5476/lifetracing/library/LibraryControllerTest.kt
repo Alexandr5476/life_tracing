@@ -1,3 +1,5 @@
+@file:Suppress("LargeClass")
+
 package com.alexandr5476.lifetracing.library
 
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
@@ -16,6 +18,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
 
@@ -423,6 +427,214 @@ class LibraryControllerTest {
         }
 
     @Test
+    fun failedMutationKeepsCanonicalStateAndReloadClearsFailureWithoutReplayingWriter() =
+        runBlocking {
+            val folder = folder("folder", "Folder")
+            val item = activity("activity", "Match")
+            val organization = LibraryOrganization(listOf(folder), emptyList())
+            var mutations = 0
+            var folderReads = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
+                    {
+                        folderReads++
+                        LibraryContents(emptyList(), listOf(item), emptyList())
+                    },
+                    { listOf(folder) },
+                    { _, _ -> listOf(item) },
+                    { organization },
+                    {
+                        mutations++
+                        error("write failed")
+                    },
+                )
+            controller.awaitBrowse()
+            controller.awaitOrganization()
+            controller.dispatch(LibraryAction.OpenFolder(folder.id))
+            controller.awaitBrowse { it.folderId == folder.id }
+            controller.dispatch(LibraryAction.Search("Match"))
+            controller.awaitSearch()
+            controller.dispatch(LibraryAction.SetFilter(LibraryKindFilter.ACTIVITIES))
+
+            controller.dispatch(LibraryAction.SetPinned(item.id, true))
+            withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationFailure != null } }
+
+            assertEquals(folder.id, controller.currentBrowse().folderId)
+            assertEquals(listOf(item), controller.awaitSearch())
+            assertEquals(organization, controller.awaitOrganization())
+            controller.dispatch(LibraryAction.Retry)
+            withTimeout(2_000) { controller.state.first { it.mutationFailure == null } }
+
+            assertEquals(folder.id, controller.currentBrowse().folderId)
+            assertEquals("Match", controller.state.value.query)
+            assertEquals(LibraryKindFilter.ACTIVITIES, controller.state.value.filter)
+            assertEquals(1, mutations)
+            assertTrue(folderReads >= 2)
+            controller.close()
+        }
+
+    @Test
+    fun unrelatedInFlightReadSuccessDoesNotDismissANewerMutationFailure() =
+        runBlocking {
+            val organizationRelease = CompletableDeferred<Unit>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    {
+                        organizationRelease.await()
+                        LibraryOrganization(emptyList(), emptyList())
+                    },
+                    { error("write failed") },
+                )
+            controller.awaitBrowse()
+
+            controller.dispatch(LibraryAction.CreateFolder("Folder"))
+            withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationFailure != null } }
+            organizationRelease.complete(Unit)
+            controller.awaitOrganization()
+
+            assertEquals("write failed", controller.state.value.mutationFailure)
+            controller.close()
+        }
+
+    @Test
+    fun committedMutationBrowseFailureUsesBrowseRecoveryAndNeverMutationFailure() =
+        runBlocking {
+            val before = activity("activity", "Before")
+            val after = activity("activity", "After")
+            var committed = false
+            var rootReads = 0
+            var mutations = 0
+            val controller =
+                LibraryController(
+                    this,
+                    {
+                        rootReads++
+                        if (committed && rootReads == 2) error("post-commit browse failed")
+                        val item = if (committed) after else before
+                        LibraryRoot(LibraryContents(emptyList(), listOf(item), emptyList()), emptyList())
+                    },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    {
+                        mutations++
+                        committed = true
+                    },
+                )
+            controller.awaitBrowse()
+            controller.awaitOrganization()
+
+            controller.dispatch(LibraryAction.SetPinned(before.id, true))
+            withTimeout(2_000) { controller.state.first { it.browse is LibraryLoad.Failure && !it.isMutating } }
+
+            assertTrue(committed)
+            assertNull(controller.state.value.mutationFailure)
+            assertEquals(1, mutations)
+            controller.dispatch(LibraryAction.Retry)
+            val recovered =
+                controller.awaitBrowse {
+                    it.contents.activities
+                        .singleOrNull()
+                        ?.name == "After"
+                }
+
+            assertEquals(
+                "After",
+                recovered.contents.activities
+                    .single()
+                    .name,
+            )
+            assertEquals(1, mutations)
+            controller.close()
+        }
+
+    @Test
+    fun organizationFailuresAreRecoverableBeforeAndAfterCommittedMutation() =
+        runBlocking {
+            val folder = folder("folder", "Folder")
+            var organizationReads = 0
+            var committed = false
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
+                    { LibraryContents(emptyList(), emptyList(), emptyList()) },
+                    { listOf(folder) },
+                    { _, _ -> emptyList() },
+                    {
+                        organizationReads++
+                        if (organizationReads == 1 || organizationReads == 3) error("organization failed")
+                        LibraryOrganization(listOf(folder), emptyList())
+                    },
+                    { committed = true },
+                )
+            controller.awaitBrowse()
+            controller.awaitOrganizationFailure()
+            controller.dispatch(LibraryAction.OpenFolder(folder.id))
+            controller.awaitBrowse { it.folderId == folder.id }
+            controller.dispatch(LibraryAction.Search("kept"))
+            controller.awaitSearch()
+            controller.dispatch(LibraryAction.SetFilter(LibraryKindFilter.SEQUENCES))
+
+            controller.dispatch(LibraryAction.Retry)
+            controller.awaitOrganization()
+            assertEquals(folder.id, controller.state.value.folderId)
+            assertEquals("kept", controller.state.value.query)
+            assertEquals(LibraryKindFilter.SEQUENCES, controller.state.value.filter)
+
+            controller.dispatch(LibraryAction.CreateFolder("Committed"))
+            withTimeout(2_000) {
+                controller.state.first { it.organization is LibraryLoad.Failure && !it.isMutating }
+            }
+            assertTrue(committed)
+            assertNull(controller.state.value.mutationFailure)
+
+            controller.dispatch(LibraryAction.Retry)
+            controller.awaitOrganization()
+            assertEquals(folder.id, controller.state.value.folderId)
+            assertEquals("kept", controller.state.value.query)
+            assertEquals(LibraryKindFilter.SEQUENCES, controller.state.value.filter)
+            controller.close()
+        }
+
+    @Test
+    fun successfulMutationClearsAnOlderMutationFailure() =
+        runBlocking {
+            var attempts = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    {
+                        attempts++
+                        if (attempts == 1) error("first failed")
+                    },
+                )
+            controller.awaitBrowse()
+            controller.awaitOrganization()
+
+            controller.dispatch(LibraryAction.CreateFolder("First"))
+            withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationFailure != null } }
+            controller.dispatch(LibraryAction.CreateFolder("Second"))
+            withTimeout(2_000) { controller.state.first { attempts == 2 && !it.isMutating } }
+
+            assertNull(controller.state.value.mutationFailure)
+            controller.close()
+        }
+
+    @Test
     fun repeatedCreateDoesNotSubmitConcurrentDuplicateMutations() =
         runBlocking {
             val started = CompletableDeferred<Unit>()
@@ -477,6 +689,13 @@ class LibraryControllerTest {
 
     private suspend fun LibraryController.awaitBrowseFailure() =
         withTimeout(2_000) { state.first { it.browse is LibraryLoad.Failure } }
+
+    private suspend fun LibraryController.awaitOrganization(): LibraryOrganization =
+        withTimeout(2_000) { state.first { it.organization is LibraryLoad.Content } }
+            .let { (it.organization as LibraryLoad.Content).value }
+
+    private suspend fun LibraryController.awaitOrganizationFailure() =
+        withTimeout(2_000) { state.first { it.organization is LibraryLoad.Failure } }
 
     private fun LibraryController.currentBrowse(): LibraryBrowse = (state.value.browse as LibraryLoad.Content).value
 

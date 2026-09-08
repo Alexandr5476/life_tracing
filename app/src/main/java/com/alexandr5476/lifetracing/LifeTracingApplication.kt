@@ -42,13 +42,14 @@ import java.time.ZoneId
 import java.util.UUID
 
 class LifeTracingApplication : Application() {
+    private val runtimeGraph by lazy { LifeTracingRuntimeGraph.from(this) }
+
     override fun onCreate() {
         super.onCreate()
-        val graph = LifeTracingRuntimeGraph.from(this)
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityStarted(activity: Activity) {
-                    graph.scope.launch { graph.coordinator.onForeground() }
+                    runtimeGraph.scope.launch { runtimeGraph.coordinator.onForeground() }
                 }
 
                 override fun onActivityCreated(

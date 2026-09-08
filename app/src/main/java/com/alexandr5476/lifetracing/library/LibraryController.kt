@@ -235,13 +235,19 @@ class LibraryController internal constructor(
     }
 
     private fun retry() {
+        if (mutableState.value.mutationFailure != null) {
+            refresh()
+            return
+        }
         mutableState.value.folderId?.let(::loadFolder) ?: loadRoot()
         if (mutableState.value.search is LibraryLoad.Failure) search(mutableState.value.query)
         if (mutableState.value.organization is LibraryLoad.Failure) loadOrganization()
     }
 
     private fun refresh() {
-        mutableState.value.folderId?.let(::loadFolder) ?: loadRoot()
+        val recoverMutationFailure = mutableState.value.mutationFailure != null
+        mutableState.value.folderId?.let { loadFolder(it, recoverMutationFailure) }
+            ?: loadRoot(recoverMutationFailure)
         mutableState.value.query
             .takeIf(String::isNotBlank)
             ?.let(::search)
@@ -272,11 +278,21 @@ class LibraryController internal constructor(
         }
     }
 
-    private fun loadRoot() = load(null)
+    private fun loadRoot() = load(null, false)
 
-    private fun loadFolder(folderId: FolderId) = load(folderId)
+    private fun loadRoot(recoverMutationFailure: Boolean) = load(null, recoverMutationFailure)
 
-    private fun load(folderId: FolderId?) {
+    private fun loadFolder(folderId: FolderId) = load(folderId, false)
+
+    private fun loadFolder(
+        folderId: FolderId,
+        recoverMutationFailure: Boolean,
+    ) = load(folderId, recoverMutationFailure)
+
+    private fun load(
+        folderId: FolderId?,
+        recoverMutationFailure: Boolean,
+    ) {
         val generation = browseGeneration.incrementAndGet()
         mutableState.update { it.copy(folderId = folderId, browse = LibraryLoad.Loading) }
         scope.launch {
@@ -288,7 +304,12 @@ class LibraryController internal constructor(
                         LibraryBrowse(folderId, readFolderPath(folderId), emptyList(), readFolderContents(folderId))
                     }
                 if (!closed && generation == browseGeneration.get()) {
-                    mutableState.update { it.copy(browse = LibraryLoad.Content(browse.activeOnly())) }
+                    mutableState.update {
+                        it.copy(
+                            browse = LibraryLoad.Content(browse.activeOnly()),
+                            mutationFailure = if (recoverMutationFailure) null else it.mutationFailure,
+                        )
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -326,66 +347,20 @@ class LibraryController internal constructor(
         mutableState.update { it.copy(isMutating = true, mutationFailure = null) }
         scope.launch {
             try {
-                mutateLibrary(mutation)
-                refreshAfterMutation()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                if (!closed) mutableState.update { it.copy(mutationFailure = failure.message ?: "Unknown error") }
+                try {
+                    mutateLibrary(mutation)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    if (!closed) {
+                        mutableState.update { it.copy(mutationFailure = failure.message ?: "Unknown error") }
+                    }
+                    return@launch
+                }
+                if (!closed) refresh()
             } finally {
                 mutationInFlight.set(false)
                 if (!closed) mutableState.update { it.copy(isMutating = false) }
-            }
-        }
-    }
-
-    private suspend fun refreshAfterMutation() {
-        val snapshot = mutableState.value
-        val browseGeneration = browseGeneration.incrementAndGet()
-        val organizationGeneration = organizationGeneration.incrementAndGet()
-        val searchGeneration = searchGeneration.incrementAndGet()
-        val browse =
-            if (snapshot.folderId == null) {
-                readRoot().toBrowse()
-            } else {
-                LibraryBrowse(
-                    snapshot.folderId,
-                    readFolderPath(snapshot.folderId),
-                    emptyList(),
-                    readFolderContents(snapshot.folderId),
-                )
-            }
-        val organization = readOrganization()
-        val search =
-            snapshot.query.takeIf(String::isNotBlank)?.let {
-                searchLibrary(it, snapshot.filter).filterNot(LibraryTrackable::isArchived)
-            }
-        if (!closed) {
-            mutableState.update { current ->
-                current.copy(
-                    browse =
-                        if (current.folderId == snapshot.folderId && browseGeneration == this.browseGeneration.get()) {
-                            LibraryLoad.Content(browse.activeOnly())
-                        } else {
-                            current.browse
-                        },
-                    organization =
-                        if (organizationGeneration == this.organizationGeneration.get()) {
-                            LibraryLoad.Content(organization)
-                        } else {
-                            current.organization
-                        },
-                    search =
-                        if (
-                            current.query == snapshot.query &&
-                            current.filter == snapshot.filter &&
-                            searchGeneration == this.searchGeneration.get()
-                        ) {
-                            search?.let { LibraryLoad.Content(it) }
-                        } else {
-                            current.search
-                        },
-                )
             }
         }
     }

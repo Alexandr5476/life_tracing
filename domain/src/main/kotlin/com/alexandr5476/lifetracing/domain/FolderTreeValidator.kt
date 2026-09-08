@@ -1,6 +1,22 @@
 package com.alexandr5476.lifetracing.domain
 
 object FolderTreeValidator {
+    fun forbiddenDestinations(
+        folderId: FolderId,
+        parents: Map<FolderId, FolderId?>,
+    ): Set<FolderId> {
+        val children = mutableMapOf<FolderId, MutableList<FolderId>>()
+        parents.forEach { (child, parent) -> parent?.let { children.getOrPut(it, ::mutableListOf) += child } }
+        val forbidden = mutableSetOf(folderId)
+        val pending = ArrayDeque<FolderId>().apply { add(folderId) }
+        while (pending.isNotEmpty()) {
+            children[pending.removeFirst()].orEmpty().forEach { child ->
+                if (forbidden.add(child)) pending.add(child)
+            }
+        }
+        return forbidden
+    }
+
     fun canMove(
         folderId: FolderId,
         parentFolderId: FolderId?,
