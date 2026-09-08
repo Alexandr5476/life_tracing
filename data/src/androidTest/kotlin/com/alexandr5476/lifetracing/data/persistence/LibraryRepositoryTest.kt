@@ -159,6 +159,23 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun organizationCatalogsAndCreatedTagAssignmentSurviveFreshRepositoryAcquisition() {
+        val writer = repository()
+        writer.createFolder(FolderId("parent"), "Parent", null, instant(1))
+        writer.createFolder(FolderId("child"), "Child", FolderId("parent"), instant(2))
+        activity("activity", "Activity", folder = "child")
+        val activity = LibraryTemplateId.Activity(ActivityTemplateId("activity"))
+
+        writer.createTagAndAssign(TagId("focus"), "Focus", activity, instant(3))
+
+        val reloaded = repository()
+        assertEquals(listOf("child", "parent"), reloaded.getFolders().map { it.id.value }.sorted())
+        assertEquals(listOf("focus"), reloaded.getTags().map { it.id.value })
+        assertEquals(setOf(TagId("focus")), reloaded.getAll().single().tagIds)
+        assertEquals(FolderId("child"), reloaded.getAll().single().folderId)
+    }
+
+    @Test
     fun catalogTagHydrationChunksBothKindsAboveTheSafeBindCount() {
         val tagQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
         database.close()

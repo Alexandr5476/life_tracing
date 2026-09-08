@@ -96,6 +96,12 @@ class LibraryRepository internal constructor(
             FolderTreeValidator.path(folderId) { id -> database.folderDao().getById(id.value)?.toDomain() }
         }
 
+    /** One bounded catalog read for Folder move destinations. */
+    fun getFolders(): List<Folder> = transaction { database.folderDao().getAll().map(FolderEntity::toDomain) }
+
+    /** One bounded catalog read for Tag assignment. */
+    fun getTags(): List<Tag> = transaction { database.tagDao().getAll().map(TagEntity::toDomain) }
+
     fun getAll(filter: LibraryKindFilter = LibraryKindFilter.ALL): List<LibraryTrackable> =
         transaction {
             filtered(
@@ -344,6 +350,25 @@ class LibraryRepository internal constructor(
     ): Tag =
         transaction {
             Tag(id, name, createdAt, createdAt).also { database.tagDao().insert(it.toEntity()) }
+        }
+
+    fun createTagAndAssign(
+        id: TagId,
+        name: String,
+        templateId: LibraryTemplateId,
+        createdAt: Instant,
+    ): Tag =
+        transaction {
+            requireTemplate(templateId, activeOnly = true)
+            val tag = Tag(id, name, createdAt, createdAt)
+            database.tagDao().insert(tag.toEntity())
+            when (templateId) {
+                is LibraryTemplateId.Activity ->
+                    database.libraryDao().addActivityTag(ActivityTemplateTagEntity(templateId.value, tag.id.value))
+                is LibraryTemplateId.Sequence ->
+                    database.libraryDao().addSequenceTag(SequenceTemplateTagEntity(templateId.value, tag.id.value))
+            }
+            tag
         }
 
     fun renameTag(

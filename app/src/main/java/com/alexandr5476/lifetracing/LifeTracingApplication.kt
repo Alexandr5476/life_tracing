@@ -25,6 +25,8 @@ import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
 import com.alexandr5476.lifetracing.launcher.StartActivityController
 import com.alexandr5476.lifetracing.launcher.toEntryValue
 import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryMutation
+import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -101,7 +103,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 instance ?: create(context.applicationContext).also { instance = it }
             }
 
-        @Suppress("LongMethod") // Runtime graph wiring is intentionally kept at one composition root.
+        @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
             val scope =
                 kotlinx.coroutines.CoroutineScope(
@@ -243,6 +245,52 @@ class LifeTracingRuntimeGraph internal constructor(
                         { query, filter ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.search(query, filter)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                LibraryOrganization(libraryRepository.getFolders(), libraryRepository.getTags())
+                            }
+                        },
+                        { mutation ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                when (mutation) {
+                                    is LibraryMutation.CreateFolder ->
+                                        libraryRepository.createFolder(
+                                            mutation.id,
+                                            mutation.name,
+                                            mutation.parentId,
+                                            mutation.at,
+                                        )
+                                    is LibraryMutation.RenameFolder ->
+                                        libraryRepository.renameFolder(mutation.id, mutation.name, mutation.at)
+                                    is LibraryMutation.MoveFolder ->
+                                        libraryRepository.moveFolder(mutation.id, mutation.parentId, mutation.at)
+                                    is LibraryMutation.MoveTemplate ->
+                                        libraryRepository.moveTemplatesToFolder(
+                                            listOf(mutation.id),
+                                            mutation.folderId,
+                                            mutation.at,
+                                        )
+                                    is LibraryMutation.CreateAndAssignTag ->
+                                        libraryRepository.createTagAndAssign(
+                                            mutation.id,
+                                            mutation.name,
+                                            mutation.templateId,
+                                            mutation.at,
+                                        )
+                                    is LibraryMutation.AssignTag ->
+                                        libraryRepository.addTag(mutation.templateId, mutation.tagId)
+                                    is LibraryMutation.UnassignTag ->
+                                        libraryRepository.removeTag(mutation.templateId, mutation.tagId)
+                                    is LibraryMutation.SetPinned ->
+                                        if (mutation.pinned) {
+                                            libraryRepository.pin(mutation.templateId)
+                                        } else {
+                                            libraryRepository.unpin(mutation.templateId)
+                                        }
+                                    is LibraryMutation.ReorderPinned -> libraryRepository.reorderPinned(mutation.ids)
+                                }
                             }
                         },
                     )

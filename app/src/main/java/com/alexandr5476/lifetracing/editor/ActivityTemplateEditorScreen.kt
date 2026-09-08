@@ -27,6 +27,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -52,8 +55,12 @@ fun ActivityTemplateEditorRoute(
 ) {
     DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
+    var committedDelivered by remember(controller) { mutableStateOf(false) }
     LaunchedEffect(state.save) {
-        if (state.save is ActivityTemplateEditorSave.Committed) (onCommitted ?: onBack)()
+        if (state.save is ActivityTemplateEditorSave.Committed && !committedDelivered) {
+            committedDelivered = true
+            (onCommitted ?: onBack)()
+        }
     }
     BackHandler { controller.requestBack(onBack) }
     ActivityTemplateEditorScreen(state, controller, onBack)

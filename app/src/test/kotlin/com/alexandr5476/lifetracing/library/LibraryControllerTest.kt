@@ -375,6 +375,85 @@ class LibraryControllerTest {
             controller.close()
         }
 
+    @Test
+    fun successfulMetadataMutationReReadsCanonicalBrowseAndPreservesSearchFilter() =
+        runBlocking {
+            var catalog = listOf(activity("activity", "Before"))
+            val mutations = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), catalog, emptyList()), emptyList()) },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { query, filter ->
+                        catalog.filter {
+                            it.name.contains(query, ignoreCase = true) &&
+                                (filter != LibraryKindFilter.SEQUENCES || it.id is LibraryTemplateId.Sequence)
+                        }
+                    },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    { mutation ->
+                        mutations += mutation
+                        catalog = listOf(activity("activity", "After"))
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.Search("After"))
+            controller.awaitSearch { it.isEmpty() }
+            controller.dispatch(LibraryAction.SetFilter(LibraryKindFilter.ACTIVITIES))
+
+            controller.dispatch(LibraryAction.MoveTemplate(activity("activity", "Before").id, null))
+
+            assertEquals(
+                "After",
+                controller
+                    .awaitBrowse {
+                        it.contents.activities
+                            .single()
+                            .name == "After"
+                    }.contents.activities
+                    .single()
+                    .name,
+            )
+            assertEquals("After", controller.awaitSearch { it.singleOrNull()?.name == "After" }.single().name)
+            assertEquals(LibraryKindFilter.ACTIVITIES, controller.state.value.filter)
+            assertEquals(1, mutations.size)
+            controller.close()
+        }
+
+    @Test
+    fun repeatedCreateDoesNotSubmitConcurrentDuplicateMutations() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var mutations = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                    { error("unused folder reader") },
+                    { error("unused path reader") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    {
+                        mutations++
+                        started.complete(Unit)
+                        release.await()
+                    },
+                )
+            controller.awaitBrowse()
+
+            controller.dispatch(LibraryAction.CreateFolder("Folder"))
+            started.await()
+            controller.dispatch(LibraryAction.CreateFolder("Folder"))
+            release.complete(Unit)
+            withTimeout(2_000) { controller.state.first { !it.isMutating } }
+
+            assertEquals(1, mutations)
+            controller.close()
+        }
+
     @Suppress("LongParameterList")
     private fun controller(
         scope: CoroutineScope,
