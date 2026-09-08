@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -46,10 +47,14 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 @Composable
 fun ActivityTemplateEditorRoute(
     controller: ActivityTemplateEditorController,
+    onCommitted: (() -> Unit)? = null,
     onBack: () -> Unit,
 ) {
     DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
+    LaunchedEffect(state.save) {
+        if (state.save is ActivityTemplateEditorSave.Committed) (onCommitted ?: onBack)()
+    }
     BackHandler { controller.requestBack(onBack) }
     ActivityTemplateEditorScreen(state, controller, onBack)
 }
@@ -194,6 +199,7 @@ private fun EditorForm(
         modifier = Modifier.fillMaxWidth(),
         enabled =
             state.save !is ActivityTemplateEditorSave.Saving &&
+                state.save !is ActivityTemplateEditorSave.Committed &&
                 !state.timerTargetError &&
                 state.invalidNumberFields.isEmpty(),
     ) {

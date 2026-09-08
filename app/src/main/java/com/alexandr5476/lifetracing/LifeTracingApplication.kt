@@ -79,7 +79,6 @@ class LifeTracingRuntimeGraph internal constructor(
     private val libraryControllerFactory: () -> LibraryController,
     private val activityTemplateEditorControllerFactory: (
         ActivityTemplateEditorTarget,
-        () -> Unit,
     ) -> ActivityTemplateEditorController,
 ) {
     val dailyController: DailyController
@@ -91,8 +90,7 @@ class LifeTracingRuntimeGraph internal constructor(
 
     fun createActivityTemplateEditorController(
         target: ActivityTemplateEditorTarget,
-        onCommitted: () -> Unit,
-    ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target, onCommitted)
+    ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target)
 
     companion object {
         @Volatile
@@ -249,7 +247,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                     )
                 },
-                { target, onCommitted ->
+                { target ->
                     ActivityTemplateEditorController(
                         scope,
                         target,
@@ -269,7 +267,6 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         java.time.Instant::now,
-                        onCommitted,
                     )
                 },
             )

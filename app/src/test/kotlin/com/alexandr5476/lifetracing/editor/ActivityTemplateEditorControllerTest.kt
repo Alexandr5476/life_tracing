@@ -18,7 +18,6 @@ import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
-import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -28,7 +27,6 @@ class ActivityTemplateEditorControllerTest {
     fun repeatedSaveDuringOneCreateCommitsExactlyOnce() =
         runBlocking {
             val releaseWrite = CompletableDeferred<Unit>()
-            val committed = CompletableDeferred<Unit>()
             var writes = 0
             val controller =
                 controller(
@@ -38,7 +36,6 @@ class ActivityTemplateEditorControllerTest {
                         releaseWrite.await()
                         template(draft)
                     },
-                    onCommitted = { committed.complete(Unit) },
                 )
             controller.awaitReady()
             controller.updateDraft { it.copy(name = "Walk") }
@@ -46,7 +43,7 @@ class ActivityTemplateEditorControllerTest {
             controller.save()
             controller.save()
             releaseWrite.complete(Unit)
-            committed.await()
+            controller.awaitCommitted()
 
             assertEquals(1, writes)
             controller.close()
@@ -97,7 +94,6 @@ class ActivityTemplateEditorControllerTest {
         runBlocking {
             val writeStarted = CompletableDeferred<Unit>()
             val releaseWrite = CompletableDeferred<Unit>()
-            val committed = CompletableDeferred<Unit>()
             var exits = 0
             var writes = 0
             val controller =
@@ -108,7 +104,6 @@ class ActivityTemplateEditorControllerTest {
                         releaseWrite.await()
                         template(draft)
                     },
-                    onCommitted = { committed.complete(Unit) },
                 )
             controller.awaitReady()
             controller.updateDraft { it.copy(name = "Walk") }
@@ -123,7 +118,7 @@ class ActivityTemplateEditorControllerTest {
             assertFalse(controller.state.value.discardConfirmationVisible)
             assertEquals(ActivityTemplateEditorSave.Saving, controller.state.value.save)
             releaseWrite.complete(Unit)
-            committed.await()
+            controller.awaitCommitted()
             assertEquals(1, writes)
             controller.close()
         }
@@ -135,7 +130,6 @@ class ActivityTemplateEditorControllerTest {
             val releaseWrite = CompletableDeferred<Unit>()
             val writeFinished = CompletableDeferred<Unit>()
             var writes = 0
-            var routeCommits = 0
             val unsaved =
                 controller(create = { draft, _, _ ->
                     writes++
@@ -155,7 +149,6 @@ class ActivityTemplateEditorControllerTest {
                         writeFinished.complete(Unit)
                         template(draft)
                     },
-                    onCommitted = { routeCommits++ },
                 )
             saving.awaitReady()
             saving.updateDraft { it.copy(name = "Saving") }
@@ -168,13 +161,12 @@ class ActivityTemplateEditorControllerTest {
             saving.save()
 
             assertEquals(1, writes)
-            assertEquals(0, routeCommits)
+            assertFalse(saving.state.value.save is ActivityTemplateEditorSave.Committed)
         }
 
     @Test
     fun failedSaveKeepsTheDraftAndCanRetry() =
         runBlocking {
-            val committed = CompletableDeferred<Unit>()
             var writes = 0
             val controller =
                 controller(
@@ -183,7 +175,6 @@ class ActivityTemplateEditorControllerTest {
                         if (writes == 1) error("disk full")
                         template(draft)
                     },
-                    onCommitted = { committed.complete(Unit) },
                 )
             controller.awaitReady()
             controller.updateDraft { it.copy(name = "Walk") }
@@ -197,7 +188,7 @@ class ActivityTemplateEditorControllerTest {
                     ?.name,
             )
             controller.save()
-            committed.await()
+            controller.awaitCommitted()
 
             assertEquals(2, writes)
             controller.close()
@@ -243,11 +234,10 @@ class ActivityTemplateEditorControllerTest {
         }
 
     @Test
-    fun fieldReplacementReconcilesNumericInputAndRemovalDropsStaleValidation() =
+    fun numericInputFollowsStableFieldLineageAndRemovalDropsStaleValidation() =
         runBlocking {
             val originalField = numberField()
             val original = templateWithField(originalField)
-            val committed = CompletableDeferred<Unit>()
             var writes = 0
             val controller =
                 existingController(
@@ -256,7 +246,6 @@ class ActivityTemplateEditorControllerTest {
                         writes++
                         template(draft)
                     },
-                    onCommitted = { committed.complete(Unit) },
                 )
             controller.awaitReady()
             var field =
@@ -277,11 +266,9 @@ class ActivityTemplateEditorControllerTest {
                     .readyDraft()!!
                     .fields
                     .single()
-            val replacementKey = field.identity.editorKey()
-            assertInstanceOf(DraftIdentity.New::class.java, field.identity)
-            assertNotEquals(oldKey, replacementKey)
-            assertEquals(mapOf(replacementKey to "invalid"), controller.state.value.numberDefaultTexts)
-            assertEquals(setOf(replacementKey), controller.state.value.invalidNumberFields)
+            assertInstanceOf(DraftIdentity.Existing::class.java, field.identity)
+            assertEquals(mapOf(oldKey to "invalid"), controller.state.value.numberDefaultTexts)
+            assertEquals(setOf(oldKey), controller.state.value.invalidNumberFields)
 
             controller.updateDraft { it.copy(fields = emptyList()) }
             assertTrue(
@@ -293,15 +280,24 @@ class ActivityTemplateEditorControllerTest {
                     .isEmpty(),
             )
             controller.save()
-            committed.await()
+            controller.awaitCommitted()
             assertEquals(1, writes)
             controller.close()
         }
 
     @Test
-    fun validFixedScaleValueSurvivesUnitReplacementAndTypeReplacementUsesNewIdentity() =
+    @Suppress("LongMethod")
+    fun finalUnitAndTypeReplacementUseNewSubmittedIdentity() =
         runBlocking {
-            val controller = existingController(load = { templateWithField(numberField()) })
+            var unitSubmission: ActivityTemplateDraft? = null
+            val controller =
+                existingController(
+                    load = { templateWithField(numberField()) },
+                    save = { _, _, draft, _ ->
+                        unitSubmission = draft
+                        template(draft)
+                    },
+                )
             controller.awaitReady()
             val original =
                 controller.state.value
@@ -318,14 +314,25 @@ class ActivityTemplateEditorControllerTest {
                     .readyDraft()!!
                     .fields
                     .single()
-            assertInstanceOf(DraftIdentity.New::class.java, unitReplacement.identity)
+            assertEquals(original.identity, unitReplacement.identity)
             assertEquals(1_234, unitReplacement.defaultNumberScaled)
             assertEquals(
                 mapOf(unitReplacement.identity.editorKey() to "1,234"),
                 controller.state.value.numberDefaultTexts,
             )
+            controller.save()
+            controller.awaitCommitted()
+            assertInstanceOf(DraftIdentity.New::class.java, unitSubmission!!.fields.single().identity)
 
-            val typeController = existingController(load = { templateWithField(numberField()) })
+            var typeSubmission: ActivityTemplateDraft? = null
+            val typeController =
+                existingController(
+                    load = { templateWithField(numberField()) },
+                    save = { _, _, draft, _ ->
+                        typeSubmission = draft
+                        template(draft)
+                    },
+                )
             typeController.awaitReady()
             val existingIdentity =
                 typeController.state.value
@@ -341,8 +348,7 @@ class ActivityTemplateEditorControllerTest {
                     .readyDraft()!!
                     .fields
                     .single()
-            assertInstanceOf(DraftIdentity.New::class.java, typeReplacement.identity)
-            assertNotEquals(existingIdentity, typeReplacement.identity)
+            assertEquals(existingIdentity, typeReplacement.identity)
             assertTrue(
                 typeController.state.value.numberDefaultTexts
                     .isEmpty(),
@@ -351,8 +357,163 @@ class ActivityTemplateEditorControllerTest {
                 typeController.state.value.invalidNumberFields
                     .isEmpty(),
             )
+            typeController.save()
+            typeController.awaitCommitted()
+            assertInstanceOf(DraftIdentity.New::class.java, typeSubmission!!.fields.single().identity)
             controller.close()
             typeController.close()
+        }
+
+    @Test
+    @Suppress("LongMethod")
+    fun precisionRevalidatesVisibleTextWithoutFallingBackToStoredDefault() =
+        runBlocking {
+            var writes = 0
+            val controller =
+                existingController(
+                    load = { templateWithField(numberField().copy(displayPrecision = 2)) },
+                    save = { _, _, draft, _ ->
+                        writes++
+                        template(draft)
+                    },
+                )
+            controller.awaitReady()
+            var field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+
+            controller.setNumberDefault(field, "1,234", ::parseLauncherNumber)
+            assertTrue(field.identity.editorKey() in controller.state.value.invalidNumberFields)
+            controller.setDisplayPrecision(field, "0")
+
+            assertEquals(
+                "1,234",
+                controller.state.value.numberDefaultTexts
+                    .getValue(field.identity.editorKey()),
+            )
+            assertTrue(field.identity.editorKey() in controller.state.value.invalidNumberFields)
+            assertEquals(
+                1_000,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+                    .defaultNumberScaled,
+            )
+            controller.save()
+            assertEquals(0, writes)
+
+            field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            controller.setDisplayPrecision(field, "3")
+            assertEquals(
+                "1,234",
+                controller.state.value.numberDefaultTexts
+                    .getValue(field.identity.editorKey()),
+            )
+            assertFalse(field.identity.editorKey() in controller.state.value.invalidNumberFields)
+            assertEquals(
+                1_234,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+                    .defaultNumberScaled,
+            )
+
+            field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            controller.setNumberDefault(field, "", ::parseLauncherNumber)
+            controller.setDisplayPrecision(field, "0")
+            assertEquals(
+                "",
+                controller.state.value.numberDefaultTexts
+                    .getValue(field.identity.editorKey()),
+            )
+            assertFalse(field.identity.editorKey() in controller.state.value.invalidNumberFields)
+            assertEquals(
+                null,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+                    .defaultNumberScaled,
+            )
+
+            field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            controller.setNumberDefault(field, "1.2345", ::parseLauncherNumber)
+            controller.setDisplayPrecision(field, "3")
+            assertEquals(
+                "1.2345",
+                controller.state.value.numberDefaultTexts
+                    .getValue(field.identity.editorKey()),
+            )
+            assertTrue(field.identity.editorKey() in controller.state.value.invalidNumberFields)
+            controller.close()
+        }
+
+    @Test
+    fun restoredFinalUnitAndTypeRetainExistingIdentityAtSubmission() =
+        runBlocking {
+            val submissions = mutableListOf<ActivityTemplateDraft>()
+            val controller =
+                existingController(
+                    load = { templateWithField(numberField()) },
+                    save = { _, _, draft, _ ->
+                        submissions += draft
+                        template(draft)
+                    },
+                )
+            controller.awaitReady()
+            val original =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+
+            controller.updateDraft { draft -> draft.copy(fields = listOf(draft.fields.single().copy(unit = "m"))) }
+            controller.updateDraft { draft -> draft.copy(fields = listOf(draft.fields.single().copy(unit = "km"))) }
+            controller.updateDraft { draft ->
+                draft.copy(fields = listOf(draft.fields.single().copy(type = CustomFieldType.TEXT)))
+            }
+            controller.updateDraft { draft ->
+                draft.copy(
+                    fields =
+                        listOf(
+                            draft.fields.single().copy(
+                                type = CustomFieldType.NUMBER,
+                                unit = "km",
+                                displayPrecision = original.displayPrecision,
+                                defaultNumberScaled = original.defaultNumberScaled,
+                                isMainValue = original.isMainValue,
+                            ),
+                        ),
+                )
+            }
+            controller.save()
+            controller.awaitCommitted()
+
+            assertEquals(
+                original.identity,
+                submissions
+                    .single()
+                    .fields
+                    .single()
+                    .identity,
+            )
+            controller.close()
         }
 
     @Test
@@ -415,7 +576,6 @@ class ActivityTemplateEditorControllerTest {
         ) -> ActivityTemplate = { draft, _, _ ->
             template(draft)
         },
-        onCommitted: () -> Unit = {},
     ): ActivityTemplateEditorController =
         ActivityTemplateEditorController(
             this,
@@ -424,14 +584,12 @@ class ActivityTemplateEditorControllerTest {
             create,
             { _, _, draft, _ -> template(draft) },
             { Instant.EPOCH },
-            onCommitted,
         )
 
     private fun CoroutineScope.existingController(
         load: suspend (ActivityTemplateId) -> ActivityTemplate?,
         save: suspend (ActivityTemplateId, Long, ActivityTemplateDraft, Instant) -> ActivityTemplate =
             { _, _, draft, _ -> template(draft) },
-        onCommitted: () -> Unit = {},
     ) = ActivityTemplateEditorController(
         this,
         ActivityTemplateEditorTarget.Existing(ActivityTemplateId("template")),
@@ -439,7 +597,6 @@ class ActivityTemplateEditorControllerTest {
         { draft, _, _ -> template(draft) },
         save,
         { Instant.EPOCH },
-        onCommitted,
     )
 
     private suspend fun ActivityTemplateEditorController.awaitReady(
@@ -452,6 +609,9 @@ class ActivityTemplateEditorControllerTest {
         withTimeout(2_000) {
             state.first { it.save is ActivityTemplateEditorSave.Failure }.save as ActivityTemplateEditorSave.Failure
         }
+
+    private suspend fun ActivityTemplateEditorController.awaitCommitted() =
+        withTimeout(2_000) { state.first { it.save is ActivityTemplateEditorSave.Committed } }
 
     private fun template(draft: ActivityTemplateDraft) =
         ActivityTemplate(

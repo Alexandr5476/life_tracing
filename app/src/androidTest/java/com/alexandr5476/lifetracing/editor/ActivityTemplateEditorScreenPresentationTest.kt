@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.editor
 
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
@@ -28,6 +29,7 @@ import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -127,6 +129,44 @@ class ActivityTemplateEditorScreenPresentationTest {
     }
 
     @Test
+    fun ioWriterCompletionReturnsToComposeOnceOnTheMainThread() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val controller =
+            ActivityTemplateEditorController(
+                scope,
+                ActivityTemplateEditorTarget.New,
+                { null },
+                { draft, _, _ -> template(draft) },
+                { _, _, draft, _ -> template(draft) },
+                Instant::now,
+            )
+        var callbacks = 0
+        var callbackLooper: Looper? = null
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                ActivityTemplateEditorRoute(
+                    controller,
+                    onBack = {},
+                    onCommitted = {
+                        callbacks++
+                        callbackLooper = Looper.myLooper()
+                    },
+                )
+            }
+        }
+        awaitReady(controller)
+
+        composeTestRule.onNodeWithText(text(R.string.activity_editor_done)).performScrollTo().performClick()
+        composeTestRule.waitUntil { callbacks == 1 }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, callbacks)
+        assertEquals(Looper.getMainLooper(), callbackLooper)
+        controller.close()
+        scope.cancel()
+    }
+
+    @Test
     fun englishCompactChoicesStayInsideBounds() = compactChoicesStayInsideBounds(Locale.ENGLISH)
 
     @Test
@@ -184,7 +224,6 @@ class ActivityTemplateEditorScreenPresentationTest {
             template(draft)
         },
         Instant::now,
-        {},
     ).also { controller ->
         if (initial.name.isNotEmpty() || initial.fields.isNotEmpty()) {
             composeTestRule.waitUntil { controller.state.value.load is ActivityTemplateEditorLoad.Ready }

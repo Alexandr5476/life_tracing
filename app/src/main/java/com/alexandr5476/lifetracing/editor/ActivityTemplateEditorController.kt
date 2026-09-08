@@ -14,6 +14,7 @@ import com.alexandr5476.lifetracing.domain.TemplateLibraryPlacement
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
+import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +53,8 @@ sealed interface ActivityTemplateEditorSave {
 
     data object Saving : ActivityTemplateEditorSave
 
+    data object Committed : ActivityTemplateEditorSave
+
     data class Failure(
         val message: String,
         val isConflict: Boolean,
@@ -75,7 +78,6 @@ class ActivityTemplateEditorController internal constructor(
     private val createTemplate: suspend (ActivityTemplateDraft, TemplateLibraryPlacement, Instant) -> ActivityTemplate,
     private val saveTemplate: suspend (ActivityTemplateId, Long, ActivityTemplateDraft, Instant) -> ActivityTemplate,
     private val now: () -> Instant,
-    private val onCommitted: () -> Unit,
 ) {
     private val mutableState = MutableStateFlow(ActivityTemplateEditorState())
     val state: StateFlow<ActivityTemplateEditorState> = mutableState
@@ -101,20 +103,7 @@ class ActivityTemplateEditorController internal constructor(
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready ?: return
         if (closed || saving.get()) return
         val proposed = transform(ready.draft)
-        val draft = normalizeDraft(ready.draft, proposed)
-        val replacementKeys =
-            proposed.fields
-                .zip(draft.fields)
-                .mapNotNull { (before, after) ->
-                    if (before.identity != after.identity &&
-                        before.type == CustomFieldType.NUMBER &&
-                        after.type == CustomFieldType.NUMBER
-                    ) {
-                        before.identity.editorKey() to after.identity.editorKey()
-                    } else {
-                        null
-                    }
-                }.toMap()
+        val draft = normalizeDraft(proposed)
         val numberKeys =
             draft.fields
                 .filter { it.type == CustomFieldType.NUMBER }
@@ -128,11 +117,9 @@ class ActivityTemplateEditorController internal constructor(
                 timerTargetError = draft.timeTrackingMode == TimeTrackingMode.TIMER && draft.timerTarget == null,
                 numberDefaultTexts =
                     it.numberDefaultTexts
-                        .mapKeys { (key, _) -> replacementKeys[key] ?: key }
                         .filterKeys(numberKeys::contains),
                 invalidNumberFields =
                     it.invalidNumberFields
-                        .map { replacementKeys[it] ?: it }
                         .filterTo(mutableSetOf(), numberKeys::contains),
             )
         }
@@ -183,21 +170,24 @@ class ActivityTemplateEditorController internal constructor(
     ) {
         val precision = text.toIntOrNull()?.takeIf { it in 0..3 }
         if (text.isNotBlank() && precision == null) return
-        updateDraft { draft ->
-            draft.withField(field.identity) { it.copy(displayPrecision = precision) }
-        }
         val key = field.identity.editorKey()
-        val invalid = !isRepresentableAtPrecision(field.defaultNumberScaled, precision)
+        val visibleText =
+            mutableState.value.numberDefaultTexts[key]
+                ?: formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision)
+        val parsed = visibleText.takeUnless(String::isBlank)?.let { parseLauncherNumber(it, precision) }
+        val valid = visibleText.isBlank() || parsed != null
+        updateDraft { draft ->
+            draft.withField(field.identity) {
+                it.copy(
+                    displayPrecision = precision,
+                    defaultNumberScaled = if (valid) parsed else it.defaultNumberScaled,
+                )
+            }
+        }
         mutableState.update {
             it.copy(
-                numberDefaultTexts =
-                    if (invalid) {
-                        it.numberDefaultTexts + (key to formatLauncherNumber(field.defaultNumberScaled, 3))
-                    } else {
-                        it.numberDefaultTexts
-                    },
-                invalidNumberFields =
-                    if (invalid) it.invalidNumberFields + key else it.invalidNumberFields - key,
+                numberDefaultTexts = it.numberDefaultTexts + (key to visibleText),
+                invalidNumberFields = if (valid) it.invalidNumberFields - key else it.invalidNumberFields + key,
             )
         }
     }
@@ -225,13 +215,13 @@ class ActivityTemplateEditorController internal constructor(
 
     fun save() {
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready ?: return
-        if (closed) return
-        if (mutableState.value.timerTargetError || mutableState.value.invalidNumberFields.isNotEmpty()) return
+        if (!canStartSave()) return
         if (!saving.compareAndSet(false, true)) return
+        val submittedDraft = ready.submittedDraft()
         val validationFailure =
             runCatching {
                 TemplateAuthoringDraftValidator.requireValid(
-                    ready.draft,
+                    submittedDraft,
                 )
             }.exceptionOrNull()
         if (validationFailure != null) {
@@ -253,11 +243,11 @@ class ActivityTemplateEditorController internal constructor(
             try {
                 when (target) {
                     ActivityTemplateEditorTarget.New ->
-                        createTemplate(ready.draft, TemplateLibraryPlacement(), now())
+                        createTemplate(submittedDraft, TemplateLibraryPlacement(), now())
                     is ActivityTemplateEditorTarget.Existing ->
-                        saveTemplate(target.id, requireNotNull(ready.expectedRevision), ready.draft, now())
+                        saveTemplate(target.id, requireNotNull(ready.expectedRevision), submittedDraft, now())
                 }
-                if (!closed) onCommitted()
+                if (!closed) mutableState.update { it.copy(save = ActivityTemplateEditorSave.Committed) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -267,6 +257,12 @@ class ActivityTemplateEditorController internal constructor(
             }
         }
     }
+
+    private fun canStartSave(): Boolean =
+        !closed &&
+            mutableState.value.save !is ActivityTemplateEditorSave.Committed &&
+            !mutableState.value.timerTargetError &&
+            mutableState.value.invalidNumberFields.isEmpty()
 
     private fun load() {
         if (closed) return
@@ -308,36 +304,36 @@ class ActivityTemplateEditorController internal constructor(
         }
     }
 
-    private fun normalizeDraft(
-        current: ActivityTemplateDraft,
-        proposed: ActivityTemplateDraft,
-    ): ActivityTemplateDraft {
-        val before = current.fields.associateBy(ActivityFieldDraft::identity)
-        return proposed.copy(
+    private fun normalizeDraft(proposed: ActivityTemplateDraft): ActivityTemplateDraft =
+        proposed.copy(
             fields =
                 proposed.fields.mapIndexed { position, field ->
-                    val old = before[field.identity]
-                    val replacement =
-                        field.identity is DraftIdentity.Existing &&
-                            old != null &&
-                            (old.type != field.type || old.unit != field.unit)
-                    (if (replacement) field.replacement() else field).copy(position = position).normalizedMetadata()
+                    field.copy(position = position).normalizedMetadata()
                 },
         )
-    }
 
     private fun ActivityFieldDraft.replacement() =
         copy(
             identity = DraftIdentity.New("field-replacement-${newIdentity.incrementAndGet()}"),
-            categoryOptions =
-                categoryOptions.mapIndexed { index, option ->
-                    option.copy(
-                        identity = DraftIdentity.New("option-replacement-${newIdentity.incrementAndGet()}"),
-                        position = index,
-                    )
-                },
-            defaultCategoryOption = null,
         )
+
+    private fun ActivityTemplateEditorLoad.Ready.submittedDraft(): ActivityTemplateDraft {
+        val originalFields =
+            original.fields.associateBy { (it.identity as? DraftIdentity.Existing)?.id }
+        return draft.copy(
+            fields =
+                draft.fields.map { field ->
+                    val originalField = originalFields[(field.identity as? DraftIdentity.Existing)?.id]
+                    if (originalField != null &&
+                        (field.type != originalField.type || field.unit != originalField.unit)
+                    ) {
+                        field.replacement()
+                    } else {
+                        field
+                    }
+                },
+        )
+    }
 
     private fun ActivityFieldDraft.normalizedMetadata() =
         when (type) {
@@ -370,21 +366,6 @@ class ActivityTemplateEditorController internal constructor(
         identity: DraftIdentity<ActivityTemplateFieldId>,
         transform: (ActivityFieldDraft) -> ActivityFieldDraft,
     ) = copy(fields = fields.map { if (it.identity == identity) transform(it) else it })
-
-    private fun isRepresentableAtPrecision(
-        value: Long?,
-        precision: Int?,
-    ): Boolean {
-        if (value == null) return true
-        val divisor =
-            when (precision) {
-                0 -> 1_000L
-                1 -> 100L
-                2 -> 10L
-                else -> 1L
-            }
-        return value % divisor == 0L
-    }
 
     private fun Exception.toSaveFailure(): ActivityTemplateEditorSave.Failure {
         val message = message ?: "Unable to save the activity template"

@@ -21,7 +21,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -48,7 +47,6 @@ fun LibraryRoute(
     onCreateActivity: () -> Unit = {},
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
 ) {
-    DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
     LibraryScreen(
         state = state,

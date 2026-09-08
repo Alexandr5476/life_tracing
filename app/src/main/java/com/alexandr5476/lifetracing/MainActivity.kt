@@ -13,6 +13,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,6 +31,7 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
+import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
@@ -96,6 +98,7 @@ internal fun LifeTracingApp(
             val controller = runtimeGraph.dailyController
             val backStack = rememberNavBackStack(dailyInitialBackStack.single())
             var libraryRefreshGeneration by remember { mutableIntStateOf(0) }
+            val libraryController = rememberLibraryController(runtimeGraph)
             val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
             NavDisplay(
                 backStack = backStack,
@@ -132,16 +135,16 @@ internal fun LifeTracingApp(
                             }
                         }
                         entry<LibraryRoot> {
-                            val libraryController = remember { runtimeGraph.createLibraryController() }
+                            val activeLibraryController = libraryController.value
                             LaunchedEffect(libraryRefreshGeneration) {
                                 if (libraryRefreshGeneration > 0) {
-                                    libraryController.dispatch(
+                                    activeLibraryController.dispatch(
                                         com.alexandr5476.lifetracing.library.LibraryAction.Refresh,
                                     )
                                 }
                             }
                             LibraryRoute(
-                                controller = libraryController,
+                                controller = activeLibraryController,
                                 onBack = backStack::removeLibrary,
                                 onCreateActivity = backStack::openNewActivityTemplateEditor,
                                 onOpenActivity = { id -> backStack.openExistingActivityTemplateEditor(id.value) },
@@ -152,12 +155,15 @@ internal fun LifeTracingApp(
                                 remember {
                                     runtimeGraph.createActivityTemplateEditorController(
                                         ActivityTemplateEditorTarget.New,
-                                    ) {
-                                        libraryRefreshGeneration++
-                                        backStack.removeActivityTemplateEditor()
-                                    }
+                                    )
                                 }
-                            ActivityTemplateEditorRoute(editor, backStack::removeActivityTemplateEditor)
+                            ActivityTemplateEditorRoute(
+                                editor,
+                                onBack = backStack::removeActivityTemplateEditor,
+                                onCommitted = {
+                                    backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                },
+                            )
                         }
                         entry<ExistingActivityTemplateEditor> { route ->
                             val editor =
@@ -167,12 +173,15 @@ internal fun LifeTracingApp(
                                             com.alexandr5476.lifetracing.domain
                                                 .ActivityTemplateId(route.id),
                                         ),
-                                    ) {
-                                        libraryRefreshGeneration++
-                                        backStack.removeActivityTemplateEditor()
-                                    }
+                                    )
                                 }
-                            ActivityTemplateEditorRoute(editor, backStack::removeActivityTemplateEditor)
+                            ActivityTemplateEditorRoute(
+                                editor,
+                                onBack = backStack::removeActivityTemplateEditor,
+                                onCommitted = {
+                                    backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                },
+                            )
                         }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
@@ -213,6 +222,12 @@ internal fun MutableList<NavKey>.removeActivityTemplateEditor() {
     if (lastOrNull() is NewActivityTemplateEditor || lastOrNull() is ExistingActivityTemplateEditor) removeAt(lastIndex)
 }
 
+internal fun MutableList<NavKey>.completeActivityTemplateEditor(refreshLibrary: () -> Unit) {
+    if (lastOrNull() !is NewActivityTemplateEditor && lastOrNull() !is ExistingActivityTemplateEditor) return
+    refreshLibrary()
+    removeActivityTemplateEditor()
+}
+
 /** A restored launcher route has no durable command state and must never acquire a new controller. */
 internal fun MutableList<NavKey>.normalizeRestoredStartActivity() {
     removeStartActivity()
@@ -226,3 +241,17 @@ internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) 
 private fun lifeTracingNavigationTransition(): ContentTransform =
     fadeIn(animationSpec = tween(dailyNavigationTransitionDurationMillis)) togetherWith
         fadeOut(animationSpec = tween(dailyNavigationTransitionDurationMillis))
+
+@Composable
+private fun rememberLibraryController(runtimeGraph: LifeTracingRuntimeGraph): Lazy<LibraryController> {
+    val controller =
+        remember(runtimeGraph) {
+            lazy(LazyThreadSafetyMode.NONE) { runtimeGraph.createLibraryController() }
+        }
+    DisposableEffect(controller) {
+        onDispose {
+            if (controller.isInitialized()) controller.value.close()
+        }
+    }
+    return controller
+}

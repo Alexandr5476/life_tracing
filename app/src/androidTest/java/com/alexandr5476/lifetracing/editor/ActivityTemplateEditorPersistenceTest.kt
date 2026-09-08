@@ -21,7 +21,6 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -201,18 +200,116 @@ class ActivityTemplateEditorPersistenceTest {
             }
         }
 
+    @Test
+    fun reversibleFieldInteractionsKeepCanonicalIdentityAndCompatibleEditsReuseIt() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val createdAt = Instant.now().minusSeconds(10)
+            val created =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S2C2 reversible ${System.nanoTime()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("distance"),
+                                    0,
+                                    "Distance",
+                                    CustomFieldType.NUMBER,
+                                    "km",
+                                    3,
+                                    1_000,
+                                    isMainValue = true,
+                                ),
+                            ),
+                    ),
+                    createdAt = createdAt,
+                )
+            try {
+                val controller =
+                    editor(
+                        scope,
+                        authoring,
+                        ActivityTemplateEditorTarget.Existing(created.id),
+                        createdAt.plusSeconds(1),
+                    )
+                controller.awaitReady()
+                val original =
+                    controller.state.value
+                        .readyDraft()!!
+                        .fields
+                        .single()
+                controller.updateDraft { draft ->
+                    draft.copy(fields = listOf(draft.fields.single().copy(unit = "m")))
+                }
+                controller.updateDraft { draft ->
+                    draft.copy(fields = listOf(draft.fields.single().copy(unit = "km")))
+                }
+                controller.updateDraft { draft ->
+                    draft.copy(fields = listOf(draft.fields.single().copy(type = CustomFieldType.TEXT)))
+                }
+                controller.updateDraft { draft ->
+                    draft.copy(
+                        fields =
+                            listOf(
+                                draft.fields.single().copy(
+                                    type = CustomFieldType.NUMBER,
+                                    unit = original.unit,
+                                    displayPrecision = original.displayPrecision,
+                                    defaultNumberScaled = original.defaultNumberScaled,
+                                    isMainValue = original.isMainValue,
+                                ),
+                            ),
+                    )
+                }
+                controller.save()
+                withTimeout(5_000) { controller.state.first { it.save is ActivityTemplateEditorSave.Committed } }
+                controller.close()
+
+                val afterNoOp =
+                    requireNotNull(TemplateAuthoringRepository.create(context).getActivityTemplate(created.id))
+                assertEquals(created.revision, afterNoOp.revision)
+                assertEquals(created.fields.single().id, afterNoOp.fields.single { it.deletedAt == null }.id)
+                assertEquals(1, afterNoOp.fields.size)
+
+                saveThroughEditor(scope, authoring, created.id, createdAt.plusSeconds(2)) { draft ->
+                    draft.copy(
+                        fields =
+                            listOf(
+                                draft.fields.single().copy(
+                                    name = "Distance corrected",
+                                    displayPrecision = 2,
+                                    defaultNumberScaled = 1_230,
+                                    isMainValue = false,
+                                ),
+                            ),
+                    )
+                }
+                val compatible =
+                    requireNotNull(TemplateAuthoringRepository.create(context).getActivityTemplate(created.id))
+                assertEquals(2L, compatible.revision)
+                assertEquals(created.fields.single().id, compatible.fields.single { it.deletedAt == null }.id)
+            } finally {
+                scope.cancel()
+            }
+        }
+
     private suspend fun createThroughEditor(
         scope: CoroutineScope,
         repository: TemplateAuthoringRepository,
         draft: ActivityTemplateDraft,
         at: Instant,
     ) {
-        val committed = CompletableDeferred<Unit>()
-        val controller = editor(scope, repository, ActivityTemplateEditorTarget.New, at, committed)
+        val controller = editor(scope, repository, ActivityTemplateEditorTarget.New, at)
         controller.awaitReady()
         controller.updateDraft { draft }
         controller.save()
-        withTimeout(5_000) { committed.await() }
+        withTimeout(5_000) { controller.state.first { it.save is ActivityTemplateEditorSave.Committed } }
         controller.close()
     }
 
@@ -223,12 +320,11 @@ class ActivityTemplateEditorPersistenceTest {
         at: Instant,
         transform: (ActivityTemplateDraft) -> ActivityTemplateDraft,
     ) {
-        val committed = CompletableDeferred<Unit>()
-        val controller = editor(scope, repository, ActivityTemplateEditorTarget.Existing(id), at, committed)
+        val controller = editor(scope, repository, ActivityTemplateEditorTarget.Existing(id), at)
         controller.awaitReady()
         controller.updateDraft(transform)
         controller.save()
-        withTimeout(5_000) { committed.await() }
+        withTimeout(5_000) { controller.state.first { it.save is ActivityTemplateEditorSave.Committed } }
         controller.close()
     }
 
@@ -237,7 +333,6 @@ class ActivityTemplateEditorPersistenceTest {
         repository: TemplateAuthoringRepository,
         target: ActivityTemplateEditorTarget,
         at: Instant,
-        committed: CompletableDeferred<Unit>,
     ) = ActivityTemplateEditorController(
         scope,
         target,
@@ -245,7 +340,6 @@ class ActivityTemplateEditorPersistenceTest {
         repository::createActivityTemplate,
         repository::saveActivityTemplate,
         { at },
-        { committed.complete(Unit) },
     )
 
     private suspend fun ActivityTemplateEditorController.awaitReady() {

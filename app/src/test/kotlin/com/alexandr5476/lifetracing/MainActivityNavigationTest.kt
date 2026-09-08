@@ -48,4 +48,19 @@ class MainActivityNavigationTest {
         backStack.removeLibrary()
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    @Test
+    fun committedEditorRefreshesAndPopsExactlyOnce() {
+        val backStack: MutableList<NavKey> =
+            mutableListOf(DailyRoot, LibraryRoot, ExistingActivityTemplateEditor("activity"))
+        var refreshes = 0
+
+        backStack.completeActivityTemplateEditor { refreshes++ }
+
+        assertEquals(1, refreshes)
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.completeActivityTemplateEditor { refreshes++ }
+        assertEquals(1, refreshes)
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
 }
