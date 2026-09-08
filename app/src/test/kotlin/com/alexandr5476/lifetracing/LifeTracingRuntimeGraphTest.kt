@@ -83,6 +83,7 @@ class LifeTracingRuntimeGraphTest {
                             { _, _ -> emptyList() },
                         )
                     },
+                    { _, _ -> error("unused editor") },
                 )
 
             graph.coordinator.recoverAndSchedule()

@@ -12,10 +12,13 @@ import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
+import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -74,6 +77,10 @@ class LifeTracingRuntimeGraph internal constructor(
     private val dailyControllerOwner: DailyControllerOwner,
     private val startActivityControllerFactory: () -> StartActivityController,
     private val libraryControllerFactory: () -> LibraryController,
+    private val activityTemplateEditorControllerFactory: (
+        ActivityTemplateEditorTarget,
+        () -> Unit,
+    ) -> ActivityTemplateEditorController,
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -81,6 +88,11 @@ class LifeTracingRuntimeGraph internal constructor(
     fun createStartActivityController(): StartActivityController = startActivityControllerFactory()
 
     fun createLibraryController(): LibraryController = libraryControllerFactory()
+
+    fun createActivityTemplateEditorController(
+        target: ActivityTemplateEditorTarget,
+        onCommitted: () -> Unit,
+    ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target, onCommitted)
 
     companion object {
         @Volatile
@@ -104,6 +116,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
             val libraryRepository = LibraryRepository.create(context)
+            val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
@@ -234,6 +247,29 @@ class LifeTracingRuntimeGraph internal constructor(
                                 libraryRepository.search(query, filter)
                             }
                         },
+                    )
+                },
+                { target, onCommitted ->
+                    ActivityTemplateEditorController(
+                        scope,
+                        target,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        { draft, placement, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.createActivityTemplate(draft, placement, at)
+                            }
+                        },
+                        { id, expectedRevision, draft, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveActivityTemplate(id, expectedRevision, draft, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                        onCommitted,
                     )
                 },
             )

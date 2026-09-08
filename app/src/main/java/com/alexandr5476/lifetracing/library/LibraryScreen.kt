@@ -3,6 +3,7 @@
 package com.alexandr5476.lifetracing.library
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -28,6 +29,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
@@ -42,6 +44,8 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 fun LibraryRoute(
     controller: LibraryController,
     onBack: () -> Unit,
+    onCreateActivity: () -> Unit = {},
+    onOpenActivity: (ActivityTemplateId) -> Unit = {},
 ) {
     DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
@@ -49,6 +53,8 @@ fun LibraryRoute(
         state = state,
         onAction = controller::dispatch,
         onRouteBack = onBack,
+        onCreateActivity = onCreateActivity,
+        onOpenActivity = onOpenActivity,
     )
 }
 
@@ -56,6 +62,8 @@ fun LibraryRoute(
 internal fun LibraryScreen(
     state: LibraryPresentationState,
     onAction: (LibraryAction) -> Unit,
+    onCreateActivity: () -> Unit = {},
+    onOpenActivity: (ActivityTemplateId) -> Unit = {},
     onRouteBack: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -70,6 +78,11 @@ internal fun LibraryScreen(
             LibraryHeader(onBack = {
                 if (state.folderId == null) onRouteBack() else onAction(LibraryAction.Back)
             })
+            if (state.folderId == null) {
+                LifeTracingPrimaryButton(onClick = onCreateActivity, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.library_new_activity))
+                }
+            }
             val browse = (state.browse as? LibraryLoad.Content)?.value
             if (browse != null) Breadcrumb(browse.path)
             LifeTracingOutlinedTextField(
@@ -80,9 +93,9 @@ internal fun LibraryScreen(
             )
             FilterRow(state.filter) { onAction(LibraryAction.SetFilter(it)) }
             if (state.query.isBlank()) {
-                BrowseContent(state.browse, state.filter, onAction)
+                BrowseContent(state.browse, state.filter, onAction, onOpenActivity)
             } else {
-                SearchContent(state.search ?: LibraryLoad.Loading, onAction)
+                SearchContent(state.search ?: LibraryLoad.Loading, onAction, onOpenActivity)
             }
         }
     }
@@ -139,6 +152,7 @@ private fun BrowseContent(
     load: LibraryLoad<LibraryBrowse>,
     filter: LibraryKindFilter,
     onAction: (LibraryAction) -> Unit,
+    onOpenActivity: (ActivityTemplateId) -> Unit,
 ) {
     when (load) {
         LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_loading)) }
@@ -147,9 +161,9 @@ private fun BrowseContent(
             val browse = load.value
             val pinned = browse.pinned.filtered(filter)
             val items = browse.contents.trackables().filtered(filter)
-            if (pinned.isNotEmpty()) TrackableSection(R.string.library_pinned, pinned)
+            if (pinned.isNotEmpty()) TrackableSection(R.string.library_pinned, pinned, onOpenActivity)
             if (browse.contents.folders.isNotEmpty()) FolderSection(browse.contents.folders, onAction)
-            if (items.isNotEmpty()) TrackableSection(R.string.library_all, items)
+            if (items.isNotEmpty()) TrackableSection(R.string.library_all, items, onOpenActivity)
             if (pinned.isEmpty() && browse.contents.folders.isEmpty() && items.isEmpty()) {
                 LibraryCard { Text(stringResource(R.string.library_empty)) }
             }
@@ -161,6 +175,7 @@ private fun BrowseContent(
 private fun SearchContent(
     load: LibraryLoad<List<LibraryTrackable>>,
     onAction: (LibraryAction) -> Unit,
+    onOpenActivity: (ActivityTemplateId) -> Unit,
 ) {
     when (load) {
         LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_search_loading)) }
@@ -169,7 +184,7 @@ private fun SearchContent(
             if (load.value.isEmpty()) {
                 LibraryCard { Text(stringResource(R.string.library_search_empty)) }
             } else {
-                TrackableSection(R.string.library_search_results, load.value)
+                TrackableSection(R.string.library_search_results, load.value, onOpenActivity)
             }
         }
     }
@@ -201,15 +216,29 @@ private fun FolderSection(
 private fun TrackableSection(
     title: Int,
     items: List<LibraryTrackable>,
+    onOpenActivity: (ActivityTemplateId) -> Unit,
 ) = LibraryCard {
     SectionTitle(title)
-    items.forEach { TrackableRow(it) }
+    items.forEach { TrackableRow(it, onOpenActivity) }
 }
 
 @Composable
-private fun TrackableRow(item: LibraryTrackable) {
+private fun TrackableRow(
+    item: LibraryTrackable,
+    onOpenActivity: (ActivityTemplateId) -> Unit,
+) {
+    val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (activityId != null) {
+                        Modifier.clickable { onOpenActivity(activityId.id) }
+                    } else {
+                        Modifier
+                    },
+                ),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
