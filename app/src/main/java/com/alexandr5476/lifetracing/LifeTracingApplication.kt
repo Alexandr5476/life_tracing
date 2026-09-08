@@ -258,6 +258,11 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executeLibraryMutation(mutation, libraryRepository)
                             }
                         },
+                        readFolderDeletionIsEmpty = { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.isFolderEmptyForDeletion(folderId)
+                            }
+                        },
                     )
                 },
                 { target ->

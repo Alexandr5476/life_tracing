@@ -245,6 +245,9 @@ class LibraryController internal constructor(
     private val now: () -> Instant = Instant::now,
     private val nextFolderId: () -> FolderId = { FolderId(UUID.randomUUID().toString()) },
     private val nextTagId: () -> TagId = { TagId(UUID.randomUUID().toString()) },
+    private val readFolderDeletionIsEmpty: suspend (FolderId) -> Boolean = {
+        error("Folder deletion inspection is unavailable")
+    },
 ) {
     private val browseGeneration = AtomicLong()
     private val organizationGeneration = AtomicLong()
@@ -413,7 +416,7 @@ class LibraryController internal constructor(
         mutableState.update { it.copy(folderDeletion = LibraryFolderDeletion(folder)) }
         scope.launch {
             try {
-                val contents = readFolderContents(folder.id)
+                val isEmpty = readFolderDeletionIsEmpty(folder.id)
                 val folders = readOrganization().folders
                 val forbidden =
                     FolderTreeValidator.forbiddenDestinations(
@@ -422,7 +425,7 @@ class LibraryController internal constructor(
                     )
                 val options =
                     LibraryFolderDeletionOptions(
-                        contents.folders.isEmpty() && contents.activities.isEmpty() && contents.sequences.isEmpty(),
+                        isEmpty,
                         folders.filterNot { it.id in forbidden },
                     )
                 if (!closed && generation == folderDeletionGeneration.get()) {

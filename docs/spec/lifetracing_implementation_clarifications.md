@@ -54,7 +54,7 @@ Archiving the current default option in one semantic commit must also clear the 
 
 An empty-Folder deletion is authorized only by its canonical repository writer. In the same database transaction that deletes the Folder, the writer verifies that it has no direct child Folder and no directly placed reusable ActivityTemplate or SequenceTemplate row, including archived Templates hidden from active Library presentation. A stale empty inspection is rejected without moving, archiving, or deleting content and never falls back to `Move contents`.
 
-`Delete contents` derives the complete Folder subtree once, archives both Template kinds in Folder-ID chunks no larger than the repository SQLite safe-bind count, and deletes the subtree within the same outer transaction. Any archive-chunk or Folder-delete failure rolls back the complete operation.
+`Delete contents` derives the complete Folder subtree once, archives both Template kinds in chunks whose total statement bindings do not exceed the repository SQLite safe-bind count, and deletes the subtree within the same outer transaction. The current archive UPDATE reserves one binding for `deletedAtMs`, so each chunk contains at most `safe-bind count - 1` Folder IDs. Any archive-chunk or Folder-delete failure rolls back the complete operation.
 
 ## ActivityExecution completion reason at the v4 boundary
 

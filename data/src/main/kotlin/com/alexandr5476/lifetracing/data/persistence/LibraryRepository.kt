@@ -91,6 +91,12 @@ class LibraryRepository internal constructor(
             contentsLocked(folderId)
         }
 
+    fun isFolderEmptyForDeletion(folderId: FolderId): Boolean =
+        transaction {
+            requireFolder(folderId)
+            database.folderDao().isEmptyForDeletion(folderId.value)
+        }
+
     fun getFolderPath(folderId: FolderId): List<Folder> =
         transaction {
             FolderTreeValidator.path(folderId) { id -> database.folderDao().getById(id.value)?.toDomain() }
@@ -311,10 +317,10 @@ class LibraryRepository internal constructor(
             val subtree = database.folderDao().getSubtree(folderId.value)
             require(subtree.any { it.id == folderId.value }) { "Unknown Folder: ${folderId.value}" }
             val ids = subtree.map(FolderEntity::id)
-            ids.chunked(SQLITE_SAFE_BIND_COUNT).forEach {
+            ids.chunked(ARCHIVE_FOLDER_ID_BIND_COUNT).forEach {
                 database.libraryDao().archiveActivitiesInFolders(it, at.toEpochMilli())
             }
-            ids.chunked(SQLITE_SAFE_BIND_COUNT).forEach {
+            ids.chunked(ARCHIVE_FOLDER_ID_BIND_COUNT).forEach {
                 database.libraryDao().archiveSequencesInFolders(it, at.toEpochMilli())
             }
             deletionOrder(subtree).forEach { id -> check(database.folderDao().deleteById(id) == 1) }
@@ -857,6 +863,8 @@ class LibraryRepository internal constructor(
 
         private const val PINNED_RANK_STEP = 1024
         private const val SQLITE_SAFE_BIND_COUNT = 900
+        private const val ARCHIVE_STATIC_BIND_COUNT = 1 // deletedAtMs
+        private const val ARCHIVE_FOLDER_ID_BIND_COUNT = SQLITE_SAFE_BIND_COUNT - ARCHIVE_STATIC_BIND_COUNT
         private const val DATABASE_NAME = "lifetracing.db"
     }
 }

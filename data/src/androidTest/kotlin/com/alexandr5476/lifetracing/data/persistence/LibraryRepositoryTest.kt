@@ -60,6 +60,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -974,6 +975,10 @@ class LibraryRepositoryTest {
         sequence("hidden-sequence", "Hidden sequence", folder = "archived-sequence-folder", deleted = 2, revision = 11)
         assertTrue(repository.getFolderContents(FolderId("archived-folder")).activities.isEmpty())
         assertTrue(repository.getFolderContents(FolderId("archived-sequence-folder")).sequences.isEmpty())
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("template-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("child-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("archived-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("archived-sequence-folder")))
 
         assertThrows(IllegalStateException::class.java) {
             repository.deleteEmptyFolder(FolderId("template-folder"), instant(3))
@@ -1009,6 +1014,38 @@ class LibraryRepositoryTest {
             "hidden-sequence-series",
             database.sequenceTemplateDao().getById("hidden-sequence")?.statisticsSeriesId,
         )
+    }
+
+    @Test
+    fun archivedOnlyFolderContentsRemainHiddenButSupportBothDeleteDispositions() {
+        val repository = repository()
+        repository.createFolder(FolderId("move-source"), "Move source", null, instant(1))
+        repository.createFolder(FolderId("destination"), "Destination", null, instant(1))
+        repository.createFolder(FolderId("delete-source"), "Delete source", null, instant(1))
+        repository.createFolder(FolderId("truly-empty"), "Truly empty", null, instant(1))
+        activity("hidden-activity", "Hidden activity", folder = "move-source", deleted = 2, revision = 7)
+        sequence("hidden-sequence", "Hidden sequence", folder = "delete-source", deleted = 2, revision = 9)
+
+        assertTrue(repository.getFolderContents(FolderId("move-source")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("delete-source")).sequences.isEmpty())
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("move-source")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("delete-source")))
+        assertTrue(repository.isFolderEmptyForDeletion(FolderId("truly-empty")))
+
+        repository.deleteFolderMovingContents(FolderId("move-source"), FolderId("destination"), instant(3))
+        val moved = requireNotNull(database.activityTemplateDao().getById("hidden-activity"))
+        assertEquals("destination", moved.folderId)
+        assertEquals(2L, moved.deletedAtMs)
+        assertEquals(7L, moved.revision)
+        assertEquals("hidden-activity-series", moved.statisticsSeriesId)
+
+        repository.deleteFolderAndArchiveContents(FolderId("delete-source"), instant(3))
+        val deleted = requireNotNull(database.sequenceTemplateDao().getById("hidden-sequence"))
+        assertNull(database.folderDao().getById("delete-source"))
+        assertNull(deleted.folderId)
+        assertEquals(2L, deleted.deletedAtMs)
+        assertEquals(9L, deleted.revision)
+        assertEquals("hidden-sequence-series", deleted.statisticsSeriesId)
     }
 
     @Test
@@ -1743,18 +1780,16 @@ class LibraryRepositoryTest {
 
     private fun assertArchiveBindChunks(queries: List<Pair<String, List<Any?>>>) {
         val archiveQueries = synchronized(queries) { queries.toList() }
-        assertEquals(
-            listOf(900, 1),
-            archiveQueries
-                .filter { "UPDATE activity_templates SET deleted_at_ms" in it.first }
-                .map { it.second.size - 1 },
-        )
-        assertEquals(
-            listOf(900, 1),
-            archiveQueries
-                .filter { "UPDATE sequence_templates SET deleted_at_ms" in it.first }
-                .map { it.second.size - 1 },
-        )
+        val activityBindCounts =
+            archiveQueries.filter { "UPDATE activity_templates SET deleted_at_ms" in it.first }.map { it.second.size }
+        val sequenceBindCounts =
+            archiveQueries.filter { "UPDATE sequence_templates SET deleted_at_ms" in it.first }.map { it.second.size }
+        assertEquals(listOf(899, 2), activityBindCounts.map { it - 1 })
+        assertEquals(listOf(899, 2), sequenceBindCounts.map { it - 1 })
+        assertEquals(listOf(900, 3), activityBindCounts)
+        assertEquals(listOf(900, 3), sequenceBindCounts)
+        assertTrue(activityBindCounts.all { it <= 900 })
+        assertTrue(sequenceBindCounts.all { it <= 900 })
     }
 
     private fun activityCommands(): ActivityCommandRepository {

@@ -28,7 +28,11 @@ import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityAction
 import com.alexandr5476.lifetracing.launcher.StartActivityController
+import com.alexandr5476.lifetracing.library.LibraryAction
+import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.library.LibraryMutation
+import com.alexandr5476.lifetracing.library.LibraryOrganization
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -158,6 +162,62 @@ class LibraryLifecyclePersistenceTest {
                 launcher.close()
                 scope.cancel()
             }
+
+            assertFalse(freshLibrary.isFolderEmptyForDeletion(folderId))
+            val destinationId = FolderId("s4-archive-destination-$suffix")
+            freshLibrary.createFolder(destinationId, "S4 archive destination $suffix", null, now)
+            val deletionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val controller = canonicalLibraryController(deletionScope, freshLibrary)
+            try {
+                withTimeout(5_000) { controller.state.first { it.organization is LibraryLoad.Content } }
+                val source = freshLibrary.getFolders().single { it.id == folderId }
+                controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+                val sourceOptions =
+                    withTimeout(5_000) {
+                        controller.state.first { it.folderDeletion?.options is LibraryLoad.Content }
+                    }.folderDeletion!!.let { (it.options as LibraryLoad.Content).value }
+                assertFalse(sourceOptions.isEmpty)
+
+                controller.dispatch(LibraryAction.DeleteFolderMovingContents(folderId, destinationId))
+                withTimeout(5_000) {
+                    controller.state.first {
+                        !it.isMutating && freshLibrary.getFolders().none { folder -> folder.id == folderId }
+                    }
+                }
+                assertTrue(
+                    freshLibrary
+                        .getArchived()
+                        .filter { it.id == activityId || it.id == sequenceId }
+                        .all { it.folderId == destinationId },
+                )
+
+                val destination = freshLibrary.getFolders().single { it.id == destinationId }
+                controller.dispatch(LibraryAction.RequestFolderDeletion(destination))
+                val destinationOptions =
+                    withTimeout(5_000) {
+                        controller.state.first { it.folderDeletion?.options is LibraryLoad.Content }
+                    }.folderDeletion!!.let { (it.options as LibraryLoad.Content).value }
+                assertFalse(destinationOptions.isEmpty)
+                controller.dispatch(LibraryAction.DeleteFolderAndArchiveContents(destinationId))
+                withTimeout(5_000) {
+                    controller.state.first {
+                        !it.isMutating && freshLibrary.getFolders().none { folder -> folder.id == destinationId }
+                    }
+                }
+            } finally {
+                controller.close()
+                deletionScope.cancel()
+            }
+
+            val deletedArchived = freshLibrary.getArchived().filter { it.id == activityId || it.id == sequenceId }
+            assertTrue(deletedArchived.all { it.folderId == null })
+            assertEquals(activity.revision, freshAuthoring.getActivityTemplate(activity.id)?.revision)
+            assertEquals(sequence.revision, freshAuthoring.getSequenceTemplate(sequence.id)?.revision)
+            assertNotNull(HistoryReadRepository.create(context).getActivityDetail(activityExecution.id))
+            assertNotNull(HistoryReadRepository.create(context).getSequenceDetail(sequenceExecution.execution.id))
+            val retainedSeriesIds = StatisticsRepository.create(context).seriesCatalog().mapTo(hashSetOf()) { it.id }
+            assertTrue(activity.statisticsSeriesId in retainedSeriesIds)
+            assertTrue(sequence.statisticsSeriesId in retainedSeriesIds)
         }
 
     @Test
@@ -267,6 +327,20 @@ class LibraryLifecyclePersistenceTest {
         WallClock { now },
         { ZoneOffset.UTC },
         PreflightScheduler { _, _ -> PreflightHandle {} },
+    )
+
+    private fun canonicalLibraryController(
+        scope: CoroutineScope,
+        library: LibraryRepository,
+    ) = LibraryController(
+        scope,
+        library::getRoot,
+        library::getFolderContents,
+        library::getFolderPath,
+        { query, filter -> library.search(query, filter) },
+        { LibraryOrganization(library.getFolders(), library.getTags()) },
+        { executeLibraryMutation(it, library) },
+        readFolderDeletionIsEmpty = library::isFolderEmptyForDeletion,
     )
 
     private fun clearActive(

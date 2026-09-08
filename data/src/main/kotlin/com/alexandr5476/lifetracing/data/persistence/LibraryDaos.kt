@@ -85,6 +85,13 @@ internal interface FolderDao {
             "AND NOT EXISTS (SELECT 1 FROM sequence_templates WHERE folder_id = :id)",
     )
     fun deleteEmptyById(id: String): Int
+
+    @Query(
+        "SELECT NOT EXISTS (SELECT 1 FROM folders WHERE parent_folder_id = :id) " +
+            "AND NOT EXISTS (SELECT 1 FROM activity_templates WHERE folder_id = :id) " +
+            "AND NOT EXISTS (SELECT 1 FROM sequence_templates WHERE folder_id = :id)",
+    )
+    fun isEmptyForDeletion(id: String): Boolean
 }
 
 @Dao

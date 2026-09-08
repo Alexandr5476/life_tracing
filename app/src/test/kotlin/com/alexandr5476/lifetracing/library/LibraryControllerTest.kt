@@ -714,13 +714,12 @@ class LibraryControllerTest {
         }
 
     @Test
-    fun folderDeleteInspectionUsesCanonicalContentsAndLinearNonDescendantCatalog() =
+    fun folderDeleteInspectionUsesDurableOccupancyAndLinearNonDescendantCatalog() =
         runBlocking {
             val source = folder("source", "Source")
             val child = folder("child", "Child", source.id)
             val grandchild = folder("grandchild", "Grandchild", child.id)
             val destination = folder("destination", "Destination")
-            val contents = LibraryContents(listOf(child), listOf(activity("activity", "Activity")), emptyList())
             var reads = 0
             val controller =
                 LibraryController(
@@ -732,13 +731,16 @@ class LibraryControllerTest {
                         )
                     },
                     {
-                        reads++
-                        assertEquals(source.id, it)
-                        contents
+                        error("Active Folder contents must not classify deletion occupancy")
                     },
                     { error("unused path reader") },
                     { _, _ -> emptyList() },
                     { LibraryOrganization(listOf(source, child, grandchild, destination), emptyList()) },
+                    readFolderDeletionIsEmpty = {
+                        reads++
+                        assertEquals(source.id, it)
+                        false
+                    },
                 )
             controller.awaitBrowse()
             controller.awaitOrganization()
@@ -775,6 +777,7 @@ class LibraryControllerTest {
                         release.await()
                     },
                     { Instant.EPOCH },
+                    readFolderDeletionIsEmpty = { true },
                 )
             controller.awaitBrowse()
             controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
@@ -800,14 +803,13 @@ class LibraryControllerTest {
     fun staleEmptyFolderConfirmationUsesGuardedWriterAndCanBeReinspected() =
         runBlocking {
             val folder = folder("empty", "Empty")
-            val arrived = activity("arrived", "Arrived")
-            var contents = LibraryContents(emptyList(), emptyList(), emptyList())
+            var isEmpty = true
             val mutations = mutableListOf<LibraryMutation>()
             val controller =
                 LibraryController(
                     this,
                     { LibraryRoot(LibraryContents(listOf(folder), emptyList(), emptyList()), emptyList()) },
-                    { contents },
+                    { LibraryContents(emptyList(), emptyList(), emptyList()) },
                     { error("unused path reader") },
                     { _, _ -> emptyList() },
                     { LibraryOrganization(listOf(folder), emptyList()) },
@@ -816,12 +818,13 @@ class LibraryControllerTest {
                         error("Folder is not empty")
                     },
                     { Instant.EPOCH },
+                    readFolderDeletionIsEmpty = { isEmpty },
                 )
             controller.awaitBrowse()
             controller.dispatch(LibraryAction.RequestFolderDeletion(folder))
             assertTrue(controller.awaitFolderDeletion().isEmpty)
 
-            contents = LibraryContents(emptyList(), listOf(arrived), emptyList())
+            isEmpty = false
             controller.dispatch(LibraryAction.DeleteEmptyFolder(folder.id))
             withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationFailure != null } }
             assertEquals(listOf(LibraryMutation.DeleteEmptyFolder(folder.id, Instant.EPOCH)), mutations)
@@ -858,6 +861,7 @@ class LibraryControllerTest {
                         release.await()
                     },
                     { Instant.EPOCH },
+                    readFolderDeletionIsEmpty = { false },
                 )
             controller.awaitBrowse()
             controller.dispatch(LibraryAction.DeleteFolderAndArchiveContents(source.id))
