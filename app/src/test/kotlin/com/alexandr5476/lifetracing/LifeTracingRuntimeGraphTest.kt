@@ -70,7 +70,7 @@ class LifeTracingRuntimeGraphTest {
                             boundary,
                         )
                     },
-                    {
+                    { _ ->
                         launcherCreations++
                         launcher(scope)
                     },

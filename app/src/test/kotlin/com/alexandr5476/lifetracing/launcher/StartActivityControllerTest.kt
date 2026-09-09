@@ -760,6 +760,7 @@ class StartActivityControllerTest {
 
             assertEquals(order, harness.reorders.single())
             assertEquals(2, harness.pinnedReads)
+            assertEquals(1, harness.pinnedOrderCommits)
             controller.close()
         }
 
@@ -791,6 +792,7 @@ class StartActivityControllerTest {
                 (controller.state.value.home as LauncherLoad.Content).value.pinned.map { it.name },
             )
             assertEquals(1, harness.pinnedReads)
+            assertEquals(0, harness.pinnedOrderCommits)
             controller.close()
         }
 
@@ -804,6 +806,7 @@ class StartActivityControllerTest {
         val reorders = mutableListOf<List<LibraryTemplateId>>()
         val commands = mutableListOf<LauncherDurableCommand>()
         var pinnedReads = 0
+        var pinnedOrderCommits = 0
         var coordinationCalls = 0
         var liveChecks = 0
         var homeFailure: Exception? = null
@@ -880,6 +883,7 @@ class StartActivityControllerTest {
                 onSelectObserved = onSelectObserved,
                 onReadPublicationChecked = onReadPublicationChecked,
                 onReadPublicationArbitrated = onReadPublicationArbitrated,
+                onPinnedOrderCommitted = { pinnedOrderCommits++ },
             )
     }
 

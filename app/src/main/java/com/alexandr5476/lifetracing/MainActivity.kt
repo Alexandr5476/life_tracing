@@ -120,7 +120,9 @@ internal fun LifeTracingApp(
                             DailyRoute(
                                 controller = controller,
                                 onStartActivity = {
-                                    launcherSessions.acquire(runtimeGraph::createStartActivityController)
+                                    launcherSessions.acquire {
+                                        runtimeGraph.createStartActivityController(libraryOwner::refreshIfInitialized)
+                                    }
                                     backStack.openStartActivity()
                                 },
                                 onLibrary = { backStack.openLibrary() },
@@ -168,9 +170,13 @@ internal fun LifeTracingApp(
                                     backStack.openExistingActivityTemplateEditor(id.value)
                                 },
                                 onQuickStart = { id ->
-                                    launcherSessions
-                                        .acquire(runtimeGraph::createStartActivityController)
-                                        .primeInitialSelection(id)
+                                    val session =
+                                        launcherSessions.acquire {
+                                            runtimeGraph.createStartActivityController(
+                                                libraryOwner::refreshIfInitialized,
+                                            )
+                                        }
+                                    session.primeInitialSelection(id)
                                     backStack.openStartActivity()
                                 },
                             )

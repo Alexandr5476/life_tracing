@@ -23,13 +23,17 @@ import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TemplateLibraryPlacement
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.launcher.LauncherHome
 import com.alexandr5476.lifetracing.launcher.LauncherLoad
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityAction
 import com.alexandr5476.lifetracing.launcher.StartActivityController
+import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.library.LibraryAction
+import com.alexandr5476.lifetracing.library.LibraryBrowse
 import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
@@ -44,6 +48,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,6 +57,78 @@ import java.time.ZoneOffset
 
 @RunWith(AndroidJUnit4::class)
 class LibraryLifecyclePersistenceTest {
+    @Test
+    fun successfulLauncherPinnedReorderRefreshesTheRetainedLibraryWithoutALaunchCommit() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val suffix = now.toEpochMilli().toString()
+            val library = LibraryRepository.create(context)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val first =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("W7 first $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(2),
+                )
+            val second =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("W7 second $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(1),
+                )
+            val firstId = LibraryTemplateId.Activity(first.id)
+            val secondId = LibraryTemplateId.Activity(second.id)
+            library.pin(firstId)
+            library.pin(secondId)
+            val initialOrder = library.getPinned().map { it.id }
+            assertEquals(listOf(firstId, secondId), initialOrder.takeLast(2))
+            val expectedOrder =
+                initialOrder.toMutableList().apply {
+                    val firstIndex = indexOf(firstId)
+                    val secondIndex = indexOf(secondId)
+                    this[firstIndex] = secondId
+                    this[secondIndex] = firstId
+                }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val libraryOwner = LibraryControllerOwner()
+            val retained = libraryOwner.get { canonicalLibraryController(scope, library) }
+            val launcherOwner = StartActivityRouteSessionOwner()
+            val session =
+                launcherOwner.acquire {
+                    canonicalLauncher(scope, library, LiveSessionRepository.create(context), now) {
+                        libraryOwner.refreshIfInitialized()
+                    }
+                }
+            try {
+                withTimeout(5_000) {
+                    retained.state.first { it.browse.pinnedIds() == initialOrder }
+                }
+                withTimeout(5_000) { session.controller.state.first { it.home is LauncherLoad.Content } }
+
+                session.controller.dispatch(StartActivityAction.ReorderPinned(expectedOrder))
+                withTimeout(5_000) {
+                    session.controller.state.first {
+                        !it.organizationInFlight &&
+                            it.home.pinnedIds() == expectedOrder
+                    }
+                }
+
+                launcherOwner.release(session)
+                val reentered = libraryOwner.get { error("Library controller must be retained after launcher Back") }
+                assertSame(retained, reentered)
+                val retainedOrder =
+                    withTimeout(5_000) {
+                        reentered.state.first { it.browse.pinnedIds() == expectedOrder }
+                    }.browse.pinnedIds()!!
+                val canonicalOrder = LibraryRepository.create(context).getPinned().map { it.id }
+
+                assertEquals(expectedOrder, retainedOrder)
+                assertEquals(canonicalOrder, retainedOrder)
+            } finally {
+                retained.close()
+                scope.cancel()
+            }
+        }
+
     @Test
     fun productionArchiveBoundaryPreservesIdentityHistoryStatisticsAndFreshLauncherExclusion() =
         runBlocking {
@@ -313,6 +390,7 @@ class LibraryLifecyclePersistenceTest {
         library: LibraryRepository,
         live: LiveSessionRepository,
         now: Instant,
+        onPinnedOrderCommitted: () -> Unit = {},
     ) = StartActivityController(
         scope,
         library::getRecent,
@@ -327,7 +405,14 @@ class LibraryLifecyclePersistenceTest {
         WallClock { now },
         { ZoneOffset.UTC },
         PreflightScheduler { _, _ -> PreflightHandle {} },
+        onPinnedOrderCommitted = onPinnedOrderCommitted,
     )
+
+    private fun LibraryLoad<LibraryBrowse>.pinnedIds(): List<LibraryTemplateId>? =
+        (this as? LibraryLoad.Content)?.value?.pinned?.map { it.id }
+
+    private fun LauncherLoad<LauncherHome>.pinnedIds(): List<LibraryTemplateId>? =
+        (this as? LauncherLoad.Content)?.value?.pinned?.map { it.id }
 
     private fun canonicalLibraryController(
         scope: CoroutineScope,

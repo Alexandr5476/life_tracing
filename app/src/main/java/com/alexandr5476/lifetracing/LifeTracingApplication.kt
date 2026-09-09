@@ -78,7 +78,7 @@ class LifeTracingRuntimeGraph internal constructor(
     val scope: kotlinx.coroutines.CoroutineScope,
     val coordinator: AndroidRuntimeCoordinator,
     private val dailyControllerOwner: DailyControllerOwner,
-    private val startActivityControllerFactory: () -> StartActivityController,
+    private val startActivityControllerFactory: (onPinnedOrderCommitted: () -> Unit) -> StartActivityController,
     private val libraryControllerFactory: () -> LibraryController,
     private val activityTemplateEditorControllerFactory: (
         ActivityTemplateEditorTarget,
@@ -87,7 +87,8 @@ class LifeTracingRuntimeGraph internal constructor(
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
 
-    fun createStartActivityController(): StartActivityController = startActivityControllerFactory()
+    fun createStartActivityController(onPinnedOrderCommitted: () -> Unit = {}): StartActivityController =
+        startActivityControllerFactory(onPinnedOrderCommitted)
 
     fun createLibraryController(): LibraryController = libraryControllerFactory()
 
@@ -170,7 +171,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         CoroutineLocalDateBoundaryScheduler(scope),
                     )
                 },
-                {
+                { onPinnedOrderCommitted ->
                     StartActivityController(
                         scope,
                         { limit ->
@@ -223,6 +224,7 @@ class LifeTracingRuntimeGraph internal constructor(
                                 libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
                             }
                         },
+                        onPinnedOrderCommitted = onPinnedOrderCommitted,
                     )
                 },
                 {

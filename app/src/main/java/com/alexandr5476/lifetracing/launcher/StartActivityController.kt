@@ -243,6 +243,7 @@ class StartActivityController internal constructor(
     private val onSelectObserved: (LauncherCommandState) -> Unit = {},
     private val onReadPublicationChecked: (LauncherReadChannel) -> Unit = {},
     private val onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {},
+    private val onPinnedOrderCommitted: () -> Unit = {},
 ) {
     private val homeGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
@@ -492,6 +493,7 @@ class StartActivityController internal constructor(
         scope.launch {
             try {
                 reorderPinned(ids)
+                onPinnedOrderCommitted()
                 mutableState.update { it.copy(organizationInFlight = false) }
                 refreshHome()
             } catch (cancelled: CancellationException) {
