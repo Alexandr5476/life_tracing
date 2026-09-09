@@ -91,10 +91,22 @@ class LibraryRepository internal constructor(
             contentsLocked(folderId)
         }
 
+    fun isFolderEmptyForDeletion(folderId: FolderId): Boolean =
+        transaction {
+            requireFolder(folderId)
+            database.folderDao().isEmptyForDeletion(folderId.value)
+        }
+
     fun getFolderPath(folderId: FolderId): List<Folder> =
         transaction {
             FolderTreeValidator.path(folderId) { id -> database.folderDao().getById(id.value)?.toDomain() }
         }
+
+    /** One bounded catalog read for Folder move destinations. */
+    fun getFolders(): List<Folder> = transaction { database.folderDao().getAll().map(FolderEntity::toDomain) }
+
+    /** One bounded catalog read for Tag assignment. */
+    fun getTags(): List<Tag> = transaction { database.tagDao().getAll().map(TagEntity::toDomain) }
 
     fun getAll(filter: LibraryKindFilter = LibraryKindFilter.ALL): List<LibraryTrackable> =
         transaction {
@@ -283,6 +295,18 @@ class LibraryRepository internal constructor(
         }
     }
 
+    fun deleteEmptyFolder(
+        folderId: FolderId,
+        at: Instant,
+    ) {
+        transaction {
+            val current = requireFolder(folderId)
+            require(at >= current.updatedAt) { "Folder update time is out of order" }
+            getFolderPath(folderId)
+            check(database.folderDao().deleteEmptyById(folderId.value) == 1) { "Folder is not empty" }
+        }
+    }
+
     fun deleteFolderAndArchiveContents(
         folderId: FolderId,
         at: Instant,
@@ -293,8 +317,12 @@ class LibraryRepository internal constructor(
             val subtree = database.folderDao().getSubtree(folderId.value)
             require(subtree.any { it.id == folderId.value }) { "Unknown Folder: ${folderId.value}" }
             val ids = subtree.map(FolderEntity::id)
-            database.libraryDao().archiveActivitiesInFolders(ids, at.toEpochMilli())
-            database.libraryDao().archiveSequencesInFolders(ids, at.toEpochMilli())
+            ids.chunked(ARCHIVE_FOLDER_ID_BIND_COUNT).forEach {
+                database.libraryDao().archiveActivitiesInFolders(it, at.toEpochMilli())
+            }
+            ids.chunked(ARCHIVE_FOLDER_ID_BIND_COUNT).forEach {
+                database.libraryDao().archiveSequencesInFolders(it, at.toEpochMilli())
+            }
             deletionOrder(subtree).forEach { id -> check(database.folderDao().deleteById(id) == 1) }
         }
     }
@@ -344,6 +372,25 @@ class LibraryRepository internal constructor(
     ): Tag =
         transaction {
             Tag(id, name, createdAt, createdAt).also { database.tagDao().insert(it.toEntity()) }
+        }
+
+    fun createTagAndAssign(
+        id: TagId,
+        name: String,
+        templateId: LibraryTemplateId,
+        createdAt: Instant,
+    ): Tag =
+        transaction {
+            requireTemplate(templateId, activeOnly = true)
+            val tag = Tag(id, name, createdAt, createdAt)
+            database.tagDao().insert(tag.toEntity())
+            when (templateId) {
+                is LibraryTemplateId.Activity ->
+                    database.libraryDao().addActivityTag(ActivityTemplateTagEntity(templateId.value, tag.id.value))
+                is LibraryTemplateId.Sequence ->
+                    database.libraryDao().addSequenceTag(SequenceTemplateTagEntity(templateId.value, tag.id.value))
+            }
+            tag
         }
 
     fun renameTag(
@@ -816,6 +863,8 @@ class LibraryRepository internal constructor(
 
         private const val PINNED_RANK_STEP = 1024
         private const val SQLITE_SAFE_BIND_COUNT = 900
+        private const val ARCHIVE_STATIC_BIND_COUNT = 1 // deletedAtMs
+        private const val ARCHIVE_FOLDER_ID_BIND_COUNT = SQLITE_SAFE_BIND_COUNT - ARCHIVE_STATIC_BIND_COUNT
         private const val DATABASE_NAME = "lifetracing.db"
     }
 }

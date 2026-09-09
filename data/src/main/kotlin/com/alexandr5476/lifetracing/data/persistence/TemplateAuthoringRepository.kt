@@ -27,6 +27,7 @@ import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateField
+import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldEvolution
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateRevisionPolicy
@@ -565,6 +566,9 @@ class TemplateAuthoringRepository internal constructor(
                         previous?.updatedAt ?: savedAt,
                         categoryOptions = options,
                     )
+                if (draft.identity is DraftIdentity.Existing) {
+                    ActivityTemplateFieldEvolution.requireSameIdentityCompatible(requireNotNull(previous), field)
+                }
                 if (previous != null && field != previous) {
                     require(savedAt >= previous.updatedAt) { "Activity Field update time is out of order" }
                     field = field.copy(updatedAt = savedAt)

@@ -36,4 +36,50 @@ class MainActivityNavigationTest {
 
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    @Test
+    fun libraryUsesTheExistingDailyBackStackWithoutChangingLauncherSemantics() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openLibrary()
+        backStack.openLibrary()
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.removeLibrary()
+        assertEquals(listOf(DailyRoot), backStack)
+    }
+
+    @Test
+    fun libraryQuickStartKeepsTheRetainedLibraryEntryUnderTheLauncher() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
+
+        backStack.openStartActivity()
+        backStack.completeStartActivity {}
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
+
+    @Test
+    fun committedEditorRefreshesAndPopsExactlyOnce() {
+        val backStack: MutableList<NavKey> =
+            mutableListOf(DailyRoot, LibraryRoot, ExistingActivityTemplateEditor("activity"))
+        var refreshes = 0
+
+        backStack.completeActivityTemplateEditor { refreshes++ }
+
+        assertEquals(1, refreshes)
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.completeActivityTemplateEditor { refreshes++ }
+        assertEquals(1, refreshes)
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
+
+    @Test
+    fun restoredEditorWithoutAnInMemorySessionReturnsToLibraryInsteadOfCreatingABlankDraft() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot, NewActivityTemplateEditor)
+
+        backStack.normalizeRestoredActivityTemplateEditor()
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
 }

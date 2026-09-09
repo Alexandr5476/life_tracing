@@ -386,6 +386,47 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun libraryPrimingSelectsExactlyOnceOnTheRetainedSession() =
+        runBlocking {
+            val harness = Harness().apply { target = sequenceTarget("sequence") }
+            val owner = StartActivityRouteSessionOwner()
+            val session = owner.acquire { harness.controller(this) }
+            session.controller.awaitHome()
+
+            session.primeInitialSelection(sequenceId("sequence"))
+            session.primeInitialSelection(activityId("ignored"))
+            session.controller.awaitTarget("sequence")
+            val target = session.controller.loadedTarget()
+            session.interaction.resolveSelection(target)?.let(session.controller::dispatch)
+            session.controller.awaitCommitted()
+
+            assertEquals(listOf(sequenceId("sequence")), harness.targetReads)
+            assertNull(session.interaction.pendingSelectionId)
+            assertNull(session.interaction.resolveSelection(target))
+            assertEquals(1, harness.commands.size)
+            assertSame(session, owner.acquire { error("Library must retain its launcher session") })
+            owner.release(session)
+        }
+
+    @Test
+    fun libraryPrimedNoLiveMainValueUsesTheExistingQuickEditorBeforeLaunch() =
+        runBlocking {
+            val harness = Harness().apply { target = noLiveTarget("quick") }
+            val owner = StartActivityRouteSessionOwner()
+            val session = owner.acquire { harness.controller(this) }
+            session.controller.awaitHome()
+
+            session.primeInitialSelection(activityId("quick"))
+            session.controller.awaitTarget("quick")
+            val target = session.controller.loadedTarget()
+
+            assertNull(session.interaction.resolveSelection(target))
+            assertEquals(activityId("quick"), session.interaction.quickEditor?.targetId)
+            assertTrue(harness.commands.isEmpty())
+            owner.release(session)
+        }
+
+    @Test
     fun routeSessionRetainsNoLiveCommitObservationAndTerminalDeliveryAcrossHostRecreation() =
         runBlocking {
             val gate = CompletableDeferred<Unit>()
@@ -719,6 +760,7 @@ class StartActivityControllerTest {
 
             assertEquals(order, harness.reorders.single())
             assertEquals(2, harness.pinnedReads)
+            assertEquals(1, harness.pinnedOrderCommits)
             controller.close()
         }
 
@@ -750,6 +792,7 @@ class StartActivityControllerTest {
                 (controller.state.value.home as LauncherLoad.Content).value.pinned.map { it.name },
             )
             assertEquals(1, harness.pinnedReads)
+            assertEquals(0, harness.pinnedOrderCommits)
             controller.close()
         }
 
@@ -763,6 +806,7 @@ class StartActivityControllerTest {
         val reorders = mutableListOf<List<LibraryTemplateId>>()
         val commands = mutableListOf<LauncherDurableCommand>()
         var pinnedReads = 0
+        var pinnedOrderCommits = 0
         var coordinationCalls = 0
         var liveChecks = 0
         var homeFailure: Exception? = null
@@ -839,6 +883,7 @@ class StartActivityControllerTest {
                 onSelectObserved = onSelectObserved,
                 onReadPublicationChecked = onReadPublicationChecked,
                 onReadPublicationArbitrated = onReadPublicationArbitrated,
+                onPinnedOrderCommitted = { pinnedOrderCommits++ },
             )
     }
 

@@ -12,15 +12,21 @@ import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
+import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
 import com.alexandr5476.lifetracing.launcher.StartActivityController
 import com.alexandr5476.lifetracing.launcher.toEntryValue
+import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryMutation
+import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -36,13 +42,14 @@ import java.time.ZoneId
 import java.util.UUID
 
 class LifeTracingApplication : Application() {
+    private val runtimeGraph by lazy { LifeTracingRuntimeGraph.from(this) }
+
     override fun onCreate() {
         super.onCreate()
-        val graph = LifeTracingRuntimeGraph.from(this)
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityStarted(activity: Activity) {
-                    graph.scope.launch { graph.coordinator.onForeground() }
+                    runtimeGraph.scope.launch { runtimeGraph.coordinator.onForeground() }
                 }
 
                 override fun onActivityCreated(
@@ -71,12 +78,23 @@ class LifeTracingRuntimeGraph internal constructor(
     val scope: kotlinx.coroutines.CoroutineScope,
     val coordinator: AndroidRuntimeCoordinator,
     private val dailyControllerOwner: DailyControllerOwner,
-    private val startActivityControllerFactory: () -> StartActivityController,
+    private val startActivityControllerFactory: (onPinnedOrderCommitted: () -> Unit) -> StartActivityController,
+    private val libraryControllerFactory: () -> LibraryController,
+    private val activityTemplateEditorControllerFactory: (
+        ActivityTemplateEditorTarget,
+    ) -> ActivityTemplateEditorController,
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
 
-    fun createStartActivityController(): StartActivityController = startActivityControllerFactory()
+    fun createStartActivityController(onPinnedOrderCommitted: () -> Unit = {}): StartActivityController =
+        startActivityControllerFactory(onPinnedOrderCommitted)
+
+    fun createLibraryController(): LibraryController = libraryControllerFactory()
+
+    fun createActivityTemplateEditorController(
+        target: ActivityTemplateEditorTarget,
+    ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target)
 
     companion object {
         @Volatile
@@ -87,7 +105,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 instance ?: create(context.applicationContext).also { instance = it }
             }
 
-        @Suppress("LongMethod") // Runtime graph wiring is intentionally kept at one composition root.
+        @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
             val scope =
                 kotlinx.coroutines.CoroutineScope(
@@ -100,6 +118,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
             val libraryRepository = LibraryRepository.create(context)
+            val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
@@ -152,7 +171,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         CoroutineLocalDateBoundaryScheduler(scope),
                     )
                 },
-                {
+                { onPinnedOrderCommitted ->
                     StartActivityController(
                         scope,
                         { limit ->
@@ -205,6 +224,69 @@ class LifeTracingRuntimeGraph internal constructor(
                                 libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
                             }
                         },
+                        onPinnedOrderCommitted = onPinnedOrderCommitted,
+                    )
+                },
+                {
+                    LibraryController(
+                        scope,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getRoot()
+                            }
+                        },
+                        { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getFolderContents(folderId)
+                            }
+                        },
+                        { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getFolderPath(folderId)
+                            }
+                        },
+                        { query, filter ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.search(query, filter)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                LibraryOrganization(libraryRepository.getFolders(), libraryRepository.getTags())
+                            }
+                        },
+                        { mutation ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executeLibraryMutation(mutation, libraryRepository)
+                            }
+                        },
+                        readFolderDeletionIsEmpty = { folderId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.isFolderEmptyForDeletion(folderId)
+                            }
+                        },
+                    )
+                },
+                { target ->
+                    ActivityTemplateEditorController(
+                        scope,
+                        target,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        { draft, placement, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.createActivityTemplate(draft, placement, at)
+                            }
+                        },
+                        { id, expectedRevision, draft, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveActivityTemplate(id, expectedRevision, draft, at)
+                            }
+                        },
+                        java.time.Instant::now,
                     )
                 },
             )
@@ -263,6 +345,47 @@ internal fun executeLauncherCommand(
             LauncherCommit.Sequence(state.execution.id)
         }
     }
+
+@Suppress("CyclomaticComplexMethod") // Exhaustive routing stays at the composition boundary.
+internal fun executeLibraryMutation(
+    mutation: LibraryMutation,
+    libraryRepository: LibraryRepository,
+) {
+    when (mutation) {
+        is LibraryMutation.CreateFolder ->
+            libraryRepository.createFolder(mutation.id, mutation.name, mutation.parentId, mutation.at)
+        is LibraryMutation.RenameFolder ->
+            libraryRepository.renameFolder(mutation.id, mutation.name, mutation.at)
+        is LibraryMutation.MoveFolder ->
+            libraryRepository.moveFolder(mutation.id, mutation.parentId, mutation.at)
+        is LibraryMutation.MoveTemplate ->
+            libraryRepository.moveTemplatesToFolder(listOf(mutation.id), mutation.folderId, mutation.at)
+        is LibraryMutation.CreateAndAssignTag ->
+            libraryRepository.createTagAndAssign(mutation.id, mutation.name, mutation.templateId, mutation.at)
+        is LibraryMutation.AssignTag -> libraryRepository.addTag(mutation.templateId, mutation.tagId)
+        is LibraryMutation.UnassignTag -> libraryRepository.removeTag(mutation.templateId, mutation.tagId)
+        is LibraryMutation.SetPinned ->
+            if (mutation.pinned) {
+                libraryRepository.pin(mutation.templateId)
+            } else {
+                libraryRepository.unpin(mutation.templateId)
+            }
+        is LibraryMutation.ReorderPinned -> libraryRepository.reorderPinned(mutation.ids)
+        is LibraryMutation.ArchiveTemplate ->
+            when (val id = mutation.id) {
+                is com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity ->
+                    libraryRepository.archiveActivityTemplate(id.id, mutation.at)
+                is com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence ->
+                    libraryRepository.archiveSequenceTemplate(id.id, mutation.at)
+            }
+        is LibraryMutation.DeleteEmptyFolder ->
+            libraryRepository.deleteEmptyFolder(mutation.id, mutation.at)
+        is LibraryMutation.DeleteFolderMovingContents ->
+            libraryRepository.deleteFolderMovingContents(mutation.id, mutation.destinationId, mutation.at)
+        is LibraryMutation.DeleteFolderAndArchiveContents ->
+            libraryRepository.deleteFolderAndArchiveContents(mutation.id, mutation.at)
+    }
+}
 
 internal class DailyControllerOwner(
     factory: () -> DailyController,

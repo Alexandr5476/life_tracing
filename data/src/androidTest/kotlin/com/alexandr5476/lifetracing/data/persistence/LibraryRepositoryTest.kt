@@ -60,6 +60,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -133,6 +134,46 @@ class LibraryRepositoryTest {
         assertEquals(listOf("nested"), folder.folders.map { it.id.value })
         assertEquals(listOf("activity-folder"), folder.activities.map { it.id.value })
         assertTrue(folder.sequences.isEmpty())
+    }
+
+    @Test
+    fun freshCanonicalRepositoryReadKeepsActiveCatalogFolderPathAndPinnedRanks() {
+        val writer = repository()
+        writer.createFolder(FolderId("root"), "Root", null, instant(1))
+        writer.createFolder(FolderId("nested"), "Nested", FolderId("root"), instant(2))
+        activity("activity-root", "Activity root", pinned = 20)
+        sequence("sequence-root", "Sequence root", pinned = 10)
+        activity("activity-nested", "Activity nested", folder = "nested")
+        sequence("sequence-archived", "Archived", deleted = 3)
+
+        val reloaded = repository()
+        val root = reloaded.getRoot()
+        val nested = reloaded.getFolderContents(FolderId("nested"))
+
+        assertEquals(listOf("sequence-root", "activity-root"), root.pinned.map { it.id.value })
+        assertEquals(listOf("root"), root.contents.folders.map { it.id.value })
+        assertEquals(listOf("activity-root"), root.contents.activities.map { it.id.value })
+        assertEquals(listOf("sequence-root"), root.contents.sequences.map { it.id.value })
+        assertEquals(listOf("root", "nested"), reloaded.getFolderPath(FolderId("nested")).map { it.id.value })
+        assertEquals(listOf("activity-nested"), nested.activities.map { it.id.value })
+        assertTrue(reloaded.search("Archived").isEmpty())
+    }
+
+    @Test
+    fun organizationCatalogsAndCreatedTagAssignmentSurviveFreshRepositoryAcquisition() {
+        val writer = repository()
+        writer.createFolder(FolderId("parent"), "Parent", null, instant(1))
+        writer.createFolder(FolderId("child"), "Child", FolderId("parent"), instant(2))
+        activity("activity", "Activity", folder = "child")
+        val activity = LibraryTemplateId.Activity(ActivityTemplateId("activity"))
+
+        writer.createTagAndAssign(TagId("focus"), "Focus", activity, instant(3))
+
+        val reloaded = repository()
+        assertEquals(listOf("child", "parent"), reloaded.getFolders().map { it.id.value }.sorted())
+        assertEquals(listOf("focus"), reloaded.getTags().map { it.id.value })
+        assertEquals(setOf(TagId("focus")), reloaded.getAll().single().tagIds)
+        assertEquals(FolderId("child"), reloaded.getAll().single().folderId)
     }
 
     @Test
@@ -667,9 +708,48 @@ class LibraryRepositoryTest {
         repository.createFolder(FolderId("folder"), "Folder", null, instant(1))
         repository.createTag(TagId("tag"), "Tag", instant(1))
         activity("activity", "Activity", revision = 7)
-        sequence("sequence", "Sequence", revision = 9)
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "archive-sequence-step",
+                    "Activity",
+                    null,
+                    "NO_LIVE_TRACKING",
+                    null,
+                    "activity",
+                    7,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("archive-sequence-step"),
+            ),
+        )
+        sequence(
+            "sequence",
+            "Sequence",
+            revision = 9,
+            nodes = listOf(step("archive-sequence-node", "sequence", "archive-sequence-step")),
+        )
         val activityId = LibraryTemplateId.Activity(ActivityTemplateId("activity"))
         val sequenceId = LibraryTemplateId.Sequence(SequenceTemplateId("sequence"))
+
+        val activityExecution =
+            repository.startActivityFromTemplate(
+                ActivityTemplateId("activity"),
+                instant(10),
+                instant(10),
+                ZoneOffset.UTC,
+            )
+        liveForExistingDatabase().completeActiveActivity(instant(11))
+        val sequenceExecution =
+            repository.startSequenceFromTemplate(
+                SequenceTemplateId("sequence"),
+                instant(12),
+                instant(12),
+                ZoneOffset.UTC,
+            )
+        liveForExistingDatabase().endSequenceEarly(instant(13))
 
         repository.moveTemplatesToFolder(listOf(activityId, sequenceId), FolderId("folder"), instant(2))
         assertIdentity("activity", "sequence", 7, 9)
@@ -696,8 +776,40 @@ class LibraryRepositoryTest {
 
         repository.archiveActivityTemplate(ActivityTemplateId("activity"), instant(30))
         repository.archiveSequenceTemplate(SequenceTemplateId("sequence"), instant(30))
-        assertTrue(repository.getPinned().isEmpty())
-        assertTrue(repository.getRecent(5).isEmpty())
+        val archivedRepository = repository()
+        val archivedAuthoring = TemplateAuthoringRepository(database, deterministicAuthoringIds("archive-read"))
+        assertEquals(setOf(activityId, sequenceId), archivedRepository.getArchived().mapTo(hashSetOf()) { it.id })
+        assertTrue(
+            archivedRepository
+                .getRoot()
+                .contents.activities
+                .isEmpty(),
+        )
+        val archivedFolder = archivedRepository.getFolderContents(FolderId("folder"))
+        assertTrue(archivedFolder.activities.isEmpty())
+        assertTrue(archivedFolder.sequences.isEmpty())
+        assertTrue(archivedRepository.search("Activity").isEmpty())
+        assertTrue(archivedRepository.search("Sequence").isEmpty())
+        assertTrue(archivedRepository.getPinned().isEmpty())
+        assertTrue(archivedRepository.getRecent(5).isEmpty())
+        val archivedActivity = requireNotNull(archivedAuthoring.getActivityTemplate(ActivityTemplateId("activity")))
+        val archivedSequence = requireNotNull(archivedAuthoring.getSequenceTemplate(SequenceTemplateId("sequence")))
+        assertEquals(7L, archivedActivity.revision)
+        assertEquals(StatisticsSeriesId("activity-series"), archivedActivity.statisticsSeriesId)
+        assertEquals(9L, archivedSequence.revision)
+        assertEquals(StatisticsSeriesId("sequence-series"), archivedSequence.statisticsSeriesId)
+        assertNotNull(database.statisticsSeriesDao().getById("activity-series"))
+        assertNotNull(database.statisticsSeriesDao().getById("sequence-series"))
+        assertEquals(
+            "activity",
+            database.activitySnapshotDao().getById(activityExecution.snapshotId.value)?.sourceTemplateId,
+        )
+        assertNotNull(database.activityExecutionDao().getById(activityExecution.id.value))
+        assertEquals(
+            "sequence",
+            database.sequenceSnapshotDao().getById(sequenceExecution.execution.snapshotId.value)?.sourceTemplateId,
+        )
+        assertNotNull(database.sequenceExecutionDao().getById(sequenceExecution.execution.id.value))
         assertNotNull(database.activityTemplateDao().getUserState("activity")?.pinnedRank)
         assertEquals(20L, database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs)
 
@@ -736,22 +848,44 @@ class LibraryRepositoryTest {
         val repository = repository()
         repository.createFolder(FolderId("source"), "Source", null, instant(1))
         repository.createFolder(FolderId("nested"), "Nested", FolderId("source"), instant(2))
+        repository.createFolder(FolderId("grandchild"), "Grandchild", FolderId("nested"), instant(3))
         repository.createFolder(FolderId("destination"), "Destination", null, instant(1))
-        activity("direct", "Direct", folder = "source")
-        sequence("nested-sequence", "Nested", folder = "nested")
+        activity("direct", "Direct", revision = 7, folder = "source")
+        sequence("direct-sequence", "Direct sequence", revision = 8, folder = "source")
+        sequence("nested-sequence", "Nested", revision = 9, folder = "grandchild")
 
-        repository.deleteFolderMovingContents(FolderId("source"), FolderId("destination"), instant(3))
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.deleteFolderMovingContents(FolderId("source"), FolderId("nested"), instant(4))
+        }
+        assertNotNull(database.folderDao().getById("source"))
+        assertEquals("source", database.activityTemplateDao().getById("direct")?.folderId)
+
+        repository.deleteFolderMovingContents(FolderId("source"), FolderId("destination"), instant(4))
         assertNull(database.folderDao().getById("source"))
         assertEquals("destination", database.activityTemplateDao().getById("direct")?.folderId)
+        assertEquals("destination", database.sequenceTemplateDao().getById("direct-sequence")?.folderId)
         assertEquals("destination", database.folderDao().getById("nested")?.parentFolderId)
-        assertEquals("nested", database.sequenceTemplateDao().getById("nested-sequence")?.folderId)
+        assertEquals("nested", database.folderDao().getById("grandchild")?.parentFolderId)
+        assertEquals("grandchild", database.sequenceTemplateDao().getById("nested-sequence")?.folderId)
+        assertEquals(7L, database.activityTemplateDao().getById("direct")?.revision)
+        assertEquals(8L, database.sequenceTemplateDao().getById("direct-sequence")?.revision)
+        assertEquals("direct-series", database.activityTemplateDao().getById("direct")?.statisticsSeriesId)
+        assertEquals(
+            "direct-sequence-series",
+            database.sequenceTemplateDao().getById("direct-sequence")?.statisticsSeriesId,
+        )
 
-        repository.createFolder(FolderId("empty"), "Empty", null, instant(3))
-        repository.deleteFolderMovingContents(FolderId("empty"), null, instant(4))
+        repository.createFolder(FolderId("move-root"), "Move root", null, instant(4))
+        activity("move-root-activity", "Move root activity", folder = "move-root")
+        repository.deleteFolderMovingContents(FolderId("move-root"), null, instant(5))
+        assertNull(database.activityTemplateDao().getById("move-root-activity")?.folderId)
+
+        repository.createFolder(FolderId("empty"), "Empty", null, instant(5))
+        repository.deleteEmptyFolder(FolderId("empty"), instant(6))
         assertNull(database.folderDao().getById("empty"))
 
-        repository.createFolder(FolderId("delete"), "Delete", null, instant(4))
-        repository.createFolder(FolderId("delete-child"), "Child", FolderId("delete"), instant(5))
+        repository.createFolder(FolderId("delete"), "Delete", null, instant(6))
+        repository.createFolder(FolderId("delete-child"), "Child", FolderId("delete"), instant(7))
         activity("delete-activity", "Delete Activity", folder = "delete-child")
         sequence("delete-sequence", "Delete Sequence", folder = "delete")
         database.activitySnapshotDao().insertAggregate(
@@ -772,27 +906,206 @@ class LibraryRepositoryTest {
             ),
         )
         standaloneExecution("history", "history-snapshot", "delete-activity-series")
-        repository.deleteFolderAndArchiveContents(FolderId("delete"), instant(6))
+        repository.deleteFolderAndArchiveContents(FolderId("delete"), instant(8))
         assertNull(database.folderDao().getById("delete"))
         assertNull(database.folderDao().getById("delete-child"))
-        assertEquals(6L, database.activityTemplateDao().getById("delete-activity")?.deletedAtMs)
+        assertEquals(8L, database.activityTemplateDao().getById("delete-activity")?.deletedAtMs)
         assertNull(database.activityTemplateDao().getById("delete-activity")?.folderId)
-        assertEquals(6L, database.sequenceTemplateDao().getById("delete-sequence")?.deletedAtMs)
+        assertEquals(8L, database.sequenceTemplateDao().getById("delete-sequence")?.deletedAtMs)
         assertNull(database.sequenceTemplateDao().getById("delete-sequence")?.folderId)
         assertNotNull(database.activityExecutionDao().getById("history"))
         assertNotNull(database.statisticsSeriesDao().getById("delete-activity-series"))
 
-        repository.createFolder(FolderId("rollback"), "Rollback", null, instant(7))
+        repository.createFolder(FolderId("rollback"), "Rollback", null, instant(9))
         activity("rollback-activity", "Rollback", folder = "rollback")
         database.openHelper.writableDatabase.execSQL(
             "CREATE TRIGGER fail_folder_delete BEFORE DELETE ON folders " +
                 "WHEN OLD.id = 'rollback' BEGIN SELECT RAISE(ABORT, 'forced'); END",
         )
         assertThrows(SQLiteException::class.java) {
-            repository.deleteFolderMovingContents(FolderId("rollback"), null, instant(8))
+            repository.deleteFolderMovingContents(FolderId("rollback"), null, instant(10))
         }
         assertNotNull(database.folderDao().getById("rollback"))
         assertEquals("rollback", database.activityTemplateDao().getById("rollback-activity")?.folderId)
+
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_folder_delete")
+        repository.createFolder(FolderId("archive-rollback"), "Archive rollback", null, instant(11))
+        repository.createFolder(
+            FolderId("archive-rollback-child"),
+            "Archive rollback child",
+            FolderId("archive-rollback"),
+            instant(12),
+        )
+        activity("archive-rollback-activity", "Archive rollback", folder = "archive-rollback-child")
+        sequence("archive-rollback-sequence", "Archive rollback", folder = "archive-rollback")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_archive_folder_delete BEFORE DELETE ON folders " +
+                "WHEN OLD.id = 'archive-rollback' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+        assertThrows(SQLiteException::class.java) {
+            repository.deleteFolderAndArchiveContents(FolderId("archive-rollback"), instant(13))
+        }
+        assertNotNull(database.folderDao().getById("archive-rollback"))
+        assertNotNull(database.folderDao().getById("archive-rollback-child"))
+        assertNull(database.activityTemplateDao().getById("archive-rollback-activity")?.deletedAtMs)
+        assertEquals(
+            "archive-rollback-child",
+            database.activityTemplateDao().getById("archive-rollback-activity")?.folderId,
+        )
+        assertNull(database.sequenceTemplateDao().getById("archive-rollback-sequence")?.deletedAtMs)
+        assertEquals(
+            "archive-rollback",
+            database.sequenceTemplateDao().getById("archive-rollback-sequence")?.folderId,
+        )
+    }
+
+    @Test
+    fun emptyFolderDeleteRejectsNewAndHiddenDurableContentsWithoutMutation() {
+        val repository = repository()
+        repository.createFolder(FolderId("template-folder"), "Template folder", null, instant(1))
+        repository.createFolder(FolderId("child-folder"), "Child folder", null, instant(1))
+        repository.createFolder(FolderId("archived-folder"), "Archived folder", null, instant(1))
+        repository.createFolder(FolderId("archived-sequence-folder"), "Archived sequence folder", null, instant(1))
+        assertTrue(repository.getFolderContents(FolderId("template-folder")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("child-folder")).folders.isEmpty())
+
+        activity("arrived", "Arrived", folder = "template-folder", revision = 7)
+        repository.createFolder(FolderId("arrived-child"), "Arrived child", FolderId("child-folder"), instant(2))
+        activity("hidden", "Hidden", folder = "archived-folder", deleted = 2, revision = 9)
+        sequence("hidden-sequence", "Hidden sequence", folder = "archived-sequence-folder", deleted = 2, revision = 11)
+        assertTrue(repository.getFolderContents(FolderId("archived-folder")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("archived-sequence-folder")).sequences.isEmpty())
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("template-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("child-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("archived-folder")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("archived-sequence-folder")))
+
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("template-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("child-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("archived-folder"), instant(3))
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repository.deleteEmptyFolder(FolderId("archived-sequence-folder"), instant(3))
+        }
+
+        assertNotNull(database.folderDao().getById("template-folder"))
+        assertEquals("template-folder", database.activityTemplateDao().getById("arrived")?.folderId)
+        assertNull(database.activityTemplateDao().getById("arrived")?.deletedAtMs)
+        assertNotNull(database.folderDao().getById("child-folder"))
+        assertEquals("child-folder", database.folderDao().getById("arrived-child")?.parentFolderId)
+        assertNotNull(database.folderDao().getById("archived-folder"))
+        assertEquals("archived-folder", database.activityTemplateDao().getById("hidden")?.folderId)
+        assertEquals(2L, database.activityTemplateDao().getById("hidden")?.deletedAtMs)
+        assertEquals(9L, database.activityTemplateDao().getById("hidden")?.revision)
+        assertEquals("hidden-series", database.activityTemplateDao().getById("hidden")?.statisticsSeriesId)
+        assertNotNull(database.folderDao().getById("archived-sequence-folder"))
+        assertEquals(
+            "archived-sequence-folder",
+            database.sequenceTemplateDao().getById("hidden-sequence")?.folderId,
+        )
+        assertEquals(2L, database.sequenceTemplateDao().getById("hidden-sequence")?.deletedAtMs)
+        assertEquals(11L, database.sequenceTemplateDao().getById("hidden-sequence")?.revision)
+        assertEquals(
+            "hidden-sequence-series",
+            database.sequenceTemplateDao().getById("hidden-sequence")?.statisticsSeriesId,
+        )
+    }
+
+    @Test
+    fun archivedOnlyFolderContentsRemainHiddenButSupportBothDeleteDispositions() {
+        val repository = repository()
+        repository.createFolder(FolderId("move-source"), "Move source", null, instant(1))
+        repository.createFolder(FolderId("destination"), "Destination", null, instant(1))
+        repository.createFolder(FolderId("delete-source"), "Delete source", null, instant(1))
+        repository.createFolder(FolderId("truly-empty"), "Truly empty", null, instant(1))
+        activity("hidden-activity", "Hidden activity", folder = "move-source", deleted = 2, revision = 7)
+        sequence("hidden-sequence", "Hidden sequence", folder = "delete-source", deleted = 2, revision = 9)
+
+        assertTrue(repository.getFolderContents(FolderId("move-source")).activities.isEmpty())
+        assertTrue(repository.getFolderContents(FolderId("delete-source")).sequences.isEmpty())
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("move-source")))
+        assertFalse(repository.isFolderEmptyForDeletion(FolderId("delete-source")))
+        assertTrue(repository.isFolderEmptyForDeletion(FolderId("truly-empty")))
+
+        repository.deleteFolderMovingContents(FolderId("move-source"), FolderId("destination"), instant(3))
+        val moved = requireNotNull(database.activityTemplateDao().getById("hidden-activity"))
+        assertEquals("destination", moved.folderId)
+        assertEquals(2L, moved.deletedAtMs)
+        assertEquals(7L, moved.revision)
+        assertEquals("hidden-activity-series", moved.statisticsSeriesId)
+
+        repository.deleteFolderAndArchiveContents(FolderId("delete-source"), instant(3))
+        val deleted = requireNotNull(database.sequenceTemplateDao().getById("hidden-sequence"))
+        assertNull(database.folderDao().getById("delete-source"))
+        assertNull(deleted.folderId)
+        assertEquals(2L, deleted.deletedAtMs)
+        assertEquals(9L, deleted.revision)
+        assertEquals("hidden-sequence-series", deleted.statisticsSeriesId)
+    }
+
+    @Test
+    fun folderSubtreeArchiveChunksSafeBindSetsAndPreservesIdentity() {
+        val archiveQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
+        rebuildDatabaseWithQueryCallback(archiveQueries)
+        val repository = repository()
+        insertWideFolderSubtree("large", 900)
+        activity("large-activity", "Large activity", folder = "large-child-0", revision = 7)
+        sequence("large-sequence", "Large sequence", folder = "large-child-899", revision = 9)
+
+        repository.deleteFolderAndArchiveContents(FolderId("large"), instant(5))
+
+        assertTrue(database.folderDao().getSubtree("large").isEmpty())
+        assertEquals(5L, database.activityTemplateDao().getById("large-activity")?.deletedAtMs)
+        assertNull(database.activityTemplateDao().getById("large-activity")?.folderId)
+        assertEquals(7L, database.activityTemplateDao().getById("large-activity")?.revision)
+        assertEquals(
+            "large-activity-series",
+            database.activityTemplateDao().getById("large-activity")?.statisticsSeriesId,
+        )
+        assertEquals(5L, database.sequenceTemplateDao().getById("large-sequence")?.deletedAtMs)
+        assertNull(database.sequenceTemplateDao().getById("large-sequence")?.folderId)
+        assertEquals(9L, database.sequenceTemplateDao().getById("large-sequence")?.revision)
+        assertEquals(
+            "large-sequence-series",
+            database.sequenceTemplateDao().getById("large-sequence")?.statisticsSeriesId,
+        )
+        assertArchiveBindChunks(archiveQueries)
+    }
+
+    @Test
+    fun largeFolderSubtreeArchiveRollsBackEarlierChunksWhenFolderDeleteFails() {
+        val archiveQueries = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
+        rebuildDatabaseWithQueryCallback(archiveQueries)
+        val repository = repository()
+        insertWideFolderSubtree("large-rollback", 900)
+        activity("large-rollback-activity", "Rollback activity", folder = "large-rollback-child-0")
+        sequence("large-rollback-sequence", "Rollback sequence", folder = "large-rollback-child-899")
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER fail_large_folder_delete BEFORE DELETE ON folders " +
+                "WHEN OLD.id = 'large-rollback' BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+
+        assertThrows(SQLiteException::class.java) {
+            repository.deleteFolderAndArchiveContents(FolderId("large-rollback"), instant(5))
+        }
+
+        assertEquals(901, database.folderDao().getSubtree("large-rollback").size)
+        assertNull(database.activityTemplateDao().getById("large-rollback-activity")?.deletedAtMs)
+        assertEquals(
+            "large-rollback-child-0",
+            database.activityTemplateDao().getById("large-rollback-activity")?.folderId,
+        )
+        assertNull(database.sequenceTemplateDao().getById("large-rollback-sequence")?.deletedAtMs)
+        assertEquals(
+            "large-rollback-child-899",
+            database.sequenceTemplateDao().getById("large-rollback-sequence")?.folderId,
+        )
+        assertArchiveBindChunks(archiveQueries)
     }
 
     @Test
@@ -875,6 +1188,8 @@ class LibraryRepositoryTest {
             nodes = listOf(step("sequence-step", "sequence", "step")),
         )
 
+        val timedSnapshotsBeforeArchiveAttempt = count("activity_snapshots")
+        val timedExecutionsBeforeArchiveAttempt = count("activity_executions")
         repository.archiveActivityTemplate(ActivityTemplateId("timed"), instant(5))
         assertThrows(IllegalArgumentException::class.java) {
             activityCommands.startLive(
@@ -884,6 +1199,10 @@ class LibraryRepositoryTest {
                 ZoneOffset.UTC,
             )
         }
+        assertEquals(timedSnapshotsBeforeArchiveAttempt, count("activity_snapshots"))
+        assertEquals(timedExecutionsBeforeArchiveAttempt, count("activity_executions"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("timed")?.lastUsedAtMs)
         repository.restoreActivityTemplate(ActivityTemplateId("timed"))
         val timed =
             activityCommands.startLive(
@@ -1006,6 +1325,30 @@ class LibraryRepositoryTest {
 
         liveForExistingDatabase().completeActiveActivity(instant(34))
 
+        val noLiveSnapshotsBeforeArchiveAttempt = count("activity_snapshots")
+        val noLiveExecutionsBeforeArchiveAttempt = count("activity_executions")
+        val noLiveRecentBeforeArchiveAttempt = database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs
+        repository.archiveActivityTemplate(ActivityTemplateId("no-live"), instant(35))
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.completeNoLiveActivityFromTemplate(
+                ActivityTemplateId("no-live"),
+                instant(36),
+                instant(36),
+                ZoneOffset.UTC,
+                expectedRevision = 1,
+            )
+        }
+        assertEquals(noLiveSnapshotsBeforeArchiveAttempt, count("activity_snapshots"))
+        assertEquals(noLiveExecutionsBeforeArchiveAttempt, count("activity_executions"))
+        assertEquals(
+            noLiveRecentBeforeArchiveAttempt,
+            database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs,
+        )
+        assertNull(database.activeSessionDao().get())
+
+        val sequenceSnapshotsBeforeArchiveAttempt = count("sequence_snapshots")
+        val sequenceExecutionsBeforeArchiveAttempt = count("sequence_executions")
+        val sequenceRecentBeforeArchiveAttempt = database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs
         repository.archiveSequenceTemplate(SequenceTemplateId("sequence"), instant(35))
         assertThrows(IllegalArgumentException::class.java) {
             repository.startSequenceFromTemplate(
@@ -1015,6 +1358,13 @@ class LibraryRepositoryTest {
                 ZoneOffset.UTC,
             )
         }
+        assertEquals(sequenceSnapshotsBeforeArchiveAttempt, count("sequence_snapshots"))
+        assertEquals(sequenceExecutionsBeforeArchiveAttempt, count("sequence_executions"))
+        assertEquals(
+            sequenceRecentBeforeArchiveAttempt,
+            database.sequenceTemplateDao().getUserState("sequence")?.lastUsedAtMs,
+        )
+        assertNull(database.activeSessionDao().get())
         repository.restoreSequenceTemplate(SequenceTemplateId("sequence"))
         val sequence =
             repository.startSequenceFromTemplate(
@@ -1401,6 +1751,45 @@ class LibraryRepositoryTest {
             { SequenceNodeId("sequence-copy-node-${++sequenceNode}") },
             { StatisticsSeriesId("copy-series-${++series}") },
         )
+    }
+
+    private fun rebuildDatabaseWithQueryCallback(queries: MutableList<Pair<String, List<Any?>>>) {
+        database.close()
+        database =
+            LifeTracingDatabase
+                .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .setQueryCallback(
+                    RoomDatabase.QueryCallback { sql, bindArgs -> queries += sql to bindArgs },
+                    Executor { command -> command.run() },
+                ).allowMainThreadQueries()
+                .build()
+    }
+
+    private fun insertWideFolderSubtree(
+        root: String,
+        childCount: Int,
+    ) {
+        database.runInTransaction {
+            database.folderDao().insert(FolderEntity(root, root, null, 0, 0))
+            repeat(childCount) { index ->
+                val id = "$root-child-$index"
+                database.folderDao().insert(FolderEntity(id, id, root, 0, 0))
+            }
+        }
+    }
+
+    private fun assertArchiveBindChunks(queries: List<Pair<String, List<Any?>>>) {
+        val archiveQueries = synchronized(queries) { queries.toList() }
+        val activityBindCounts =
+            archiveQueries.filter { "UPDATE activity_templates SET deleted_at_ms" in it.first }.map { it.second.size }
+        val sequenceBindCounts =
+            archiveQueries.filter { "UPDATE sequence_templates SET deleted_at_ms" in it.first }.map { it.second.size }
+        assertEquals(listOf(899, 2), activityBindCounts.map { it - 1 })
+        assertEquals(listOf(899, 2), sequenceBindCounts.map { it - 1 })
+        assertEquals(listOf(900, 3), activityBindCounts)
+        assertEquals(listOf(900, 3), sequenceBindCounts)
+        assertTrue(activityBindCounts.all { it <= 900 })
+        assertTrue(sequenceBindCounts.all { it <= 900 })
     }
 
     private fun activityCommands(): ActivityCommandRepository {

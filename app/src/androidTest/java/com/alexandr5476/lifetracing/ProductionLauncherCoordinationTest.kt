@@ -20,6 +20,7 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -37,6 +38,13 @@ import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityAction
 import com.alexandr5476.lifetracing.launcher.StartActivityController
+import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
+import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
+import com.alexandr5476.lifetracing.library.LibraryAction
+import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryLoad
+import com.alexandr5476.lifetracing.library.LibraryMutation
+import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.InProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.RuntimeDeadlineScheduler
@@ -62,9 +70,274 @@ import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class ProductionLauncherCoordinationTest {
+    @Test
+    @Suppress("LongMethod") // The three existing launcher variants share one real Library-entry boundary.
+    fun libraryPrimedRoutesUseTheExistingProductionLaunchWriters() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val suffix = now.toEpochMilli()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, now)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val timed =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S5 timed $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = now.minusSeconds(3),
+                )
+            val noLive =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S5 no-live $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(2),
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "S5 sequence $suffix",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(timed.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = now.minusSeconds(1),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val dailyReader = DailyReadRepository.create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val sessions = StartActivityRouteSessionOwner()
+            val durableCommands = mutableListOf<LauncherDurableCommand>()
+            val timedBefore = requireNotNull(authoring.getActivityTemplate(timed.id))
+            val noLiveBefore = requireNotNull(authoring.getActivityTemplate(noLive.id))
+            val sequenceBefore = requireNotNull(authoring.getSequenceTemplate(sequence.id))
+            try {
+                val timedSession =
+                    sessions.acquire {
+                        controller(
+                            scope,
+                            library,
+                            live,
+                            FixedWallClock(now),
+                            execute = { command ->
+                                durableCommands += command
+                                executeLauncherCommand(command, commands, library)
+                            },
+                        )
+                    }
+                val timedCommit =
+                    resolvePrimedLibraryRoute(
+                        timedSession,
+                        LibraryTemplateId.Activity(timed.id),
+                    ) as LauncherCommit.Activity
+                assertTrue(timedCommit.isLive)
+                assertNull(timedSession.interaction.resolveSelection(timedSession.controller.loadedTarget()))
+                assertEquals(timedCommit.executionId, live.getActiveSession()?.activityExecutionId)
+                val timedActive =
+                    dailyReader
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now, 100))
+                        .active as DailyActive.Activity
+                assertEquals(timed.id, timedActive.runtime.snapshot.sourceTemplateId)
+                assertEquals(timedBefore.revision, timedActive.runtime.snapshot.sourceRevision)
+                assertEquals(timedBefore.statisticsSeriesId, timedActive.runtime.snapshot.statisticsSeriesId)
+                sessions.release(timedSession)
+
+                val noLiveSession =
+                    sessions.acquire {
+                        controller(
+                            scope,
+                            library,
+                            live,
+                            FixedWallClock(now),
+                            execute = { command ->
+                                durableCommands += command
+                                executeLauncherCommand(command, commands, library)
+                            },
+                        )
+                    }
+                val noLiveCommit =
+                    resolvePrimedLibraryRoute(
+                        noLiveSession,
+                        LibraryTemplateId.Activity(noLive.id),
+                    ) as LauncherCommit.Activity
+                assertEquals(false, noLiveCommit.isLive)
+                assertEquals(timedCommit.executionId, live.getActiveSession()?.activityExecutionId)
+                val noLiveHistory =
+                    dailyReader
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now, 100))
+                        .completedHistory
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single { it.executionId == noLiveCommit.executionId }
+                assertNull(noLiveHistory.startedAt)
+                assertNull(noLiveHistory.activeDuration)
+                assertNull(noLiveHistory.planEntryId)
+                sessions.release(noLiveSession)
+
+                clearLiveSession(live, now.plusSeconds(1))
+                val sequenceSession =
+                    sessions.acquire {
+                        controller(
+                            scope,
+                            library,
+                            live,
+                            FixedWallClock(now.plusSeconds(2)),
+                            execute = { command ->
+                                durableCommands += command
+                                executeLauncherCommand(command, commands, library)
+                            },
+                        )
+                    }
+                val sequenceCommit =
+                    resolvePrimedLibraryRoute(
+                        sequenceSession,
+                        LibraryTemplateId.Sequence(sequence.id),
+                    ) as LauncherCommit.Sequence
+                assertEquals(sequenceCommit.executionId, live.getActiveSession()?.sequenceExecutionId)
+                sessions.release(sequenceSession)
+
+                assertEquals(
+                    listOf(
+                        LauncherDurableCommand.StartActivity::class,
+                        LauncherDurableCommand.CompleteNoLive::class,
+                        LauncherDurableCommand.StartSequence::class,
+                    ),
+                    durableCommands.map { it::class },
+                )
+                assertEquals(
+                    setOf(
+                        LibraryTemplateId.Activity(timed.id),
+                        LibraryTemplateId.Activity(noLive.id),
+                        LibraryTemplateId.Sequence(sequence.id),
+                    ),
+                    library.getRecent(100).map(LibraryTrackable::id).toSet().intersect(
+                        setOf(
+                            LibraryTemplateId.Activity(timed.id),
+                            LibraryTemplateId.Activity(noLive.id),
+                            LibraryTemplateId.Sequence(sequence.id),
+                        ),
+                    ),
+                )
+                val activeSequence =
+                    dailyReader
+                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now.plusSeconds(2), 100))
+                        .active as DailyActive.Sequence
+                assertEquals(sequenceCommit.executionId, activeSequence.runtime.execution.id)
+                assertEquals(sequence.id, activeSequence.runtime.snapshot.sourceTemplateId)
+                assertEquals(sequenceBefore.revision, activeSequence.runtime.snapshot.sourceRevision)
+                assertEquals(sequenceBefore.statisticsSeriesId, activeSequence.runtime.snapshot.statisticsSeriesId)
+                assertEquals(timedBefore.revision, authoring.getActivityTemplate(timed.id)?.revision)
+                assertEquals(
+                    timedBefore.statisticsSeriesId,
+                    authoring.getActivityTemplate(timed.id)?.statisticsSeriesId,
+                )
+                assertEquals(noLiveBefore.revision, authoring.getActivityTemplate(noLive.id)?.revision)
+                assertEquals(
+                    noLiveBefore.statisticsSeriesId,
+                    authoring.getActivityTemplate(noLive.id)?.statisticsSeriesId,
+                )
+                assertEquals(sequenceBefore.revision, authoring.getSequenceTemplate(sequence.id)?.revision)
+                assertEquals(
+                    sequenceBefore.statisticsSeriesId,
+                    authoring.getSequenceTemplate(sequence.id)?.statisticsSeriesId,
+                )
+            } finally {
+                sessions.activeSession?.let(sessions::release)
+                clearLiveSession(live, now.plusSeconds(3))
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun loadedTimedNoLiveAndSequenceTargetsArchivedBeforeCommitLeaveNoRuntimeOrRecentResidue() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val suffix = now.toEpochMilli()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, now)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val timed =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S4 timed $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = now.minusSeconds(4),
+                )
+            val noLive =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("S4 no-live $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(3),
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "S4 sequence $suffix",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(timed.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = now.minusSeconds(2),
+                )
+            val targets =
+                listOf(
+                    LibraryTemplateId.Activity(timed.id),
+                    LibraryTemplateId.Activity(noLive.id),
+                    LibraryTemplateId.Sequence(sequence.id),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+
+            targets.forEachIndexed { index, id ->
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                var writers = 0
+                val controller =
+                    controller(
+                        scope,
+                        library,
+                        live,
+                        FixedWallClock(now),
+                        execute = { command ->
+                            writers++
+                            executeLauncherCommand(command, commands, library)
+                        },
+                        initialLiveConflict = { false },
+                    )
+                try {
+                    withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                    controller.dispatch(StartActivityAction.Select(id))
+                    withTimeout(5_000) { controller.state.first { it.selected is LauncherLoad.Content } }
+                    executeLibraryMutation(LibraryMutation.ArchiveTemplate(id, now.plusMillis(index.toLong())), library)
+
+                    controller.dispatch(StartActivityAction.Launch())
+                    withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Rejected } }
+
+                    assertEquals(1, writers)
+                    assertNull(live.getActiveSession())
+                    assertTrue(library.getRecent(100).none { it.id == id })
+                } finally {
+                    controller.close()
+                    scope.cancel()
+                    clearLiveSession(live, now.plusSeconds(1))
+                }
+            }
+        }
+
     @Test
     fun realSemanticSaveRehydratesTheLauncherBeforeTheOldNoLiveBoundaryCanPersist() =
         runBlocking {
@@ -566,12 +839,151 @@ class ProductionLauncherCoordinationTest {
         }
     }
 
+    @Test
+    fun libraryReorderIsTheFreshStartActivityPinnedOrderWithoutChangingTemplateIdentity() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val now = Instant.now()
+            val authoring = TemplateAuthoringRepository.create(context)
+            val activityA =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S3 pinned A ${now.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = now.minusSeconds(3),
+                )
+            val activityB =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S3 pinned B ${now.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = now.minusSeconds(2),
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "S3 pinned sequence ${now.toEpochMilli()}",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(activityA.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = now.minusSeconds(1),
+                )
+            val library = LibraryRepository.create(context)
+            val baseline = library.getPinned().map(LibraryTrackable::id)
+            val activityAId = LibraryTemplateId.Activity(activityA.id)
+            val activityBId = LibraryTemplateId.Activity(activityB.id)
+            val sequenceId = LibraryTemplateId.Sequence(sequence.id)
+            listOf(activityAId, activityBId, sequenceId).forEach(library::pin)
+            val desired = listOf(sequenceId, activityBId, activityAId) + baseline
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val failNextRootRead = AtomicBoolean()
+            val libraryController =
+                LibraryController(
+                    scope,
+                    {
+                        if (failNextRootRead.getAndSet(false)) error("post-commit browse failed")
+                        library.getRoot()
+                    },
+                    library::getFolderContents,
+                    library::getFolderPath,
+                    library::search,
+                    { LibraryOrganization(library.getFolders(), library.getTags()) },
+                    { mutation ->
+                        require(mutation is LibraryMutation.ReorderPinned)
+                        library.reorderPinned(mutation.ids)
+                        failNextRootRead.set(true)
+                    },
+                )
+            try {
+                withTimeout(5_000) { libraryController.state.first { it.browse is LibraryLoad.Content } }
+                libraryController.dispatch(LibraryAction.ReorderPinned(desired))
+                withTimeout(5_000) {
+                    libraryController.state.first { !it.isMutating && it.browse is LibraryLoad.Failure }
+                }
+                assertNull(libraryController.state.value.mutationFailure)
+
+                val freshLibrary = LibraryRepository.create(context)
+                assertEquals(desired, freshLibrary.getPinned().map(LibraryTrackable::id))
+                libraryController.dispatch(LibraryAction.Retry)
+                withTimeout(5_000) {
+                    libraryController.state.first { state ->
+                        (state.browse as? LibraryLoad.Content)?.value?.pinned?.map(LibraryTrackable::id) == desired
+                    }
+                }
+                val freshStart =
+                    controller(
+                        scope,
+                        freshLibrary,
+                        LiveSessionRepository.create(context),
+                        FixedWallClock(now),
+                        execute = { error("launcher writer is not used") },
+                        readPinned = freshLibrary::getPinned,
+                    )
+                try {
+                    val home =
+                        withTimeout(5_000) { freshStart.state.first { it.home is LauncherLoad.Content } }
+                            .let { (it.home as LauncherLoad.Content).value }
+                    assertEquals(desired, home.pinned.map(LibraryTrackable::id))
+                } finally {
+                    freshStart.close()
+                }
+
+                val reloadedActivityA = requireNotNull(authoring.getActivityTemplate(activityA.id))
+                val reloadedActivityB = requireNotNull(authoring.getActivityTemplate(activityB.id))
+                val reloadedSequence = requireNotNull(authoring.getSequenceTemplate(sequence.id))
+                assertEquals(activityA.revision, reloadedActivityA.revision)
+                assertEquals(activityA.statisticsSeriesId, reloadedActivityA.statisticsSeriesId)
+                assertEquals(activityB.revision, reloadedActivityB.revision)
+                assertEquals(activityB.statisticsSeriesId, reloadedActivityB.statisticsSeriesId)
+                assertEquals(sequence.revision, reloadedSequence.revision)
+                assertEquals(sequence.statisticsSeriesId, reloadedSequence.statisticsSeriesId)
+            } finally {
+                libraryController.close()
+                scope.cancel()
+            }
+        }
+
+    private suspend fun resolvePrimedLibraryRoute(
+        session: StartActivityRouteSession,
+        id: LibraryTemplateId,
+    ): LauncherCommit {
+        withTimeout(5_000) { session.controller.state.first { it.home !is LauncherLoad.Loading } }
+        session.primeInitialSelection(id)
+        val target =
+            withTimeout(5_000) {
+                session.controller.state.first { it.selected is LauncherLoad.Content }
+            }.let { (it.selected as LauncherLoad.Content).value }
+        session.interaction.resolveSelection(target)?.let(session.controller::dispatch)
+            ?: error("Expected Library priming to resolve an immediate launcher action")
+        return withTimeout(5_000) {
+            session.controller.state.first { it.command is LauncherCommandState.Committed }
+        }.let { (it.command as LauncherCommandState.Committed).result }
+    }
+
+    private fun StartActivityController.loadedTarget() = (state.value.selected as LauncherLoad.Content).value
+
     private fun controller(
         scope: CoroutineScope,
         library: LibraryRepository,
         live: LiveSessionRepository,
         wallClock: WallClock,
         execute: suspend (LauncherDurableCommand) -> LauncherCommit,
+        readPinned: suspend () -> List<LibraryTrackable> = { emptyList() },
         coordinate: suspend () -> Unit = {},
         scheduler: PreflightScheduler = PreflightScheduler { _, _ -> PreflightHandle {} },
         onSelectObserved: (LauncherCommandState) -> Unit = {},
@@ -579,7 +991,7 @@ class ProductionLauncherCoordinationTest {
     ) = StartActivityController(
         scope,
         { emptyList() },
-        { emptyList() },
+        readPinned,
         { emptyList() },
         { LibraryContents(emptyList(), emptyList(), emptyList()) },
         library::getLaunchTarget,

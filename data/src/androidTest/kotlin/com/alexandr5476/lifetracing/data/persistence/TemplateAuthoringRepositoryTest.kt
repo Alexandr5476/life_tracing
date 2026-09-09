@@ -130,8 +130,111 @@ class TemplateAuthoringRepositoryTest {
             )
         val replaced = repository.saveActivityTemplate(created.id, 2, replacementDraft, at(5))
         assertEquals(3L, replaced.revision)
-        assertNotEquals(oldFieldId, replaced.fields.single { it.deletedAt == null }.id)
+        val unitReplacementId = replaced.fields.single { it.deletedAt == null }.id
+        assertNotEquals(oldFieldId, unitReplacementId)
         assertNotNull(replaced.fields.single { it.id == oldFieldId }.deletedAt)
+
+        val typeReplaced =
+            repository.saveActivityTemplate(
+                created.id,
+                3,
+                replaced.toAuthoringDraft().let { current ->
+                    current.copy(
+                        fields =
+                            listOf(
+                                current.fields.single().copy(
+                                    identity = DraftIdentity.New("type-replacement"),
+                                    type = CustomFieldType.TEXT,
+                                    unit = null,
+                                    displayPrecision = null,
+                                    defaultNumberScaled = null,
+                                    defaultText = "note",
+                                    isMainValue = false,
+                                ),
+                            ),
+                    )
+                },
+                at(6),
+            )
+        assertEquals(4L, typeReplaced.revision)
+        assertNotEquals(unitReplacementId, typeReplaced.fields.single { it.deletedAt == null }.id)
+        assertNotNull(typeReplaced.fields.single { it.id == unitReplacementId }.deletedAt)
+    }
+
+    @Test
+    fun retainedActivityFieldRejectsTypeAndUnitMutationWithoutPartialPersistence() {
+        val number = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val numberDraft = number.toAuthoringDraft()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveActivityTemplate(
+                number.id,
+                number.revision,
+                numberDraft.copy(fields = listOf(numberDraft.fields.single().copy(unit = "m"))),
+                at(2),
+            )
+        }
+        assertEquals(number, repository.getActivityTemplate(number.id))
+
+        val unitReplacement =
+            repository.saveActivityTemplate(
+                number.id,
+                number.revision,
+                numberDraft.copy(
+                    fields =
+                        listOf(
+                            numberDraft.fields.single().copy(
+                                identity = DraftIdentity.New("unit-replacement"),
+                                unit = "m",
+                            ),
+                        ),
+                ),
+                at(2),
+            )
+        assertEquals(2L, unitReplacement.revision)
+        assertNotEquals(number.fields.single().id, unitReplacement.fields.single { it.deletedAt == null }.id)
+        assertNotNull(unitReplacement.fields.single { it.id == number.fields.single().id }.deletedAt)
+
+        val category = repository.createActivityTemplate(categoryActivityDraft(), createdAt = at(10))
+        val categoryDraft = category.toAuthoringDraft()
+        val retainedTypeMutation =
+            categoryDraft.copy(
+                fields =
+                    listOf(
+                        categoryDraft.fields.single().copy(
+                            type = CustomFieldType.TEXT,
+                            defaultCategoryOption = null,
+                            defaultText = "note",
+                            categoryOptions = emptyList(),
+                        ),
+                    ),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveActivityTemplate(category.id, category.revision, retainedTypeMutation, at(11))
+        }
+        val afterRejectedType = requireNotNull(repository.getActivityTemplate(category.id))
+        assertEquals(category.revision, afterRejectedType.revision)
+        assertEquals(category.fields, afterRejectedType.fields)
+
+        val typeReplacement =
+            repository.saveActivityTemplate(
+                category.id,
+                category.revision,
+                retainedTypeMutation.copy(
+                    fields =
+                        listOf(
+                            retainedTypeMutation.fields.single().copy(
+                                identity = DraftIdentity.New("type-replacement"),
+                            ),
+                        ),
+                ),
+                at(11),
+            )
+        assertEquals(2L, typeReplacement.revision)
+        assertEquals(CustomFieldType.TEXT, typeReplacement.fields.single { it.deletedAt == null }.type)
+        assertNotEquals(category.fields.single().id, typeReplacement.fields.single { it.deletedAt == null }.id)
+        assertNotNull(typeReplacement.fields.single { it.id == category.fields.single().id }.deletedAt)
     }
 
     @Test
@@ -162,6 +265,80 @@ class TemplateAuthoringRepositoryTest {
                 .categoryOptions
                 .single()
                 .label,
+        )
+        val renamedOptionId =
+            renamed.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id
+        val added =
+            repository.saveActivityTemplate(
+                renamed.id,
+                1,
+                renamed.toAuthoringDraft().let { current ->
+                    current.copy(
+                        fields =
+                            listOf(
+                                current.fields.single().copy(
+                                    categoryOptions =
+                                        current.fields.single().categoryOptions +
+                                            com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft(
+                                                DraftIdentity.New("medium"),
+                                                1,
+                                                "Medium",
+                                            ),
+                                ),
+                            ),
+                    )
+                },
+                at(3),
+            )
+        val activeAddedOptions =
+            added.fields
+                .single()
+                .categoryOptions
+                .filterNot { it.isArchived }
+        assertEquals(renamedOptionId, activeAddedOptions.single { it.label == "Hard" }.id)
+        assertNotEquals(renamedOptionId, activeAddedOptions.single { it.label == "Medium" }.id)
+
+        val removedSelected =
+            repository.saveActivityTemplate(
+                added.id,
+                2,
+                added.toAuthoringDraft().let { current ->
+                    current.copy(
+                        fields =
+                            listOf(
+                                current.fields.single().copy(
+                                    defaultCategoryOption = null,
+                                    categoryOptions =
+                                        current.fields
+                                            .single()
+                                            .categoryOptions
+                                            .filter { it.label == "Medium" },
+                                ),
+                            ),
+                    )
+                },
+                at(4),
+            )
+        assertNull(removedSelected.fields.single().defaultCategoryOptionId)
+        assertTrue(
+            removedSelected.fields
+                .single()
+                .categoryOptions
+                .single { it.id == renamedOptionId }
+                .isArchived,
+        )
+        assertEquals(
+            listOf("Medium"),
+            removedSelected.fields
+                .single()
+                .categoryOptions
+                .filterNot {
+                    it.isArchived
+                }.map { it.label },
         )
 
         val colliding =
