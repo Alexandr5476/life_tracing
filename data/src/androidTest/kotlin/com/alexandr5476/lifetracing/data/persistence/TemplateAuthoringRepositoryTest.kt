@@ -516,7 +516,7 @@ class TemplateAuthoringRepositoryTest {
                 DraftIdentity.New("duplicate"),
                 0,
                 StepActivityDraft.Duplicate(sourceStep),
-                SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)),
+                SequenceStepOverrides(),
             )
         val saved =
             repository.saveSequenceTemplate(
@@ -568,6 +568,7 @@ class TemplateAuthoringRepositoryTest {
                 .single()
                 .id,
         )
+        assertNotEquals(duplicate.overrides, copiedStep.overrides)
         assertEquals(SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)), copiedStep.overrides)
     }
 

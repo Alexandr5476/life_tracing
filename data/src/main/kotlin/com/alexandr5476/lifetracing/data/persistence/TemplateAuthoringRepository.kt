@@ -453,6 +453,7 @@ class TemplateAuthoringRepository internal constructor(
         fun resolveStep(draft: ActivityStepDraft): ActivityStep {
             val id = resolveNodeIdentity(draft.identity)
             val previous = existingNodes[id]
+            var overrides = draft.overrides
             when (draft.identity) {
                 is DraftIdentity.Existing ->
                     require(previous is ActivityStep) { "Existing Step must belong to the current SequenceTemplate" }
@@ -501,6 +502,7 @@ class TemplateAuthoringRepository internal constructor(
                                 "Duplicate source must be an existing Step in the current SequenceTemplate"
                             }
                         duplicateSources += source.id
+                        overrides = source.overrides
                         activitySnapshotFactory()
                             .duplicate(
                                 requireNotNull(currentSnapshots[source.activitySnapshotId]) {
@@ -511,7 +513,7 @@ class TemplateAuthoringRepository internal constructor(
                             .id
                     }
                 }
-            return ActivityStep(id, draft.position, snapshotId, draft.overrides)
+            return ActivityStep(id, draft.position, snapshotId, overrides)
         }
 
         val nodes =
