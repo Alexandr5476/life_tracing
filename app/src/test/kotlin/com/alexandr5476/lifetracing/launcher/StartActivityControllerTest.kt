@@ -396,10 +396,33 @@ class StartActivityControllerTest {
             session.primeInitialSelection(sequenceId("sequence"))
             session.primeInitialSelection(activityId("ignored"))
             session.controller.awaitTarget("sequence")
+            val target = session.controller.loadedTarget()
+            session.interaction.resolveSelection(target)?.let(session.controller::dispatch)
+            session.controller.awaitCommitted()
 
             assertEquals(listOf(sequenceId("sequence")), harness.targetReads)
-            assertEquals(sequenceId("sequence"), session.interaction.pendingSelectionId)
+            assertNull(session.interaction.pendingSelectionId)
+            assertNull(session.interaction.resolveSelection(target))
+            assertEquals(1, harness.commands.size)
             assertSame(session, owner.acquire { error("Library must retain its launcher session") })
+            owner.release(session)
+        }
+
+    @Test
+    fun libraryPrimedNoLiveMainValueUsesTheExistingQuickEditorBeforeLaunch() =
+        runBlocking {
+            val harness = Harness().apply { target = noLiveTarget("quick") }
+            val owner = StartActivityRouteSessionOwner()
+            val session = owner.acquire { harness.controller(this) }
+            session.controller.awaitHome()
+
+            session.primeInitialSelection(activityId("quick"))
+            session.controller.awaitTarget("quick")
+            val target = session.controller.loadedTarget()
+
+            assertNull(session.interaction.resolveSelection(target))
+            assertEquals(activityId("quick"), session.interaction.quickEditor?.targetId)
+            assertTrue(harness.commands.isEmpty())
             owner.release(session)
         }
 

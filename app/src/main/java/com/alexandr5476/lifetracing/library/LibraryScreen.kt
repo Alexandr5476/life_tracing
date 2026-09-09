@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -379,13 +380,23 @@ private fun TrackableRow(
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
+    val shape = MaterialTheme.shapes.medium
     var showOrganization by remember(item.id) { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (activityId != null) {
+                        Modifier.clip(shape).clickable { onOpenActivity(activityId.id) }
+                    } else {
+                        Modifier
+                    },
+                ),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = MaterialTheme.shapes.medium,
+        shape = shape,
     ) {
         Column(
             modifier = Modifier.padding(MaterialTheme.spacing.medium),
@@ -397,16 +408,7 @@ private fun TrackableRow(
             ) {
                 Text(
                     item.name,
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .then(
-                                if (activityId != null) {
-                                    Modifier.clickable { onOpenActivity(activityId.id) }
-                                } else {
-                                    Modifier
-                                },
-                            ),
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

@@ -107,8 +107,9 @@ class LibraryScreenPresentationTest {
 
     @Test
     fun activityRowsOpenTheEditorWhileSequenceRowsRemainNonEditorActions() {
-        val activity = trackable("Editable activity", false)
+        val activity = trackable("Editable activity", false).copy(shortComment = "Ordinary row content")
         val sequence = trackable("Sequence without editor", true)
+        val actions = mutableListOf<LibraryAction>()
         val opened = mutableListOf<ActivityTemplateId>()
         val quickStarts = mutableListOf<LibraryTemplateId>()
         composeTestRule.setContent {
@@ -125,8 +126,9 @@ class LibraryScreenPresentationTest {
                                         LibraryContents(emptyList(), listOf(activity), listOf(sequence)),
                                     ),
                                 ),
+                            organization = LibraryLoad.Content(LibraryOrganization(emptyList(), emptyList())),
                         ),
-                    onAction = {},
+                    onAction = actions::add,
                     onOpenActivity = opened::add,
                     onQuickStart = quickStarts::add,
                     onRouteBack = {},
@@ -134,7 +136,7 @@ class LibraryScreenPresentationTest {
             }
         }
 
-        composeTestRule.onNodeWithText("Editable activity").performClick()
+        composeTestRule.onNodeWithText("Ordinary row content").performClick()
 
         assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
         assertFalse(
@@ -149,6 +151,59 @@ class LibraryScreenPresentationTest {
 
         assertEquals(listOf(activity.id, sequence.id), quickStarts)
         assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+        composeTestRule.onAllNodesWithText(text(R.string.library_organize))[0].performClick()
+        composeTestRule.onNodeWithText(text(R.string.library_pin)).performClick()
+        assertEquals(LibraryAction.SetPinned(activity.id, true), actions.last())
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+        assertEquals(listOf(activity.id, sequence.id), quickStarts)
+    }
+
+    @Test
+    fun quickStartIsAvailableFromPinnedFolderAndSearchProjections() {
+        val pinned = trackable("Pinned start", false)
+        val folder = folder("folder", "Folder")
+        val inFolder = trackable("Folder start", true)
+        val search = trackable("Search start", false)
+        val quickStarts = mutableListOf<LibraryTemplateId>()
+        var state by mutableStateOf(
+            LibraryPresentationState(
+                browse =
+                    LibraryLoad.Content(
+                        LibraryBrowse(
+                            null,
+                            emptyList(),
+                            listOf(pinned),
+                            LibraryContents(emptyList(), emptyList(), emptyList()),
+                        ),
+                    ),
+            ),
+        )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                LibraryScreen(state, onAction = {}, onQuickStart = quickStarts::add, onRouteBack = {})
+            }
+        }
+
+        composeTestRule.onNodeWithText(text(R.string.library_quick_start)).performClick()
+        state =
+            state.copy(
+                browse =
+                    LibraryLoad.Content(
+                        LibraryBrowse(
+                            folder.id,
+                            listOf(folder),
+                            emptyList(),
+                            LibraryContents(emptyList(), emptyList(), listOf(inFolder)),
+                        ),
+                    ),
+            )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText(text(R.string.library_quick_start)).performClick()
+        state = state.copy(query = "Search", search = LibraryLoad.Content(listOf(search)))
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText(text(R.string.library_quick_start)).performClick()
+
+        assertEquals(listOf(pinned.id, inFolder.id, search.id), quickStarts)
     }
 
     @Test
@@ -269,7 +324,7 @@ class LibraryScreenPresentationTest {
         val context = composeTestRule.activity.createConfigurationContext(configuration)
         val source = folder("source", "Source")
         val destination = folder("destination", "Destination")
-        val activity = trackable("Compact activity", false).copy(pinnedRank = 0)
+        val activity = trackable("Compact activity", false).copy(pinnedRank = 0, shortComment = "Compact body")
         val sequence = trackable("Compact sequence", true).copy(pinnedRank = 1)
         val unpinned = trackable("Unpinned activity", false)
         val actions = mutableListOf<LibraryAction>()
@@ -315,14 +370,16 @@ class LibraryScreenPresentationTest {
         val moveDestination = context.getString(R.string.library_move_to_folder, destination.name)
         val quickStart = context.getString(R.string.library_quick_start)
 
+        clickInside(composeTestRule.onNodeWithText("Compact body"), widthPixels)
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
         clickInside(composeTestRule.onAllNodesWithText(quickStart)[0], widthPixels)
         clickInside(composeTestRule.onAllNodesWithText(quickStart)[1], widthPixels)
         assertEquals(listOf(activity.id, sequence.id), quickStarts)
         clickInside(composeTestRule.onAllNodesWithText(organize)[0], widthPixels)
-        assertTrue(opened.isEmpty())
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
         clickInside(composeTestRule.onAllNodesWithText(unpin)[0], widthPixels)
         assertEquals(LibraryAction.SetPinned(activity.id, false), actions.last())
-        assertTrue(opened.isEmpty())
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
         clickInside(composeTestRule.onAllNodesWithText(moveRoot)[0], widthPixels)
         assertEquals(LibraryAction.MoveTemplate(activity.id, null), actions.last())
         clickInside(composeTestRule.onAllNodesWithText(moveDestination)[0], widthPixels)
@@ -348,7 +405,7 @@ class LibraryScreenPresentationTest {
         clickInside(composeTestRule.onAllNodesWithText(organize)[3], widthPixels)
         clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_pin)), widthPixels)
         assertEquals(LibraryAction.SetPinned(unpinned.id, true), actions.last())
-        assertTrue(opened.isEmpty())
+        assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
     }
 
     private fun verifyCompactFolderOrganization(locale: Locale) {
