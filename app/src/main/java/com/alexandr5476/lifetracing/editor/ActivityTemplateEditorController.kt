@@ -101,7 +101,7 @@ class ActivityTemplateEditorController internal constructor(
 
     fun updateDraft(transform: (ActivityTemplateDraft) -> ActivityTemplateDraft) {
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready ?: return
-        if (closed || saving.get()) return
+        if (!canEdit()) return
         val proposed = transform(ready.draft)
         val draft = normalizeDraft(proposed)
         val numberKeys =
@@ -134,6 +134,7 @@ class ActivityTemplateEditorController internal constructor(
         }
 
     fun setTimerTargetSeconds(text: String) {
+        if (!canEdit()) return
         val seconds = text.toLongOrNull()?.takeIf { it > 0 }
         updateDraft { it.copy(timerTarget = seconds?.let(Duration::ofSeconds)) }
         mutableState.update { it.copy(timerTargetText = text, timerTargetError = seconds == null) }
@@ -144,6 +145,7 @@ class ActivityTemplateEditorController internal constructor(
         text: String,
         parse: (String, Int?) -> Long?,
     ) {
+        if (!canEdit()) return
         val key = field.identity.editorKey()
         val number = parse(text, field.displayPrecision)
         if (text.isBlank() || number != null) {
@@ -168,6 +170,7 @@ class ActivityTemplateEditorController internal constructor(
         field: ActivityFieldDraft,
         text: String,
     ) {
+        if (!canEdit()) return
         val precision = text.toIntOrNull()?.takeIf { it in 0..3 }
         if (text.isNotBlank() && precision == null) return
         val key = field.identity.editorKey()
@@ -264,6 +267,8 @@ class ActivityTemplateEditorController internal constructor(
             !mutableState.value.timerTargetError &&
             mutableState.value.invalidNumberFields.isEmpty()
 
+    private fun canEdit(): Boolean = !closed && !saving.get()
+
     private fun load() {
         if (closed) return
         mutableState.value = ActivityTemplateEditorState()
@@ -308,7 +313,15 @@ class ActivityTemplateEditorController internal constructor(
         proposed.copy(
             fields =
                 proposed.fields.mapIndexed { position, field ->
-                    field.copy(position = position).normalizedMetadata()
+                    val normalized =
+                        field.copy(
+                            position = position,
+                            categoryOptions =
+                                field.categoryOptions.mapIndexed { optionPosition, option ->
+                                    option.copy(position = optionPosition)
+                                },
+                        )
+                    normalized.normalizedMetadata()
                 },
         )
 

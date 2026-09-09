@@ -13,7 +13,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,10 +27,11 @@ import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
+import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
-import com.alexandr5476.lifetracing.library.LibraryController
+import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
@@ -44,12 +44,23 @@ class MainActivity : AppCompatActivity() {
     internal val startActivityRouteSessions by lazy {
         ViewModelProvider(this)[StartActivityRouteSessionOwner::class.java]
     }
+    internal val activityTemplateEditorRouteSessions by lazy {
+        ViewModelProvider(this)[ActivityTemplateEditorRouteSessionOwner::class.java]
+    }
+    internal val libraryControllerOwner by lazy {
+        ViewModelProvider(this)[LibraryControllerOwner::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val appearance by appearancePreferences.preferences.collectAsState(initial = AppearancePreferences())
-            LifeTracingApp(appearance, startActivityRouteSessions = startActivityRouteSessions)
+            LifeTracingApp(
+                appearance,
+                startActivityRouteSessions = startActivityRouteSessions,
+                activityTemplateEditorRouteSessions = activityTemplateEditorRouteSessions,
+                libraryControllerOwner = libraryControllerOwner,
+            )
         }
     }
 }
@@ -82,6 +93,8 @@ internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
     startActivityRouteSessions: StartActivityRouteSessionOwner? = null,
+    activityTemplateEditorRouteSessions: ActivityTemplateEditorRouteSessionOwner? = null,
+    libraryControllerOwner: LibraryControllerOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -98,8 +111,10 @@ internal fun LifeTracingApp(
             val controller = runtimeGraph.dailyController
             val backStack = rememberNavBackStack(dailyInitialBackStack.single())
             var libraryRefreshGeneration by remember { mutableIntStateOf(0) }
-            val libraryController = rememberLibraryController(runtimeGraph)
+            val libraryOwner = libraryControllerOwner ?: remember { LibraryControllerOwner() }
             val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
+            val editorSessions =
+                activityTemplateEditorRouteSessions ?: remember { ActivityTemplateEditorRouteSessionOwner() }
             NavDisplay(
                 backStack = backStack,
                 entryProvider =
@@ -136,7 +151,7 @@ internal fun LifeTracingApp(
                             }
                         }
                         entry<LibraryRoot> {
-                            val activeLibraryController = libraryController.value
+                            val activeLibraryController = libraryOwner.get(runtimeGraph::createLibraryController)
                             LaunchedEffect(libraryRefreshGeneration) {
                                 if (libraryRefreshGeneration > 0) {
                                     activeLibraryController.dispatch(
@@ -147,8 +162,21 @@ internal fun LifeTracingApp(
                             LibraryRoute(
                                 controller = activeLibraryController,
                                 onBack = backStack::removeLibrary,
-                                onCreateActivity = backStack::openNewActivityTemplateEditor,
-                                onOpenActivity = { id -> backStack.openExistingActivityTemplateEditor(id.value) },
+                                onCreateActivity = {
+                                    editorSessions.acquire(ActivityTemplateEditorTarget.New) {
+                                        runtimeGraph.createActivityTemplateEditorController(
+                                            ActivityTemplateEditorTarget.New,
+                                        )
+                                    }
+                                    backStack.openNewActivityTemplateEditor()
+                                },
+                                onOpenActivity = { id ->
+                                    val target = ActivityTemplateEditorTarget.Existing(id)
+                                    editorSessions.acquire(target) {
+                                        runtimeGraph.createActivityTemplateEditorController(target)
+                                    }
+                                    backStack.openExistingActivityTemplateEditor(id.value)
+                                },
                                 onQuickStart = { id ->
                                     launcherSessions
                                         .acquire(runtimeGraph::createStartActivityController)
@@ -158,37 +186,49 @@ internal fun LifeTracingApp(
                             )
                         }
                         entry<NewActivityTemplateEditor> {
-                            val editor =
-                                remember {
-                                    runtimeGraph.createActivityTemplateEditorController(
-                                        ActivityTemplateEditorTarget.New,
-                                    )
-                                }
-                            ActivityTemplateEditorRoute(
-                                editor,
-                                onBack = backStack::removeActivityTemplateEditor,
-                                onCommitted = {
-                                    backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
-                                },
-                            )
+                            val session = editorSessions.activeSession
+                            if (session?.target != ActivityTemplateEditorTarget.New) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredActivityTemplateEditor() }
+                            } else {
+                                ActivityTemplateEditorRoute(
+                                    session.controller,
+                                    onBack = {
+                                        editorSessions.release(session)
+                                        backStack.removeActivityTemplateEditor()
+                                    },
+                                    onCommitted = {
+                                        session.exitPolicy.deliverCommitted {
+                                            editorSessions.release(session)
+                                            backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                        }
+                                    },
+                                )
+                            }
                         }
                         entry<ExistingActivityTemplateEditor> { route ->
-                            val editor =
-                                remember(route.id) {
-                                    runtimeGraph.createActivityTemplateEditorController(
-                                        ActivityTemplateEditorTarget.Existing(
-                                            com.alexandr5476.lifetracing.domain
-                                                .ActivityTemplateId(route.id),
-                                        ),
-                                    )
-                                }
-                            ActivityTemplateEditorRoute(
-                                editor,
-                                onBack = backStack::removeActivityTemplateEditor,
-                                onCommitted = {
-                                    backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
-                                },
-                            )
+                            val session = editorSessions.activeSession
+                            val target =
+                                ActivityTemplateEditorTarget.Existing(
+                                    com.alexandr5476.lifetracing.domain
+                                        .ActivityTemplateId(route.id),
+                                )
+                            if (session?.target != target) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredActivityTemplateEditor() }
+                            } else {
+                                ActivityTemplateEditorRoute(
+                                    session.controller,
+                                    onBack = {
+                                        editorSessions.release(session)
+                                        backStack.removeActivityTemplateEditor()
+                                    },
+                                    onCommitted = {
+                                        session.exitPolicy.deliverCommitted {
+                                            editorSessions.release(session)
+                                            backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                        }
+                                    },
+                                )
+                            }
                         }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
@@ -235,6 +275,11 @@ internal fun MutableList<NavKey>.completeActivityTemplateEditor(refreshLibrary: 
     removeActivityTemplateEditor()
 }
 
+/** No draft is durable; a process-restored editor must not manufacture a new authoring session. */
+internal fun MutableList<NavKey>.normalizeRestoredActivityTemplateEditor() {
+    removeActivityTemplateEditor()
+}
+
 /** A restored launcher route has no durable command state and must never acquire a new controller. */
 internal fun MutableList<NavKey>.normalizeRestoredStartActivity() {
     removeStartActivity()
@@ -248,17 +293,3 @@ internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) 
 private fun lifeTracingNavigationTransition(): ContentTransform =
     fadeIn(animationSpec = tween(dailyNavigationTransitionDurationMillis)) togetherWith
         fadeOut(animationSpec = tween(dailyNavigationTransitionDurationMillis))
-
-@Composable
-private fun rememberLibraryController(runtimeGraph: LifeTracingRuntimeGraph): Lazy<LibraryController> {
-    val controller =
-        remember(runtimeGraph) {
-            lazy(LazyThreadSafetyMode.NONE) { runtimeGraph.createLibraryController() }
-        }
-    DisposableEffect(controller) {
-        onDispose {
-            if (controller.isInitialized()) controller.value.close()
-        }
-    }
-    return controller
-}

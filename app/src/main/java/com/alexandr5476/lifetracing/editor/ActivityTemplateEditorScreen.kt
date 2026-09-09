@@ -23,7 +23,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,7 +52,6 @@ fun ActivityTemplateEditorRoute(
     onCommitted: (() -> Unit)? = null,
     onBack: () -> Unit,
 ) {
-    DisposableEffect(controller) { onDispose(controller::close) }
     val state by controller.state.collectAsState()
     var committedDelivered by remember(controller) { mutableStateOf(false) }
     LaunchedEffect(state.save) {
@@ -112,23 +110,26 @@ private fun EditorForm(
     controller: ActivityTemplateEditorController,
     onBack: () -> Unit,
 ) = EditorPage {
+    val editable = state.save !is ActivityTemplateEditorSave.Saving
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(stringResource(R.string.activity_editor_title), style = MaterialTheme.typography.headlineSmall)
-        TextButton(onClick = { controller.requestBack(onBack) }) { Text(stringResource(R.string.activity_editor_back)) }
+        TextButton(onClick = { controller.requestBack(onBack) }, enabled = editable) {
+            Text(stringResource(R.string.activity_editor_back))
+        }
     }
     LifeTracingOutlinedTextField(
         value = draft.name,
         onValueChange = { value -> controller.updateDraft { it.copy(name = value) } },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_name)) },
-        enabled = state.save !is ActivityTemplateEditorSave.Saving,
+        enabled = editable,
     )
     LifeTracingOutlinedTextField(
         value = draft.shortComment.orEmpty(),
         onValueChange = { value -> controller.updateDraft { it.copy(shortComment = value.ifBlank { null }) } },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_short_comment)) },
-        enabled = state.save !is ActivityTemplateEditorSave.Saving,
+        enabled = editable,
     )
     EditorCard {
         Text(stringResource(R.string.activity_editor_tracking), style = MaterialTheme.typography.titleMedium)
@@ -142,9 +143,15 @@ private fun EditorForm(
                     },
                 )
             if (draft.timeTrackingMode == mode) {
-                LifeTracingPrimaryButton(onClick = { controller.setTimeTrackingMode(mode) }) { Text(label) }
+                LifeTracingPrimaryButton(
+                    onClick = { controller.setTimeTrackingMode(mode) },
+                    enabled = editable,
+                ) { Text(label) }
             } else {
-                LifeTracingSecondaryButton(onClick = { controller.setTimeTrackingMode(mode) }) { Text(label) }
+                LifeTracingSecondaryButton(
+                    onClick = { controller.setTimeTrackingMode(mode) },
+                    enabled = editable,
+                ) { Text(label) }
             }
         }
         if (draft.timeTrackingMode == TimeTrackingMode.TIMER) {
@@ -153,7 +160,7 @@ private fun EditorForm(
                 onValueChange = controller::setTimerTargetSeconds,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(stringResource(R.string.activity_editor_timer_seconds)) },
-                enabled = state.save !is ActivityTemplateEditorSave.Saving,
+                enabled = editable,
             )
             if (state.timerTargetError) {
                 Text(
@@ -171,14 +178,18 @@ private fun EditorForm(
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
             CustomFieldType.entries.forEach { type ->
-                LifeTracingSecondaryButton(onClick = {
-                    controller.updateDraft {
-                        it.copy(
-                            fields =
-                                it.fields + newField(type, it.fields.size),
-                        )
-                    }
-                }) {
+                LifeTracingSecondaryButton(
+                    onClick = {
+                        controller.updateDraft {
+                            it.copy(
+                                fields =
+                                    it.fields +
+                                        newField(type, nextEditorPosition(it.fields.map(ActivityFieldDraft::position))),
+                            )
+                        }
+                    },
+                    enabled = editable,
+                ) {
                     Text(stringResource(fieldTypeLabel(type)))
                 }
             }
@@ -229,6 +240,7 @@ private fun FieldEditor(
     state: ActivityTemplateEditorState,
     controller: ActivityTemplateEditorController,
 ) = EditorCard {
+    val editable = state.save !is ActivityTemplateEditorSave.Saving
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(stringResource(R.string.activity_editor_field), style = MaterialTheme.typography.titleSmall)
         TextButton(onClick = {
@@ -241,7 +253,7 @@ private fun FieldEditor(
                         },
                 )
             }
-        }) {
+        }, enabled = editable) {
             Text(stringResource(R.string.activity_editor_remove))
         }
     }
@@ -250,6 +262,7 @@ private fun FieldEditor(
         onValueChange = { value -> controller.updateDraft { it.withFieldAt(index) { field.copy(name = value) } } },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_field_name)) },
+        enabled = editable,
     )
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
@@ -259,15 +272,21 @@ private fun FieldEditor(
             val selected = field.type == type
             val action = { controller.updateDraft { it.withFieldAt(index) { value -> value.copy(type = type) } } }
             if (selected) {
-                LifeTracingPrimaryButton(onClick = action) { Text(stringResource(fieldTypeLabel(type))) }
+                LifeTracingPrimaryButton(
+                    onClick = action,
+                    enabled = editable,
+                ) { Text(stringResource(fieldTypeLabel(type))) }
             } else {
-                LifeTracingSecondaryButton(onClick = action) { Text(stringResource(fieldTypeLabel(type))) }
+                LifeTracingSecondaryButton(
+                    onClick = action,
+                    enabled = editable,
+                ) { Text(stringResource(fieldTypeLabel(type))) }
             }
         }
     }
     when (field.type) {
         CustomFieldType.NUMBER -> NumberFieldEditor(index, field, state, controller)
-        CustomFieldType.CATEGORY -> CategoryFieldEditor(index, field, controller)
+        CustomFieldType.CATEGORY -> CategoryFieldEditor(index, field, state, controller)
         CustomFieldType.TEXT ->
             LifeTracingOutlinedTextField(
                 value = field.defaultText.orEmpty(),
@@ -280,6 +299,7 @@ private fun FieldEditor(
                 },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(stringResource(R.string.activity_editor_default)) },
+                enabled = editable,
             )
     }
 }
@@ -291,6 +311,7 @@ private fun NumberFieldEditor(
     state: ActivityTemplateEditorState,
     controller: ActivityTemplateEditorController,
 ) {
+    val editable = state.save !is ActivityTemplateEditorSave.Saving
     LifeTracingOutlinedTextField(
         value = field.unit.orEmpty(),
         onValueChange = { unit ->
@@ -298,12 +319,14 @@ private fun NumberFieldEditor(
         },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_unit)) },
+        enabled = editable,
     )
     LifeTracingOutlinedTextField(
         value = field.displayPrecision?.toString().orEmpty(),
         onValueChange = { controller.setDisplayPrecision(field, it) },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_precision)) },
+        enabled = editable,
     )
     val key = field.identity.editorKey()
     LifeTracingOutlinedTextField(
@@ -315,6 +338,7 @@ private fun NumberFieldEditor(
         onValueChange = { controller.setNumberDefault(field, it, ::parseLauncherNumber) },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(stringResource(R.string.activity_editor_default)) },
+        enabled = editable,
     )
     if (key in
         state.invalidNumberFields
@@ -337,6 +361,7 @@ private fun NumberFieldEditor(
                     )
                 }
             },
+            enabled = editable,
         )
         Text(stringResource(R.string.activity_editor_main_value))
     }
@@ -346,8 +371,10 @@ private fun NumberFieldEditor(
 private fun CategoryFieldEditor(
     index: Int,
     field: ActivityFieldDraft,
+    state: ActivityTemplateEditorState,
     controller: ActivityTemplateEditorController,
 ) {
+    val editable = state.save !is ActivityTemplateEditorSave.Saving
     field.categoryOptions.forEachIndexed { optionIndex, option ->
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             LifeTracingOutlinedTextField(
@@ -366,6 +393,7 @@ private fun CategoryFieldEditor(
                 },
                 modifier = Modifier.weight(1f),
                 label = { Text(stringResource(R.string.activity_editor_option)) },
+                enabled = editable,
             )
             TextButton(onClick = {
                 controller.updateDraft { draft ->
@@ -387,7 +415,7 @@ private fun CategoryFieldEditor(
                         )
                     }
                 }
-            }) { Text(stringResource(R.string.activity_editor_remove)) }
+            }, enabled = editable) { Text(stringResource(R.string.activity_editor_remove)) }
         }
         LifeTracingSecondaryButton(onClick = {
             controller.updateDraft { draft ->
@@ -398,7 +426,7 @@ private fun CategoryFieldEditor(
                     )
                 }
             }
-        }) {
+        }, enabled = editable) {
             Text(
                 stringResource(
                     if (field.defaultCategoryOption ==
@@ -415,7 +443,7 @@ private fun CategoryFieldEditor(
     LifeTracingSecondaryButton(onClick = {
         controller.updateDraft { draft ->
             draft.withFieldAt(index) { current ->
-                val position = current.categoryOptions.size
+                val position = nextEditorPosition(current.categoryOptions.map(ActivityCategoryOptionDraft::position))
                 current.copy(
                     categoryOptions =
                         current.categoryOptions +
@@ -423,7 +451,7 @@ private fun CategoryFieldEditor(
                 )
             }
         }
-    }) { Text(stringResource(R.string.activity_editor_add_option)) }
+    }, enabled = editable) { Text(stringResource(R.string.activity_editor_add_option)) }
 }
 
 @Composable
@@ -453,6 +481,14 @@ private fun newField(
     type: CustomFieldType,
     position: Int,
 ) = ActivityFieldDraft(DraftIdentity.New("field-${System.nanoTime()}"), position, "", type)
+
+internal fun nextEditorPosition(positions: Iterable<Int>): Int {
+    val used = positions.toSet()
+    val last = used.maxOrNull()
+    if (last == null || last < Int.MAX_VALUE) return (last ?: -1) + 1
+    return generateSequence(0) { value -> value.takeUnless { it == Int.MAX_VALUE }?.plus(1) }
+        .first { it !in used }
+}
 
 private fun fieldTypeLabel(type: CustomFieldType) =
     when (type) {

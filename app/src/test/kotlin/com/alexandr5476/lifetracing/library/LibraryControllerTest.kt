@@ -19,11 +19,69 @@ import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
 
 class LibraryControllerTest {
+    @Test
+    fun retainedOwnerRefreshesTheCurrentLibraryProjectionAfterRecreationDuringAMutation() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var catalog = listOf(activity("old", "Old"))
+            val owner = LibraryControllerOwner()
+            val first =
+                owner.get {
+                    LibraryController(
+                        this,
+                        { LibraryRoot(LibraryContents(emptyList(), catalog, emptyList()), emptyList()) },
+                        { error("unused folder reader") },
+                        { error("unused path reader") },
+                        { _, _ -> emptyList() },
+                        { LibraryOrganization(emptyList(), emptyList()) },
+                        {
+                            started.complete(Unit)
+                            release.await()
+                        },
+                    )
+                }
+            first.awaitBrowse {
+                it.contents.activities
+                    .singleOrNull()
+                    ?.name == "Old"
+            }
+            first.dispatch(LibraryAction.CreateFolder("Folder"))
+            started.await()
+
+            val recreated = owner.get { error("Host recreation must retain the current catalog owner") }
+            assertSame(first, recreated)
+            assertEquals(
+                "Old",
+                recreated
+                    .currentBrowse()
+                    .contents.activities
+                    .single()
+                    .name,
+            )
+            catalog = listOf(activity("new", "New"))
+            release.complete(Unit)
+
+            assertEquals(
+                "New",
+                recreated
+                    .awaitBrowse {
+                        it.contents.activities
+                            .singleOrNull()
+                            ?.name == "New"
+                    }.contents.activities
+                    .single()
+                    .name,
+            )
+            recreated.close()
+        }
+
     @Test
     fun rootUsesTheCanonicalCatalogAndPreservesPersistedPinnedOrder() =
         runBlocking {

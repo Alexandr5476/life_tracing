@@ -1,5 +1,8 @@
+@file:Suppress("LargeClass")
+
 package com.alexandr5476.lifetracing.editor
 
+import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateField
@@ -191,6 +194,76 @@ class ActivityTemplateEditorControllerTest {
             controller.awaitCommitted()
 
             assertEquals(2, writes)
+            controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // The gate, failure, and retry assertions describe one save boundary.
+    fun numberPresentationCannotDivergeFromTheFrozenRetryDraftWhileSaving() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val submitted = mutableListOf<ActivityTemplateDraft>()
+            var writes = 0
+            val controller =
+                controller(
+                    create = { draft, _, _ ->
+                        submitted += draft
+                        writes++
+                        if (writes == 1) {
+                            started.complete(Unit)
+                            release.await()
+                            error("disk full")
+                        }
+                        template(draft)
+                    },
+                )
+            controller.awaitReady()
+            controller.updateDraft {
+                it.copy(
+                    fields =
+                        listOf(
+                            numberField().let { field ->
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("distance"),
+                                    field.position,
+                                    field.name,
+                                    field.type,
+                                    field.unit,
+                                    field.displayPrecision,
+                                    field.defaultNumberScaled,
+                                    isMainValue = field.isMainValue,
+                                )
+                            },
+                        ),
+                )
+            }
+            val field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            controller.save()
+            started.await()
+            controller.setNumberDefault(field, "2", ::parseLauncherNumber)
+            controller.setDisplayPrecision(field, "2")
+            release.complete(Unit)
+            controller.awaitSaveFailure()
+
+            val retryable =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            assertEquals(1_000, retryable.defaultNumberScaled)
+            assertEquals(3, retryable.displayPrecision)
+            assertTrue(
+                controller.state.value.numberDefaultTexts
+                    .isEmpty(),
+            )
+            controller.save()
+            controller.awaitCommitted()
+            assertEquals(submitted.first(), submitted.last())
             controller.close()
         }
 

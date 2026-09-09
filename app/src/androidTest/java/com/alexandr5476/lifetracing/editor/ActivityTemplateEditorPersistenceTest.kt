@@ -32,6 +32,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,6 +42,161 @@ import java.time.ZoneOffset
 
 @RunWith(AndroidJUnit4::class)
 class ActivityTemplateEditorPersistenceTest {
+    @Test
+    fun retainedNewEditorCommitsOneDurableTemplateAcrossHostRecreation() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val repository = TemplateAuthoringRepository.create(context)
+            val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val owner = ActivityTemplateEditorRouteSessionOwner()
+            val name = "Recreated ${System.nanoTime()}"
+            try {
+                val session =
+                    owner.acquire(ActivityTemplateEditorTarget.New) {
+                        ActivityTemplateEditorController(
+                            scope,
+                            ActivityTemplateEditorTarget.New,
+                            repository::getActivityTemplate,
+                            { draft, placement, at ->
+                                started.complete(Unit)
+                                release.await()
+                                repository.createActivityTemplate(draft, placement, at)
+                            },
+                            repository::saveActivityTemplate,
+                            { Instant.EPOCH },
+                        )
+                    }
+                session.controller.awaitReady()
+                session.controller.updateDraft { it.copy(name = name) }
+                session.controller.save()
+                started.await()
+
+                val recreated =
+                    owner.acquire(ActivityTemplateEditorTarget.New) {
+                        error("An in-flight create must not expose a blank second editor")
+                    }
+                assertSame(session, recreated)
+                release.complete(Unit)
+                withTimeout(5_000) {
+                    session.controller.state.first { it.save is ActivityTemplateEditorSave.Committed }
+                }
+                var deliveries = 0
+                recreated.exitPolicy.deliverCommitted { deliveries++ }
+                recreated.exitPolicy.deliverCommitted { deliveries++ }
+
+                assertEquals(
+                    1,
+                    LibraryRepository
+                        .create(context)
+                        .search(name, LibraryKindFilter.ACTIVITIES)
+                        .count { it.name == name },
+                )
+                assertEquals(1, deliveries)
+                owner.release(session)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun sparseActiveFieldAndOptionPositionsAppendInEditorOrderAfterFreshCanonicalReload() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val repository = TemplateAuthoringRepository.create(context)
+            val created =
+                repository.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Sparse ${System.nanoTime()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(DraftIdentity.New("first"), 0, "First", CustomFieldType.TEXT),
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("category"),
+                                    2,
+                                    "Category",
+                                    CustomFieldType.CATEGORY,
+                                    categoryOptions =
+                                        listOf(
+                                            ActivityCategoryOptionDraft(DraftIdentity.New("kept"), 1, "Kept"),
+                                        ),
+                                ),
+                            ),
+                    ),
+                    createdAt = Instant.EPOCH,
+                )
+            try {
+                val controller =
+                    editor(
+                        scope,
+                        repository,
+                        ActivityTemplateEditorTarget.Existing(created.id),
+                        Instant.EPOCH.plusSeconds(1),
+                    )
+                controller.awaitReady()
+                controller.updateDraft { draft ->
+                    draft.copy(
+                        fields =
+                            draft.fields +
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("appended-field"),
+                                    nextEditorPosition(draft.fields.map(ActivityFieldDraft::position)),
+                                    "Appended field",
+                                    CustomFieldType.TEXT,
+                                ),
+                    )
+                }
+                controller.updateDraft { draft ->
+                    draft.copy(
+                        fields =
+                            draft.fields.map { field ->
+                                if (field.type != CustomFieldType.CATEGORY) {
+                                    field
+                                } else {
+                                    field.copy(
+                                        categoryOptions =
+                                            field.categoryOptions +
+                                                ActivityCategoryOptionDraft(
+                                                    DraftIdentity.New("appended-option"),
+                                                    nextEditorPosition(
+                                                        field.categoryOptions.map(
+                                                            ActivityCategoryOptionDraft::position,
+                                                        ),
+                                                    ),
+                                                    "Appended option",
+                                                ),
+                                    )
+                                }
+                            },
+                    )
+                }
+                controller.save()
+                withTimeout(5_000) { controller.state.first { it.save is ActivityTemplateEditorSave.Committed } }
+                controller.close()
+
+                val reloaded =
+                    requireNotNull(TemplateAuthoringRepository.create(context).getActivityTemplate(created.id))
+                val activeFields = reloaded.fields.filter { it.deletedAt == null }
+                assertEquals(listOf("First", "Category", "Appended field"), activeFields.map { it.name })
+                assertEquals(activeFields.size, activeFields.map { it.position }.distinct().size)
+                val options =
+                    activeFields
+                        .single {
+                            it.type == CustomFieldType.CATEGORY
+                        }.categoryOptions
+                        .filterNot { it.isArchived }
+                assertEquals(listOf("Kept", "Appended option"), options.map { it.label })
+                assertEquals(options.size, options.map { it.position }.distinct().size)
+            } finally {
+                scope.cancel()
+            }
+        }
+
     @Test
     fun editorWriterReloadsThroughCanonicalAuthoringLibraryAndHistoryReaders() =
         runBlocking {

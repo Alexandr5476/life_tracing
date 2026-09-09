@@ -7,6 +7,7 @@
 
 package com.alexandr5476.lifetracing.library
 
+import androidx.lifecycle.ViewModel
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.FolderTreeValidator
@@ -554,3 +555,16 @@ private fun LibraryBrowse.activeOnly() =
                 sequences = contents.sequences.filterNot(LibraryTrackable::isArchived),
             ),
     )
+
+/** The catalog projection belongs to the host lifetime so a durable mutation can refresh after recreation. */
+internal class LibraryControllerOwner : ViewModel() {
+    private var controller: LibraryController? = null
+
+    fun get(createController: () -> LibraryController): LibraryController =
+        controller ?: createController().also { controller = it }
+
+    override fun onCleared() {
+        controller?.close()
+        controller = null
+    }
+}

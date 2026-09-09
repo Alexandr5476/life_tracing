@@ -73,4 +73,13 @@ class MainActivityNavigationTest {
         assertEquals(1, refreshes)
         assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
     }
+
+    @Test
+    fun restoredEditorWithoutAnInMemorySessionReturnsToLibraryInsteadOfCreatingABlankDraft() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot, NewActivityTemplateEditor)
+
+        backStack.normalizeRestoredActivityTemplateEditor()
+
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
 }
