@@ -16,9 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation3.runtime.NavKey
@@ -110,7 +108,6 @@ internal fun LifeTracingApp(
                 }
             val controller = runtimeGraph.dailyController
             val backStack = rememberNavBackStack(dailyInitialBackStack.single())
-            var libraryRefreshGeneration by remember { mutableIntStateOf(0) }
             val libraryOwner = libraryControllerOwner ?: remember { LibraryControllerOwner() }
             val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
             val editorSessions =
@@ -144,7 +141,7 @@ internal fun LifeTracingApp(
                                         launcherSessions.release(session)
                                         backStack.completeStartActivity {
                                             controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
-                                            libraryRefreshGeneration++
+                                            libraryOwner.refreshIfInitialized()
                                         }
                                     },
                                 )
@@ -152,13 +149,6 @@ internal fun LifeTracingApp(
                         }
                         entry<LibraryRoot> {
                             val activeLibraryController = libraryOwner.get(runtimeGraph::createLibraryController)
-                            LaunchedEffect(libraryRefreshGeneration) {
-                                if (libraryRefreshGeneration > 0) {
-                                    activeLibraryController.dispatch(
-                                        com.alexandr5476.lifetracing.library.LibraryAction.Refresh,
-                                    )
-                                }
-                            }
                             LibraryRoute(
                                 controller = activeLibraryController,
                                 onBack = backStack::removeLibrary,
@@ -199,7 +189,7 @@ internal fun LifeTracingApp(
                                     onCommitted = {
                                         session.exitPolicy.deliverCommitted {
                                             editorSessions.release(session)
-                                            backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                            backStack.completeActivityTemplateEditor(libraryOwner::refreshIfInitialized)
                                         }
                                     },
                                 )
@@ -224,7 +214,7 @@ internal fun LifeTracingApp(
                                     onCommitted = {
                                         session.exitPolicy.deliverCommitted {
                                             editorSessions.release(session)
-                                            backStack.completeActivityTemplateEditor { libraryRefreshGeneration++ }
+                                            backStack.completeActivityTemplateEditor(libraryOwner::refreshIfInitialized)
                                         }
                                     },
                                 )

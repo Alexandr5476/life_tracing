@@ -26,6 +26,43 @@ import java.time.Instant
 
 class LibraryControllerTest {
     @Test
+    fun ownerBoundCatalogInvalidationRefreshesRetainedProjectionAfterCommitBeforeHostRecreation() =
+        runBlocking {
+            var catalog = listOf(activity("activity", "Before commit"))
+            val owner = LibraryControllerOwner()
+            val controller =
+                owner.get {
+                    LibraryController(
+                        this,
+                        { LibraryRoot(LibraryContents(emptyList(), catalog, emptyList()), emptyList()) },
+                        { error("unused folder reader") },
+                        { error("unused path reader") },
+                        { _, _ -> emptyList() },
+                    )
+                }
+            val initial = controller.awaitBrowse()
+            val initialActivities = initial.contents.activities
+            assertEquals("Before commit", initialActivities.single().name)
+
+            catalog = listOf(activity("activity", "Committed canonical value"))
+            owner.refreshIfInitialized()
+
+            val recreated = owner.get { error("Host recreation must reuse the invalidated controller") }
+            assertSame(controller, recreated)
+            val refreshed =
+                recreated.awaitBrowse { browse ->
+                    val activity = browse.contents.activities.singleOrNull()
+                    activity?.name == "Committed canonical value"
+                }
+            val refreshedActivities = refreshed.contents.activities
+            assertEquals(
+                "Committed canonical value",
+                refreshedActivities.single().name,
+            )
+            recreated.close()
+        }
+
+    @Test
     fun retainedOwnerRefreshesTheCurrentLibraryProjectionAfterRecreationDuringAMutation() =
         runBlocking {
             val started = CompletableDeferred<Unit>()

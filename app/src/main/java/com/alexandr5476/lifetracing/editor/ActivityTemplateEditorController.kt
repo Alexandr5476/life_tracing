@@ -312,17 +312,7 @@ class ActivityTemplateEditorController internal constructor(
     private fun normalizeDraft(proposed: ActivityTemplateDraft): ActivityTemplateDraft =
         proposed.copy(
             fields =
-                proposed.fields.mapIndexed { position, field ->
-                    val normalized =
-                        field.copy(
-                            position = position,
-                            categoryOptions =
-                                field.categoryOptions.mapIndexed { optionPosition, option ->
-                                    option.copy(position = optionPosition)
-                                },
-                        )
-                    normalized.normalizedMetadata()
-                },
+                proposed.fields.map { it.normalizedMetadata() },
         )
 
     private fun ActivityFieldDraft.replacement() =

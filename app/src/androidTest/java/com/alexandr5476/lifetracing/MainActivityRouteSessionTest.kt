@@ -30,6 +30,8 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
+import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import org.junit.Assert.assertEquals
@@ -85,6 +87,118 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.startActivityRouteSessions.activeSession == null
         }
+    }
+
+    @Test
+    fun productionDirtyEditorSessionSurvivesActivityRecreationAndReleasesOnlyAfterRoutePop() {
+        val name = "Dirty editor ${System.nanoTime()}"
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_library))
+            .performClick()
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_activity))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession != null
+        }
+        val session = requireNotNull(composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession)
+        val controller = session.controller
+        composeTestRule
+            .onNode(hasText(composeTestRule.activity.getString(R.string.activity_editor_name)) and hasSetTextAction())
+            .performTextInput(name)
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+
+        assertSame(session, composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession)
+        assertSame(
+            controller,
+            requireNotNull(composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession).controller,
+        )
+        val retainedState = controller.state.value
+        val retainedDraft = retainedState.readyDraft()
+        assertEquals(name, retainedDraft?.name)
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        assertSame(session, composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession)
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.activity_editor_discard))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession == null
+        }
+    }
+
+    @Test
+    fun productionLibraryControllerAndProjectionSurviveActivityRecreation() {
+        val name = "Retained library ${System.nanoTime()}"
+        TemplateAuthoringRepository.create(composeTestRule.activity).createActivityTemplate(
+            ActivityTemplateDraft(name, null, TimeTrackingMode.STOPWATCH, null),
+            createdAt = Instant.now(),
+        )
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        val controller =
+            composeTestRule.activity.libraryControllerOwner.get {
+                error("Library route must initialize the retained controller")
+            }
+        val projection = controller.state.value
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+
+        val recreated =
+            composeTestRule.activity.libraryControllerOwner.get {
+                error("Activity recreation must reuse the retained controller")
+            }
+        assertSame(controller, recreated)
+        assertSame(projection, recreated.state.value)
+    }
+
+    @Test
+    fun committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary() {
+        val oldName = "Catalog before commit ${System.nanoTime()}"
+        val newName = "Catalog after commit ${System.nanoTime()}"
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val created =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft(oldName, null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = Instant.now(),
+            )
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(oldName).fetchSemanticsNodes().isNotEmpty()
+        }
+        val controller =
+            composeTestRule.activity.libraryControllerOwner.get {
+                error("Library route must initialize the retained controller")
+            }
+        authoring.saveActivityTemplate(
+            created.id,
+            created.revision,
+            created.toAuthoringDraft().copy(name = newName),
+            Instant.now(),
+        )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.libraryControllerOwner.refreshIfInitialized()
+        }
+
+        composeTestRule.activityRule.scenario.recreate()
+
+        assertSame(
+            controller,
+            composeTestRule.activity.libraryControllerOwner.get {
+                error("Activity recreation must retain the catalog controller")
+            },
+        )
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(newName).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(oldName).assertDoesNotExist()
     }
 
     @Test

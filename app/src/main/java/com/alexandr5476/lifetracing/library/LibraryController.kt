@@ -563,6 +563,10 @@ internal class LibraryControllerOwner : ViewModel() {
     fun get(createController: () -> LibraryController): LibraryController =
         controller ?: createController().also { controller = it }
 
+    fun refreshIfInitialized() {
+        controller?.dispatch(LibraryAction.Refresh)
+    }
+
     override fun onCleared() {
         controller?.close()
         controller = null

@@ -198,6 +198,105 @@ class ActivityTemplateEditorPersistenceTest {
         }
 
     @Test
+    fun fieldDisplayNameRenamePreservesSparseActiveFieldPositionsAndRevision() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val repository = TemplateAuthoringRepository.create(context)
+            val created =
+                repository.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Sparse field rename ${System.nanoTime()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(DraftIdentity.New("first"), 0, "First", CustomFieldType.TEXT),
+                                ActivityFieldDraft(DraftIdentity.New("second"), 2, "Second", CustomFieldType.TEXT),
+                            ),
+                    ),
+                    createdAt = Instant.EPOCH,
+                )
+            try {
+                saveThroughEditor(scope, repository, created.id, Instant.EPOCH.plusSeconds(1)) { draft ->
+                    draft.copy(fields = draft.fields.map { field -> field.copy(name = "${field.name} renamed") })
+                }
+
+                val reloaded =
+                    requireNotNull(TemplateAuthoringRepository.create(context).getActivityTemplate(created.id))
+                assertEquals(created.revision, reloaded.revision)
+                assertEquals(
+                    created.fields.map { it.id to it.position },
+                    reloaded.fields.map { it.id to it.position },
+                )
+                assertEquals(listOf("First renamed", "Second renamed"), reloaded.fields.map { it.name })
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun categoryOptionLabelRenamePreservesSparseActiveOptionPositionsAndRevision() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val repository = TemplateAuthoringRepository.create(context)
+            val created =
+                repository.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Sparse option rename ${System.nanoTime()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("category"),
+                                    0,
+                                    "Category",
+                                    CustomFieldType.CATEGORY,
+                                    categoryOptions =
+                                        listOf(
+                                            ActivityCategoryOptionDraft(DraftIdentity.New("first"), 0, "First"),
+                                            ActivityCategoryOptionDraft(DraftIdentity.New("second"), 2, "Second"),
+                                        ),
+                                ),
+                            ),
+                    ),
+                    createdAt = Instant.EPOCH,
+                )
+            try {
+                saveThroughEditor(scope, repository, created.id, Instant.EPOCH.plusSeconds(1)) { draft ->
+                    draft.copy(
+                        fields =
+                            draft.fields.map { field ->
+                                field.copy(
+                                    categoryOptions =
+                                        field.categoryOptions.map { option ->
+                                            option.copy(label = "${option.label} renamed")
+                                        },
+                                )
+                            },
+                    )
+                }
+
+                val reloaded =
+                    requireNotNull(TemplateAuthoringRepository.create(context).getActivityTemplate(created.id))
+                val originalOptions = created.fields.single().categoryOptions
+                val reloadedOptions = reloaded.fields.single().categoryOptions
+                assertEquals(created.revision, reloaded.revision)
+                assertEquals(
+                    originalOptions.map { it.id to it.position },
+                    reloadedOptions.map { it.id to it.position },
+                )
+                assertEquals(listOf("First renamed", "Second renamed"), reloadedOptions.map { it.label })
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
     fun editorWriterReloadsThroughCanonicalAuthoringLibraryAndHistoryReaders() =
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()
