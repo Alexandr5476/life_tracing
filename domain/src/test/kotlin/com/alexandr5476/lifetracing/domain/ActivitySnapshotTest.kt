@@ -53,6 +53,50 @@ class ActivitySnapshotTest {
     }
 
     @Test
+    fun `duplicate keeps frozen provenance and values while remapping every physical identity`() {
+        val option = CategoryOption(CategoryOptionId("option"), 0, "Easy")
+        val factory = factory()
+        val source =
+            factory
+                .fromTemplate(template(fields = listOf(categoryField(listOf(option), option.id))), now)
+                .copy(locallyModified = true)
+        val duplicate = factory.duplicate(source, now.plusSeconds(1))
+
+        assertNotEquals(source.id, duplicate.id)
+        assertEquals(
+            source.copy(id = duplicate.id, createdAt = duplicate.createdAt, fields = duplicate.fields),
+            duplicate,
+        )
+        assertNotEquals(source.fields.single().id, duplicate.fields.single().id)
+        assertNotEquals(
+            source.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+            duplicate.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+        )
+        assertEquals(source.fields.single().sourceFieldId, duplicate.fields.single().sourceFieldId)
+        assertEquals(
+            source.fields
+                .single()
+                .categoryOptions
+                .single()
+                .sourceOptionId,
+            duplicate.fields
+                .single()
+                .categoryOptions
+                .single()
+                .sourceOptionId,
+        )
+        assertEquals(source.locallyModified, duplicate.locallyModified)
+    }
+
+    @Test
     fun `factory excludes archived fields and options and remaps active category default`() {
         val activeDefault = CategoryOption(CategoryOptionId("source-active"), 2, "Active")
         val archived = CategoryOption(CategoryOptionId("source-archived"), 1, "Old", isArchived = true)

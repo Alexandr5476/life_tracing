@@ -26,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.LinkedStepPropagationMode
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft
+import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
@@ -47,13 +48,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
 class TemplateAuthoringRepositoryTest {
     private lateinit var database: LifeTracingDatabase
     private lateinit var repository: TemplateAuthoringRepository
     private lateinit var baseIds: TemplateAuthoringIds
+    private val observedSql = mutableListOf<String>()
 
     @Before
     fun setUp() {
@@ -61,6 +65,7 @@ class TemplateAuthoringRepositoryTest {
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
                 .allowMainThreadQueries()
+                .setQueryCallback({ sql, _ -> observedSql += sql }, Executor { it.run() })
                 .build()
         baseIds = deterministicIds("test")
         repository = TemplateAuthoringRepository(database, baseIds)
@@ -357,7 +362,10 @@ class TemplateAuthoringRepositoryTest {
     fun sequenceCreateReorderLocalSourceRoundTripsAndSaveAsNewPreserveHistory() {
         val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
         val sequence = repository.createSequenceTemplate(sequenceDraft(source.id), createdAt = at(2))
-        val snapshots = snapshots(sequence.id)
+        val authoringState = repository.getSequenceTemplateAuthoringState(sequence.id)!!
+        val snapshots = authoringState.activitySnapshots
+        assertEquals(sequence, authoringState.sequence)
+        assertEquals(sequence.toAuthoringDraft(snapshots), authoringState.toAuthoringDraft())
         val originalIds = snapshots.keys
         val sourceStep = sequence.nodes.flatMap { it.stepIds() }.first()
         val sourceSnapshot = repository.getStepSnapshot(sequence.id, sourceStep)!!
@@ -446,6 +454,322 @@ class TemplateAuthoringRepositoryTest {
         assertEquals(1L, relinked.sourceRevision)
         assertFalse(relinked.locallyModified)
         assertEquals("Route walk", repository.getActivityTemplate(source.id)?.name)
+    }
+
+    @Test
+    fun canonicalAuthoringReadHydratesSnapshotsByBindChunksRatherThanSteps() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence =
+            repository.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Large",
+                    null,
+                    nodes = List(901) { index -> sourceStep("step-$index", index, source.id) },
+                ),
+                createdAt = at(2),
+            )
+
+        observedSql.clear()
+        val state = repository.getSequenceTemplateAuthoringState(sequence.id)!!
+
+        assertEquals(901, state.activitySnapshots.size)
+        assertEquals(901, state.toAuthoringDraft().nodes.size)
+        assertEquals(
+            2,
+            observedSql.count { it.startsWith("SELECT * FROM activity_snapshots WHERE id IN") },
+        )
+    }
+
+    @Test
+    fun duplicateAndMoveCopiesFrozenSnapshotWithFreshPhysicalIdentitiesAndOverrides() {
+        val source = repository.createActivityTemplate(categoryActivityDraft(), createdAt = at(1))
+        val sequence =
+            repository.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Duplicate",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("source"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(source.id),
+                                    SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = at(2),
+            )
+        val sourceStep = sequence.nodes.flatMap { it.stepIds() }.single()
+        val frozen = repository.getStepSnapshot(sequence.id, sourceStep)!!
+        repository.saveActivityTemplate(
+            source.id,
+            1,
+            source.toAuthoringDraft().copy(name = "New template value"),
+            at(3),
+        )
+        val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val duplicate =
+            ActivityStepDraft(
+                DraftIdentity.New("duplicate"),
+                0,
+                StepActivityDraft.Duplicate(sourceStep),
+                SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)),
+            )
+        val saved =
+            repository.saveSequenceTemplate(
+                sequence.id,
+                1,
+                draft.copy(
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Repeat(
+                                SequenceRepeatBlockDraft(DraftIdentity.New("repeat"), 0, 2, listOf(duplicate)),
+                            ),
+                            SequenceNodeDraft.Step(
+                                (draft.nodes.single() as SequenceNodeDraft.Step).value.copy(position = 1),
+                            ),
+                        ),
+                ),
+                at(4),
+            )
+
+        val copiedStep =
+            (saved.nodes.first() as com.alexandr5476.lifetracing.domain.SequenceRepeatBlock)
+                .children
+                .single()
+        val copied = repository.getStepSnapshot(saved.id, copiedStep.id)!!
+        assertEquals(2L, saved.revision)
+        assertNotEquals(sourceStep, copiedStep.id)
+        assertNotEquals(frozen.id, copied.id)
+        assertEquals(frozen.name, copied.name)
+        assertEquals(frozen.sourceTemplateId, copied.sourceTemplateId)
+        assertEquals(frozen.sourceRevision, copied.sourceRevision)
+        assertEquals(frozen.statisticsSeriesId, copied.statisticsSeriesId)
+        assertEquals(frozen.locallyModified, copied.locallyModified)
+        assertEquals(frozen.settings, copied.settings)
+        assertEquals(frozen.fields.map { it.sourceFieldId }, copied.fields.map { it.sourceFieldId })
+        assertEquals(
+            frozen.fields.flatMap { it.categoryOptions }.map { it.sourceOptionId },
+            copied.fields.flatMap { it.categoryOptions }.map { it.sourceOptionId },
+        )
+        assertNotEquals(frozen.fields.single().id, copied.fields.single().id)
+        assertNotEquals(
+            frozen.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+            copied.fields
+                .single()
+                .categoryOptions
+                .single()
+                .id,
+        )
+        assertEquals(SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)), copiedStep.overrides)
+    }
+
+    @Test
+    fun movingExistingStepIntoAndOutOfRepeatPreservesItsFrozenIdentityAndOverrides() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(sequenceDraft(source.id), createdAt = at(2))
+        val sourceStep = sequence.nodes.filterIsInstance<com.alexandr5476.lifetracing.domain.ActivityStep>().single()
+        val sourceSnapshot = repository.getStepSnapshot(sequence.id, sourceStep.id)!!
+        val initial = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val top = (initial.nodes.filterIsInstance<SequenceNodeDraft.Step>().single()).value
+        val repeat = (initial.nodes.filterIsInstance<SequenceNodeDraft.Repeat>().single()).value
+        val intoRepeat =
+            initial.copy(
+                nodes =
+                    listOf(
+                        SequenceNodeDraft.Repeat(
+                            repeat.copy(
+                                position = 0,
+                                children = listOf(top.copy(position = 0), repeat.children.single().copy(position = 1)),
+                            ),
+                        ),
+                    ),
+            )
+        val movedInto = repository.saveSequenceTemplate(sequence.id, 1, intoRepeat, at(3))
+        val movedSource =
+            (movedInto.nodes.single() as com.alexandr5476.lifetracing.domain.SequenceRepeatBlock)
+                .children
+                .single { it.id == sourceStep.id }
+        assertEquals(sourceSnapshot.id, movedSource.activitySnapshotId)
+        assertEquals(sourceStep.overrides, movedSource.overrides)
+
+        val inside = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val insideRepeat = (inside.nodes.single() as SequenceNodeDraft.Repeat).value
+        val sourceInside = insideRepeat.children.single { (it.identity as DraftIdentity.Existing).id == sourceStep.id }
+        val localInside = insideRepeat.children.single { it !== sourceInside }
+        val movedOut =
+            repository.saveSequenceTemplate(
+                sequence.id,
+                2,
+                inside.copy(
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(sourceInside.copy(position = 0)),
+                            SequenceNodeDraft.Repeat(
+                                insideRepeat.copy(position = 1, children = listOf(localInside.copy(position = 0))),
+                            ),
+                        ),
+                ),
+                at(4),
+            )
+        val movedOutSource =
+            movedOut.nodes
+                .filterIsInstance<com.alexandr5476.lifetracing.domain.ActivityStep>()
+                .single()
+        assertEquals(3L, movedOut.revision)
+        assertEquals(sourceStep.id, movedOutSource.id)
+        assertEquals(sourceSnapshot.id, movedOutSource.activitySnapshotId)
+        assertEquals(sourceStep.overrides, movedOutSource.overrides)
+        assertEquals(sourceSnapshot, repository.getStepSnapshot(sequence.id, sourceStep.id))
+    }
+
+    @Test
+    fun duplicatePropagationAndLaterEditsKeepBothPhysicalOwnersIndependent() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "duplicate"), createdAt = at(2))
+        val originalStep = sequence.nodes.flatMap { it.stepIds() }.single()
+        val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val duplicated =
+            repository.saveSequenceTemplate(
+                sequence.id,
+                1,
+                draft.copy(
+                    nodes =
+                        draft.nodes +
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("duplicate"),
+                                    1,
+                                    StepActivityDraft.Duplicate(originalStep),
+                                ),
+                            ),
+                ),
+                at(3),
+            )
+        val duplicateStep = duplicated.nodes.flatMap { it.stepIds() }.single { it != originalStep }
+        repository.saveActivityTemplate(source.id, 1, source.toAuthoringDraft().copy(name = "Propagated"), at(4))
+        val propagation =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                2,
+                LinkedStepPropagationMode.ONLY_UNMODIFIED,
+                at(5),
+            )
+        assertEquals(2, propagation.updatedSteps)
+        val original = repository.getStepSnapshot(sequence.id, originalStep)!!
+        val duplicate = repository.getStepSnapshot(sequence.id, duplicateStep)!!
+        assertEquals("Propagated", original.name)
+        assertEquals("Propagated", duplicate.name)
+        assertNotEquals(original.id, duplicate.id)
+
+        repository.saveStepConfiguration(
+            sequence.id,
+            duplicateStep,
+            3,
+            duplicate.toAuthoringDraft().copy(name = "Duplicate only"),
+            at(6),
+        )
+        assertEquals("Propagated", repository.getStepSnapshot(sequence.id, originalStep)?.name)
+        assertEquals("Duplicate only", repository.getStepSnapshot(sequence.id, duplicateStep)?.name)
+    }
+
+    @Test
+    fun locallyModifiedDuplicateIsSkippedByOnlyUnmodifiedPropagation() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence =
+            repository.createSequenceTemplate(
+                singleStepSequence(source.id, "local duplicate"),
+                createdAt = at(2),
+            )
+        val originalStep = sequence.nodes.flatMap { it.stepIds() }.single()
+        val local = repository.getStepSnapshot(sequence.id, originalStep)!!
+        repository.saveStepConfiguration(
+            sequence.id,
+            originalStep,
+            1,
+            local.toAuthoringDraft().copy(name = "Local source"),
+            at(3),
+        )
+        val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val duplicated =
+            repository.saveSequenceTemplate(
+                sequence.id,
+                2,
+                draft.copy(
+                    nodes =
+                        draft.nodes +
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("duplicate"),
+                                    1,
+                                    StepActivityDraft.Duplicate(originalStep),
+                                ),
+                            ),
+                ),
+                at(4),
+            )
+        val duplicateStep = duplicated.nodes.flatMap { it.stepIds() }.single { it != originalStep }
+        val duplicate = repository.getStepSnapshot(sequence.id, duplicateStep)!!
+        assertTrue(duplicate.locallyModified)
+        assertEquals("Local source", duplicate.name)
+        assertEquals(local.sourceTemplateId, duplicate.sourceTemplateId)
+        assertEquals(local.statisticsSeriesId, duplicate.statisticsSeriesId)
+
+        repository.saveActivityTemplate(source.id, 1, source.toAuthoringDraft().copy(name = "Template update"), at(5))
+        val result =
+            repository.propagateActivityTemplateToLinkedSteps(
+                source.id,
+                2,
+                LinkedStepPropagationMode.ONLY_UNMODIFIED,
+                at(6),
+            )
+        assertEquals(0, result.updatedSteps)
+        assertEquals(2, result.skippedLocallyModified)
+    }
+
+    @Test
+    fun duplicateStaleRevisionAndSnapshotCollisionLeaveNoOrphan() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "collision"), createdAt = at(2))
+        val originalStep = sequence.nodes.flatMap { it.stepIds() }.single()
+        val originalSnapshot = repository.getStepSnapshot(sequence.id, originalStep)!!
+        val validDuplicateDraft =
+            repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft().copy(
+                nodes =
+                    repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft().nodes +
+                        SequenceNodeDraft.Step(
+                            ActivityStepDraft(
+                                DraftIdentity.New("duplicate"),
+                                1,
+                                StepActivityDraft.Duplicate(originalStep),
+                            ),
+                        ),
+            )
+        val beforeNodes = database.sequenceTemplateDao().getNodes(sequence.id.value)
+        val beforeSnapshots = count("activity_snapshots")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveSequenceTemplate(sequence.id, 0, validDuplicateDraft, at(3))
+        }
+        val colliding =
+            TemplateAuthoringRepository(
+                database,
+                baseIds.copy(nextActivitySnapshotId = { originalSnapshot.id }),
+            )
+        assertThrows(SQLiteConstraintException::class.java) {
+            colliding.saveSequenceTemplate(sequence.id, 1, validDuplicateDraft, at(3))
+        }
+        assertEquals(1L, repository.getSequenceTemplate(sequence.id)?.revision)
+        assertEquals(beforeNodes, database.sequenceTemplateDao().getNodes(sequence.id.value))
+        assertEquals(beforeSnapshots, count("activity_snapshots"))
+        assertEquals(originalSnapshot, repository.getStepSnapshot(sequence.id, originalStep))
     }
 
     @Test

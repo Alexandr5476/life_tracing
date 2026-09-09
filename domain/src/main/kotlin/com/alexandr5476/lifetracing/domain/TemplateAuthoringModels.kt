@@ -103,6 +103,14 @@ data class ActivitySnapshotDraft(
     val fields: List<ActivitySnapshotFieldDraft> = emptyList(),
 )
 
+/** The complete immutable graph needed to author an existing SequenceTemplate. */
+data class SequenceTemplateAuthoringState(
+    val sequence: SequenceTemplate,
+    val activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+) {
+    fun toAuthoringDraft(): SequenceTemplateDraft = sequence.toAuthoringDraft(activitySnapshots)
+}
+
 sealed interface StepActivityDraft {
     data class Existing(
         val snapshotId: ActivitySnapshotId,
@@ -115,6 +123,11 @@ sealed interface StepActivityDraft {
 
     data class Local(
         val configuration: ActivitySnapshotDraft,
+    ) : StepActivityDraft
+
+    /** A new physical Step copied from this Sequence's already-frozen Step snapshot. */
+    data class Duplicate(
+        val sourceStepId: SequenceNodeId,
     ) : StepActivityDraft
 }
 

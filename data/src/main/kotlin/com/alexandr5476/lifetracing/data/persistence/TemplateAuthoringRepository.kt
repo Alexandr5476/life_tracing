@@ -45,6 +45,7 @@ import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
+import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
@@ -79,6 +80,18 @@ class TemplateAuthoringRepository internal constructor(
 
     fun getSequenceTemplate(id: SequenceTemplateId): SequenceTemplate? =
         transaction { database.sequenceTemplateDao().getAggregate(id.value)?.toDomain() }
+
+    fun getSequenceTemplateAuthoringState(id: SequenceTemplateId): SequenceTemplateAuthoringState? =
+        transaction {
+            val sequence = database.sequenceTemplateDao().getAggregate(id.value)?.toDomain() ?: return@transaction null
+            val snapshotIds = sequence.nodes.flatMap { it.activitySnapshotIds() }.distinct()
+            val snapshots =
+                loadActivitySnapshots(
+                    snapshotIds.map(ActivitySnapshotId::value),
+                ).associateBy(ActivityConfigSnapshot::id)
+            require(snapshots.size == snapshotIds.size) { "SequenceTemplate is missing ActivitySnapshot data" }
+            SequenceTemplateAuthoringState(sequence, snapshots)
+        }
 
     fun getStepSnapshot(
         sequenceTemplateId: SequenceTemplateId,
@@ -435,6 +448,7 @@ class TemplateAuthoringRepository internal constructor(
                 .associateWith(::requireActiveActivity)
         val newSnapshots = mutableListOf<ActivityConfigSnapshot>()
         val replacements = mutableListOf<SequenceStepSnapshotReplacement>()
+        val duplicateSources = mutableSetOf<SequenceNodeId>()
 
         fun resolveStep(draft: ActivityStepDraft): ActivityStep {
             val id = resolveNodeIdentity(draft.identity)
@@ -480,6 +494,22 @@ class TemplateAuthoringRepository internal constructor(
                         require(previous == null) { "Existing Step must preserve its committed snapshot identity" }
                         snapshotFromDraft(activity.configuration, null, true, savedAt).also { newSnapshots += it }.id
                     }
+                    is StepActivityDraft.Duplicate -> {
+                        require(draft.identity is DraftIdentity.New) { "Duplicate Step must receive a new identity" }
+                        val source =
+                            requireNotNull(existingNodes[activity.sourceStepId] as? ActivityStep) {
+                                "Duplicate source must be an existing Step in the current SequenceTemplate"
+                            }
+                        duplicateSources += source.id
+                        activitySnapshotFactory()
+                            .duplicate(
+                                requireNotNull(currentSnapshots[source.activitySnapshotId]) {
+                                    "Duplicate source ActivitySnapshot is missing"
+                                },
+                                savedAt,
+                            ).also { newSnapshots += it }
+                            .id
+                    }
                 }
             return ActivityStep(id, draft.position, snapshotId, draft.overrides)
         }
@@ -508,6 +538,16 @@ class TemplateAuthoringRepository internal constructor(
                     }
                 }
             }
+        require(
+            duplicateSources.all { sourceId ->
+                nodes.any { node ->
+                    when (node) {
+                        is ActivityStep -> node.id == sourceId
+                        is SequenceRepeatBlock -> node.children.any { it.id == sourceId }
+                    }
+                }
+            },
+        ) { "Duplicate source Step must remain in the committed SequenceTemplate" }
         return ResolvedSequenceNodes(nodes, replacements, newSnapshots)
     }
 

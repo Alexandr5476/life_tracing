@@ -72,6 +72,12 @@ Step overrides are mutable SequenceTemplate semantic configuration. A committed 
 
 When immutable SequenceSnapshot persistence is introduced, it must preserve the same Step override intent in snapshot-owned form, separately from the child ActivitySnapshot. It must not infer or flatten override intent from `locallyModified`.
 
+## Sequence Step duplicate-and-move
+
+Duplicating an existing Activity Step during one SequenceTemplate Save/Apply/Done creates a second physical Step, not a second reference to the same immutable snapshot. The duplicate receives fresh `SequenceNodeId`, `ActivitySnapshotId`, snapshot-Field IDs, and snapshot-Category-option IDs. It copies the source Step's frozen Activity values/settings, source Template and revision linkage, StatisticsSeriesId, source Field/option provenance, `locallyModified`, and explicit Step execution overrides exactly as frozen at duplication time. The source must be an ActivityStep already owned by the Sequence being committed; a Repeat, foreign node, or unknown node is rejected. The original Step remains unchanged and the two Steps are independent owners after commit.
+
+Duplication never rereads or refreshes from the mutable ActivityTemplate. An unmodified linked duplicate remains independently eligible for normal linked-snapshot propagation; a locally modified duplicate remains locally modified and is skipped by `ONLY_UNMODIFIED`. Whole-Repeat duplication is not part of this rule.
+
 ## SequenceSnapshot foreign keys and frozen overrides
 
 `sequence_snapshots.statistics_series_id`, when non-null, references `statistics_series.id` with `ON DELETE RESTRICT`. This preserves the Sequence's durable statistical identity after its source Template is hard-purged.
