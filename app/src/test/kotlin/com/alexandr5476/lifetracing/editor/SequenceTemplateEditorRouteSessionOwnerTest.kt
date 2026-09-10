@@ -16,6 +16,7 @@ class SequenceTemplateEditorRouteSessionOwnerTest {
             val session = owner.acquire(SequenceTemplateEditorTarget.New) { controller(this) }
             withTimeout(2_000) { session.controller.state.first { it.load is SequenceTemplateEditorLoad.Ready } }
             session.controller.updateDraft { it.copy(name = "Workout") }
+            session.controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "", 0, 0) {}
 
             val recreated =
                 owner.acquire(SequenceTemplateEditorTarget.New) { error("A recreated route must retain its session") }
@@ -24,6 +25,7 @@ class SequenceTemplateEditorRouteSessionOwnerTest {
             val state = recreated.controller.state.value
             val draft = state.readyDraft()
             assertEquals("Workout", draft?.name)
+            assertEquals("", state.inputText(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "0"))
             owner.release(recreated)
         }
 

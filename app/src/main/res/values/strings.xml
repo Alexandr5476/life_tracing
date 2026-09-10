@@ -207,7 +207,7 @@
     <string name="activity_editor_continue_editing">Keep editing</string>
     <string name="library_new_sequence">New sequence</string>
     <string name="sequence_editor_title">Sequence</string>
-    <string name="sequence_editor_loading">Loading sequenceвЂ¦</string>
+    <string name="sequence_editor_loading">Loading sequence…</string>
     <string name="sequence_editor_load_failure">This sequence could not be loaded.</string>
     <string name="sequence_editor_retry">Retry</string>
     <string name="sequence_editor_back">Back</string>
@@ -231,6 +231,13 @@
     <string name="sequence_editor_add_step">Add step</string>
     <string name="sequence_editor_add_local_step">Add local step</string>
     <string name="sequence_editor_add_repeat">Add repeat</string>
+    <string name="sequence_editor_pick_activity">Choose an activity</string>
+    <string name="sequence_editor_cancel">Cancel</string>
+    <string name="sequence_editor_edit_step">Edit step</string>
+    <string name="sequence_editor_close_step">Close step</string>
+    <string name="sequence_editor_complete_only">Complete only</string>
+    <string name="sequence_editor_unavailable_activity">Unavailable activity</string>
+    <string name="sequence_editor_invalid_number">Enter a valid value.</string>
     <string name="sequence_editor_repeat_count">Repeat count</string>
     <string name="sequence_editor_linked_step">Reusable Activity step</string>
     <string name="sequence_editor_local_step">Local step</string>
@@ -242,7 +249,7 @@
     <string name="sequence_editor_on">On</string>
     <string name="sequence_editor_off">Off</string>
     <string name="sequence_editor_done">Done</string>
-    <string name="sequence_editor_saving">SavingвЂ¦</string>
+    <string name="sequence_editor_saving">Saving…</string>
     <string name="sequence_editor_save_failure">Could not save the sequence. Your draft is still available.</string>
     <string name="sequence_editor_conflict">This sequence changed elsewhere. Reload or discard this draft before continuing.</string>
     <string name="sequence_editor_discard_title">Discard changes?</string>

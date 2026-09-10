@@ -314,9 +314,17 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         {
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                libraryRepository.getRoot().contents.activities.mapNotNull { activity ->
-                                    (activity.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity)
-                                        ?.let { SequenceEditorActivityChoice(it.id, activity.name) }
+                                libraryRepository.getReusableActivityCatalog().map { activity ->
+                                    SequenceEditorActivityChoice(
+                                        activity.id,
+                                        activity.name,
+                                        activity.timeTrackingMode,
+                                        activity.timerTarget,
+                                        activity.mainValueName,
+                                        activity.mainValueUnit,
+                                        activity.mainValueDisplayPrecision,
+                                        activity.mainValueDefaultNumberScaled,
+                                    )
                                 }
                             }
                         },

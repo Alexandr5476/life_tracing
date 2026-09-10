@@ -3,7 +3,9 @@
 package com.alexandr5476.lifetracing.editor
 
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
 import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
@@ -63,11 +65,24 @@ data class SequenceTemplateEditorState(
     val save: SequenceTemplateEditorSave = SequenceTemplateEditorSave.Idle,
     val discardConfirmationVisible: Boolean = false,
     val availableActivities: List<SequenceEditorActivityChoice> = emptyList(),
+    val textInputs: Map<String, SequenceEditorTextInput> = emptyMap(),
 )
 
 data class SequenceEditorActivityChoice(
     val id: ActivityTemplateId,
     val name: String,
+    val timeTrackingMode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+    val timerTarget: java.time.Duration? = null,
+    val mainValueName: String? = null,
+    val mainValueUnit: String? = null,
+    val mainValueDisplayPrecision: Int? = null,
+    val mainValueDefaultNumberScaled: Long? = null,
+)
+
+data class SequenceEditorTextInput(
+    val text: String,
+    val originalText: String,
+    val isValid: Boolean,
 )
 
 class SequenceTemplateEditorController internal constructor(
@@ -106,6 +121,31 @@ class SequenceTemplateEditorController internal constructor(
         }
     }
 
+    fun updateNumberInput(
+        key: String,
+        text: String,
+        originalValue: Long,
+        minimum: Long,
+        maximum: Long = Long.MAX_VALUE,
+        onValid: (Long) -> Unit,
+    ) {
+        if (closed || saving.get()) return
+        val value = text.toLongOrNull()
+        val valid = value != null && value in minimum..maximum
+        mutableState.update { state ->
+            val originalText = state.textInputs[key]?.originalText ?: originalValue.toString()
+            state.copy(
+                textInputs = state.textInputs + (key to SequenceEditorTextInput(text, originalText, valid)),
+                save = SequenceTemplateEditorSave.Idle,
+            )
+        }
+        if (valid) onValid(requireNotNull(value))
+    }
+
+    fun clearNumberInput(key: String) {
+        mutableState.update { it.copy(textInputs = it.textInputs - key, save = SequenceTemplateEditorSave.Idle) }
+    }
+
     fun newKey(prefix: String): DraftIdentity.New = DraftIdentity.New("$prefix-${newIdentity.incrementAndGet()}")
 
     fun newLocalActivityDraft() = ActivitySnapshotDraft("", null, TimeTrackingMode.STOPWATCH, null)
@@ -113,7 +153,7 @@ class SequenceTemplateEditorController internal constructor(
     fun requestBack(onExit: () -> Unit) {
         if (saving.get()) return
         val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
-        if (ready == null || ready.draft == ready.original) {
+        if (ready == null || !mutableState.value.isDirty(ready)) {
             onExit()
         } else {
             mutableState.update { it.copy(discardConfirmationVisible = true) }
@@ -134,6 +174,10 @@ class SequenceTemplateEditorController internal constructor(
     fun save() {
         val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
         if (closed || !saving.compareAndSet(false, true)) return
+        if (mutableState.value.hasInvalidInput(ready.draft)) {
+            saving.set(false)
+            return
+        }
         val submittedDraft = ready.submittedDraft()
         val invalid = runCatching { TemplateAuthoringDraftValidator.requireValid(submittedDraft) }.exceptionOrNull()
         if (invalid != null) {
@@ -232,3 +276,84 @@ class SequenceTemplateEditorController internal constructor(
 
 internal fun SequenceTemplateEditorState.readyDraft(): SequenceTemplateDraft? =
     (load as? SequenceTemplateEditorLoad.Ready)?.draft
+
+internal fun SequenceTemplateEditorState.inputText(
+    key: String,
+    default: String,
+): String = textInputs[key]?.text ?: default
+
+internal fun SequenceTemplateEditorState.inputIsInvalid(key: String): Boolean = textInputs[key]?.isValid == false
+
+internal fun SequenceTemplateEditorState.hasInvalidInput(draft: SequenceTemplateDraft): Boolean =
+    draft.activeNumberInputKeys().any { textInputs[it]?.isValid == false }
+
+private fun SequenceTemplateEditorState.isDirty(ready: SequenceTemplateEditorLoad.Ready): Boolean =
+    ready.draft != ready.original ||
+        ready.draft.activeNumberInputKeys().any { key ->
+            textInputs[key]?.let { it.text != it.originalText } == true
+        }
+
+internal fun SequenceTemplateDraft.activeNumberInputKeys(): Set<String> =
+    buildSet {
+        add(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN)
+        add(SequenceEditorInputKey.BEFORE_STEP_COUNTDOWN)
+        nodes.forEach { node ->
+            when (node) {
+                is com.alexandr5476.lifetracing.domain.SequenceNodeDraft.Step -> addStep(node.value)
+                is com.alexandr5476.lifetracing.domain.SequenceNodeDraft.Repeat -> {
+                    add(SequenceEditorInputKey.repeatCount(node.identity))
+                    node.value.children.forEach(::addStep)
+                }
+            }
+        }
+    }
+
+private fun MutableSet<String>.addStep(step: com.alexandr5476.lifetracing.domain.ActivityStepDraft) {
+    add(SequenceEditorInputKey.stepCountdown(step.identity))
+    val activity =
+        when (val value = step.activity) {
+            is com.alexandr5476.lifetracing.domain.StepActivityDraft.Existing -> value.configuration
+            is com.alexandr5476.lifetracing.domain.StepActivityDraft.Local -> value.configuration
+            else -> null
+        } ?: return
+    add(SequenceEditorInputKey.activityCountdown(step.identity))
+    if (activity.timeTrackingMode == TimeTrackingMode.TIMER) {
+        add(SequenceEditorInputKey.timerTarget(step.identity))
+    }
+}
+
+internal object SequenceEditorInputKey {
+    const val SEQUENCE_START_COUNTDOWN = "sequence-start-countdown"
+    const val BEFORE_STEP_COUNTDOWN = "before-step-countdown"
+
+    fun repeatCount(identity: DraftIdentity<*>): String = "repeat-count:${identity.editorInputKey()}"
+
+    fun stepCountdown(identity: DraftIdentity<*>): String = "step-countdown:${identity.editorInputKey()}"
+
+    fun activityCountdown(identity: DraftIdentity<*>): String = "activity-countdown:${identity.editorInputKey()}"
+
+    fun timerTarget(identity: DraftIdentity<*>): String = "timer-target:${identity.editorInputKey()}"
+}
+
+private fun DraftIdentity<*>.editorInputKey(): String =
+    when (this) {
+        is DraftIdentity.Existing<*> -> "existing:$id"
+        is DraftIdentity.New -> "new:$key"
+    }
+
+internal fun ActivitySnapshotFieldDraft.withCompatibleUnitReplacement(
+    unit: String?,
+    replacementIdentity: DraftIdentity.New,
+): ActivitySnapshotFieldDraft =
+    if (sourceFieldId == null || this.unit == unit) {
+        copy(unit = unit)
+    } else {
+        require(type == CustomFieldType.NUMBER) { "Only Number Fields have units" }
+        copy(
+            identity = replacementIdentity,
+            sourceFieldId = null,
+            nameAtCreation = localNameOverride ?: nameAtCreation,
+            localNameOverride = null,
+            unit = unit,
+        )
+    }

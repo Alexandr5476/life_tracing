@@ -33,6 +33,7 @@ import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
+import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceNode
@@ -61,6 +62,7 @@ import com.alexandr5476.lifetracing.domain.Tag
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.firstEffectiveStep
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
@@ -115,6 +117,23 @@ class LibraryRepository internal constructor(
                 { database.libraryDao().getActiveActivities() },
                 { database.libraryDao().getActiveSequences() },
             )
+        }
+
+    /** One bounded query for every active reusable Activity and the compact fact needed by pickers. */
+    fun getReusableActivityCatalog(): List<ReusableActivityCatalogItem> =
+        transaction {
+            database.libraryDao().getReusableActivityCatalog().map { row ->
+                ReusableActivityCatalogItem(
+                    ActivityTemplateId(row.id),
+                    row.name,
+                    TimeTrackingMode.valueOf(row.timeTrackingMode),
+                    row.timerTargetMs?.let(Duration::ofMillis),
+                    row.mainValueName,
+                    row.mainValueUnit,
+                    row.mainValueDisplayPrecision,
+                    row.mainValueDefaultNumberScaled,
+                )
+            }
         }
 
     fun search(

@@ -1,8 +1,14 @@
 package com.alexandr5476.lifetracing.editor
 
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityStep
+import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
@@ -108,6 +114,72 @@ class SequenceTemplateEditorControllerTest {
             assertFalse(controller.state.value.load is SequenceTemplateEditorLoad.Ready)
             controller.close()
         }
+
+    @Test
+    fun invalidRepeatTextIsDirtyAndBlocksTheRepositoryWriteWithoutRestoringTheOldValue() =
+        runBlocking {
+            var writes = 0
+            var exits = 0
+            val state = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(state.sequence.id),
+                    { state },
+                    { emptyList() },
+                    { _, _, _ -> error("New save is not used") },
+                    { _, _, _, _ ->
+                        writes++
+                        state.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val repeat =
+                controller.state.value
+                    .readyDraft()!!
+                    .nodes
+                    .filterIsInstance<SequenceNodeDraft.Repeat>()
+                    .single()
+            val key = SequenceEditorInputKey.repeatCount(repeat.identity)
+
+            controller.updateNumberInput(key, "0", repeat.value.repeatCount.toLong(), 1, Int.MAX_VALUE.toLong()) {
+                error("Invalid text must not update the draft")
+            }
+            controller.requestBack { exits++ }
+            controller.save()
+
+            assertEquals("0", controller.state.value.inputText(key, "2"))
+            assertTrue(controller.state.value.inputIsInvalid(key))
+            assertTrue(controller.state.value.discardConfirmationVisible)
+            assertEquals(0, exits)
+            assertEquals(0, writes)
+            assertEquals(2, repeat.value.repeatCount)
+            controller.close()
+        }
+
+    @Test
+    fun changingSourceLinkedSnapshotFieldUnitCreatesALocalReplacementIdentity() {
+        val sourceId = ActivityTemplateFieldId("source")
+        val field =
+            ActivitySnapshotFieldDraft(
+                DraftIdentity.Existing(ActivitySnapshotFieldId("snapshot-field")),
+                sourceId,
+                0,
+                "Distance",
+                "Route distance",
+                CustomFieldType.NUMBER,
+                unit = "km",
+            )
+
+        val replacement = field.withCompatibleUnitReplacement("m", DraftIdentity.New("replacement"))
+
+        assertEquals(DraftIdentity.New("replacement"), replacement.identity)
+        assertEquals(null, replacement.sourceFieldId)
+        assertEquals("Route distance", replacement.nameAtCreation)
+        assertEquals(null, replacement.localNameOverride)
+        assertEquals("m", replacement.unit)
+    }
 
     private suspend fun SequenceTemplateEditorController.awaitReady() {
         withTimeout(2_000) { state.first { it.load is SequenceTemplateEditorLoad.Ready } }

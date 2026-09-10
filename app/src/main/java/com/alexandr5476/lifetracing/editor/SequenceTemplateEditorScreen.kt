@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,9 +24,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
@@ -116,79 +119,107 @@ private fun SequenceEditorForm(
     state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     onBack: () -> Unit,
-) = SequenceEditorPage {
+) {
     val editable = state.save !is SequenceTemplateEditorSave.Saving
-    item {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(stringResource(R.string.sequence_editor_title), style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = {
-                controller.requestBack(onBack)
-            }, enabled = editable) { Text(stringResource(R.string.sequence_editor_back)) }
+    var settingsExpanded by rememberSaveable { mutableStateOf(false) }
+    var pickerTarget by remember { mutableStateOf<SequencePickerTarget?>(null) }
+    val choices = remember(state.availableActivities) { state.availableActivities.associateBy { it.id } }
+    SequenceEditorPage {
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.sequence_editor_title), style = MaterialTheme.typography.headlineSmall)
+                TextButton(onClick = {
+                    controller.requestBack(onBack)
+                }, enabled = editable) { Text(stringResource(R.string.sequence_editor_back)) }
+            }
+        }
+        item {
+            LifeTracingOutlinedTextField(
+                value = draft.name,
+                onValueChange = { name -> controller.updateDraft { it.copy(name = name) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(stringResource(R.string.sequence_editor_name)) },
+                enabled = editable,
+            )
+            LifeTracingOutlinedTextField(
+                value = draft.shortComment.orEmpty(),
+                onValueChange = { value -> controller.updateDraft { it.copy(shortComment = value.ifBlank { null }) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = {
+                    Text(stringResource(R.string.sequence_editor_short_comment))
+                },
+                enabled = editable,
+            )
+        }
+        item {
+            LifeTracingSecondaryButton(
+                onClick = { settingsExpanded = !settingsExpanded },
+                enabled = editable,
+            ) { Text(stringResource(R.string.sequence_editor_settings)) }
+        }
+        if (settingsExpanded) item { SequenceSettings(draft, state, controller, editable) }
+        item { SequenceFields(draft, controller, editable) }
+        item { Text(stringResource(R.string.sequence_editor_steps), style = MaterialTheme.typography.titleMedium) }
+        items(draft.sequenceEditorRows(), key = SequenceEditorRow::key) { row ->
+            when (row) {
+                is SequenceEditorRow.Step ->
+                    StepCard(row.step, state, controller, row.repeat, choices[row.templateId], editable)
+                is SequenceEditorRow.RepeatHeader -> RepeatHeader(row.repeat, state, controller, editable)
+                is SequenceEditorRow.RepeatAdd ->
+                    AddStepAction(editable) { pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity) }
+            }
+        }
+        item { AddTopLevel(draft, controller, editable) { pickerTarget = SequencePickerTarget.TopLevel } }
+        item {
+            if (state.save is SequenceTemplateEditorSave.Failure) {
+                val message =
+                    if (state.save.isConflict) {
+                        R.string.sequence_editor_conflict
+                    } else {
+                        R.string.sequence_editor_save_failure
+                    }
+                Text(
+                    stringResource(message),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            LifeTracingPrimaryButton(
+                onClick = controller::save,
+                modifier = Modifier.fillMaxWidth(),
+                enabled =
+                    editable &&
+                        state.save !is SequenceTemplateEditorSave.Committed &&
+                        !state.hasInvalidInput(draft),
+            ) {
+                val label =
+                    if (state.save is SequenceTemplateEditorSave.Saving) {
+                        R.string.sequence_editor_saving
+                    } else {
+                        R.string.sequence_editor_done
+                    }
+                Text(
+                    stringResource(label),
+                )
+            }
         }
     }
-    item {
-        LifeTracingOutlinedTextField(
-            value = draft.name,
-            onValueChange = { name -> controller.updateDraft { it.copy(name = name) } },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.sequence_editor_name)) },
-            enabled = editable,
-        )
-        LifeTracingOutlinedTextField(
-            value = draft.shortComment.orEmpty(),
-            onValueChange = { value -> controller.updateDraft { it.copy(shortComment = value.ifBlank { null }) } },
-            modifier = Modifier.fillMaxWidth(),
-            label = {
-                Text(stringResource(R.string.sequence_editor_short_comment))
+    pickerTarget?.let { target ->
+        AddStepPicker(
+            state.availableActivities,
+            editable,
+            onDismiss = { pickerTarget = null },
+            onSelect = { activity ->
+                controller.updateDraft { it.insertStep(target, controller.newKey("step"), activity) }
+                pickerTarget = null
             },
-            enabled = editable,
         )
-    }
-    item { SequenceSettings(draft, controller, editable) }
-    item { SequenceFields(draft, controller, editable) }
-    item { Text(stringResource(R.string.sequence_editor_steps), style = MaterialTheme.typography.titleMedium) }
-    items(draft.nodes, key = { it.identity.editorKey() }) { node ->
-        when (node) {
-            is SequenceNodeDraft.Step -> StepCard(node.value, controller, null, state.availableActivities, editable)
-            is SequenceNodeDraft.Repeat -> RepeatCard(node.value, controller, state.availableActivities, editable)
-        }
-    }
-    item { AddTopLevel(draft, controller, state.availableActivities, editable) }
-    item {
-        if (state.save is SequenceTemplateEditorSave.Failure) {
-            val message =
-                if (state.save.isConflict) {
-                    R.string.sequence_editor_conflict
-                } else {
-                    R.string.sequence_editor_save_failure
-                }
-            Text(
-                stringResource(message),
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        LifeTracingPrimaryButton(
-            onClick = controller::save,
-            modifier = Modifier.fillMaxWidth(),
-            enabled =
-                editable && state.save !is SequenceTemplateEditorSave.Committed,
-        ) {
-            val label =
-                if (state.save is SequenceTemplateEditorSave.Saving) {
-                    R.string.sequence_editor_saving
-                } else {
-                    R.string.sequence_editor_done
-                }
-            Text(
-                stringResource(label),
-            )
-        }
     }
 }
 
 @Composable
 private fun SequenceSettings(
     draft: SequenceTemplateDraft,
+    state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     editable: Boolean,
 ) = SequenceCard {
@@ -233,7 +264,10 @@ private fun SequenceSettings(
     }
     DurationField(
         R.string.sequence_editor_start_countdown,
+        SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN,
         draft.settings.sequenceStartCountdown,
+        state,
+        controller,
         editable,
     ) { value ->
         controller.updateDraft {
@@ -242,7 +276,10 @@ private fun SequenceSettings(
     }
     DurationField(
         R.string.sequence_editor_before_step_countdown,
+        SequenceEditorInputKey.BEFORE_STEP_COUNTDOWN,
         draft.settings.beforeEachStepCountdown,
+        state,
+        controller,
         editable,
     ) { value ->
         controller.updateDraft {
@@ -302,10 +339,11 @@ private fun SequenceFields(
                 controller.updateDraft {
                     it.copy(
                         fields =
-                            it.fields.filterIndexed { current, _ ->
-                                current !=
-                                    index
-                            },
+                            it.fields
+                                .filterIndexed { current, _ ->
+                                    current !=
+                                        index
+                                }.mapIndexed { position, value -> value.copy(position = position) },
                     )
                 }
             }, enabled = editable) { Text(stringResource(R.string.sequence_editor_remove)) }
@@ -336,7 +374,12 @@ private fun SequenceFields(
                     it.copy(
                         fields =
                             it.fields +
-                                SequenceFieldDraft(controller.newKey("field"), it.fields.size, "", type).normalized(),
+                                SequenceFieldDraft(
+                                    controller.newKey("field"),
+                                    nextEditorPosition(it.fields.map(SequenceFieldDraft::position)),
+                                    "",
+                                    type,
+                                ).normalized(),
                     )
                 }
             }, enabled = editable) { Text(stringResource(sequenceFieldTypeLabel(type))) }
@@ -508,22 +551,12 @@ private fun CategorySequenceFieldDetails(
 private fun AddTopLevel(
     draft: SequenceTemplateDraft,
     controller: SequenceTemplateEditorController,
-    choices: List<SequenceEditorActivityChoice>,
     editable: Boolean,
+    openPicker: () -> Unit,
 ) = SequenceCard {
-    Text(stringResource(R.string.sequence_editor_add_step), style = MaterialTheme.typography.titleMedium)
-    choices.forEach { choice ->
-        LifeTracingSecondaryButton(onClick = {
-            controller.updateDraft {
-                it.addTopLevelStep(controller.newKey("step"), StepActivityDraft.FromTemplate(choice.id))
-            }
-        }, enabled = editable) { Text(choice.name) }
+    LifeTracingSecondaryButton(onClick = openPicker, enabled = editable) {
+        Text(stringResource(R.string.sequence_editor_add_step))
     }
-    LifeTracingSecondaryButton(onClick = {
-        controller.updateDraft {
-            it.addTopLevelStep(controller.newKey("step"), StepActivityDraft.Local(controller.newLocalActivityDraft()))
-        }
-    }, enabled = editable) { Text(stringResource(R.string.sequence_editor_add_local_step)) }
     LifeTracingSecondaryButton(onClick = {
         controller.updateDraft {
             it.copy(
@@ -538,15 +571,18 @@ private fun AddTopLevel(
 }
 
 @Composable
-private fun RepeatCard(
+private fun RepeatHeader(
     repeat: SequenceRepeatBlockDraft,
+    state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
-    choices: List<SequenceEditorActivityChoice>,
     editable: Boolean,
 ) = SequenceCard {
     DurationField(
         R.string.sequence_editor_repeat_count,
+        SequenceEditorInputKey.repeatCount(repeat.identity),
         Duration.ofSeconds(repeat.repeatCount.toLong()),
+        state,
+        controller,
         editable,
         labelIsSeconds = false,
     ) { count ->
@@ -554,51 +590,91 @@ private fun RepeatCard(
             it.withRepeat(repeat.identity) { value -> value.copy(repeatCount = count.seconds.toInt()) }
         }
     }
-    repeat.children.forEach { StepCard(it, controller, repeat.identity, choices, editable) }
-    choices.forEach { choice ->
-        LifeTracingSecondaryButton(onClick = {
-            controller.updateDraft {
-                it.addRepeatStep(repeat.identity, controller.newKey("step"), StepActivityDraft.FromTemplate(choice.id))
-            }
-        }, enabled = editable) { Text(choice.name) }
-    }
-    LifeTracingSecondaryButton(onClick = {
-        controller.updateDraft {
-            it.addRepeatStep(
-                repeat.identity,
-                controller.newKey("step"),
-                StepActivityDraft.Local(controller.newLocalActivityDraft()),
-            )
-        }
-    }, enabled = editable) { Text(stringResource(R.string.sequence_editor_add_local_step)) }
 }
 
 @Composable
-private fun StepCard(
-    step: ActivityStepDraft,
-    controller: SequenceTemplateEditorController,
-    repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+private fun AddStepAction(
+    editable: Boolean,
+    openPicker: () -> Unit,
+) = LifeTracingSecondaryButton(onClick = openPicker, enabled = editable) {
+    Text(stringResource(R.string.sequence_editor_add_step))
+}
+
+@Composable
+private fun AddStepPicker(
     choices: List<SequenceEditorActivityChoice>,
     editable: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (StepActivityDraft) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sequence_editor_pick_activity)) },
+        text = {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                items(choices, key = { it.id.value }) { choice ->
+                    TextButton(
+                        onClick = { onSelect(StepActivityDraft.FromTemplate(choice.id)) },
+                        enabled = editable,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(choice.name)
+                            Text(choice.compactFact(), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                item {
+                    TextButton(
+                        onClick = {
+                            onSelect(
+                                StepActivityDraft.Local(
+                                    ActivitySnapshotDraft("", null, TimeTrackingMode.STOPWATCH, null),
+                                ),
+                            )
+                        },
+                        enabled = editable,
+                    ) {
+                        Text(stringResource(R.string.sequence_editor_add_local_step))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.sequence_editor_cancel)) }
+        },
+    )
+}
+
+@Composable
+@Suppress("CyclomaticComplexMethod") // One expanded Step surface keeps all controls on the same draft boundary.
+private fun StepCard(
+    step: ActivityStepDraft,
+    state: SequenceTemplateEditorState,
+    controller: SequenceTemplateEditorController,
+    repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+    choice: SequenceEditorActivityChoice?,
+    editable: Boolean,
 ) = SequenceCard {
+    var expanded by rememberSaveable(step.identity.editorKey()) { mutableStateOf(false) }
     val local =
         when (val activity = step.activity) {
             is StepActivityDraft.Existing -> activity.configuration
             is StepActivityDraft.Local -> activity.configuration
             else -> null
         }
+    val stepMode = local?.timeTrackingMode ?: choice?.timeTrackingMode
     Text(
-        if (local ==
-            null
-        ) {
-            stringResource(R.string.sequence_editor_linked_step)
-        } else {
-            stringResource(R.string.sequence_editor_local_step)
-        },
+        local?.name ?: choice?.name ?: stringResource(R.string.sequence_editor_unavailable_activity),
         style = MaterialTheme.typography.titleSmall,
     )
+    Text(local?.compactFact() ?: choice?.compactFact().orEmpty(), style = MaterialTheme.typography.bodySmall)
+    LifeTracingSecondaryButton(onClick = { expanded = !expanded }, enabled = editable) {
+        Text(stringResource(if (expanded) R.string.sequence_editor_close_step else R.string.sequence_editor_edit_step))
+    }
+    if (!expanded) return@SequenceCard
     if (local != null) {
-        LocalActivityDetails(step, repeat, local, controller, editable)
+        LocalActivityDetails(step, repeat, local, state, controller, editable)
     }
     OverrideToggle(
         R.string.sequence_editor_override_sound,
@@ -636,7 +712,7 @@ private fun StepCard(
             ) { current -> current.copy(overrides = current.overrides.copy(keepScreenAwake = value)) }
         }
     }
-    if (local?.timeTrackingMode == TimeTrackingMode.TIMER) {
+    if (stepMode == TimeTrackingMode.TIMER) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             LifeTracingSecondaryButton(onClick = {
                 controller.updateDraft {
@@ -658,7 +734,10 @@ private fun StepCard(
     }
     DurationField(
         R.string.sequence_editor_override_countdown,
+        SequenceEditorInputKey.stepCountdown(step.identity),
         step.overrides.startCountdown ?: Duration.ZERO,
+        state,
+        controller,
         editable,
     ) { value ->
         controller.updateDraft {
@@ -670,12 +749,15 @@ private fun StepCard(
     }
     if (step.overrides.startCountdown != null) {
         LifeTracingSecondaryButton(onClick = {
+            controller.clearNumberInput(SequenceEditorInputKey.stepCountdown(step.identity))
             controller.updateDraft {
                 it.updateStep(step.identity, repeat) { current ->
                     current.copy(overrides = current.overrides.copy(startCountdown = null))
                 }
             }
         }, enabled = editable) { Text(stringResource(R.string.sequence_editor_inherit)) }
+    } else {
+        Text(stringResource(R.string.sequence_editor_inherit), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -684,6 +766,7 @@ private fun LocalActivityDetails(
     step: ActivityStepDraft,
     repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
     activity: ActivitySnapshotDraft,
+    state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     editable: Boolean,
 ) {
@@ -706,6 +789,16 @@ private fun LocalActivityDetails(
     FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
         TimeTrackingMode.entries.forEach { mode ->
             LifeTracingSecondaryButton(onClick = {
+                if (mode == TimeTrackingMode.TIMER && activity.timerTarget == null) {
+                    controller.updateNumberInput(
+                        SequenceEditorInputKey.timerTarget(step.identity),
+                        "0",
+                        0,
+                        1,
+                    ) {}
+                } else if (mode != TimeTrackingMode.TIMER) {
+                    controller.clearNumberInput(SequenceEditorInputKey.timerTarget(step.identity))
+                }
                 controller.updateStepActivity(step.identity, repeat) {
                     it.copy(
                         timeTrackingMode = mode,
@@ -725,17 +818,15 @@ private fun LocalActivityDetails(
     if (activity.timeTrackingMode == TimeTrackingMode.TIMER) {
         DurationField(
             R.string.activity_editor_timer_seconds,
+            SequenceEditorInputKey.timerTarget(step.identity),
             activity.timerTarget ?: Duration.ZERO,
+            state,
+            controller,
             editable,
+            minimum = 1,
         ) { target ->
             controller.updateStepActivity(step.identity, repeat) {
-                it.copy(
-                    timerTarget =
-                        target.takeIf {
-                            it >
-                                Duration.ZERO
-                        },
-                )
+                it.copy(timerTarget = target)
             }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
@@ -775,7 +866,10 @@ private fun LocalActivityDetails(
     }
     DurationField(
         R.string.sequence_editor_local_start_countdown,
+        SequenceEditorInputKey.activityCountdown(step.identity),
         activity.settings.startCountdown,
+        state,
+        controller,
         editable,
     ) { countdown ->
         controller.updateStepActivity(step.identity, repeat) {
@@ -826,7 +920,12 @@ private fun LocalActivityFields(
         LocalSnapshotFieldDetails(step, repeat, index, field, controller, editable)
         LifeTracingSecondaryButton(onClick = {
             controller.updateStepActivity(step.identity, repeat) {
-                it.copy(fields = it.fields.filterIndexed { current, _ -> current != index })
+                it.copy(
+                    fields =
+                        it.fields
+                            .filterIndexed { current, _ -> current != index }
+                            .mapIndexed { position, value -> value.copy(position = position) },
+                )
             }
         }, enabled = editable) { Text(stringResource(R.string.sequence_editor_remove)) }
     }
@@ -840,7 +939,7 @@ private fun LocalActivityFields(
                                 ActivitySnapshotFieldDraft(
                                     controller.newKey("local-field"),
                                     null,
-                                    it.fields.size,
+                                    nextEditorPosition(it.fields.map(ActivitySnapshotFieldDraft::position)),
                                     "",
                                     type = type,
                                 ),
@@ -866,7 +965,12 @@ private fun LocalSnapshotFieldDetails(
                 value = field.unit.orEmpty(),
                 onValueChange = { unit ->
                     controller.updateStepActivity(step.identity, repeat) {
-                        it.withSnapshotField(index) { value -> value.copy(unit = unit.ifBlank { null }) }
+                        it.withSnapshotField(index) { value ->
+                            value.withCompatibleUnitReplacement(
+                                unit.ifBlank { null },
+                                controller.newKey("local-field-replacement"),
+                            )
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -963,6 +1067,20 @@ private fun LocalSnapshotFieldDetails(
                         }
                     }
                 }, enabled = editable) { Text(stringResource(R.string.activity_editor_default)) }
+                LifeTracingSecondaryButton(onClick = {
+                    controller.updateStepActivity(step.identity, repeat) {
+                        it.withSnapshotField(index) { current ->
+                            current.copy(
+                                categoryOptions =
+                                    current.categoryOptions
+                                        .filterIndexed { currentIndex, _ -> currentIndex != optionIndex }
+                                        .mapIndexed { position, value -> value.copy(position = position) },
+                                defaultCategoryOption =
+                                    current.defaultCategoryOption.takeIf { it != option.identity },
+                            )
+                        }
+                    }
+                }, enabled = editable) { Text(stringResource(R.string.sequence_editor_remove)) }
             }
             LifeTracingSecondaryButton(onClick = {
                 controller.updateStepActivity(step.identity, repeat) {
@@ -1030,19 +1148,34 @@ private fun LocalSnapshotFieldDetails(
 
 @Composable private fun DurationField(
     label: Int,
+    inputKey: String,
     duration: Duration,
+    state: SequenceTemplateEditorState,
+    controller: SequenceTemplateEditorController,
     enabled: Boolean,
     labelIsSeconds: Boolean = true,
+    minimum: Long = if (labelIsSeconds) 0 else 1,
     change: (Duration) -> Unit,
 ) {
-    var text by remember(duration) {
-        mutableStateOf(if (labelIsSeconds) duration.seconds.toString() else duration.seconds.toString())
-    }
-    LifeTracingOutlinedTextField(text, { value ->
-        text =
-            value
-        ; value.toLongOrNull()?.takeIf { it >= if (labelIsSeconds) 0 else 1 }?.let { change(Duration.ofSeconds(it)) }
-    }, Modifier.fillMaxWidth(), label = { Text(stringResource(label)) }, enabled = enabled)
+    val text = state.inputText(inputKey, duration.seconds.toString())
+    val invalid = state.inputIsInvalid(inputKey)
+    LifeTracingOutlinedTextField(
+        text,
+        { value ->
+            controller.updateNumberInput(
+                inputKey,
+                value,
+                duration.seconds,
+                minimum,
+                if (labelIsSeconds) Long.MAX_VALUE else Int.MAX_VALUE.toLong(),
+            ) { change(Duration.ofSeconds(it)) }
+        },
+        Modifier.fillMaxWidth(),
+        label = { Text(stringResource(label)) },
+        enabled = enabled,
+        isError = invalid,
+        supportingText = if (invalid) ({ Text(stringResource(R.string.sequence_editor_invalid_number)) }) else null,
+    )
 }
 
 @Composable private fun SequenceEditorPage(content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) =
@@ -1126,6 +1259,119 @@ private fun ActivitySnapshotFieldDraft.normalized() =
                 isMainValue = false,
             )
     }
+
+private sealed interface SequencePickerTarget {
+    data object TopLevel : SequencePickerTarget
+
+    data class Repeat(
+        val identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,
+    ) : SequencePickerTarget
+}
+
+private sealed interface SequenceEditorRow {
+    val key: String
+
+    data class Step(
+        val step: ActivityStepDraft,
+        val repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+    ) : SequenceEditorRow {
+        override val key = "step:${step.identity.editorKey()}"
+        val templateId = (step.activity as? StepActivityDraft.FromTemplate)?.templateId
+    }
+
+    data class RepeatHeader(
+        val repeat: SequenceRepeatBlockDraft,
+    ) : SequenceEditorRow {
+        override val key = "repeat:${repeat.identity.editorKey()}"
+    }
+
+    data class RepeatAdd(
+        val repeat: SequenceRepeatBlockDraft,
+    ) : SequenceEditorRow {
+        override val key = "repeat-add:${repeat.identity.editorKey()}"
+    }
+}
+
+private fun SequenceTemplateDraft.sequenceEditorRows(): List<SequenceEditorRow> =
+    buildList {
+        nodes.forEach { node ->
+            when (node) {
+                is SequenceNodeDraft.Step -> add(SequenceEditorRow.Step(node.value, null))
+                is SequenceNodeDraft.Repeat -> {
+                    add(SequenceEditorRow.RepeatHeader(node.value))
+                    node.value.children.forEach { add(SequenceEditorRow.Step(it, node.identity)) }
+                    add(SequenceEditorRow.RepeatAdd(node.value))
+                }
+            }
+        }
+    }
+
+private fun SequenceTemplateDraft.insertStep(
+    target: SequencePickerTarget,
+    identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,
+    activity: StepActivityDraft,
+): SequenceTemplateDraft =
+    when (target) {
+        SequencePickerTarget.TopLevel -> addTopLevelStep(identity, activity)
+        is SequencePickerTarget.Repeat -> addRepeatStep(target.identity, identity, activity)
+    }
+
+@Composable
+private fun ActivitySnapshotDraft.compactFact(): String {
+    val mainValue = fields.singleOrNull { it.isMainValue && it.type == CustomFieldType.NUMBER }
+    return compactActivityFact(
+        timeTrackingMode,
+        timerTarget,
+        mainValue?.localNameOverride ?: mainValue?.nameAtCreation,
+        mainValue?.unit,
+        mainValue?.displayPrecision,
+        mainValue?.defaultNumberScaled,
+    )
+}
+
+@Composable
+private fun SequenceEditorActivityChoice.compactFact(): String =
+    compactActivityFact(
+        timeTrackingMode,
+        timerTarget,
+        mainValueName,
+        mainValueUnit,
+        mainValueDisplayPrecision,
+        mainValueDefaultNumberScaled,
+    )
+
+@Composable
+private fun compactActivityFact(
+    mode: TimeTrackingMode,
+    timerTarget: Duration?,
+    mainValueName: String?,
+    mainValueUnit: String?,
+    mainValueDisplayPrecision: Int?,
+    mainValueDefaultNumberScaled: Long?,
+): String =
+    when (mode) {
+        TimeTrackingMode.TIMER ->
+            timerTarget?.let(::formatEditorDuration)
+                ?: stringResource(R.string.activity_editor_timer)
+        TimeTrackingMode.STOPWATCH -> stringResource(R.string.activity_editor_stopwatch)
+        TimeTrackingMode.NO_LIVE_TRACKING -> {
+            if (mainValueName == null) {
+                stringResource(R.string.sequence_editor_complete_only)
+            } else {
+                val value = formatLauncherNumber(mainValueDefaultNumberScaled, mainValueDisplayPrecision)
+                listOf(value, mainValueUnit ?: mainValueName).filter(String::isNotBlank).joinToString(" ")
+            }
+        }
+    }
+
+@Suppress("MagicNumber")
+private fun formatEditorDuration(duration: Duration): String {
+    val seconds = duration.seconds
+    val hours = seconds / 3_600
+    val minutes = seconds % 3_600 / 60
+    val remainder = seconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder) else "%d:%02d".format(minutes, remainder)
+}
 
 private fun SequenceTemplateDraft.withRepeat(
     identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,

@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteException
 import androidx.room.RoomDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValue
@@ -121,6 +122,10 @@ class LibraryRepositoryTest {
             listOf("activity-folder", "activity-root"),
             repository.getAll(LibraryKindFilter.ACTIVITIES).map { it.id.value },
         )
+        assertEquals(
+            listOf("activity-folder", "activity-root"),
+            repository.getReusableActivityCatalog().map { it.id.value },
+        )
         assertEquals(listOf("activity-folder"), repository.search("%").map { it.id.value })
         assertEquals(
             setOf("activity-root", "sequence-root"),
@@ -134,6 +139,99 @@ class LibraryRepositoryTest {
         assertEquals(listOf("nested"), folder.folders.map { it.id.value })
         assertEquals(listOf("activity-folder"), folder.activities.map { it.id.value })
         assertTrue(folder.sequences.isEmpty())
+    }
+
+    @Test
+    fun reusableActivityCatalogIncludesFolderedTemplatesInOneBoundedProjection() {
+        val queries: MutableList<Pair<String, List<Any?>>> = Collections.synchronizedList(mutableListOf())
+        rebuildDatabaseWithQueryCallback(queries)
+        database.folderDao().insert(FolderEntity("folder", "Folder", null, 0, 0))
+        activity("root", "Root")
+        activity("foldered", "Foldered", mode = "TIMER", folder = "folder")
+        val repository = repository()
+        queries.clear()
+
+        val catalog = repository.getReusableActivityCatalog()
+
+        assertEquals(listOf("foldered", "root"), catalog.map { it.id.value })
+        assertEquals(Duration.ofMinutes(1), catalog.first().timerTarget)
+        assertEquals(
+            1,
+            queries.count {
+                "FROM activity_templates AS templates LEFT JOIN activity_template_fields" in
+                    it.first
+            },
+        )
+    }
+
+    @Test
+    fun activeSequenceKeepsItsFrozenGraphAfterTheSourceEditorCommits() {
+        val authoring = TemplateAuthoringRepository(database, deterministicAuthoringIds("frozen"))
+        val source =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Original step", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = instant(1),
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Original sequence",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(source.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = instant(2),
+            )
+        val library = repository()
+        val started =
+            library.startSequenceFromTemplate(
+                sequence.id,
+                instant(3),
+                instant(3),
+                ZoneOffset.UTC,
+                sequence.revision,
+            )
+        val edit = authoring.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val step = (edit.nodes.single() as SequenceNodeDraft.Step).value
+        val existing = step.activity as StepActivityDraft.Existing
+        authoring.saveSequenceTemplate(
+            sequence.id,
+            sequence.revision,
+            edit.copy(
+                name = "Edited sequence",
+                nodes =
+                    listOf(
+                        SequenceNodeDraft.Step(
+                            step.copy(
+                                activity =
+                                    existing.copy(
+                                        configuration = existing.configuration.copy(name = "Edited step"),
+                                    ),
+                            ),
+                        ),
+                    ),
+            ),
+            instant(4),
+        )
+
+        val recovered = liveForExistingDatabase().getActiveRuntime() as ActiveSequenceRuntime
+        assertEquals(started.execution.snapshotId, recovered.snapshot.id)
+        assertEquals("Original sequence", recovered.snapshot.name)
+        assertEquals(
+            "Original step",
+            recovered.activitySnapshots.values
+                .single()
+                .name,
+        )
+        assertEquals("Edited sequence", authoring.getSequenceTemplate(sequence.id)?.name)
     }
 
     @Test

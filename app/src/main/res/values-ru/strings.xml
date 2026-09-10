@@ -231,6 +231,13 @@
     <string name="sequence_editor_add_step">Добавить шаг</string>
     <string name="sequence_editor_add_local_step">Добавить локальный шаг</string>
     <string name="sequence_editor_add_repeat">Добавить повтор</string>
+    <string name="sequence_editor_pick_activity">Выберите действие</string>
+    <string name="sequence_editor_cancel">Отмена</string>
+    <string name="sequence_editor_edit_step">Изменить шаг</string>
+    <string name="sequence_editor_close_step">Свернуть шаг</string>
+    <string name="sequence_editor_complete_only">Только завершение</string>
+    <string name="sequence_editor_unavailable_activity">Недоступное действие</string>
+    <string name="sequence_editor_invalid_number">Введите допустимое значение.</string>
     <string name="sequence_editor_repeat_count">Количество повторов</string>
     <string name="sequence_editor_linked_step">Шаг из действия</string>
     <string name="sequence_editor_local_step">Локальный шаг</string>

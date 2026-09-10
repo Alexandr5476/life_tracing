@@ -22,6 +22,17 @@ internal data class LibraryTagLinkRow(
     @ColumnInfo(name = "tag_id") val tagId: String,
 )
 
+internal data class ReusableActivityCatalogRow(
+    val id: String,
+    val name: String,
+    @ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
+    @ColumnInfo(name = "timer_target_ms") val timerTargetMs: Long?,
+    @ColumnInfo(name = "main_value_name") val mainValueName: String?,
+    @ColumnInfo(name = "main_value_unit") val mainValueUnit: String?,
+    @ColumnInfo(name = "main_value_display_precision") val mainValueDisplayPrecision: Int?,
+    @ColumnInfo(name = "main_value_default_number_scaled") val mainValueDefaultNumberScaled: Long?,
+)
+
 @Dao
 @Suppress("TooManyFunctions")
 internal interface FolderDao {
@@ -137,6 +148,18 @@ internal interface StatisticsSeriesDao {
 @Dao
 @Suppress("TooManyFunctions") // One bounded DAO owns lightweight catalog SQL and metadata-only writes.
 internal interface LibraryDao {
+    @Query(
+        "SELECT templates.id, templates.name, templates.time_tracking_mode, templates.timer_target_ms, " +
+            "fields.name AS main_value_name, fields.unit AS main_value_unit, " +
+            "fields.display_precision AS main_value_display_precision, " +
+            "fields.default_number_scaled AS main_value_default_number_scaled " +
+            "FROM activity_templates AS templates LEFT JOIN activity_template_fields AS fields " +
+            "ON fields.activity_template_id = templates.id AND fields.deleted_at_ms IS NULL " +
+            "AND fields.is_main_value = 1 AND fields.field_type = 'NUMBER' " +
+            "WHERE templates.deleted_at_ms IS NULL ORDER BY templates.name COLLATE NOCASE, templates.id",
+    )
+    fun getReusableActivityCatalog(): List<ReusableActivityCatalogRow>
+
     @Query(
         "SELECT templates.id, templates.name, templates.short_comment, templates.folder_id, " +
             "state.pinned_rank, state.last_used_at_ms, templates.deleted_at_ms " +
