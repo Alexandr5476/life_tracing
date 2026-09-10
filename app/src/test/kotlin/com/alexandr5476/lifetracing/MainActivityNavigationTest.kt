@@ -82,4 +82,30 @@ class MainActivityNavigationTest {
 
         assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
     }
+
+    @Test
+    fun sequenceEditorUsesDistinctRoutesAndRestoresToLibraryWithoutADraft() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
+
+        backStack.openNewSequenceTemplateEditor()
+        assertEquals(listOf(DailyRoot, LibraryRoot, NewSequenceTemplateEditor), backStack)
+        backStack.normalizeRestoredSequenceTemplateEditor()
+        backStack.openExistingSequenceTemplateEditor("sequence")
+        assertEquals(listOf(DailyRoot, LibraryRoot, ExistingSequenceTemplateEditor("sequence")), backStack)
+        backStack.normalizeRestoredSequenceTemplateEditor()
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
+
+    @Test
+    fun committedSequenceEditorRefreshesAndPopsOnce() {
+        val backStack: MutableList<NavKey> =
+            mutableListOf(DailyRoot, LibraryRoot, ExistingSequenceTemplateEditor("sequence"))
+        var refreshes = 0
+
+        backStack.completeSequenceTemplateEditor { refreshes++ }
+        backStack.completeSequenceTemplateEditor { refreshes++ }
+
+        assertEquals(1, refreshes)
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+    }
 }

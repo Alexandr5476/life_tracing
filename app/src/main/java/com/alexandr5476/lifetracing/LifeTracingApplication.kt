@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package com.alexandr5476.lifetracing
 
 import android.app.Activity
@@ -19,6 +21,9 @@ import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
+import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -83,6 +88,11 @@ class LifeTracingRuntimeGraph internal constructor(
     private val activityTemplateEditorControllerFactory: (
         ActivityTemplateEditorTarget,
     ) -> ActivityTemplateEditorController,
+    private val sequenceTemplateEditorControllerFactory: (
+        SequenceTemplateEditorTarget,
+    ) -> SequenceTemplateEditorController = {
+        error("Sequence editor is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -95,6 +105,10 @@ class LifeTracingRuntimeGraph internal constructor(
     fun createActivityTemplateEditorController(
         target: ActivityTemplateEditorTarget,
     ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target)
+
+    fun createSequenceTemplateEditorController(
+        target: SequenceTemplateEditorTarget,
+    ): SequenceTemplateEditorController = sequenceTemplateEditorControllerFactory(target)
 
     companion object {
         @Volatile
@@ -284,6 +298,36 @@ class LifeTracingRuntimeGraph internal constructor(
                         { id, expectedRevision, draft, at ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 templateAuthoringRepository.saveActivityTemplate(id, expectedRevision, draft, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                    )
+                },
+                { target ->
+                    SequenceTemplateEditorController(
+                        scope,
+                        target,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getSequenceTemplateAuthoringState(id)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getRoot().contents.activities.mapNotNull { activity ->
+                                    (activity.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity)
+                                        ?.let { SequenceEditorActivityChoice(it.id, activity.name) }
+                                }
+                            }
+                        },
+                        { draft, placement, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.createSequenceTemplate(draft, placement, at)
+                            }
+                        },
+                        { id, revision, draft, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveSequenceTemplate(id, revision, draft, at)
                             }
                         },
                         java.time.Instant::now,
