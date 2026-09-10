@@ -254,6 +254,14 @@
     <string name="sequence_editor_on">On</string>
     <string name="sequence_editor_off">Off</string>
     <string name="sequence_editor_done">Done</string>
+    <string name="sequence_editor_apply">Apply</string>
+    <string name="sequence_editor_undo">Undo</string>
+    <string name="sequence_editor_redo">Redo</string>
+    <string name="sequence_editor_manipulation_cancel">Close manipulation</string>
+    <string name="sequence_editor_move_step">Move or reorder step</string>
+    <string name="sequence_editor_duplicate_step">Duplicate and move step</string>
+    <string name="sequence_editor_move_repeat">Move or reorder repeat</string>
+    <string name="sequence_editor_pending_duplicate">Pending duplicate; apply before editing</string>
     <string name="sequence_editor_saving">Saving…</string>
     <string name="sequence_editor_save_failure">Could not save the sequence. Your draft is still available.</string>
     <string name="sequence_editor_conflict">This sequence changed elsewhere. Reload or discard this draft before continuing.</string>

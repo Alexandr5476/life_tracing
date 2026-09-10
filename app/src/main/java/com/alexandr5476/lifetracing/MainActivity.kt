@@ -265,6 +265,8 @@ internal fun LifeTracingApp(
                                 SequenceTemplateEditorRoute(session.controller, onBack = {
                                     sequenceEditorSessions.release(session)
                                     backStack.removeSequenceTemplateEditor()
+                                }, onApplied = {
+                                    libraryOwner.refreshIfInitialized()
                                 }, onCommitted = {
                                     session.exitPolicy.deliverCommitted {
                                         sequenceEditorSessions.release(session)
@@ -286,6 +288,8 @@ internal fun LifeTracingApp(
                                 SequenceTemplateEditorRoute(session.controller, onBack = {
                                     sequenceEditorSessions.release(session)
                                     backStack.removeSequenceTemplateEditor()
+                                }, onApplied = {
+                                    libraryOwner.refreshIfInitialized()
                                 }, onCommitted = {
                                     session.exitPolicy.deliverCommitted {
                                         sequenceEditorSessions.release(session)

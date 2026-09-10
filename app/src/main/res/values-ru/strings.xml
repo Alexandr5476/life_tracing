@@ -254,6 +254,14 @@
     <string name="sequence_editor_on">Вкл.</string>
     <string name="sequence_editor_off">Выкл.</string>
     <string name="sequence_editor_done">Готово</string>
+    <string name="sequence_editor_apply">Применить</string>
+    <string name="sequence_editor_undo">Отменить</string>
+    <string name="sequence_editor_redo">Повторить</string>
+    <string name="sequence_editor_manipulation_cancel">Закрыть изменение порядка</string>
+    <string name="sequence_editor_move_step">Переместить или изменить порядок шага</string>
+    <string name="sequence_editor_duplicate_step">Дублировать и переместить шаг</string>
+    <string name="sequence_editor_move_repeat">Переместить или изменить порядок повтора</string>
+    <string name="sequence_editor_pending_duplicate">Ожидающее дублирование; примените перед редактированием</string>
     <string name="sequence_editor_saving">Сохранение…</string>
     <string name="sequence_editor_save_failure">Не удалось сохранить последовательность. Черновик сохранён.</string>
     <string name="sequence_editor_conflict">Последовательность изменилась в другом месте. Перезагрузите или отмените черновик.</string>

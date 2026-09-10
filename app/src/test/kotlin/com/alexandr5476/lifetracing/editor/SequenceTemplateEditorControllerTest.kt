@@ -5,6 +5,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityStep
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
@@ -13,8 +14,10 @@ import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
 import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
+import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -203,6 +206,149 @@ class SequenceTemplateEditorControllerTest {
         )
     }
 
+    @Test
+    fun manipulationDiscardRestoresSessionEntryDraftAndNeverWrites() =
+        runBlocking {
+            var writes = 0
+            val state = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(state.sequence.id),
+                    { state },
+                    { emptyList() },
+                    { _, _, _ -> error("Create must not run") },
+                    { _, _, _, _ ->
+                        writes++
+                        state.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "ordinary unsaved") }
+            val baseline = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                baseline.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val repeat =
+                baseline.nodes
+                    .filterIsInstance<SequenceNodeDraft.Repeat>()
+                    .single()
+                    .identity
+
+            controller.enterManipulation(step)
+            assertTrue(controller.moveManipulation(step, SequenceDropDestination(repeat, 1)))
+            assertTrue(
+                controller.state.value.manipulation
+                    ?.canUndo == true,
+            )
+            controller.discardManipulation()
+
+            assertEquals(baseline, controller.state.value.readyDraft())
+            assertEquals(null, controller.state.value.manipulation)
+            assertEquals(0, writes)
+            controller.close()
+        }
+
+    @Test
+    fun staleApplyRetainsManipulationDraftAndHistory() =
+        runBlocking {
+            val canonical = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("Create must not run") },
+                    { _, _, _, _ -> error("SequenceTemplate revision changed concurrently") },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val initial = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                initial.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val repeat =
+                initial.nodes
+                    .filterIsInstance<SequenceNodeDraft.Repeat>()
+                    .single()
+                    .identity
+            controller.enterManipulation(step)
+            controller.moveManipulation(step, SequenceDropDestination(repeat, 1))
+            val submitted = controller.state.value.readyDraft()
+
+            controller.applyManipulation()
+            controller.awaitFailure()
+
+            assertEquals(submitted, controller.state.value.readyDraft())
+            assertTrue(
+                controller.state.value.manipulation
+                    ?.canUndo == true,
+            )
+            assertEquals(7, canonical.sequence.revision)
+            controller.close()
+        }
+
+    @Test
+    fun newApplyAdoptsCreatedIdentityAndLaterDoneSavesInsteadOfCreatingAgain() =
+        runBlocking {
+            var creates = 0
+            var saves = 0
+            var canonical: SequenceTemplateAuthoringState? = null
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.New,
+                    { canonical },
+                    { emptyList() },
+                    { draft, _, _ ->
+                        creates++
+                        canonical = draft.toFakeAuthoring(SequenceTemplateId("created"), 1)
+                        requireNotNull(canonical).sequence
+                    },
+                    { id, revision, draft, _ ->
+                        saves++
+                        assertEquals(SequenceTemplateId("created"), id)
+                        assertEquals(1, revision)
+                        canonical = draft.toFakeAuthoring(id, 2)
+                        requireNotNull(canonical).sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            controller.updateDraft {
+                it.copy(
+                    name = "New sequence",
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(localStep("one", 0)),
+                            SequenceNodeDraft.Step(localStep("two", 1)),
+                        ),
+                )
+            }
+            controller.enterManipulation(DraftIdentity.New("one"))
+            controller.moveManipulation(DraftIdentity.New("two"), SequenceDropDestination(position = 0))
+            controller.applyManipulation()
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+
+            assertEquals(1, creates)
+            assertEquals(0, saves)
+            val firstSnapshot = (canonical?.sequence?.nodes?.first() as ActivityStep).activitySnapshotId
+            assertEquals("two", firstSnapshot.value)
+            controller.updateDraft { it.copy(name = "After apply") }
+            controller.save()
+            withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
+
+            assertEquals(1, creates)
+            assertEquals(1, saves)
+            controller.close()
+        }
+
     private suspend fun SequenceTemplateEditorController.awaitReady() {
         withTimeout(2_000) { state.first { it.load is SequenceTemplateEditorLoad.Ready } }
     }
@@ -252,4 +398,70 @@ class SequenceTemplateEditorControllerTest {
         locallyModified = false,
         createdAt = Instant.EPOCH,
     )
+
+    private fun localStep(
+        key: String,
+        position: Int,
+    ) = ActivityStepDraft(
+        DraftIdentity.New(key),
+        position,
+        StepActivityDraft.Local(
+            com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                key,
+                null,
+                com.alexandr5476.lifetracing.domain.TimeTrackingMode.STOPWATCH,
+                null,
+            ),
+        ),
+    )
+
+    private fun SequenceTemplateDraft.toFakeAuthoring(
+        id: SequenceTemplateId,
+        revision: Long,
+    ): SequenceTemplateAuthoringState {
+        val snapshots = mutableMapOf<ActivitySnapshotId, ActivityConfigSnapshot>()
+
+        fun step(value: ActivityStepDraft): ActivityStep {
+            val key =
+                when (val identity = value.identity) {
+                    is DraftIdentity.Existing -> identity.id.value
+                    is DraftIdentity.New -> identity.key
+                }
+            val snapshotId = ActivitySnapshotId(key)
+            val configuration =
+                when (val activity = value.activity) {
+                    is StepActivityDraft.Existing -> activity.configuration
+                    is StepActivityDraft.Local -> activity.configuration
+                    else -> error("Fake authoring does not duplicate")
+                }
+            snapshots[snapshotId] = snapshot(snapshotId, configuration.name)
+            return ActivityStep(SequenceNodeId(key), value.position, snapshotId, value.overrides)
+        }
+        val committedNodes =
+            nodes.map { node ->
+                when (node) {
+                    is SequenceNodeDraft.Step -> step(node.value)
+                    is SequenceNodeDraft.Repeat ->
+                        SequenceRepeatBlock(
+                            (node.identity as DraftIdentity.Existing).id,
+                            node.position,
+                            node.value.repeatCount,
+                            node.value.children.map(::step),
+                        )
+                }
+            }
+        return SequenceTemplateAuthoringState(
+            SequenceTemplate(
+                id,
+                name,
+                shortComment,
+                StatisticsSeriesId("series-$revision"),
+                revision,
+                Instant.EPOCH,
+                Instant.EPOCH.plusSeconds(revision),
+                nodes = committedNodes,
+            ),
+            snapshots,
+        )
+    }
 }

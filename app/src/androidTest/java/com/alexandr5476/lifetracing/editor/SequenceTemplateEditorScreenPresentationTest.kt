@@ -7,16 +7,22 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
 import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityStep
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
@@ -24,9 +30,12 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.SequenceFieldDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceNodeId
+import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft
 import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
+import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -476,6 +485,78 @@ class SequenceTemplateEditorScreenPresentationTest {
         controller.close()
     }
 
+    @Test
+    fun longPressShowsAccessibleHandlesOnAllEligibleRowsAndDragMovesIntoRepeat() {
+        val firstSnapshot = ActivitySnapshotId("first-snapshot")
+        val childSnapshot = ActivitySnapshotId("child-snapshot")
+        val authoring =
+            SequenceTemplateAuthoringState(
+                SequenceTemplate(
+                    SequenceTemplateId("existing"),
+                    "Workout",
+                    null,
+                    StatisticsSeriesId("sequence-series"),
+                    revision = 4,
+                    createdAt = Instant.EPOCH,
+                    updatedAt = Instant.EPOCH,
+                    nodes =
+                        listOf(
+                            ActivityStep(SequenceNodeId("first"), 0, firstSnapshot),
+                            SequenceRepeatBlock(
+                                SequenceNodeId("repeat"),
+                                1,
+                                2,
+                                listOf(ActivityStep(SequenceNodeId("child"), 0, childSnapshot)),
+                            ),
+                        ),
+                ),
+                mapOf(
+                    firstSnapshot to snapshot(firstSnapshot, "Warmup"),
+                    childSnapshot to snapshot(childSnapshot, "Rest"),
+                ),
+            )
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(authoring.sequence.id),
+                { authoring },
+                { emptyList() },
+                { _, _, _ -> error("Create is not used") },
+                { _, _, _, _ -> error("Save is not used") },
+                Instant::now,
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+
+        composeTestRule.onNodeWithText("Warmup").performTouchInput { longClick() }
+
+        composeTestRule.onNode(hasText("Warmup") and isSelected()).assertIsSelected()
+        assertEquals(
+            1,
+            composeTestRule
+                .onAllNodesWithContentDescription(text(R.string.sequence_editor_move_step))
+                .fetchSemanticsNodes()
+                .size,
+        )
+        assertEquals(
+            1,
+            composeTestRule
+                .onAllNodesWithContentDescription(text(R.string.sequence_editor_duplicate_step))
+                .fetchSemanticsNodes()
+                .size,
+        )
+        composeTestRule.onNodeWithContentDescription(text(R.string.sequence_editor_move_repeat)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_apply)).assertIsDisplayed()
+
+        composeTestRule.runOnIdle {
+            controller.moveManipulationRelative(DraftIdentity.Existing(SequenceNodeId("first")), 1)
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            assertTrue(draft.nodes.first() is SequenceNodeDraft.Repeat)
+            assertEquals(2, (draft.nodes.first() as SequenceNodeDraft.Repeat).value.children.size)
+        }
+        controller.close()
+    }
+
     private fun controller(choices: List<SequenceEditorActivityChoice>) =
         SequenceTemplateEditorController(
             CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
@@ -538,6 +619,22 @@ class SequenceTemplateEditorScreenPresentationTest {
         StatisticsSeriesId("series"),
         createdAt = at,
         updatedAt = at,
+    )
+
+    private fun snapshot(
+        id: ActivitySnapshotId,
+        name: String,
+    ) = ActivityConfigSnapshot(
+        id,
+        name,
+        null,
+        TimeTrackingMode.STOPWATCH,
+        null,
+        null,
+        null,
+        null,
+        false,
+        Instant.EPOCH,
     )
 
     private fun text(id: Int) = composeTestRule.activity.getString(id)
