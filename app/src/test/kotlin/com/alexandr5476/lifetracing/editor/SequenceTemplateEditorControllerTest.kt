@@ -181,6 +181,28 @@ class SequenceTemplateEditorControllerTest {
         assertEquals("m", replacement.unit)
     }
 
+    @Test
+    fun changingCommittedLocalSnapshotFieldTypeOrUnitCreatesAReplacementIdentity() {
+        val field =
+            ActivitySnapshotFieldDraft(
+                DraftIdentity.Existing(ActivitySnapshotFieldId("local-field")),
+                null,
+                0,
+                "Distance",
+                type = CustomFieldType.NUMBER,
+                unit = "km",
+            )
+
+        assertEquals(
+            DraftIdentity.New("unit-replacement"),
+            field.withCompatibleUnitReplacement("m", DraftIdentity.New("unit-replacement")).identity,
+        )
+        assertEquals(
+            DraftIdentity.New("type-replacement"),
+            field.withCompatibleTypeReplacement(CustomFieldType.TEXT, DraftIdentity.New("type-replacement")).identity,
+        )
+    }
+
     private suspend fun SequenceTemplateEditorController.awaitReady() {
         withTimeout(2_000) { state.first { it.load is SequenceTemplateEditorLoad.Ready } }
     }

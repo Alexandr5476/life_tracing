@@ -345,7 +345,7 @@ internal fun ActivitySnapshotFieldDraft.withCompatibleUnitReplacement(
     unit: String?,
     replacementIdentity: DraftIdentity.New,
 ): ActivitySnapshotFieldDraft =
-    if (sourceFieldId == null || this.unit == unit) {
+    if (this.unit == unit || identity is DraftIdentity.New && sourceFieldId == null) {
         copy(unit = unit)
     } else {
         require(type == CustomFieldType.NUMBER) { "Only Number Fields have units" }
@@ -356,4 +356,15 @@ internal fun ActivitySnapshotFieldDraft.withCompatibleUnitReplacement(
             localNameOverride = null,
             unit = unit,
         )
+    }
+
+internal fun ActivitySnapshotFieldDraft.withCompatibleTypeReplacement(
+    type: CustomFieldType,
+    replacementIdentity: DraftIdentity.New,
+): ActivitySnapshotFieldDraft =
+    if (this.type == type || identity is DraftIdentity.New) {
+        copy(type = type)
+    } else {
+        require(sourceFieldId == null) { "Source-linked Field type is immutable" }
+        copy(identity = replacementIdentity, type = type)
     }

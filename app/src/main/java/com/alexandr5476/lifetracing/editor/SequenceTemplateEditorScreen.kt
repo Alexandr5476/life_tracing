@@ -28,6 +28,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -163,10 +167,20 @@ private fun SequenceEditorForm(
         items(draft.sequenceEditorRows(), key = SequenceEditorRow::key) { row ->
             when (row) {
                 is SequenceEditorRow.Step ->
-                    StepCard(row.step, state, controller, row.repeat, choices[row.templateId], editable)
+                    StepCard(
+                        row.step,
+                        state,
+                        controller,
+                        row.repeat,
+                        row.repeatCount,
+                        choices[row.templateId],
+                        editable,
+                    )
                 is SequenceEditorRow.RepeatHeader -> RepeatHeader(row.repeat, state, controller, editable)
                 is SequenceEditorRow.RepeatAdd ->
-                    AddStepAction(editable) { pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity) }
+                    AddStepAction(row.repeat.repeatCount, editable) {
+                        pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
+                    }
             }
         }
         item { AddTopLevel(draft, controller, editable) { pickerTarget = SequencePickerTarget.TopLevel } }
@@ -318,7 +332,7 @@ private fun SequenceFields(
         }, enabled = editable)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             CustomFieldType.entries.forEach { type ->
-                LifeTracingSecondaryButton(onClick = {
+                ChoiceButton(selected = field.type == type, onClick = {
                     controller.updateDraft {
                         it.copy(
                             fields =
@@ -464,6 +478,15 @@ private fun CategorySequenceFieldDetails(
     controller: SequenceTemplateEditorController,
     editable: Boolean,
 ) {
+    ChoiceButton(
+        selected = field.defaultCategoryOption == null,
+        onClick = {
+            controller.updateDraft {
+                it.withSequenceField(index) { current -> current.copy(defaultCategoryOption = null) }
+            }
+        },
+        enabled = editable,
+    ) { Text(stringResource(R.string.sequence_editor_no_default)) }
     field.categoryOptions.forEachIndexed { optionIndex, option ->
         LifeTracingOutlinedTextField(
             value = option.label,
@@ -483,30 +506,14 @@ private fun CategorySequenceFieldDetails(
             label = { Text(stringResource(R.string.activity_editor_option)) },
             enabled = editable,
         )
-        LifeTracingSecondaryButton(onClick = {
+        ChoiceButton(selected = field.defaultCategoryOption == option.identity, onClick = {
             controller.updateDraft {
                 it.withSequenceField(index) { current ->
-                    current.copy(
-                        defaultCategoryOption =
-                            option.identity.takeUnless {
-                                it ==
-                                    current.defaultCategoryOption
-                            },
-                    )
+                    current.copy(defaultCategoryOption = option.identity)
                 }
             }
         }, enabled = editable) {
-            Text(
-                stringResource(
-                    if (field.defaultCategoryOption ==
-                        option.identity
-                    ) {
-                        R.string.activity_editor_clear_default
-                    } else {
-                        R.string.activity_editor_make_default
-                    },
-                ),
-            )
+            Text(stringResource(R.string.activity_editor_default))
         }
         LifeTracingSecondaryButton(onClick = {
             controller.updateDraft {
@@ -577,6 +584,10 @@ private fun RepeatHeader(
     controller: SequenceTemplateEditorController,
     editable: Boolean,
 ) = SequenceCard {
+    Text(
+        stringResource(R.string.sequence_editor_repeat_label, repeat.repeatCount),
+        style = MaterialTheme.typography.titleSmall,
+    )
     DurationField(
         R.string.sequence_editor_repeat_count,
         SequenceEditorInputKey.repeatCount(repeat.identity),
@@ -594,10 +605,20 @@ private fun RepeatHeader(
 
 @Composable
 private fun AddStepAction(
+    repeatCount: Int,
     editable: Boolean,
     openPicker: () -> Unit,
-) = LifeTracingSecondaryButton(onClick = openPicker, enabled = editable) {
-    Text(stringResource(R.string.sequence_editor_add_step))
+) = LifeTracingSecondaryButton(
+    onClick = openPicker,
+    modifier = Modifier.padding(start = 16.dp).fillMaxWidth(),
+    enabled = editable,
+) {
+    Text(
+        stringResource(
+            R.string.sequence_editor_add_step_to_repeat,
+            stringResource(R.string.sequence_editor_repeat_label, repeatCount),
+        ),
+    )
 }
 
 @Composable
@@ -653,9 +674,10 @@ private fun StepCard(
     state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+    repeatCount: Int?,
     choice: SequenceEditorActivityChoice?,
     editable: Boolean,
-) = SequenceCard {
+) = SequenceCard(modifier = if (repeat == null) Modifier else Modifier.padding(start = 16.dp)) {
     var expanded by rememberSaveable(step.identity.editorKey()) { mutableStateOf(false) }
     val local =
         when (val activity = step.activity) {
@@ -664,6 +686,16 @@ private fun StepCard(
             else -> null
         }
     val stepMode = local?.timeTrackingMode ?: choice?.timeTrackingMode
+    repeatCount?.let {
+        Text(
+            stringResource(
+                R.string.sequence_editor_repeat_child_label,
+                stringResource(R.string.sequence_editor_repeat_label, it),
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
     Text(
         local?.name ?: choice?.name ?: stringResource(R.string.sequence_editor_unavailable_activity),
         style = MaterialTheme.typography.titleSmall,
@@ -675,6 +707,11 @@ private fun StepCard(
     if (!expanded) return@SequenceCard
     if (local != null) {
         LocalActivityDetails(step, repeat, local, state, controller, editable)
+    } else if (step.activity is StepActivityDraft.FromTemplate) {
+        Text(
+            stringResource(R.string.sequence_editor_pending_source_configuration),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
     OverrideToggle(
         R.string.sequence_editor_override_sound,
@@ -714,7 +751,7 @@ private fun StepCard(
     }
     if (stepMode == TimeTrackingMode.TIMER) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            LifeTracingSecondaryButton(onClick = {
+            ChoiceButton(selected = step.overrides.timerZeroBehavior == null, onClick = {
                 controller.updateDraft {
                     it.updateStep(step.identity, repeat) { current ->
                         current.copy(overrides = current.overrides.copy(timerZeroBehavior = null))
@@ -722,7 +759,7 @@ private fun StepCard(
                 }
             }, enabled = editable) { Text(stringResource(R.string.sequence_editor_inherit)) }
             TimerZeroBehavior.entries.forEach { behavior ->
-                LifeTracingSecondaryButton(onClick = {
+                ChoiceButton(selected = step.overrides.timerZeroBehavior == behavior, onClick = {
                     controller.updateDraft {
                         it.updateStep(step.identity, repeat) { current ->
                             current.copy(overrides = current.overrides.copy(timerZeroBehavior = behavior))
@@ -788,7 +825,7 @@ private fun LocalActivityDetails(
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
         TimeTrackingMode.entries.forEach { mode ->
-            LifeTracingSecondaryButton(onClick = {
+            ChoiceButton(selected = activity.timeTrackingMode == mode, onClick = {
                 if (mode == TimeTrackingMode.TIMER && activity.timerTarget == null) {
                     controller.updateNumberInput(
                         SequenceEditorInputKey.timerTarget(step.identity),
@@ -831,7 +868,7 @@ private fun LocalActivityDetails(
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             TimerZeroBehavior.entries.forEach { behavior ->
-                LifeTracingSecondaryButton(onClick = {
+                ChoiceButton(selected = activity.settings.timerZeroBehavior == behavior, onClick = {
                     controller.updateStepActivity(step.identity, repeat) {
                         it.copy(settings = it.settings.copy(timerZeroBehavior = behavior))
                     }
@@ -909,9 +946,15 @@ private fun LocalActivityFields(
         if (field.sourceFieldId == null) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                 CustomFieldType.entries.forEach { type ->
-                    LifeTracingSecondaryButton(onClick = {
+                    ChoiceButton(selected = field.type == type, onClick = {
                         controller.updateStepActivity(step.identity, repeat) {
-                            it.withSnapshotField(index) { value -> value.copy(type = type).normalized() }
+                            it.withSnapshotField(index) { value ->
+                                value
+                                    .withCompatibleTypeReplacement(
+                                        type,
+                                        controller.newKey("local-field-replacement"),
+                                    ).normalized()
+                            }
                         }
                     }, enabled = editable) { Text(stringResource(sequenceFieldTypeLabel(type))) }
                 }
@@ -1029,6 +1072,15 @@ private fun LocalSnapshotFieldDetails(
             }
         }
         CustomFieldType.CATEGORY -> {
+            ChoiceButton(
+                selected = field.defaultCategoryOption == null,
+                onClick = {
+                    controller.updateStepActivity(step.identity, repeat) {
+                        it.withSnapshotField(index) { current -> current.copy(defaultCategoryOption = null) }
+                    }
+                },
+                enabled = editable,
+            ) { Text(stringResource(R.string.sequence_editor_no_default)) }
             field.categoryOptions.forEachIndexed { optionIndex, option ->
                 LifeTracingOutlinedTextField(
                     value = option.localLabelOverride ?: option.labelAtCreation,
@@ -1054,16 +1106,10 @@ private fun LocalSnapshotFieldDetails(
                     label = { Text(stringResource(R.string.activity_editor_option)) },
                     enabled = editable,
                 )
-                LifeTracingSecondaryButton(onClick = {
+                ChoiceButton(selected = field.defaultCategoryOption == option.identity, onClick = {
                     controller.updateStepActivity(step.identity, repeat) {
                         it.withSnapshotField(index) { current ->
-                            current.copy(
-                                defaultCategoryOption =
-                                    option.identity.takeUnless {
-                                        it ==
-                                            current.defaultCategoryOption
-                                    },
-                            )
+                            current.copy(defaultCategoryOption = option.identity)
                         }
                     }
                 }, enabled = editable) { Text(stringResource(R.string.activity_editor_default)) }
@@ -1133,16 +1179,38 @@ private fun LocalSnapshotFieldDetails(
     value: Boolean?,
     enabled: Boolean,
     change: (Boolean?) -> Unit,
-) = FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-    Text(stringResource(label))
-    LifeTracingSecondaryButton(onClick = { change(null) }, enabled = enabled) {
-        Text(stringResource(R.string.sequence_editor_inherit))
+) {
+    val description = stringResource(label)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        Text(description)
+        ChoiceButton(selected = value == null, onClick = { change(null) }, enabled = enabled) {
+            Text(stringResource(R.string.sequence_editor_inherit))
+        }
+        ChoiceButton(selected = value == true, onClick = { change(true) }, enabled = enabled) {
+            Text(stringResource(R.string.sequence_editor_on))
+        }
+        ChoiceButton(selected = value == false, onClick = { change(false) }, enabled = enabled) {
+            Text(stringResource(R.string.sequence_editor_off))
+        }
     }
-    LifeTracingSecondaryButton(onClick = { change(true) }, enabled = enabled) {
-        Text(stringResource(R.string.sequence_editor_on))
-    }
-    LifeTracingSecondaryButton(onClick = { change(false) }, enabled = enabled) {
-        Text(stringResource(R.string.sequence_editor_off))
+}
+
+@Composable
+private fun ChoiceButton(
+    selected: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
+) {
+    val modifier =
+        Modifier.semantics {
+            this.selected = selected
+            role = Role.RadioButton
+        }
+    if (selected) {
+        LifeTracingPrimaryButton(onClick, modifier, enabled, content)
+    } else {
+        LifeTracingSecondaryButton(onClick, modifier, enabled, content)
     }
 }
 
@@ -1185,14 +1253,16 @@ private fun LocalSnapshotFieldDetails(
         content = content,
     )
 
-@Composable private fun SequenceCard(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) =
-    androidx.compose.material3.Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(MaterialTheme.spacing.medium),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-            content = content,
-        )
-    }
+@Composable private fun SequenceCard(
+    modifier: Modifier = Modifier,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) = androidx.compose.material3.Card(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier.padding(MaterialTheme.spacing.medium),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        content = content,
+    )
+}
 
 private fun SequenceFieldDraft.normalized() =
     when (type) {
@@ -1274,6 +1344,7 @@ private sealed interface SequenceEditorRow {
     data class Step(
         val step: ActivityStepDraft,
         val repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+        val repeatCount: Int? = null,
     ) : SequenceEditorRow {
         override val key = "step:${step.identity.editorKey()}"
         val templateId = (step.activity as? StepActivityDraft.FromTemplate)?.templateId
@@ -1299,8 +1370,10 @@ private fun SequenceTemplateDraft.sequenceEditorRows(): List<SequenceEditorRow> 
                 is SequenceNodeDraft.Step -> add(SequenceEditorRow.Step(node.value, null))
                 is SequenceNodeDraft.Repeat -> {
                     add(SequenceEditorRow.RepeatHeader(node.value))
-                    node.value.children.forEach { add(SequenceEditorRow.Step(it, node.identity)) }
                     add(SequenceEditorRow.RepeatAdd(node.value))
+                    node.value.children.forEach {
+                        add(SequenceEditorRow.Step(it, node.identity, node.value.repeatCount))
+                    }
                 }
             }
         }
@@ -1349,19 +1422,16 @@ private fun compactActivityFact(
     mainValueDisplayPrecision: Int?,
     mainValueDefaultNumberScaled: Long?,
 ): String =
-    when (mode) {
-        TimeTrackingMode.TIMER ->
+    when {
+        mode == TimeTrackingMode.TIMER ->
             timerTarget?.let(::formatEditorDuration)
                 ?: stringResource(R.string.activity_editor_timer)
-        TimeTrackingMode.STOPWATCH -> stringResource(R.string.activity_editor_stopwatch)
-        TimeTrackingMode.NO_LIVE_TRACKING -> {
-            if (mainValueName == null) {
-                stringResource(R.string.sequence_editor_complete_only)
-            } else {
-                val value = formatLauncherNumber(mainValueDefaultNumberScaled, mainValueDisplayPrecision)
-                listOf(value, mainValueUnit ?: mainValueName).filter(String::isNotBlank).joinToString(" ")
-            }
+        mainValueName != null -> {
+            val value = formatLauncherNumber(mainValueDefaultNumberScaled, mainValueDisplayPrecision)
+            listOf(value, mainValueUnit ?: mainValueName).filter(String::isNotBlank).joinToString(" ")
         }
+        mode == TimeTrackingMode.STOPWATCH -> stringResource(R.string.activity_editor_stopwatch)
+        else -> stringResource(R.string.sequence_editor_complete_only)
     }
 
 @Suppress("MagicNumber")

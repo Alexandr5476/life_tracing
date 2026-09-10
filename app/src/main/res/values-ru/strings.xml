@@ -239,8 +239,13 @@
     <string name="sequence_editor_unavailable_activity">Недоступное действие</string>
     <string name="sequence_editor_invalid_number">Введите допустимое значение.</string>
     <string name="sequence_editor_repeat_count">Количество повторов</string>
+    <string name="sequence_editor_repeat_label">Повтор ×%1$d</string>
+    <string name="sequence_editor_repeat_child_label">Внутри: %1$s</string>
+    <string name="sequence_editor_add_step_to_repeat">Добавить шаг в %1$s</string>
     <string name="sequence_editor_linked_step">Шаг из действия</string>
     <string name="sequence_editor_local_step">Локальный шаг</string>
+    <string name="sequence_editor_pending_source_configuration">Конфигурация берётся из шаблона действия и фиксируется при сохранении. Сейчас можно изменить переопределения шага; локальное редактирование конфигурации действия станет доступно после сохранения шага.</string>
+    <string name="sequence_editor_no_default">Без значения по умолчанию</string>
     <string name="sequence_editor_override_sound">Переопределить звук</string>
     <string name="sequence_editor_override_vibration">Переопределить вибрацию</string>
     <string name="sequence_editor_override_awake">Переопределить не выключать экран</string>
