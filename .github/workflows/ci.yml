@@ -73,6 +73,12 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - name: Resolve debug foundation
+        run: ./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency foundation-android
+      - name: Resolve androidTest foundation
+        run: ./gradlew :app:dependencyInsight --configuration debugAndroidTestRuntimeClasspath --dependency foundation-android
+      - name: Resolve androidTest UI test
+        run: ./gradlew :app:dependencyInsight --configuration debugAndroidTestRuntimeClasspath --dependency ui-test-android
       - run: ./gradlew :data:pixel2Api35DebugAndroidTest :app:pixel2Api35DebugAndroidTest --stacktrace
       - name: Upload instrumentation reports
         if: always()
@@ -82,4 +88,6 @@ jobs:
           path: |
             data/build/reports/**
             app/build/reports/**
+            **/build/outputs/androidTest-results/**
+            **/build/outputs/managed_device_android_test_additional_output/**
           if-no-files-found: ignore
