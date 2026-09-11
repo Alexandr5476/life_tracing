@@ -169,8 +169,9 @@ private fun SequenceEditorForm(
     val density = LocalDensity.current
     val edge = with(density) { 56.dp.toPx() }
     val scroll = with(density) { 32.dp.toPx() }
+    val awayThreshold = with(density) { 1.dp.toPx() }
     val autoScroll = { pointerY: Float, movementY: Float, uptimeMillis: Long ->
-        val delta = dropState.autoScroll(pointerY, movementY, edge, scroll, uptimeMillis)
+        val delta = dropState.autoScroll(pointerY, movementY, awayThreshold, edge, scroll, uptimeMillis)
         if (delta != 0f) {
             val consumed = listState.dispatchRawDelta(delta)
             sequenceDragTrace("auto_scroll_dispatch invoked=true requested=$delta consumed=$consumed")
@@ -1752,6 +1753,7 @@ private class SequenceEditorDropState {
     fun autoScroll(
         pointerY: Float,
         movementY: Float,
+        awayThreshold: Float,
         edge: Float,
         amount: Float,
         uptimeMillis: Long,
@@ -1759,7 +1761,7 @@ private class SequenceEditorDropState {
         val bounds = viewport
         if (bounds == null) {
             sequenceDragTrace(
-                "auto_scroll pointerY=$pointerY movementY=$movementY viewport=null " +
+                "auto_scroll pointerY=$pointerY movementY=$movementY awayThreshold=$awayThreshold viewport=null " +
                     "direction=none boundary=unknown " +
                     "requested=0.0 rateLimited=false decision=no_viewport",
             )
@@ -1771,7 +1773,8 @@ private class SequenceEditorDropState {
                 pointerY > bounds.bottom - edge -> 1f
                 else -> 0f
             }
-        val movingAwayFromEdge = direction < 0f && movementY > 0f || direction > 0f && movementY < 0f
+        val movingAwayFromEdge =
+            direction < 0f && movementY > awayThreshold || direction > 0f && movementY < -awayThreshold
         val boundaryKey = if (direction < 0) firstRowKey else lastRowKey
         val boundaryReached =
             visible[boundaryKey]
@@ -1809,9 +1812,9 @@ private class SequenceEditorDropState {
                 else -> "dispatch"
             }
         sequenceDragTrace(
-            "auto_scroll pointerY=$pointerY movementY=$movementY viewport=${bounds.traceBounds()} " +
-                "direction=$directionName boundaryKey=$boundaryKey boundaryReached=$boundaryReached " +
-                "requested=$requested rateLimited=$rateLimited decision=$decision",
+            "auto_scroll pointerY=$pointerY movementY=$movementY awayThreshold=$awayThreshold " +
+                "viewport=${bounds.traceBounds()} direction=$directionName boundaryKey=$boundaryKey " +
+                "boundaryReached=$boundaryReached requested=$requested rateLimited=$rateLimited decision=$decision",
         )
         return requested
     }
