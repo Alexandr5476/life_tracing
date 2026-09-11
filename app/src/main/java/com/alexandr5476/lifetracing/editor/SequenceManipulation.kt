@@ -1,4 +1,4 @@
-@file:Suppress("ReturnCount", "TooManyFunctions")
+@file:Suppress("ReturnCount")
 
 package com.alexandr5476.lifetracing.editor
 
@@ -52,34 +52,14 @@ internal class SequenceManipulationSession(
         identity: DraftIdentity<SequenceNodeId>,
         destination: SequenceDropDestination,
     ): SequenceTemplateDraft? {
-        sequenceDragTrace(
-            "session_move begin identity=${identity.traceId()} destination=${destination.traceValue()} " +
-                "operationCount=${undo.size} selection=${selected.traceId()}",
-        )
-        val source = draft.locationOf(identity)
-        if (source == null) {
-            sequenceDragTrace("session_move source_missing identity=${identity.traceId()} returned=null")
-            return null
-        }
-        val moved = draft.move(identity, destination)
-        if (moved == null) {
-            sequenceDragTrace(
-                "session_move rejected identity=${identity.traceId()} source=${source.traceValue()} returned=null",
-            )
-            return null
-        }
+        val source = draft.locationOf(identity) ?: return null
+        val moved = draft.move(identity, destination) ?: return null
         if (moved == draft) {
             selected = identity
-            sequenceDragTrace(
-                "session_move no_op identity=${identity.traceId()} accepted=true operationCount=${undo.size}",
-            )
             return draft
         }
         record(SequenceStructuralEdit.Move(identity, source, destination, selected))
         selected = identity
-        sequenceDragTrace(
-            "session_move changed identity=${identity.traceId()} accepted=true operationCount=${undo.size}",
-        )
         return moved
     }
 
@@ -287,29 +267,4 @@ private fun SequenceNodeDraft.steps(): List<ActivityStepDraft> =
     when (this) {
         is SequenceNodeDraft.Step -> listOf(value)
         is SequenceNodeDraft.Repeat -> value.children
-    }
-
-internal const val SEQUENCE_DRAG_TRACE = "SequenceDragTrace"
-
-internal fun sequenceDragTrace(message: String) = println("$SEQUENCE_DRAG_TRACE $message")
-
-internal fun DraftIdentity<SequenceNodeId>.traceId(): String =
-    when (this) {
-        is DraftIdentity.Existing -> "existing:${id.value}"
-        is DraftIdentity.New -> "new:$key"
-    }
-
-internal fun SequenceDropDestination?.traceValue(): String =
-    this?.let { "{repeat=${repeat?.traceId() ?: "top"},position=$position}" } ?: "none"
-
-internal fun SequenceTemplateDraft.traceTopLevelShape(): String =
-    nodes.joinToString(prefix = "[", postfix = "]") { node ->
-        val type = if (node is SequenceNodeDraft.Repeat) "repeat" else "step"
-        "$type:${node.identity.traceId()}"
-    }
-
-internal fun SequenceTemplateDraft.traceRepeatShape(): String =
-    nodes.filterIsInstance<SequenceNodeDraft.Repeat>().joinToString(prefix = "[", postfix = "]") { node ->
-        val children = node.value.children.joinToString(prefix = "[", postfix = "]") { it.identity.traceId() }
-        "${node.identity.traceId()}:$children"
     }

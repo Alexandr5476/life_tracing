@@ -1,16 +1,15 @@
 package com.alexandr5476.lifetracing.editor
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithContentDescription
-import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -554,7 +553,7 @@ class SequenceTemplateEditorScreenPresentationTest {
 
         drag(
             moveTag("first"),
-            repeatDropTag("repeat"),
+            dropTarget(repeatDropTag("repeat")),
         )
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
@@ -588,12 +587,7 @@ class SequenceTemplateEditorScreenPresentationTest {
         source.assertIsDisplayed()
         target.assertIsDisplayed()
 
-        drag(
-            moveTag("b"),
-            stepDropTag("a"),
-            0.1f,
-            "SequenceTemplateEditorScreenPresentationTest.pointerDragReordersTopLevelAndSelectsTheDraggedRow",
-        )
+        drag(moveTag("b"), target, 0.1f)
 
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
@@ -630,12 +624,7 @@ class SequenceTemplateEditorScreenPresentationTest {
         awaitReady(controller)
         composeTestRule.onNodeWithText("Child C").performScrollTo().performTouchInput { longClick() }
 
-        drag(
-            moveTag("c"),
-            repeatDropTag("r1"),
-            0.1f,
-            "SequenceTemplateEditorScreenPresentationTest.pointerDragMovesRepeatChildToTopLevel",
-        )
+        drag(moveTag("c"), dropTarget(repeatDropTag("r1")), 0.1f)
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
             assertEquals(
@@ -714,7 +703,7 @@ class SequenceTemplateEditorScreenPresentationTest {
 
         drag(
             duplicateTag("a"),
-            repeatDropTag("r2"),
+            dropTarget(repeatDropTag("r2")),
         )
 
         composeTestRule.runOnIdle {
@@ -769,7 +758,7 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         }
 
-        drag(moveTag("r1"), stepDropTag("a"), 0.1f)
+        drag(moveTag("r1"), dropTarget(stepDropTag("a")), 0.1f)
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
             assertEquals(
@@ -812,34 +801,11 @@ class SequenceTemplateEditorScreenPresentationTest {
 
     private fun drag(
         sourceTag: String,
-        targetTag: String,
+        target: SemanticsNodeInteraction,
         targetYFraction: Float = 0.5f,
-        testName: String? = null,
     ) {
         val source = composeTestRule.onNodeWithTag(sourceTag, useUnmergedTree = true)
-        val target = dropTarget(targetTag)
         composeTestRule.waitForIdle()
-        if (testName != null) {
-            val page = composeTestRule.onNodeWithTag("sequence-editor-page", useUnmergedTree = true)
-            val sourceNodes =
-                composeTestRule.onAllNodesWithTag(sourceTag, useUnmergedTree = true).fetchSemanticsNodes()
-            val targetNodes =
-                composeTestRule.onAllNodesWithTag(targetTag, useUnmergedTree = true).fetchSemanticsNodes()
-            val sourceBounds = sourceNodes.singleOrNull()?.boundsInRoot
-            val targetBounds = targetNodes.singleOrNull()?.boundsInRoot
-            val targetPoint =
-                targetBounds?.let { it.center.copy(y = it.top + it.height * targetYFraction) }
-            sequenceDragTrace(
-                "test_before_drag test=$testName sourceTag=$sourceTag targetTag=$targetTag " +
-                    "sourceExists=${sourceNodes.isNotEmpty()} targetExists=${targetNodes.isNotEmpty()} " +
-                    "sourceDisplayed=${sourceNodes.size == 1 && source.isDisplayed()} " +
-                    "targetDisplayed=${targetNodes.size == 1 && target.isDisplayed()} " +
-                    "sourceClippedBoundsInRoot=$sourceBounds targetClippedBoundsInRoot=$targetBounds " +
-                    "editorPageBounds=${page.fetchSemanticsNode().boundsInRoot} " +
-                    "requestedDownRoot=${sourceBounds?.center} requestedEndRoot=$targetPoint " +
-                    "density=${composeTestRule.activity.resources.displayMetrics.density}",
-            )
-        }
         val sourceBounds = source.fetchSemanticsNode().boundsInRoot
         val targetBounds = target.fetchSemanticsNode().boundsInRoot
         val targetPoint = targetBounds.center.copy(y = targetBounds.top + targetBounds.height * targetYFraction)

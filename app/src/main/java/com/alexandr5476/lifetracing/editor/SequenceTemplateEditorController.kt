@@ -184,26 +184,7 @@ class SequenceTemplateEditorController internal constructor(
     fun moveManipulation(
         identity: DraftIdentity<SequenceNodeId>,
         destination: SequenceDropDestination,
-    ): Boolean {
-        val before = (mutableState.value.load as? SequenceTemplateEditorLoad.Ready)?.draft
-        val beforeUi = mutableState.value.manipulation
-        sequenceDragTrace(
-            "controller_move invoked=true identity=${identity.traceId()} " +
-                "destination=${destination.traceValue()} topLevelBefore=${before?.traceTopLevelShape()} " +
-                "repeatsBefore=${before?.traceRepeatShape()} operationCountBefore=${beforeUi?.operationCount} " +
-                "selectionBefore=${beforeUi?.selected?.traceId() ?: "none"}",
-        )
-        val returned = changeManipulation { session, draft -> session.move(draft, identity, destination) }
-        val after = (mutableState.value.load as? SequenceTemplateEditorLoad.Ready)?.draft
-        val afterUi = mutableState.value.manipulation
-        sequenceDragTrace(
-            "controller_move returned=$returned identity=${identity.traceId()} " +
-                "structurallyEqual=${before == after} topLevelAfter=${after?.traceTopLevelShape()} " +
-                "repeatsAfter=${after?.traceRepeatShape()} operationCountAfter=${afterUi?.operationCount} " +
-                "selectionAfter=${afterUi?.selected?.traceId() ?: "none"}",
-        )
-        return returned
-    }
+    ): Boolean = changeManipulation { session, draft -> session.move(draft, identity, destination) }
 
     fun duplicateManipulation(
         identity: DraftIdentity<SequenceNodeId>,
