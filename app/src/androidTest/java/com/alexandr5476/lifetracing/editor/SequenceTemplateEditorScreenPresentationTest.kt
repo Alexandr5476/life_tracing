@@ -581,6 +581,12 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
         composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+        val source = composeTestRule.onNodeWithTag(moveTag("b"), useUnmergedTree = true)
+        val target = dropTarget(stepDropTag("a"))
+        source.performScrollTo()
+        composeTestRule.waitForIdle()
+        source.assertIsDisplayed()
+        target.assertIsDisplayed()
 
         drag(
             moveTag("b"),

@@ -169,8 +169,8 @@ private fun SequenceEditorForm(
     val density = LocalDensity.current
     val edge = with(density) { 56.dp.toPx() }
     val scroll = with(density) { 32.dp.toPx() }
-    val autoScroll = { pointerY: Float, uptimeMillis: Long ->
-        val delta = dropState.autoScroll(pointerY, edge, scroll, uptimeMillis)
+    val autoScroll = { pointerY: Float, movementY: Float, uptimeMillis: Long ->
+        val delta = dropState.autoScroll(pointerY, movementY, edge, scroll, uptimeMillis)
         if (delta != 0f) {
             val consumed = listState.dispatchRawDelta(delta)
             sequenceDragTrace("auto_scroll_dispatch invoked=true requested=$delta consumed=$consumed")
@@ -682,7 +682,7 @@ private fun RepeatHeader(
     editable: Boolean,
     draft: SequenceTemplateDraft,
     dropState: SequenceEditorDropState,
-    autoScroll: (Float, Long) -> Unit,
+    autoScroll: (Float, Float, Long) -> Unit,
 ) = SequenceCard {
     Text(
         stringResource(R.string.sequence_editor_repeat_label, repeat.repeatCount),
@@ -790,7 +790,7 @@ private fun StepCard(
     editable: Boolean,
     draft: SequenceTemplateDraft,
     dropState: SequenceEditorDropState,
-    autoScroll: (Float, Long) -> Unit,
+    autoScroll: (Float, Float, Long) -> Unit,
 ) {
     val manipulation = state.manipulation
     val selected = manipulation?.selected == step.identity
@@ -968,7 +968,7 @@ private fun ManipulationHandle(
     select: (DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>) -> Unit,
     draft: SequenceTemplateDraft,
     dropState: SequenceEditorDropState,
-    autoScroll: (Float, Long) -> Unit,
+    autoScroll: (Float, Float, Long) -> Unit,
     duplicate: Boolean = false,
     commit: (SequenceDropDestination) -> Boolean,
 ) {
@@ -1017,7 +1017,7 @@ private fun ManipulationHandle(
                                 )
                                 pointerY = after
                                 dropState.update(pointerY)
-                                autoScroll(pointerY, change.uptimeMillis)
+                                autoScroll(pointerY, amount.y, change.uptimeMillis)
                             }
                         },
                         onDragEnd = {
@@ -1751,6 +1751,7 @@ private class SequenceEditorDropState {
 
     fun autoScroll(
         pointerY: Float,
+        movementY: Float,
         edge: Float,
         amount: Float,
         uptimeMillis: Long,
@@ -1758,7 +1759,8 @@ private class SequenceEditorDropState {
         val bounds = viewport
         if (bounds == null) {
             sequenceDragTrace(
-                "auto_scroll pointerY=$pointerY viewport=null direction=none boundary=unknown " +
+                "auto_scroll pointerY=$pointerY movementY=$movementY viewport=null " +
+                    "direction=none boundary=unknown " +
                     "requested=0.0 rateLimited=false decision=no_viewport",
             )
             return 0f
@@ -1769,6 +1771,7 @@ private class SequenceEditorDropState {
                 pointerY > bounds.bottom - edge -> 1f
                 else -> 0f
             }
+        val movingAwayFromEdge = direction < 0f && movementY > 0f || direction > 0f && movementY < 0f
         val boundaryKey = if (direction < 0) firstRowKey else lastRowKey
         val boundaryReached =
             visible[boundaryKey]
@@ -1779,11 +1782,15 @@ private class SequenceEditorDropState {
         val rateLimited =
             lastAutoScrollAtMillis?.let { uptimeMillis - it < AUTO_SCROLL_INTERVAL_MILLIS } == true
         val requested =
-            if (direction == 0f || boundaryReached || rateLimited) {
-                0f
-            } else {
-                lastAutoScrollAtMillis = uptimeMillis
-                direction * amount
+            when {
+                direction == 0f -> 0f
+                movingAwayFromEdge -> 0f
+                boundaryReached -> 0f
+                rateLimited -> 0f
+                else -> {
+                    lastAutoScrollAtMillis = uptimeMillis
+                    direction * amount
+                }
             }
         val directionName =
             if (direction < 0) {
@@ -1796,14 +1803,15 @@ private class SequenceEditorDropState {
         val decision =
             when {
                 direction == 0f -> "outside_edge"
+                movingAwayFromEdge -> "moving_away_from_edge"
                 boundaryReached -> "boundary_reached"
                 rateLimited -> "rate_limited"
                 else -> "dispatch"
             }
         sequenceDragTrace(
-            "auto_scroll pointerY=$pointerY viewport=${bounds.traceBounds()} direction=$directionName " +
-                "boundaryKey=$boundaryKey boundaryReached=$boundaryReached requested=$requested " +
-                "rateLimited=$rateLimited decision=$decision",
+            "auto_scroll pointerY=$pointerY movementY=$movementY viewport=${bounds.traceBounds()} " +
+                "direction=$directionName boundaryKey=$boundaryKey boundaryReached=$boundaryReached " +
+                "requested=$requested rateLimited=$rateLimited decision=$decision",
         )
         return requested
     }
