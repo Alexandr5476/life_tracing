@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -346,6 +347,59 @@ class SequenceTemplateEditorControllerTest {
 
             assertEquals(1, creates)
             assertEquals(1, saves)
+            controller.close()
+        }
+
+    @Test
+    fun applyRetryAfterCommittedReloadFailureDoesNotRepeatWriter() =
+        runBlocking {
+            val initial = authoringState()
+            var canonical = initial
+            var loads = 0
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(initial.sequence.id),
+                    {
+                        loads++
+                        if (loads == 2) error("temporary reload failure")
+                        canonical
+                    },
+                    { emptyList() },
+                    { _, _, _ -> error("Create is not used") },
+                    { id, revision, draft, _ ->
+                        writes++
+                        assertEquals(7, revision)
+                        canonical = draft.toFakeAuthoring(id, 8)
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                draft.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val repeat =
+                draft.nodes
+                    .filterIsInstance<SequenceNodeDraft.Repeat>()
+                    .single()
+                    .identity
+            controller.enterManipulation(step)
+            controller.moveManipulation(step, SequenceDropDestination(repeat, 1))
+
+            controller.applyManipulation()
+            controller.awaitFailure()
+            controller.applyManipulation()
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+
+            assertEquals(1, writes)
+            assertEquals(3, loads)
+            assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
+            assertEquals(null, controller.state.value.manipulation)
             controller.close()
         }
 

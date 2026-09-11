@@ -186,15 +186,6 @@ class SequenceTemplateEditorController internal constructor(
         destination: SequenceDropDestination,
     ): Boolean = changeManipulation { session, draft -> session.move(draft, identity, destination) }
 
-    fun moveManipulationRelative(
-        identity: DraftIdentity<SequenceNodeId>,
-        direction: Int,
-    ): Boolean {
-        val draft = mutableState.value.readyDraft() ?: return false
-        val destination = draft.relativeDestination(identity, direction) ?: return false
-        return moveManipulation(identity, destination)
-    }
-
     fun duplicateManipulation(
         identity: DraftIdentity<SequenceNodeId>,
         destination: SequenceDropDestination,
@@ -202,15 +193,6 @@ class SequenceTemplateEditorController internal constructor(
         changeManipulation { session, draft ->
             session.duplicate(draft, identity, newKey("duplicate"), destination)
         }
-
-    fun duplicateManipulationRelative(
-        identity: DraftIdentity<SequenceNodeId>,
-        direction: Int,
-    ): Boolean {
-        val draft = mutableState.value.readyDraft() ?: return false
-        val destination = draft.duplicateDestination(identity, direction) ?: return false
-        return duplicateManipulation(identity, destination)
-    }
 
     fun undoManipulation(): Boolean = changeManipulation { session, draft -> session.undo(draft) }
 

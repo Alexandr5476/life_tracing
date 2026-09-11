@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.editor
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasSetTextAction
@@ -10,11 +11,13 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -486,7 +489,7 @@ class SequenceTemplateEditorScreenPresentationTest {
     }
 
     @Test
-    fun longPressShowsAccessibleHandlesOnAllEligibleRowsAndDragMovesIntoRepeat() {
+    fun longPressShowsAccessibleHandlesAndPointerDragMovesTopLevelStepIntoRepeat() {
         val firstSnapshot = ActivitySnapshotId("first-snapshot")
         val childSnapshot = ActivitySnapshotId("child-snapshot")
         val authoring =
@@ -548,11 +551,222 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.onNodeWithContentDescription(text(R.string.sequence_editor_move_repeat)).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.sequence_editor_apply)).assertIsDisplayed()
 
+        drag(
+            moveTag("first"),
+            dropTarget(repeatDropTag("repeat")),
+        )
         composeTestRule.runOnIdle {
-            controller.moveManipulationRelative(DraftIdentity.Existing(SequenceNodeId("first")), 1)
             val draft = requireNotNull(controller.state.value.readyDraft())
             assertTrue(draft.nodes.first() is SequenceNodeDraft.Repeat)
             assertEquals(2, (draft.nodes.first() as SequenceNodeDraft.Repeat).value.children.size)
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+        controller.close()
+    }
+
+    @Test
+    fun pointerDragReordersTopLevelAndSelectsTheDraggedRow() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                    ActivityStep(SequenceNodeId("b"), 1, ActivitySnapshotId("snapshot-b")),
+                ),
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+
+        drag(moveTag("b"), dropTarget(stepDropTag("a")), 0.1f)
+
+        composeTestRule.runOnIdle {
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            assertEquals(listOf("b", "a"), draft.nodes.map { it.identity.existingValue() })
+            assertEquals(
+                DraftIdentity.Existing(SequenceNodeId("b")),
+                controller.state.value.manipulation
+                    ?.selected,
+            )
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+        controller.close()
+    }
+
+    @Test
+    fun pointerDragMovesRepeatChildToTopLevel() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    SequenceRepeatBlock(
+                        SequenceNodeId("r1"),
+                        0,
+                        2,
+                        listOf(ActivityStep(SequenceNodeId("c"), 0, ActivitySnapshotId("snapshot-c"))),
+                    ),
+                    ActivityStep(SequenceNodeId("a"), 1, ActivitySnapshotId("snapshot-a")),
+                ),
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        composeTestRule.onNodeWithText("Child C").performScrollTo().performTouchInput { longClick() }
+
+        drag(moveTag("c"), dropTarget(repeatDropTag("r1")), 0.1f)
+        composeTestRule.runOnIdle {
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            assertEquals(
+                "c",
+                draft.nodes
+                    .first()
+                    .identity
+                    .existingValue(),
+            )
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+        controller.close()
+    }
+
+    @Test
+    fun pointerDragMovesStepFromOneRepeatToAnotherEmptyRepeat() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    SequenceRepeatBlock(
+                        SequenceNodeId("r1"),
+                        0,
+                        2,
+                        listOf(ActivityStep(SequenceNodeId("c"), 0, ActivitySnapshotId("snapshot-c"))),
+                    ),
+                    SequenceRepeatBlock(SequenceNodeId("r2"), 1, 3, emptyList()),
+                ),
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        composeTestRule.onNodeWithText("Child C").performScrollTo().performTouchInput { longClick() }
+        autoScrollDrag(moveTag("c"))
+        composeTestRule.runOnIdle {
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+            val secondRepeat =
+                draft.nodes.filterIsInstance<SequenceNodeDraft.Repeat>().single {
+                    it.identity.existingValue() ==
+                        "r2"
+                }
+            val placements =
+                draft.nodes.joinToString { node ->
+                    when (node) {
+                        is SequenceNodeDraft.Step -> "top:${node.identity.existingValue()}"
+                        is SequenceNodeDraft.Repeat -> {
+                            val children = node.value.children.joinToString { it.identity.existingValue() }
+                            "${node.identity.existingValue()}:$children"
+                        }
+                    }
+                }
+            assertEquals(placements, listOf("c"), secondRepeat.value.children.map { it.identity.existingValue() })
+        }
+        controller.close()
+    }
+
+    @Test
+    fun pointerDuplicateMovesDirectlyAcrossContainersAsOneOperation() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                    SequenceRepeatBlock(SequenceNodeId("r2"), 1, 3, emptyList()),
+                ),
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+
+        drag(
+            duplicateTag("a"),
+            dropTarget(repeatDropTag("r2")),
+        )
+
+        composeTestRule.runOnIdle {
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            val secondRepeat =
+                draft.nodes.filterIsInstance<SequenceNodeDraft.Repeat>().single {
+                    it.identity.existingValue() ==
+                        "r2"
+                }
+            val duplicate = secondRepeat.value.children.first()
+            assertEquals(StepActivityDraft.Duplicate(SequenceNodeId("a")), duplicate.activity)
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+            assertEquals(1, draft.nodes.flatMap { it.stepsForTest() }.count { it.identity is DraftIdentity.Existing })
+        }
+        controller.close()
+    }
+
+    @Test
+    fun cancelledDragAddsNoOperationAndRepeatHasMoveOnly() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                    SequenceRepeatBlock(
+                        SequenceNodeId("r1"),
+                        1,
+                        2,
+                        listOf(ActivityStep(SequenceNodeId("c"), 0, ActivitySnapshotId("snapshot-c"))),
+                    ),
+                ),
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+
+        composeTestRule.onNodeWithTag(moveTag("r1"), useUnmergedTree = true).performTouchInput {
+            down(center)
+            moveTo(center.copy(y = center.y - 200f))
+            cancel()
+        }
+        composeTestRule.onNodeWithTag(moveTag("r1"), useUnmergedTree = true).assertExists()
+        composeTestRule.onNodeWithTag(duplicateTag("r1"), useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.runOnIdle {
+            assertEquals(
+                0,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+
+        drag(moveTag("r1"), dropTarget(stepDropTag("a")), 0.1f)
+        composeTestRule.runOnIdle {
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            assertEquals(
+                "r1",
+                draft.nodes
+                    .first()
+                    .identity
+                    .existingValue(),
+            )
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
         }
         controller.close()
     }
@@ -567,6 +781,88 @@ class SequenceTemplateEditorScreenPresentationTest {
             { _, _, draft, at -> template(draft, at) },
             Instant::now,
         )
+
+    private fun existingController(authoring: SequenceTemplateAuthoringState) =
+        SequenceTemplateEditorController(
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            SequenceTemplateEditorTarget.Existing(authoring.sequence.id),
+            { authoring },
+            { emptyList() },
+            { _, _, _ -> error("Create is not used") },
+            { _, _, _, _ -> error("Save is not used") },
+            Instant::now,
+        )
+
+    private fun drag(
+        sourceTag: String,
+        target: SemanticsNodeInteraction,
+        targetYFraction: Float = 0.5f,
+    ) {
+        val source = composeTestRule.onNodeWithTag(sourceTag, useUnmergedTree = true)
+        composeTestRule.waitForIdle()
+        val sourceBounds = source.fetchSemanticsNode().boundsInRoot
+        val targetBounds = target.fetchSemanticsNode().boundsInRoot
+        val targetPoint = targetBounds.center.copy(y = targetBounds.top + targetBounds.height * targetYFraction)
+        source.performTouchInput {
+            swipe(center, targetPoint - sourceBounds.topLeft, 400)
+        }
+        composeTestRule.waitForIdle()
+    }
+
+    private fun autoScrollDrag(sourceTag: String) {
+        val source = composeTestRule.onNodeWithTag(sourceTag, useUnmergedTree = true)
+        val page = composeTestRule.onNodeWithTag("sequence-editor-page", useUnmergedTree = true)
+        composeTestRule.waitForIdle()
+        val sourceBounds = source.fetchSemanticsNode().boundsInRoot
+        val pageBounds = page.fetchSemanticsNode().boundsInRoot
+        source.performTouchInput {
+            val edge = center.copy(y = pageBounds.bottom - sourceBounds.top - 8f)
+            down(center)
+            moveTo(edge)
+            repeat(5) { moveTo(edge.copy(y = edge.y - (it % 2))) }
+            up()
+        }
+        composeTestRule.waitForIdle()
+    }
+
+    private fun pointerAuthoring(
+        vararg nodes: com.alexandr5476.lifetracing.domain.SequenceNode,
+    ): SequenceTemplateAuthoringState {
+        val snapshots =
+            listOf("a", "b", "c").associate { value ->
+                val id = ActivitySnapshotId("snapshot-$value")
+                id to snapshot(id, mapOf("a" to "Top A", "b" to "Top B", "c" to "Child C").getValue(value))
+            }
+        return SequenceTemplateAuthoringState(
+            SequenceTemplate(
+                SequenceTemplateId("pointer-sequence"),
+                "Pointer workout",
+                null,
+                StatisticsSeriesId("pointer-series"),
+                revision = 1,
+                createdAt = Instant.EPOCH,
+                updatedAt = Instant.EPOCH,
+                nodes = nodes.toList(),
+            ),
+            snapshots,
+        )
+    }
+
+    private fun moveTag(id: String) = "sequence-move-${DraftIdentity.Existing(SequenceNodeId(id)).editorKey()}"
+
+    private fun duplicateTag(id: String) =
+        "sequence-duplicate-${DraftIdentity.Existing(SequenceNodeId(id)).editorKey()}"
+
+    private fun dropTarget(tag: String) = composeTestRule.onNodeWithTag(tag, useUnmergedTree = true)
+
+    private fun stepDropTag(id: String) = dropTag("step", id)
+
+    private fun repeatDropTag(id: String) = dropTag("repeat", id)
+
+    private fun dropTag(
+        prefix: String,
+        id: String,
+    ) = "sequence-drop-$prefix:${DraftIdentity.Existing(SequenceNodeId(id)).editorKey()}"
 
     private fun awaitReady(controller: SequenceTemplateEditorController) {
         composeTestRule.waitUntil { controller.state.value.load is SequenceTemplateEditorLoad.Ready }
@@ -637,5 +933,16 @@ class SequenceTemplateEditorScreenPresentationTest {
         Instant.EPOCH,
     )
 
-    private fun text(id: Int) = composeTestRule.activity.getString(id)
+    private fun text(
+        id: Int,
+        vararg arguments: Any,
+    ) = composeTestRule.activity.getString(id, *arguments)
+
+    private fun DraftIdentity<SequenceNodeId>.existingValue() = (this as DraftIdentity.Existing).id.value
+
+    private fun SequenceNodeDraft.stepsForTest() =
+        when (this) {
+            is SequenceNodeDraft.Step -> listOf(value)
+            is SequenceNodeDraft.Repeat -> value.children
+        }
 }

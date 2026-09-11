@@ -17,6 +17,8 @@ import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
@@ -27,10 +29,13 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
+import com.alexandr5476.lifetracing.editor.SequenceDropDestination
 import com.alexandr5476.lifetracing.editor.SequenceEditorInputKey
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
 import com.alexandr5476.lifetracing.editor.inputIsInvalid
@@ -109,11 +114,71 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             second.controller.state.value.load is SequenceTemplateEditorLoad.Ready
         }
-        composeTestRule.runOnUiThread { second.controller.updateDraft { it.copy(name = name) } }
+        val firstStep = DraftIdentity.New("first")
+        val secondStep = DraftIdentity.New("second")
+        composeTestRule.runOnUiThread {
+            second.controller.updateDraft {
+                it.copy(
+                    name = name,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    firstStep,
+                                    0,
+                                    StepActivityDraft.Local(
+                                        ActivitySnapshotDraft("First", null, TimeTrackingMode.STOPWATCH, null),
+                                    ),
+                                ),
+                            ),
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    secondStep,
+                                    1,
+                                    StepActivityDraft.Local(
+                                        ActivitySnapshotDraft("Second", null, TimeTrackingMode.STOPWATCH, null),
+                                    ),
+                                ),
+                            ),
+                        ),
+                )
+            }
+            second.controller.enterManipulation(firstStep)
+            second.controller.moveManipulation(secondStep, SequenceDropDestination(position = 0))
+            second.controller.moveManipulation(firstStep, SequenceDropDestination(position = 0))
+            second.controller.undoManipulation()
+            second.controller.selectManipulation(secondStep)
+        }
+        val manipulationDraft =
+            second.controller.state.value
+                .readyDraft()
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(
+            manipulationDraft,
+            second.controller.state.value
+                .readyDraft(),
+        )
+        assertEquals(
+            secondStep,
+            second.controller.state.value.manipulation
+                ?.selected,
+        )
+        assertTrue(
+            second.controller.state.value.manipulation
+                ?.canUndo == true,
+        )
+        assertTrue(
+            second.controller.state.value.manipulation
+                ?.canRedo == true,
+        )
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.sequence_editor_done))
+            .onNodeWithText(composeTestRule.activity.getString(R.string.sequence_editor_apply))
             .performScrollTo()
             .performClick()
+        composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 1L }
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
         }

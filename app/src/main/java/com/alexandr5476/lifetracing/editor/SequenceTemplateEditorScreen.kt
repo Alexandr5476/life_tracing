@@ -15,6 +15,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -22,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -30,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,7 +43,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -147,7 +157,27 @@ private fun SequenceEditorForm(
     var settingsExpanded by rememberSaveable { mutableStateOf(false) }
     var pickerTarget by remember { mutableStateOf<SequencePickerTarget?>(null) }
     val choices = remember(state.availableActivities) { state.availableActivities.associateBy { it.id } }
-    SequenceEditorPage {
+    val rows = remember(draft.nodes) { draft.sequenceEditorRows() }
+    val topEnd = remember(draft.nodes.size) { SequenceEditorRow.TopEnd(draft.nodes.size) }
+    val dropState = remember { SequenceEditorDropState() }
+    val listState = rememberLazyListState()
+    dropState.visibleRowKeys = { listState.layoutInfo.visibleItemsInfo.map { it.key } }
+    dropState.firstRowKey = rows.firstOrNull()?.key ?: topEnd.key
+    dropState.lastRowKey = topEnd.key
+    val density = LocalDensity.current
+    val edge = with(density) { 56.dp.toPx() }
+    val scroll = with(density) { 32.dp.toPx() }
+    val autoScroll = { pointerY: Float, uptimeMillis: Long ->
+        val delta = dropState.autoScroll(pointerY, edge, scroll, uptimeMillis)
+        if (delta != 0f) listState.dispatchRawDelta(delta)
+    }
+    SequenceEditorPage(
+        state = listState,
+        modifier =
+            Modifier
+                .testTag("sequence-editor-page")
+                .onGloballyPositioned { dropState.viewport = it.boundsInRoot() },
+    ) {
         item {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 val manipulation = state.manipulation
@@ -211,26 +241,37 @@ private fun SequenceEditorForm(
         if (settingsExpanded) item { SequenceSettings(draft, state, controller, formEditable) }
         item { SequenceFields(draft, controller, formEditable) }
         item { Text(stringResource(R.string.sequence_editor_steps), style = MaterialTheme.typography.titleMedium) }
-        items(draft.sequenceEditorRows(), key = SequenceEditorRow::key) { row ->
-            when (row) {
-                is SequenceEditorRow.Step ->
-                    StepCard(
-                        row.step,
-                        state,
-                        controller,
-                        row.repeat,
-                        row.repeatCount,
-                        choices[row.templateId],
-                        editable,
-                    )
-                is SequenceEditorRow.RepeatHeader -> RepeatHeader(row.repeat, state, controller, editable)
-                is SequenceEditorRow.RepeatAdd ->
-                    AddStepAction(row.repeat.repeatCount, formEditable) {
-                        pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
-                    }
+        items(rows, key = SequenceEditorRow::key) { row ->
+            SequenceDropTarget(row, dropState) {
+                when (row) {
+                    is SequenceEditorRow.Step ->
+                        StepCard(
+                            row.step,
+                            state,
+                            controller,
+                            row.repeat,
+                            row.repeatCount,
+                            choices[row.templateId],
+                            editable,
+                            draft,
+                            dropState,
+                            autoScroll,
+                        )
+                    is SequenceEditorRow.RepeatHeader ->
+                        RepeatHeader(row.repeat, state, controller, editable, draft, dropState, autoScroll)
+                    is SequenceEditorRow.RepeatAdd ->
+                        AddStepAction(row.repeat.repeatCount, formEditable) {
+                            pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
+                        }
+                    is SequenceEditorRow.TopEnd -> Unit
+                }
             }
         }
-        item { AddTopLevel(draft, controller, formEditable) { pickerTarget = SequencePickerTarget.TopLevel } }
+        item(key = topEnd.key) {
+            SequenceDropTarget(topEnd, dropState) {
+                AddTopLevel(draft, controller, formEditable) { pickerTarget = SequencePickerTarget.TopLevel }
+            }
+        }
         item {
             if (state.save is SequenceTemplateEditorSave.Failure) {
                 val message =
@@ -632,6 +673,9 @@ private fun RepeatHeader(
     state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     editable: Boolean,
+    draft: SequenceTemplateDraft,
+    dropState: SequenceEditorDropState,
+    autoScroll: (Float, Long) -> Unit,
 ) = SequenceCard {
     Text(
         stringResource(R.string.sequence_editor_repeat_label, repeat.repeatCount),
@@ -643,7 +687,10 @@ private fun RepeatHeader(
             repeat.identity,
             editable,
             controller::selectManipulation,
-        ) { direction -> controller.moveManipulationRelative(repeat.identity, direction) }
+            draft,
+            dropState,
+            autoScroll,
+        ) { destination -> controller.moveManipulation(repeat.identity, destination) }
     }
     DurationField(
         R.string.sequence_editor_repeat_count,
@@ -734,6 +781,9 @@ private fun StepCard(
     repeatCount: Int?,
     choice: SequenceEditorActivityChoice?,
     editable: Boolean,
+    draft: SequenceTemplateDraft,
+    dropState: SequenceEditorDropState,
+    autoScroll: (Float, Long) -> Unit,
 ) {
     val manipulation = state.manipulation
     val selected = manipulation?.selected == step.identity
@@ -779,15 +829,21 @@ private fun StepCard(
                     step.identity,
                     editable,
                     controller::selectManipulation,
-                ) { direction -> controller.moveManipulationRelative(step.identity, direction) }
+                    draft,
+                    dropState,
+                    autoScroll,
+                ) { destination -> controller.moveManipulation(step.identity, destination) }
                 if (step.identity is DraftIdentity.Existing && step.activity is StepActivityDraft.Existing) {
                     ManipulationHandle(
                         R.string.sequence_editor_duplicate_step,
                         step.identity,
                         editable,
                         controller::selectManipulation,
+                        draft,
+                        dropState,
+                        autoScroll,
                         duplicate = true,
-                    ) { direction -> controller.duplicateManipulationRelative(step.identity, direction) }
+                    ) { destination -> controller.duplicateManipulation(step.identity, destination) }
                 }
             }
         }
@@ -903,35 +959,46 @@ private fun ManipulationHandle(
     identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,
     enabled: Boolean,
     select: (DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>) -> Unit,
+    draft: SequenceTemplateDraft,
+    dropState: SequenceEditorDropState,
+    autoScroll: (Float, Long) -> Unit,
     duplicate: Boolean = false,
-    commit: (Int) -> Unit,
+    commit: (SequenceDropDestination) -> Unit,
 ) {
     val label = stringResource(description)
-    var drag by remember(identity, duplicate) { mutableStateOf(0f) }
+    var coordinates by remember(identity, duplicate) { mutableStateOf<LayoutCoordinates?>(null) }
     Text(
         if (duplicate) "⧉↕" else "↕",
         modifier =
             Modifier
+                .testTag("sequence-${if (duplicate) "duplicate" else "move"}-${identity.editorKey()}")
                 .semantics { contentDescription = label }
+                .onGloballyPositioned { coordinates = it }
                 .pointerInput(identity, enabled, duplicate) {
+                    var pointerY = 0f
                     detectDragGestures(
-                        onDragStart = {
+                        onDragStart = { position ->
                             if (enabled) {
-                                drag = 0f
                                 select(identity)
+                                dropState.start(draft, identity, duplicate)
+                                coordinates?.localToRoot(position)?.y?.let {
+                                    pointerY = it
+                                    dropState.update(it)
+                                }
                             }
                         },
                         onDrag = { change, amount ->
                             if (enabled) {
                                 change.consume()
-                                drag += amount.y
+                                pointerY += amount.y
+                                dropState.update(pointerY)
+                                autoScroll(pointerY, change.uptimeMillis)
                             }
                         },
                         onDragEnd = {
-                            if (enabled && drag != 0f) commit(if (drag < 0f) -1 else 1)
-                            drag = 0f
+                            if (enabled) dropState.finish()?.let(commit)
                         },
-                        onDragCancel = { drag = 0f },
+                        onDragCancel = dropState::cancel,
                     )
                 }.padding(MaterialTheme.spacing.small),
     )
@@ -1385,12 +1452,16 @@ private fun ChoiceButton(
     )
 }
 
-@Composable private fun SequenceEditorPage(content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) =
-    LazyColumn(
-        modifier = Modifier.padding(MaterialTheme.spacing.xLarge),
-        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
-        content = content,
-    )
+@Composable private fun SequenceEditorPage(
+    modifier: Modifier = Modifier,
+    state: LazyListState = rememberLazyListState(),
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
+) = LazyColumn(
+    modifier = modifier.padding(MaterialTheme.spacing.xLarge),
+    state = state,
+    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
+    content = content,
+)
 
 @Composable private fun SequenceCard(
     modifier: Modifier = Modifier,
@@ -1513,6 +1584,12 @@ private sealed interface SequenceEditorRow {
     ) : SequenceEditorRow {
         override val key = "repeat-add:${repeat.identity.editorKey()}"
     }
+
+    data class TopEnd(
+        val position: Int,
+    ) : SequenceEditorRow {
+        override val key = "top-end"
+    }
 }
 
 private fun SequenceTemplateDraft.sequenceEditorRows(): List<SequenceEditorRow> =
@@ -1530,6 +1607,193 @@ private fun SequenceTemplateDraft.sequenceEditorRows(): List<SequenceEditorRow> 
             }
         }
     }
+
+@Composable
+private fun SequenceDropTarget(
+    row: SequenceEditorRow,
+    state: SequenceEditorDropState,
+    content: @Composable () -> Unit,
+) {
+    val owner = remember(row.key) { Any() }
+    DisposableEffect(row.key, owner) { onDispose { state.remove(row.key, owner) } }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .testTag("sequence-drop-${row.key}")
+            .onGloballyPositioned { state.put(row, it.boundsInRoot(), owner) },
+    ) { content() }
+}
+
+private class SequenceEditorDropState {
+    private val visible = mutableMapOf<String, SequenceEditorVisibleRow>()
+    private var source: SequenceEditorDragSource? = null
+    private var destination: SequenceDropDestination? = null
+    private var lastAutoScrollAtMillis: Long? = null
+    var viewport: Rect? = null
+    var firstRowKey = ""
+    var lastRowKey = ""
+    var visibleRowKeys: () -> List<Any> = { emptyList() }
+
+    fun put(
+        row: SequenceEditorRow,
+        bounds: Rect,
+        owner: Any,
+    ) {
+        visible[row.key] = SequenceEditorVisibleRow(row, bounds, owner)
+    }
+
+    fun remove(
+        key: String,
+        owner: Any,
+    ) {
+        if (visible[key]?.owner === owner) visible.remove(key)
+    }
+
+    fun start(
+        draft: SequenceTemplateDraft,
+        identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,
+        duplicate: Boolean,
+    ) {
+        source = draft.dragSource(identity, duplicate)
+        destination = null
+        lastAutoScrollAtMillis = null
+    }
+
+    fun update(pointerY: Float) {
+        val dragSource = source ?: return
+        val visibleKeys = visibleRowKeys()
+        val candidates = visible.values.filter { it.row.key in visibleKeys }
+        if (candidates.isEmpty()) return
+        val candidate =
+            candidates.minBy { (_, bounds) ->
+                when {
+                    pointerY < bounds.top -> bounds.top - pointerY
+                    pointerY > bounds.bottom -> pointerY - bounds.bottom
+                    else -> 0f
+                }
+            }
+        destination = candidate.row.destination(pointerY, candidate.bounds, dragSource)
+    }
+
+    fun finish(): SequenceDropDestination? = destination.also { this.clear() }
+
+    fun cancel() = clear()
+
+    fun autoScroll(
+        pointerY: Float,
+        edge: Float,
+        amount: Float,
+        uptimeMillis: Long,
+    ): Float {
+        val bounds = viewport ?: return 0f
+        val direction =
+            when {
+                pointerY < bounds.top + edge -> -1f
+                pointerY > bounds.bottom - edge -> 1f
+                else -> 0f
+            }
+        val boundaryKey = if (direction < 0) firstRowKey else lastRowKey
+        val boundaryReached =
+            visible[boundaryKey]
+                ?.takeIf { boundaryKey in visibleRowKeys() }
+                ?.let {
+                    if (direction < 0) it.bounds.top >= bounds.top else it.bounds.bottom <= bounds.bottom
+                } == true
+        val rateLimited =
+            lastAutoScrollAtMillis?.let { uptimeMillis - it < AUTO_SCROLL_INTERVAL_MILLIS } == true
+        return if (direction == 0f || boundaryReached || rateLimited) {
+            0f
+        } else {
+            lastAutoScrollAtMillis = uptimeMillis
+            direction * amount
+        }
+    }
+
+    private fun clear() {
+        source = null
+        destination = null
+        lastAutoScrollAtMillis = null
+    }
+}
+
+private data class SequenceEditorVisibleRow(
+    val row: SequenceEditorRow,
+    val bounds: Rect,
+    val owner: Any,
+)
+
+private data class SequenceEditorDragSource(
+    val repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+    val position: Int,
+    val isRepeat: Boolean,
+    val duplicate: Boolean,
+) {
+    fun at(
+        repeat: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>?,
+        boundary: Int,
+    ) = SequenceDropDestination(
+        repeat,
+        boundary - if (!duplicate && this.repeat == repeat && position < boundary) 1 else 0,
+    )
+}
+
+private fun SequenceTemplateDraft.dragSource(
+    identity: DraftIdentity<com.alexandr5476.lifetracing.domain.SequenceNodeId>,
+    duplicate: Boolean,
+): SequenceEditorDragSource? =
+    nodes.firstNotNullOfOrNull { node ->
+        when {
+            node.identity == identity ->
+                SequenceEditorDragSource(null, node.position, node is SequenceNodeDraft.Repeat, duplicate)
+            node is SequenceNodeDraft.Repeat ->
+                node.value.children
+                    .indexOfFirst { it.identity == identity }
+                    .takeIf { it >= 0 }
+                    ?.let { SequenceEditorDragSource(node.identity, it, false, duplicate) }
+            else -> null
+        }
+    }
+
+private fun SequenceEditorRow.destination(
+    pointerY: Float,
+    bounds: Rect,
+    source: SequenceEditorDragSource,
+): SequenceDropDestination? =
+    if (source.isRepeat) {
+        repeatDestination(pointerY, bounds)?.let { source.at(null, it) }
+    } else {
+        when (this) {
+            is SequenceEditorRow.Step ->
+                source.at(repeat, step.position + if (pointerY >= bounds.center.y) 1 else 0)
+            is SequenceEditorRow.RepeatHeader ->
+                if (source.repeat != null && source.repeat != repeat.identity) {
+                    source.at(repeat.identity, 0)
+                } else if (pointerY < bounds.top + bounds.height * REPEAT_HEADER_TOP_LEVEL_FRACTION) {
+                    source.at(null, repeat.position)
+                } else {
+                    source.at(repeat.identity, 0)
+                }
+            is SequenceEditorRow.RepeatAdd -> source.at(repeat.identity, 0)
+            is SequenceEditorRow.TopEnd -> source.at(null, position)
+        }
+    }
+
+private fun SequenceEditorRow.repeatDestination(
+    pointerY: Float,
+    bounds: Rect,
+): Int? =
+    when (this) {
+        is SequenceEditorRow.Step ->
+            step.position
+                .takeIf { repeat == null }
+                ?.plus(if (pointerY >= bounds.center.y) 1 else 0)
+        is SequenceEditorRow.RepeatHeader -> repeat.position + if (pointerY >= bounds.center.y) 1 else 0
+        is SequenceEditorRow.RepeatAdd -> repeat.position + 1
+        is SequenceEditorRow.TopEnd -> position
+    }
+
+private const val REPEAT_HEADER_TOP_LEVEL_FRACTION = 0.25f
+private const val AUTO_SCROLL_INTERVAL_MILLIS = 16L
 
 private fun SequenceTemplateDraft.insertStep(
     target: SequencePickerTarget,
