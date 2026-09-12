@@ -87,6 +87,47 @@ class SequenceManipulationTest {
     }
 
     @Test
+    fun mixedMovesAndDuplicateUndoRedoRestoreEveryExactContainerAndPosition() {
+        val original = draft()
+        val session = SequenceManipulationSession(original, id("a"))
+        val duplicateIdentity = DraftIdentity.New("same-duplicate")
+
+        val afterCrossContainerMove =
+            requireNotNull(session.move(original, id("c"), SequenceDropDestination(id("r2"), 0)))
+        val afterDuplicate =
+            requireNotNull(
+                session.duplicate(
+                    afterCrossContainerMove,
+                    id("a"),
+                    duplicateIdentity,
+                    SequenceDropDestination(id("r1"), 1),
+                ),
+            )
+        val afterMoveOut =
+            requireNotNull(session.move(afterDuplicate, id("b"), SequenceDropDestination(position = 2)))
+
+        assertEquals(afterDuplicate, session.undo(afterMoveOut))
+        assertEquals(afterCrossContainerMove, session.undo(afterDuplicate))
+        assertEquals(original, session.undo(afterCrossContainerMove))
+        assertEquals(afterCrossContainerMove, session.redo(original))
+        val duplicateRedo = requireNotNull(session.redo(afterCrossContainerMove))
+        assertEquals(afterDuplicate, duplicateRedo)
+        assertEquals(duplicateIdentity, duplicateRedo.step("same-duplicate").identity)
+        assertEquals(afterMoveOut, session.redo(duplicateRedo))
+        assertCanonical(afterMoveOut)
+    }
+
+    @Test
+    fun dropAtCurrentLogicalLocationIsNoOpWithoutHistory() {
+        val draft = draft()
+        val session = SequenceManipulationSession(draft, id("b"))
+
+        assertEquals(draft, session.move(draft, id("b"), SequenceDropDestination(id("r1"), 0)))
+        assertEquals(0, session.uiState().operationCount)
+        assertFalse(session.uiState().canUndo)
+    }
+
+    @Test
     fun newStepCannotBeDuplicatedAndHistoryEntriesAreDeltas() {
         val newStep =
             ActivityStepDraft(

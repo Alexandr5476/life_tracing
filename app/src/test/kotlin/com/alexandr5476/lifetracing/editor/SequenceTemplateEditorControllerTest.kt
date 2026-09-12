@@ -18,7 +18,12 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -27,8 +32,17 @@ import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
+import kotlin.coroutines.CoroutineContext
 
 class SequenceTemplateEditorControllerTest {
+    private val inlineDispatcher =
+        object : CoroutineDispatcher() {
+            override fun dispatch(
+                context: CoroutineContext,
+                block: Runnable,
+            ) = block.run()
+        }
+
     @Test
     fun newDraftChangesAndDiscardNeverWrite() =
         runBlocking {
@@ -295,10 +309,11 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
-    fun newApplyAdoptsCreatedIdentityAndLaterDoneSavesInsteadOfCreatingAgain() =
+    fun observableNewApplyCompletionImmediatelyAcceptsEditAndDoneSave() =
         runBlocking {
             var creates = 0
             var saves = 0
+            var savedName: String? = null
             var canonical: SequenceTemplateAuthoringState? = null
             val controller =
                 SequenceTemplateEditorController(
@@ -313,6 +328,7 @@ class SequenceTemplateEditorControllerTest {
                     },
                     { id, revision, draft, _ ->
                         saves++
+                        savedName = draft.name
                         assertEquals(SequenceTemplateId("created"), id)
                         assertEquals(1, revision)
                         canonical = draft.toFakeAuthoring(id, 2)
@@ -333,19 +349,115 @@ class SequenceTemplateEditorControllerTest {
             }
             controller.enterManipulation(DraftIdentity.New("one"))
             controller.moveManipulation(DraftIdentity.New("two"), SequenceDropDestination(position = 0))
+            val immediateSave =
+                launch(inlineDispatcher, start = CoroutineStart.UNDISPATCHED) {
+                    controller.state.first { it.appliedGeneration == 1L }
+                    controller.updateDraft { it.copy(name = "After apply") }
+                    controller.save()
+                }
             controller.applyManipulation()
-            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+            immediateSave.join()
 
             assertEquals(1, creates)
-            assertEquals(0, saves)
             val firstSnapshot = (canonical?.sequence?.nodes?.first() as ActivityStep).activitySnapshotId
             assertEquals("two", firstSnapshot.value)
-            controller.updateDraft { it.copy(name = "After apply") }
+            assertEquals(1L, controller.state.value.appliedGeneration)
+            assertEquals(1, saves)
+            assertEquals("After apply", savedName)
+            assertTrue(controller.state.value.save is SequenceTemplateEditorSave.Committed)
+            controller.close()
+        }
+
+    @Test
+    fun duplicateSaveWhileSavingDoesNotStartAnotherWrite() =
+        runBlocking {
+            val canonical = authoringState()
+            val writerStarted = CompletableDeferred<Unit>()
+            val releaseWriter = CompletableDeferred<Unit>()
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("Create is not used") },
+                    { _, _, _, _ ->
+                        writes++
+                        writerStarted.complete(Unit)
+                        releaseWriter.await()
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Changed") }
+
             controller.save()
+            writerStarted.await()
+            controller.save()
+            assertEquals(1, writes)
+            releaseWriter.complete(Unit)
             withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
 
-            assertEquals(1, creates)
-            assertEquals(1, saves)
+            assertEquals(1, writes)
+            controller.close()
+        }
+
+    @Test
+    fun applyRetryAfterCommittedReloadFailureDoesNotRepeatWriter() =
+        runBlocking {
+            val initial = authoringState()
+            var canonical = initial
+            var loads = 0
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(initial.sequence.id),
+                    {
+                        loads++
+                        if (loads == 2) error("temporary reload failure")
+                        canonical
+                    },
+                    { emptyList() },
+                    { _, _, _ -> error("Create is not used") },
+                    { id, revision, draft, _ ->
+                        writes++
+                        assertEquals(7, revision)
+                        canonical = draft.toFakeAuthoring(id, 8)
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val draft = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                draft.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val repeat =
+                draft.nodes
+                    .filterIsInstance<SequenceNodeDraft.Repeat>()
+                    .single()
+                    .identity
+            controller.enterManipulation(step)
+            controller.moveManipulation(step, SequenceDropDestination(repeat, 1))
+
+            val immediateRetry =
+                launch(inlineDispatcher, start = CoroutineStart.UNDISPATCHED) {
+                    controller.state.first { it.save is SequenceTemplateEditorSave.Failure }
+                    controller.applyManipulation()
+                }
+            controller.applyManipulation()
+            immediateRetry.join()
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+
+            assertEquals(1, writes)
+            assertEquals(3, loads)
+            assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
+            assertEquals(null, controller.state.value.manipulation)
             controller.close()
         }
 

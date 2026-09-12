@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 sealed interface SequenceTemplateEditorTarget {
@@ -106,7 +105,8 @@ class SequenceTemplateEditorController internal constructor(
 ) {
     private val mutableState = MutableStateFlow(SequenceTemplateEditorState())
     val state: StateFlow<SequenceTemplateEditorState> = mutableState
-    private val saving = AtomicBoolean()
+    private val commandLock = Any()
+    private var saving = false
     private val newIdentity = AtomicLong()
     private var durableTarget = target
     private var manipulationSession: SequenceManipulationSession? = null
@@ -119,18 +119,18 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     fun close() {
-        closed = true
+        synchronized(commandLock) { closed = true }
     }
 
-    fun retry() {
-        if (!closed && !saving.get()) load()
-    }
+    fun retry() = load()
 
     fun updateDraft(transform: (SequenceTemplateDraft) -> SequenceTemplateDraft) {
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-        if (closed || saving.get() || committedAwaitingReload != null) return
-        mutableState.update {
-            it.copy(load = ready.copy(draft = transform(ready.draft)), save = SequenceTemplateEditorSave.Idle)
+        synchronized(commandLock) {
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
+            if (closed || saving || committedAwaitingReload != null) return
+            mutableState.update {
+                it.copy(load = ready.copy(draft = transform(ready.draft)), save = SequenceTemplateEditorSave.Idle)
+            }
         }
     }
 
@@ -142,21 +142,26 @@ class SequenceTemplateEditorController internal constructor(
         maximum: Long = Long.MAX_VALUE,
         onValid: (Long) -> Unit,
     ) {
-        if (closed || saving.get() || committedAwaitingReload != null) return
-        val value = text.toLongOrNull()
-        val valid = value != null && value in minimum..maximum
-        mutableState.update { state ->
-            val originalText = state.textInputs[key]?.originalText ?: originalValue.toString()
-            state.copy(
-                textInputs = state.textInputs + (key to SequenceEditorTextInput(text, originalText, valid)),
-                save = SequenceTemplateEditorSave.Idle,
-            )
+        synchronized(commandLock) {
+            if (closed || saving || committedAwaitingReload != null) return
+            val value = text.toLongOrNull()
+            val valid = value != null && value in minimum..maximum
+            mutableState.update { state ->
+                val originalText = state.textInputs[key]?.originalText ?: originalValue.toString()
+                state.copy(
+                    textInputs = state.textInputs + (key to SequenceEditorTextInput(text, originalText, valid)),
+                    save = SequenceTemplateEditorSave.Idle,
+                )
+            }
+            if (valid) onValid(requireNotNull(value))
         }
-        if (valid) onValid(requireNotNull(value))
     }
 
     fun clearNumberInput(key: String) {
-        mutableState.update { it.copy(textInputs = it.textInputs - key, save = SequenceTemplateEditorSave.Idle) }
+        synchronized(commandLock) {
+            if (closed || saving || committedAwaitingReload != null) return
+            mutableState.update { it.copy(textInputs = it.textInputs - key, save = SequenceTemplateEditorSave.Idle) }
+        }
     }
 
     fun newKey(prefix: String): DraftIdentity.New = DraftIdentity.New("$prefix-${newIdentity.incrementAndGet()}")
@@ -164,20 +169,25 @@ class SequenceTemplateEditorController internal constructor(
     fun newLocalActivityDraft() = ActivitySnapshotDraft("", null, TimeTrackingMode.STOPWATCH, null)
 
     fun enterManipulation(identity: DraftIdentity<SequenceNodeId>) {
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-        if (closed || saving.get() || committedAwaitingReload != null) return
-        val session =
-            manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
-                manipulationSession = it
-            }
-        session.select(identity)
-        publishManipulation(session)
+        synchronized(commandLock) {
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
+            if (closed || saving || committedAwaitingReload != null) return
+            val session =
+                manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
+                    manipulationSession = it
+                }
+            session.select(identity)
+            publishManipulation(session)
+        }
     }
 
     fun selectManipulation(identity: DraftIdentity<SequenceNodeId>) {
-        manipulationSession?.let {
-            it.select(identity)
-            publishManipulation(it)
+        synchronized(commandLock) {
+            if (closed || saving || committedAwaitingReload != null) return
+            manipulationSession?.let {
+                it.select(identity)
+                publishManipulation(it)
+            }
         }
     }
 
@@ -185,15 +195,6 @@ class SequenceTemplateEditorController internal constructor(
         identity: DraftIdentity<SequenceNodeId>,
         destination: SequenceDropDestination,
     ): Boolean = changeManipulation { session, draft -> session.move(draft, identity, destination) }
-
-    fun moveManipulationRelative(
-        identity: DraftIdentity<SequenceNodeId>,
-        direction: Int,
-    ): Boolean {
-        val draft = mutableState.value.readyDraft() ?: return false
-        val destination = draft.relativeDestination(identity, direction) ?: return false
-        return moveManipulation(identity, destination)
-    }
 
     fun duplicateManipulation(
         identity: DraftIdentity<SequenceNodeId>,
@@ -203,41 +204,36 @@ class SequenceTemplateEditorController internal constructor(
             session.duplicate(draft, identity, newKey("duplicate"), destination)
         }
 
-    fun duplicateManipulationRelative(
-        identity: DraftIdentity<SequenceNodeId>,
-        direction: Int,
-    ): Boolean {
-        val draft = mutableState.value.readyDraft() ?: return false
-        val destination = draft.duplicateDestination(identity, direction) ?: return false
-        return duplicateManipulation(identity, destination)
-    }
-
     fun undoManipulation(): Boolean = changeManipulation { session, draft -> session.undo(draft) }
 
     fun redoManipulation(): Boolean = changeManipulation { session, draft -> session.redo(draft) }
 
     fun discardManipulation() {
-        if (committedAwaitingReload != null) return
-        val session = manipulationSession ?: return
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-        manipulationSession = null
-        mutableState.update {
-            it.copy(
-                load = ready.copy(draft = session.baseline),
-                manipulation = null,
-                save = SequenceTemplateEditorSave.Idle,
-            )
+        synchronized(commandLock) {
+            if (closed || saving || committedAwaitingReload != null) return
+            val session = manipulationSession ?: return
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
+            manipulationSession = null
+            mutableState.update {
+                it.copy(
+                    load = ready.copy(draft = session.baseline),
+                    manipulation = null,
+                    save = SequenceTemplateEditorSave.Idle,
+                )
+            }
         }
     }
 
     fun requestBack(onExit: () -> Unit) {
-        if (saving.get() || committedAwaitingReload != null) return
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
-        if (ready == null || !mutableState.value.isDirty(ready)) {
-            onExit()
-        } else {
-            mutableState.update { it.copy(discardConfirmationVisible = true) }
-        }
+        val shouldExit =
+            synchronized(commandLock) {
+                if (closed || saving || committedAwaitingReload != null) return
+                val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
+                (ready == null || !mutableState.value.isDirty(ready)).also {
+                    if (!it) mutableState.update { state -> state.copy(discardConfirmationVisible = true) }
+                }
+            }
+        if (shouldExit) onExit()
     }
 
     fun dismissDiscard() {
@@ -245,10 +241,13 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     fun discard(onExit: () -> Unit) {
-        if (!saving.get()) {
-            mutableState.update { it.copy(discardConfirmationVisible = false) }
-            onExit()
-        }
+        val shouldExit =
+            synchronized(commandLock) {
+                if (saving) return
+                mutableState.update { it.copy(discardConfirmationVisible = false) }
+                true
+            }
+        if (shouldExit) onExit()
     }
 
     fun save() = commit(exitAfter = true)
@@ -256,58 +255,80 @@ class SequenceTemplateEditorController internal constructor(
     fun applyManipulation() = commit(exitAfter = false)
 
     private fun commit(exitAfter: Boolean) {
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-        if (closed || !saving.compareAndSet(false, true)) return
-        if (mutableState.value.hasInvalidInput(ready.draft)) {
-            saving.set(false)
-            return
-        }
-        val submittedDraft = ready.submittedDraft()
-        val invalid = runCatching { TemplateAuthoringDraftValidator.requireValid(submittedDraft) }.exceptionOrNull()
-        if (invalid != null) {
-            saving.set(false)
-            mutableState.update { it.copy(save = invalid.toSaveFailure()) }
-            return
-        }
-        if (submittedDraft == ready.original) {
-            saving.set(false)
-            manipulationSession = null
-            mutableState.update {
-                it.copy(
-                    manipulation = null,
-                    save = if (exitAfter) SequenceTemplateEditorSave.Committed else SequenceTemplateEditorSave.Idle,
-                )
+        val (ready, submittedDraft) =
+            synchronized(commandLock) {
+                val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
+                if (closed || saving) return
+                saving = true
+                if (mutableState.value.hasInvalidInput(ready.draft)) {
+                    saving = false
+                    return
+                }
+                val submittedDraft = ready.submittedDraft()
+                val invalid =
+                    runCatching { TemplateAuthoringDraftValidator.requireValid(submittedDraft) }.exceptionOrNull()
+                if (invalid != null) {
+                    saving = false
+                    mutableState.update { it.copy(save = invalid.toSaveFailure()) }
+                    return
+                }
+                if (submittedDraft == ready.original) {
+                    saving = false
+                    manipulationSession = null
+                    mutableState.update {
+                        it.copy(
+                            manipulation = null,
+                            save =
+                                if (exitAfter) {
+                                    SequenceTemplateEditorSave.Committed
+                                } else {
+                                    SequenceTemplateEditorSave.Idle
+                                },
+                        )
+                    }
+                    return
+                }
+                mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
+                ready to submittedDraft
             }
-            return
-        }
-        mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
         scope.launch {
-            try {
-                val committed =
-                    committedAwaitingReload
-                        ?: when (val currentTarget = durableTarget) {
-                            SequenceTemplateEditorTarget.New ->
-                                createSequence(
-                                    submittedDraft,
-                                    TemplateLibraryPlacement(),
-                                    now(),
-                                )
-                            is SequenceTemplateEditorTarget.Existing ->
-                                saveSequence(
-                                    currentTarget.id,
-                                    requireNotNull(ready.expectedRevision),
-                                    submittedDraft,
-                                    now(),
-                                )
-                        }.also {
-                            durableTarget = SequenceTemplateEditorTarget.Existing(it.id)
-                            committedAwaitingReload = it
-                        }
-                val canonical = requireNotNull(loadSequence(committed.id)) { "Committed Sequence is unavailable" }
-                val canonicalDraft = canonical.toAuthoringDraft()
+            persist(ready, submittedDraft, exitAfter)
+        }
+    }
+
+    private suspend fun persist(
+        ready: SequenceTemplateEditorLoad.Ready,
+        submittedDraft: SequenceTemplateDraft,
+        exitAfter: Boolean,
+    ) {
+        try {
+            val committed =
+                committedAwaitingReload
+                    ?: when (val currentTarget = durableTarget) {
+                        SequenceTemplateEditorTarget.New ->
+                            createSequence(
+                                submittedDraft,
+                                TemplateLibraryPlacement(),
+                                now(),
+                            )
+                        is SequenceTemplateEditorTarget.Existing ->
+                            saveSequence(
+                                currentTarget.id,
+                                requireNotNull(ready.expectedRevision),
+                                submittedDraft,
+                                now(),
+                            )
+                    }.also {
+                        durableTarget = SequenceTemplateEditorTarget.Existing(it.id)
+                        committedAwaitingReload = it
+                    }
+            val canonical = requireNotNull(loadSequence(committed.id)) { "Committed Sequence is unavailable" }
+            val canonicalDraft = canonical.toAuthoringDraft()
+            synchronized(commandLock) {
                 durableTarget = SequenceTemplateEditorTarget.Existing(committed.id)
                 committedAwaitingReload = null
                 manipulationSession = null
+                saving = false
                 if (!closed) {
                     mutableState.update {
                         it.copy(
@@ -329,22 +350,27 @@ class SequenceTemplateEditorController internal constructor(
                         )
                     }
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
+            }
+        } catch (cancelled: CancellationException) {
+            synchronized(commandLock) { saving = false }
+            throw cancelled
+        } catch (failure: Exception) {
+            synchronized(commandLock) {
+                saving = false
                 if (!closed) mutableState.update { it.copy(save = failure.toSaveFailure()) }
-            } finally {
-                saving.set(false)
             }
         }
     }
 
     private fun load() {
-        if (closed) return
-        mutableState.value = SequenceTemplateEditorState()
+        val target =
+            synchronized(commandLock) {
+                if (closed || saving) return
+                mutableState.value = SequenceTemplateEditorState()
+                durableTarget
+            }
         scope.launch {
             try {
-                val target = durableTarget
                 val authoring = (target as? SequenceTemplateEditorTarget.Existing)?.let { loadSequence(it.id) }
                 require(
                     target !is SequenceTemplateEditorTarget.Existing || authoring != null,
@@ -377,20 +403,21 @@ class SequenceTemplateEditorController internal constructor(
 
     private fun changeManipulation(
         change: (SequenceManipulationSession, SequenceTemplateDraft) -> SequenceTemplateDraft?,
-    ): Boolean {
-        val session = manipulationSession ?: return false
-        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
-        if (closed || saving.get() || committedAwaitingReload != null) return false
-        val changed = change(session, ready.draft) ?: return false
-        mutableState.update {
-            it.copy(
-                load = ready.copy(draft = changed),
-                save = SequenceTemplateEditorSave.Idle,
-                manipulation = session.uiState(),
-            )
+    ): Boolean =
+        synchronized(commandLock) {
+            val session = manipulationSession ?: return false
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
+            if (closed || saving || committedAwaitingReload != null) return false
+            val changed = change(session, ready.draft) ?: return false
+            mutableState.update {
+                it.copy(
+                    load = ready.copy(draft = changed),
+                    save = SequenceTemplateEditorSave.Idle,
+                    manipulation = session.uiState(),
+                )
+            }
+            true
         }
-        return true
-    }
 
     private fun publishManipulation(session: SequenceManipulationSession) {
         mutableState.update { it.copy(manipulation = session.uiState(), save = SequenceTemplateEditorSave.Idle) }

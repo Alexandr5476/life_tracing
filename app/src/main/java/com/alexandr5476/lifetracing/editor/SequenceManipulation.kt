@@ -161,47 +161,6 @@ private fun SequenceTemplateDraft.locationOf(identity: DraftIdentity<SequenceNod
     return null
 }
 
-internal fun SequenceTemplateDraft.relativeDestination(
-    identity: DraftIdentity<SequenceNodeId>,
-    direction: Int,
-): SequenceDropDestination? {
-    val source = locationOf(identity) ?: return null
-    val topNode = nodes.singleOrNull { it.identity == identity }
-    if (topNode is SequenceNodeDraft.Repeat) {
-        val next = source.position + direction.coerceIn(-1, 1)
-        return SequenceDropDestination(position = next).takeIf { next in nodes.indices }
-    }
-    if (source.repeat == null) {
-        val adjacent = nodes.getOrNull(source.position + direction.coerceIn(-1, 1)) ?: return null
-        if (adjacent is SequenceNodeDraft.Repeat) {
-            return SequenceDropDestination(
-                adjacent.identity,
-                if (direction > 0) 0 else adjacent.value.children.size,
-            )
-        }
-        return SequenceDropDestination(position = source.position + direction.coerceIn(-1, 1))
-    }
-    val repeatIndex = nodes.indexOfFirst { it.identity == source.repeat }
-    val repeat = nodes[repeatIndex] as SequenceNodeDraft.Repeat
-    val childPosition = source.position + direction.coerceIn(-1, 1)
-    if (childPosition in repeat.value.children.indices) return SequenceDropDestination(source.repeat, childPosition)
-    if (direction < 0) return SequenceDropDestination(position = repeatIndex)
-    val next = nodes.getOrNull(repeatIndex + 1)
-    return if (next is SequenceNodeDraft.Repeat) {
-        SequenceDropDestination(next.identity, 0)
-    } else {
-        SequenceDropDestination(position = repeatIndex + 1)
-    }
-}
-
-internal fun SequenceTemplateDraft.duplicateDestination(
-    identity: DraftIdentity<SequenceNodeId>,
-    direction: Int,
-): SequenceDropDestination? =
-    locationOf(identity)?.let { source ->
-        SequenceDropDestination(source.repeat, source.position + if (direction < 0) 0 else 1)
-    }
-
 private fun SequenceTemplateDraft.step(identity: DraftIdentity<SequenceNodeId>): ActivityStepDraft? =
     nodes.firstNotNullOfOrNull { node ->
         when (node) {
