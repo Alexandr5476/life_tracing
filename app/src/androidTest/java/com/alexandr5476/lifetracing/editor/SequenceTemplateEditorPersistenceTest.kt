@@ -1,10 +1,11 @@
 package com.alexandr5476.lifetracing.editor
 
 import android.content.Context
-import android.database.sqlite.SQLiteConstraintException
+import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
+import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivityStep
@@ -462,7 +463,7 @@ class SequenceTemplateEditorPersistenceTest {
             val repository = TemplateAuthoringRepository.create(context)
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val base = Instant.now()
-            val source = repository.createActivityTemplate(sourceDraft("failure"), createdAt = base)
+            val source = repository.createActivityTemplate(categorySourceDraft(), createdAt = base)
             val created =
                 repository.createSequenceTemplate(
                     SequenceTemplateDraft(
@@ -477,7 +478,23 @@ class SequenceTemplateEditorPersistenceTest {
                 before.sequence.nodes
                     .filterIsInstance<ActivityStep>()
                     .single()
+            val sql = context.openOrCreateDatabase("lifetracing.db", Context.MODE_PRIVATE, null)
+            val trackedTables =
+                listOf(
+                    "activity_snapshots",
+                    "activity_snapshot_fields",
+                    "activity_snapshot_category_options",
+                    "sequence_nodes",
+                )
+            val beforeCounts = trackedTables.associateWith { sql.countRows(it) }
+            val failureTrigger = "fail_manipulation_duplicate_node_insert"
             try {
+                sql.execSQL("DROP TRIGGER IF EXISTS $failureTrigger")
+                sql.execSQL(
+                    "CREATE TRIGGER $failureTrigger BEFORE INSERT ON sequence_nodes " +
+                        "BEGIN SELECT RAISE(ABORT, 'forced repository transaction failure'); END",
+                )
+                var writes = 0
                 val controller =
                     controller(
                         scope,
@@ -485,7 +502,10 @@ class SequenceTemplateEditorPersistenceTest {
                         repository,
                         base.plusSeconds(2),
                         create = { error("Create is not used") },
-                        save = { _, _, _, _ -> throw SQLiteConstraintException("forced duplicate collision") },
+                        save = { id, revision, draft, at ->
+                            writes++
+                            repository.saveSequenceTemplate(id, revision, draft, at)
+                        },
                     )
                 controller.awaitReady()
                 val sourceIdentity = DraftIdentity.Existing(sourceStep.id)
@@ -494,12 +514,17 @@ class SequenceTemplateEditorPersistenceTest {
                 val submitted = requireNotNull(controller.state.value.readyDraft())
 
                 controller.applyManipulation()
-                controller.awaitFailure()
+                val failure = controller.awaitFailure()
 
                 val after = requireNotNull(repository.getSequenceTemplateAuthoringState(created.id))
-                assertEquals(before, after)
+                assertTrue(failure.message.contains("forced repository transaction failure"))
+                assertEquals(before.sequence.revision, after.sequence.revision)
+                assertEquals(before.sequence.nodes, after.sequence.nodes)
+                assertEquals(before.activitySnapshots, after.activitySnapshots)
                 assertEquals(before.activitySnapshots.size, after.activitySnapshots.size)
+                assertEquals(beforeCounts, trackedTables.associateWith { sql.countRows(it) })
                 assertEquals(submitted, controller.state.value.readyDraft())
+                assertEquals(1, writes)
                 assertTrue(
                     controller.state.value.manipulation
                         ?.canUndo == true,
@@ -510,8 +535,18 @@ class SequenceTemplateEditorPersistenceTest {
                         .filterIsInstance<ActivityStep>()
                         .single(),
                 )
+                assertTrue(controller.undoManipulation())
+                assertTrue(
+                    controller.state.value.manipulation
+                        ?.canRedo == true,
+                )
+                assertTrue(controller.redoManipulation())
+                assertEquals(submitted, controller.state.value.readyDraft())
+                assertEquals(1, writes)
                 controller.close()
             } finally {
+                sql.execSQL("DROP TRIGGER IF EXISTS $failureTrigger")
+                sql.close()
                 scope.cancel()
             }
         }
@@ -661,6 +696,34 @@ class SequenceTemplateEditorPersistenceTest {
                     ),
                 ),
         )
+
+    private fun categorySourceDraft() =
+        ActivityTemplateDraft(
+            "Source failure ${System.nanoTime()}",
+            null,
+            TimeTrackingMode.STOPWATCH,
+            null,
+            fields =
+                listOf(
+                    ActivityFieldDraft(
+                        DraftIdentity.New("effort"),
+                        0,
+                        "Effort",
+                        CustomFieldType.CATEGORY,
+                        defaultCategoryOption = DraftIdentity.New("easy"),
+                        categoryOptions =
+                            listOf(
+                                ActivityCategoryOptionDraft(DraftIdentity.New("easy"), 0, "Easy"),
+                            ),
+                    ),
+                ),
+        )
+
+    private fun SQLiteDatabase.countRows(table: String): Int =
+        rawQuery("SELECT COUNT(*) FROM `$table`", null).use {
+            check(it.moveToFirst())
+            it.getInt(0)
+        }
 
     private suspend fun SequenceTemplateEditorController.awaitReady() {
         awaitState(

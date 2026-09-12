@@ -31,9 +31,11 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.Instant
 import kotlin.coroutines.CoroutineContext
 
+@Suppress("LargeClass") // Editor boundary scenarios share one focused controller harness.
 class SequenceTemplateEditorControllerTest {
     private val inlineDispatcher =
         object : CoroutineDispatcher() {
@@ -262,6 +264,104 @@ class SequenceTemplateEditorControllerTest {
 
             assertEquals(baseline, controller.state.value.readyDraft())
             assertEquals(null, controller.state.value.manipulation)
+            assertEquals(0, writes)
+            controller.close()
+        }
+
+    @Test
+    fun manipulationDiscardRestoresPreExistingInvalidInputExactly() =
+        runBlocking {
+            var writes = 0
+            var exits = 0
+            val state = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(state.sequence.id),
+                    { state },
+                    { emptyList() },
+                    { _, _, _ -> error("Create must not run") },
+                    { _, _, _, _ ->
+                        writes++
+                        state.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val step =
+                requireNotNull(controller.state.value.readyDraft())
+                    .nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val key = SequenceEditorInputKey.stepCountdown(step)
+            controller.updateNumberInput(key, "invalid", 0, 0) { error("Invalid input must not update the draft") }
+            val entryDraft = requireNotNull(controller.state.value.readyDraft())
+            val entryInputs = controller.state.value.textInputs
+
+            controller.enterManipulation(step)
+            controller.updateNumberInput(key, "9", 0, 0) { seconds ->
+                controller.updateDraft { it.withStepCountdown(step, seconds) }
+            }
+            controller.discardManipulation()
+
+            assertEquals(entryDraft, controller.state.value.readyDraft())
+            assertEquals(entryInputs, controller.state.value.textInputs)
+            assertTrue(controller.state.value.inputIsInvalid(key))
+            controller.requestBack { exits++ }
+            assertTrue(controller.state.value.discardConfirmationVisible)
+            assertEquals(0, exits)
+            assertEquals(0, writes)
+            controller.close()
+        }
+
+    @Test
+    fun manipulationDiscardRemovesValidAndInvalidInputsCreatedAfterCleanEntry() =
+        runBlocking {
+            var writes = 0
+            var exits = 0
+            val state = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(state.sequence.id),
+                    { state },
+                    { emptyList() },
+                    { _, _, _ -> error("Create must not run") },
+                    { _, _, _, _ ->
+                        writes++
+                        state.sequence
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val baseline = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                baseline.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val key = SequenceEditorInputKey.stepCountdown(step)
+
+            controller.enterManipulation(step)
+            controller.updateNumberInput(key, "9", 0, 0) { seconds ->
+                controller.updateDraft { it.withStepCountdown(step, seconds) }
+            }
+            controller.updateNumberInput(key, "invalid", 0, 0) { error("Invalid input must not update the draft") }
+            assertTrue(controller.state.value.inputIsInvalid(key))
+            controller.discardManipulation()
+
+            assertEquals(baseline, controller.state.value.readyDraft())
+            assertTrue(
+                controller.state.value.textInputs
+                    .isEmpty(),
+            )
+            assertFalse(controller.state.value.inputIsInvalid(key))
+            controller.requestBack { exits++ }
+            assertEquals(1, exits)
+            assertFalse(controller.state.value.discardConfirmationVisible)
+            controller.save()
+            assertTrue(controller.state.value.save is SequenceTemplateEditorSave.Committed)
             assertEquals(0, writes)
             controller.close()
         }
@@ -526,6 +626,25 @@ class SequenceTemplateEditorControllerTest {
             ),
         ),
     )
+
+    private fun SequenceTemplateDraft.withStepCountdown(
+        identity: DraftIdentity<SequenceNodeId>,
+        seconds: Long,
+    ): SequenceTemplateDraft =
+        copy(
+            nodes =
+                nodes.map { node ->
+                    if (node is SequenceNodeDraft.Step && node.identity == identity) {
+                        SequenceNodeDraft.Step(
+                            node.value.copy(
+                                overrides = node.value.overrides.copy(startCountdown = Duration.ofSeconds(seconds)),
+                            ),
+                        )
+                    } else {
+                        node
+                    }
+                },
+        )
 
     private fun SequenceTemplateDraft.toFakeAuthoring(
         id: SequenceTemplateId,

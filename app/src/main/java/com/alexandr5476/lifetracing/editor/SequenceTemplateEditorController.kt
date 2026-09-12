@@ -110,6 +110,7 @@ class SequenceTemplateEditorController internal constructor(
     private val newIdentity = AtomicLong()
     private var durableTarget = target
     private var manipulationSession: SequenceManipulationSession? = null
+    private var manipulationTextInputsBaseline: Map<String, SequenceEditorTextInput>? = null
     private var committedAwaitingReload: SequenceTemplate? = null
 
     @Volatile private var closed = false
@@ -175,6 +176,7 @@ class SequenceTemplateEditorController internal constructor(
             val session =
                 manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
                     manipulationSession = it
+                    manipulationTextInputsBaseline = mutableState.value.textInputs
                 }
             session.select(identity)
             publishManipulation(session)
@@ -213,10 +215,12 @@ class SequenceTemplateEditorController internal constructor(
             if (closed || saving || committedAwaitingReload != null) return
             val session = manipulationSession ?: return
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-            manipulationSession = null
+            val textInputs = requireNotNull(manipulationTextInputsBaseline)
+            clearManipulationSession()
             mutableState.update {
                 it.copy(
                     load = ready.copy(draft = session.baseline),
+                    textInputs = textInputs,
                     manipulation = null,
                     save = SequenceTemplateEditorSave.Idle,
                 )
@@ -274,7 +278,7 @@ class SequenceTemplateEditorController internal constructor(
                 }
                 if (submittedDraft == ready.original) {
                     saving = false
-                    manipulationSession = null
+                    clearManipulationSession()
                     mutableState.update {
                         it.copy(
                             manipulation = null,
@@ -327,7 +331,7 @@ class SequenceTemplateEditorController internal constructor(
             synchronized(commandLock) {
                 durableTarget = SequenceTemplateEditorTarget.Existing(committed.id)
                 committedAwaitingReload = null
-                manipulationSession = null
+                clearManipulationSession()
                 saving = false
                 if (!closed) {
                     mutableState.update {
@@ -366,6 +370,7 @@ class SequenceTemplateEditorController internal constructor(
         val target =
             synchronized(commandLock) {
                 if (closed || saving) return
+                clearManipulationSession()
                 mutableState.value = SequenceTemplateEditorState()
                 durableTarget
             }
@@ -421,6 +426,11 @@ class SequenceTemplateEditorController internal constructor(
 
     private fun publishManipulation(session: SequenceManipulationSession) {
         mutableState.update { it.copy(manipulation = session.uiState(), save = SequenceTemplateEditorSave.Idle) }
+    }
+
+    private fun clearManipulationSession() {
+        manipulationSession = null
+        manipulationTextInputsBaseline = null
     }
 
     private fun Throwable.toSaveFailure(): SequenceTemplateEditorSave.Failure {
