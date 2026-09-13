@@ -14,6 +14,7 @@ import android.content.Context
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
 import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
@@ -33,6 +34,8 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -41,7 +44,6 @@ import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
-import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.RuntimeReconciliationResult
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceExecutionFactory
@@ -58,7 +60,6 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
-import com.alexandr5476.lifetracing.domain.TransitionCountdownProgressResolver
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
 import java.time.ZoneId
@@ -96,6 +97,41 @@ class LiveSessionRepository internal constructor(
     fun getActiveSession(): ActiveSession? = transaction(::getActiveSessionLocked)
 
     fun getActiveRuntime(): ActiveRuntime? = transaction(::getActiveRuntimeLocked)
+
+    fun getExpandedSequence(expectedExecutionId: SequenceExecutionId): ExpandedLiveSequenceRead =
+        transaction {
+            val session =
+                database.activeSessionDao().get()
+                    ?: return@transaction ExpandedLiveSequenceRead.StaleOrInactive
+            if (session.kind != ActiveSessionKind.SEQUENCE || session.sequenceExecutionId != expectedExecutionId) {
+                return@transaction ExpandedLiveSequenceRead.StaleOrInactive
+            }
+            val execution =
+                requireNotNull(database.sequenceExecutionDao().getAggregate(expectedExecutionId.value)) {
+                    "Active SequenceExecution is missing"
+                }.toDomain()
+            val snapshot = loadSequenceSnapshot(execution.snapshotId)
+            val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
+            val children =
+                database
+                    .activityExecutionDao()
+                    .getSequenceChildAggregates(expectedExecutionId.value)
+                    .map(ActivityExecutionAggregateEntity::toDomain)
+            val currentChild =
+                execution.currentOccurrenceId?.let { currentId ->
+                    children.singleOrNull { it.sequenceOccurrenceId == currentId }
+                }
+            val runtime =
+                ActiveSequenceRuntime(
+                    session,
+                    execution,
+                    snapshot,
+                    activities,
+                    currentChild,
+                    transitionCountdownTargetId(session, execution),
+                )
+            ExpandedLiveSequenceRead.Active(ExpandedLiveSequenceProjector.project(runtime, children))
+        }
 
     fun startStandaloneTimedActivityFromSnapshot(
         snapshotId: ActivitySnapshotId,
@@ -621,7 +657,17 @@ class LiveSessionRepository internal constructor(
         if (after.execution.status == SequenceExecutionStatus.RUNNING ||
             after.execution.status == SequenceExecutionStatus.PAUSED
         ) {
-            validateSequenceRuntimeShape(sequenceSession(after.execution).state, after.execution, snapshot, activities)
+            val session = sequenceSession(after.execution)
+            ActiveSequenceStateResolver.resolve(
+                ActiveSequenceRuntime(
+                    session,
+                    after.execution,
+                    snapshot,
+                    activities,
+                    after.currentChild,
+                    transitionCountdownTargetId(session, after.execution),
+                ),
+            )
         }
         after.children.forEach { (occurrenceId, child) ->
             val occurrence = after.execution.occurrences.single { it.id == occurrenceId }
@@ -812,141 +858,32 @@ class LiveSessionRepository internal constructor(
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
         val activities = loadActivitySnapshots(snapshot, execution.occurrences.map { it.activitySnapshotId })
         SequenceExecutionValidator.requireValid(execution, snapshot)
-        validateSequenceRuntimeShape(session.state, execution, snapshot, activities)
         val current =
             execution.currentOccurrenceId?.let { currentId ->
-                execution.occurrences.single {
-                    it.id ==
-                        currentId
-                }
+                execution.occurrences.single { it.id == currentId }
             }
+        val currentChild =
+            current?.let { database.activityExecutionDao().getAggregateByOccurrence(it.id.value)?.toDomain() }
         if (current != null) {
             validateCurrentChild(
                 execution.id,
                 current.id,
                 activities.getValue(current.activitySnapshotId),
                 session.state == ActiveSessionState.PAUSED,
+                currentChild,
             )
         }
+        val runtime =
+            ActiveSequenceRuntime(
+                session,
+                execution,
+                snapshot,
+                activities,
+                currentChild,
+                transitionCountdownTargetId(session, execution),
+            )
+        ActiveSequenceStateResolver.resolve(runtime)
     }
-
-    private fun validateSequenceRuntimeShape(
-        state: ActiveSessionState,
-        execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
-        snapshot: SequenceConfigSnapshot,
-        activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
-    ) {
-        val open = execution.intervals.filter { it.endedAt == null }
-        require(open.size == 1) { "Active Sequence requires exactly one open classification interval" }
-        val interval = open.single()
-        require(
-            execution.intervals.filter { it.endedAt != null }.all { requireNotNull(it.endedAt) <= interval.startedAt },
-        ) {
-            "The open runtime interval must follow every closed segment"
-        }
-        val current = execution.currentOccurrenceId?.let { id -> execution.occurrences.single { it.id == id } }
-        val frontier = nextRemainingOccurrence(execution)
-        if (current != null) {
-            require(frontier == null || frontier.runtimePosition > current.runtimePosition) {
-                "Current Step cannot skip an earlier remaining occurrence"
-            }
-        }
-        when (state) {
-            ActiveSessionState.WAITING_NEXT ->
-                require(
-                    execution.status == SequenceExecutionStatus.RUNNING &&
-                        current == null &&
-                        execution.occurrences.none { it.status == RuntimeOccurrenceStatus.CURRENT } &&
-                        interval.kind == SequenceIntervalKind.IMPLICIT_IDLE &&
-                        interval.occurrenceId == null &&
-                        frontier != null,
-                ) { "WAITING_NEXT requires a global implicit idle and a remaining frontier" }
-            ActiveSessionState.RUNNING -> {
-                require(execution.status == SequenceExecutionStatus.RUNNING) { "Running session requires running root" }
-                if (current == null) {
-                    require(
-                        interval.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                            interval.occurrenceId == frontier?.id,
-                    ) { "Transition countdown must target the next remaining occurrence" }
-                    require(
-                        countdownConsumedMs(execution, requireNotNull(frontier).id) <
-                            requiredCountdownMs(frontier, snapshot, activities),
-                    ) {
-                        "Transition countdown requires positive remaining time"
-                    }
-                } else {
-                    val expected =
-                        com.alexandr5476.lifetracing.domain.stepIntervalKind(
-                            activities.getValue(current.activitySnapshotId),
-                            snapshot.settings.noLiveTimeAccounting,
-                        )
-                    require(interval.kind == expected && interval.occurrenceId == current.id) {
-                        "Running current Step requires its one open Step-classification interval"
-                    }
-                }
-            }
-            ActiveSessionState.PAUSED -> {
-                require(
-                    execution.status == SequenceExecutionStatus.PAUSED &&
-                        interval.kind == SequenceIntervalKind.EXPLICIT_PAUSE &&
-                        interval.occurrenceId == null,
-                ) { "Paused Sequence requires one global explicit-pause interval" }
-                if (current == null) {
-                    val target = requireNotNull(frontier) { "Paused countdown requires a remaining frontier" }
-                    val segments =
-                        execution.intervals.filter {
-                            it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
-                                it.occurrenceId == target.id &&
-                                it.endedAt != null
-                        }
-                    val latest =
-                        requireNotNull(segments.maxByOrNull { requireNotNull(it.endedAt) }) {
-                            "Paused countdown requires progress for its frontier target"
-                        }
-                    require(latest.endedAt == interval.startedAt) {
-                        "Paused countdown progress must end exactly when the explicit pause starts"
-                    }
-                    require(
-                        countdownConsumedMs(execution, target.id) < requiredCountdownMs(target, snapshot, activities),
-                    ) {
-                        "Paused countdown must retain positive remaining time"
-                    }
-                }
-            }
-        }
-    }
-
-    private fun requiredCountdownMs(
-        occurrence: com.alexandr5476.lifetracing.domain.RuntimeOccurrence,
-        snapshot: SequenceConfigSnapshot,
-        activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
-    ): Long {
-        val activity = activities.getValue(occurrence.activitySnapshotId)
-        val source = occurrence.sourceSequenceSnapshotNodeId
-        if (source == null) {
-            return EffectiveSequenceStepSettingsResolver
-                .resolve(activity, snapshot.settings, false)
-                .startCountdown
-                .toMillis()
-        }
-        val step =
-            snapshot.nodes
-                .flatMap {
-                    when (it) {
-                        is SequenceSnapshotActivityStep -> listOf(it)
-                        is SequenceSnapshotRepeatBlock -> it.children
-                    }
-                }.single { it.id == source }
-        return EffectiveSequenceStepSettingsResolver
-            .resolve(step, activity, snapshot.settings, false)
-            .startCountdown
-            .toMillis()
-    }
-
-    private fun countdownConsumedMs(
-        execution: com.alexandr5476.lifetracing.domain.SequenceExecution,
-        target: SequenceOccurrenceId,
-    ): Long = TransitionCountdownProgressResolver.closedDuration(execution, target).toMillis()
 
     private fun transitionCountdownTargetId(
         session: ActiveSession,
@@ -962,8 +899,8 @@ class LiveSessionRepository internal constructor(
         occurrenceId: SequenceOccurrenceId,
         snapshot: ActivityConfigSnapshot,
         paused: Boolean,
+        child: ActivityExecution?,
     ) {
-        val child = database.activityExecutionDao().getAggregateByOccurrence(occurrenceId.value)?.toDomain()
         if (snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
             require(child == null) { "Current No-live Step cannot have a running child execution" }
             return

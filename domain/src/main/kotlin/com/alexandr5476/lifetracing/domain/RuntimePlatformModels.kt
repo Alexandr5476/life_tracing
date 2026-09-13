@@ -1,4 +1,8 @@
-@file:Suppress("ReturnCount") // Deadline/state helpers use guard clauses to keep invalid states explicit.
+@file:Suppress(
+    "CyclomaticComplexMethod",
+    "LongMethod",
+    "ReturnCount",
+) // Deadline/state helpers keep invalid persisted combinations explicit.
 
 package com.alexandr5476.lifetracing.domain
 
@@ -50,6 +54,106 @@ data class ActiveSequenceRuntime(
     val currentChild: ActivityExecution?,
     val transitionCountdownTargetId: SequenceOccurrenceId?,
 ) : ActiveRuntime
+
+enum class ActiveSequenceState {
+    RUNNING_CURRENT,
+    PAUSED_CURRENT,
+    WAITING_NEXT,
+    RUNNING_TRANSITION_COUNTDOWN,
+    PAUSED_TRANSITION_COUNTDOWN,
+}
+
+object ActiveSequenceStateResolver {
+    fun resolve(runtime: ActiveSequenceRuntime): ActiveSequenceState {
+        require(
+            runtime.session.kind == ActiveSessionKind.SEQUENCE &&
+                runtime.session.sequenceExecutionId == runtime.execution.id,
+        ) { "Active Sequence session and root identity must agree" }
+        val execution = runtime.execution
+        val current = execution.currentOccurrenceId?.let { id -> execution.occurrences.single { it.id == id } }
+        val frontier = nextRemainingOccurrence(execution)
+        val open = execution.intervals.singleOrNull { it.endedAt == null }
+        require(open != null) { "Active Sequence requires exactly one open classification interval" }
+        require(
+            execution.intervals
+                .filter { it.endedAt != null }
+                .all { requireNotNull(it.endedAt) <= open.startedAt },
+        ) {
+            "The open runtime interval must follow every closed segment"
+        }
+        if (current != null) {
+            require(frontier == null || frontier.runtimePosition > current.runtimePosition) {
+                "Current Step cannot skip an earlier remaining occurrence"
+            }
+        }
+        return when {
+            current != null && runtime.session.state == ActiveSessionState.RUNNING -> {
+                require(execution.status == SequenceExecutionStatus.RUNNING) { "Running session requires running root" }
+                val expected =
+                    stepIntervalKind(
+                        runtime.activitySnapshots.getValue(current.activitySnapshotId),
+                        runtime.snapshot.settings.noLiveTimeAccounting,
+                    )
+                require(open.kind == expected && open.occurrenceId == current.id) {
+                    "Running current Step requires its open Step-classification interval"
+                }
+                require(runtime.transitionCountdownTargetId == null)
+                ActiveSequenceState.RUNNING_CURRENT
+            }
+            current != null && runtime.session.state == ActiveSessionState.PAUSED -> {
+                require(execution.status == SequenceExecutionStatus.PAUSED) { "Paused session requires paused root" }
+                require(open.kind == SequenceIntervalKind.EXPLICIT_PAUSE && open.occurrenceId == null) {
+                    "Paused current Step requires one global explicit-pause interval"
+                }
+                require(runtime.transitionCountdownTargetId == null)
+                ActiveSequenceState.PAUSED_CURRENT
+            }
+            current == null && runtime.session.state == ActiveSessionState.WAITING_NEXT -> {
+                require(
+                    execution.status == SequenceExecutionStatus.RUNNING &&
+                        execution.occurrences.none { it.status == RuntimeOccurrenceStatus.CURRENT } &&
+                        open.kind == SequenceIntervalKind.IMPLICIT_IDLE &&
+                        open.occurrenceId == null &&
+                        frontier != null &&
+                        runtime.transitionCountdownTargetId == null,
+                ) { "WAITING_NEXT requires a global implicit idle and a remaining frontier" }
+                ActiveSequenceState.WAITING_NEXT
+            }
+            current == null && runtime.session.state == ActiveSessionState.RUNNING -> {
+                require(execution.status == SequenceExecutionStatus.RUNNING && frontier != null) {
+                    "Running transition countdown requires a running root and remaining frontier"
+                }
+                require(open.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN && open.occurrenceId == frontier?.id) {
+                    "Running transition countdown must target the remaining frontier"
+                }
+                require(runtime.transitionCountdownTargetId == frontier.id)
+                requireNotNull(TransitionCountdownProgressResolver.running(runtime))
+                ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN
+            }
+            current == null && runtime.session.state == ActiveSessionState.PAUSED -> {
+                require(execution.status == SequenceExecutionStatus.PAUSED) { "Paused session requires paused root" }
+                require(open.kind == SequenceIntervalKind.EXPLICIT_PAUSE && open.occurrenceId == null) {
+                    "Paused transition countdown requires one global explicit-pause interval"
+                }
+                val target = requireNotNull(frontier) { "Paused countdown requires a remaining frontier" }
+                require(runtime.transitionCountdownTargetId == target.id)
+                val latestClosedCountdown =
+                    execution.intervals
+                        .filter {
+                            it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN &&
+                                it.occurrenceId == target.id &&
+                                it.endedAt != null
+                        }.maxByOrNull { requireNotNull(it.endedAt) }
+                require(latestClosedCountdown?.endedAt == open.startedAt) {
+                    "Paused countdown progress must end exactly when the explicit pause starts"
+                }
+                requireNotNull(TransitionCountdownProgressResolver.paused(runtime))
+                ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN
+            }
+            else -> throw IllegalArgumentException("Unsupported canonical active Sequence state")
+        }
+    }
+}
 
 enum class RuntimeDeadlineKind {
     ACTIVITY_TIMER_ZERO,

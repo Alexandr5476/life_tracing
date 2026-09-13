@@ -246,6 +246,7 @@ internal abstract class SequenceSnapshotDao {
         }
     }
 
+    @Suppress("LongMethod") // Persisted aggregate validation keeps all cross-table invariants together.
     private fun requireValidAggregate(
         aggregate: SequenceSnapshotAggregateEntity,
         knownActivityIds: Set<String>? = null,
@@ -289,10 +290,18 @@ internal abstract class SequenceSnapshotDao {
             ) { "Sibling node positions must be unique" }
         }
         val ids = aggregate.nodes.mapNotNull(SequenceSnapshotNodeEntity::activitySnapshotId).distinct()
-        require((knownActivityIds ?: existingActivitySnapshots(ids).toSet()).containsAll(ids)) {
+        val existing =
+            knownActivityIds
+                ?: ids.chunked(SQLITE_SAFE_BIND_COUNT).flatMap(::existingActivitySnapshots).toSet()
+        require(existing.containsAll(ids)) {
             "Every Step must reference an existing ActivitySnapshot"
         }
-        val modes = knownActivityModes ?: activitySnapshotModes(ids).associateBy(ActivitySnapshotModeRow::id)
+        val modes =
+            knownActivityModes
+                ?: ids
+                    .chunked(SQLITE_SAFE_BIND_COUNT)
+                    .flatMap(::activitySnapshotModes)
+                    .associateBy(ActivitySnapshotModeRow::id)
         aggregate.stepOverrides.forEach { override ->
             val owner = requireNotNull(nodes[override.sequenceSnapshotNodeId]) { "Step override owner must exist" }
             require(owner.nodeType == "STEP") { "Only a Step can own execution-setting overrides" }
