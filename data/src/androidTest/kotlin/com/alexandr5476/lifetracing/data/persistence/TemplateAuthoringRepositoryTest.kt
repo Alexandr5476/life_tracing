@@ -889,12 +889,24 @@ class TemplateAuthoringRepositoryTest {
             at(3),
         )
         val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val sourceDraft = (draft.nodes.single() as SequenceNodeDraft.Step).value
+        val sourceActivity = sourceDraft.activity as StepActivityDraft.Existing
+        val atDuplicate = sourceActivity.configuration.copy(name = "At duplicate")
+        val captured =
+            StepActivityDraft.Duplicate(
+                sourceStep,
+                atDuplicate,
+                sourceActivity.sourceTemplateId,
+                sourceActivity.sourceRevision,
+                sourceActivity.statisticsSeriesId,
+                locallyModified = true,
+            )
         val duplicate =
             ActivityStepDraft(
                 DraftIdentity.New("duplicate"),
                 0,
-                StepActivityDraft.Duplicate(sourceStep),
-                SequenceStepOverrides(),
+                captured,
+                SequenceStepOverrides(startCountdown = Duration.ofSeconds(4)),
             )
         val saved =
             repository.saveSequenceTemplate(
@@ -907,7 +919,13 @@ class TemplateAuthoringRepositoryTest {
                                 SequenceRepeatBlockDraft(DraftIdentity.New("repeat"), 0, 2, listOf(duplicate)),
                             ),
                             SequenceNodeDraft.Step(
-                                (draft.nodes.single() as SequenceNodeDraft.Step).value.copy(position = 1),
+                                sourceDraft.copy(
+                                    position = 1,
+                                    activity =
+                                        sourceActivity.copy(
+                                            configuration = sourceActivity.configuration.copy(name = "Later original"),
+                                        ),
+                                ),
                             ),
                         ),
                 ),
@@ -922,11 +940,11 @@ class TemplateAuthoringRepositoryTest {
         assertEquals(2L, saved.revision)
         assertNotEquals(sourceStep, copiedStep.id)
         assertNotEquals(frozen.id, copied.id)
-        assertEquals(frozen.name, copied.name)
+        assertEquals("At duplicate", copied.name)
         assertEquals(frozen.sourceTemplateId, copied.sourceTemplateId)
         assertEquals(frozen.sourceRevision, copied.sourceRevision)
         assertEquals(frozen.statisticsSeriesId, copied.statisticsSeriesId)
-        assertEquals(frozen.locallyModified, copied.locallyModified)
+        assertTrue(copied.locallyModified)
         assertEquals(frozen.settings, copied.settings)
         assertEquals(frozen.fields.map { it.sourceFieldId }, copied.fields.map { it.sourceFieldId })
         assertEquals(
@@ -946,8 +964,10 @@ class TemplateAuthoringRepositoryTest {
                 .single()
                 .id,
         )
-        assertNotEquals(duplicate.overrides, copiedStep.overrides)
-        assertEquals(SequenceStepOverrides(startCountdown = Duration.ofSeconds(3)), copiedStep.overrides)
+        assertEquals(duplicate.overrides, copiedStep.overrides)
+        val original = repository.getStepSnapshot(saved.id, sourceStep)!!
+        assertEquals("Later original", original.name)
+        assertNotEquals(original.id, copied.id)
     }
 
     @Test
@@ -1026,7 +1046,7 @@ class TemplateAuthoringRepositoryTest {
                                 ActivityStepDraft(
                                     DraftIdentity.New("duplicate"),
                                     1,
-                                    StepActivityDraft.Duplicate(originalStep),
+                                    draft.duplicateActivity(originalStep),
                                 ),
                             ),
                 ),
@@ -1088,7 +1108,7 @@ class TemplateAuthoringRepositoryTest {
                                 ActivityStepDraft(
                                     DraftIdentity.New("duplicate"),
                                     1,
-                                    StepActivityDraft.Duplicate(originalStep),
+                                    draft.duplicateActivity(originalStep),
                                 ),
                             ),
                 ),
@@ -1119,15 +1139,16 @@ class TemplateAuthoringRepositoryTest {
         val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "collision"), createdAt = at(2))
         val originalStep = sequence.nodes.flatMap { it.stepIds() }.single()
         val originalSnapshot = repository.getStepSnapshot(sequence.id, originalStep)!!
+        val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
         val validDuplicateDraft =
-            repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft().copy(
+            draft.copy(
                 nodes =
-                    repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft().nodes +
+                    draft.nodes +
                         SequenceNodeDraft.Step(
                             ActivityStepDraft(
                                 DraftIdentity.New("duplicate"),
                                 1,
-                                StepActivityDraft.Duplicate(originalStep),
+                                draft.duplicateActivity(originalStep),
                             ),
                         ),
             )
@@ -2119,6 +2140,26 @@ class TemplateAuthoringRepositoryTest {
     }
 
     private fun observedQueriesSnapshot() = synchronized(observedQueries) { observedQueries.toList() }
+
+    private fun SequenceTemplateDraft.duplicateActivity(sourceStep: SequenceNodeId): StepActivityDraft.Duplicate {
+        val source =
+            nodes
+                .flatMap { node ->
+                    when (node) {
+                        is SequenceNodeDraft.Step -> listOf(node.value)
+                        is SequenceNodeDraft.Repeat -> node.value.children
+                    }
+                }.single { (it.identity as? DraftIdentity.Existing)?.id == sourceStep }
+                .activity as StepActivityDraft.Existing
+        return StepActivityDraft.Duplicate(
+            sourceStep,
+            source.configuration,
+            source.sourceTemplateId,
+            source.sourceRevision,
+            source.statisticsSeriesId,
+            source.locallyModified,
+        )
+    }
 
     private fun at(second: Long): Instant = Instant.ofEpochSecond(second)
 }

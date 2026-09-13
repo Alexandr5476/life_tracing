@@ -806,7 +806,7 @@ private fun StepCard(
             when (val activity = step.activity) {
                 is StepActivityDraft.Existing -> activity.configuration
                 is StepActivityDraft.Local -> activity.configuration
-                is StepActivityDraft.Duplicate -> manipulation?.duplicatePreviews?.get(activity.sourceStepId)
+                is StepActivityDraft.Duplicate -> activity.configuration
                 else -> null
             }
         val stepMode = local?.timeTrackingMode ?: choice?.timeTrackingMode

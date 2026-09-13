@@ -457,6 +457,52 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
+    fun manipulationUndoRedoRestoresNonStructuralDraftAndTextInputTogether() =
+        runBlocking {
+            val state = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(state.sequence.id),
+                    { state },
+                    { emptyList() },
+                    { _, _, _ -> error("Create must not run") },
+                    { _, _, _, _ -> state.sequence },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitReady()
+            val entry = requireNotNull(controller.state.value.readyDraft())
+            val step =
+                entry.nodes
+                    .filterIsInstance<SequenceNodeDraft.Step>()
+                    .single()
+                    .identity
+            val key = SequenceEditorInputKey.stepCountdown(step)
+
+            controller.enterManipulation(step)
+            controller.updateNumberInput(key, "9", 0, 0) { seconds ->
+                controller.updateDraft { it.withStepCountdown(step, seconds) }
+            }
+            val edited = requireNotNull(controller.state.value.readyDraft())
+            val editedInputs = controller.state.value.textInputs
+            assertTrue(
+                controller.state.value.manipulation
+                    ?.canUndo == true,
+            )
+
+            assertTrue(controller.undoManipulation())
+            assertEquals(entry, controller.state.value.readyDraft())
+            assertTrue(
+                controller.state.value.textInputs
+                    .isEmpty(),
+            )
+            assertTrue(controller.redoManipulation())
+            assertEquals(edited, controller.state.value.readyDraft())
+            assertEquals(editedInputs, controller.state.value.textInputs)
+            controller.close()
+        }
+
+    @Test
     fun manipulationDiscardRestoresPreExistingInvalidInputExactly() =
         runBlocking {
             var writes = 0

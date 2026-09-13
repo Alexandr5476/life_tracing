@@ -2,7 +2,6 @@
 
 package com.alexandr5476.lifetracing.editor
 
-import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -20,28 +19,17 @@ data class SequenceManipulationUiState(
     val canUndo: Boolean,
     val canRedo: Boolean,
     val operationCount: Int,
-    val duplicatePreviews: Map<SequenceNodeId, ActivitySnapshotDraft>,
 )
 
-/** One baseline plus small reversible deltas; history never retains a draft graph per operation. */
 internal class SequenceManipulationSession(
     val baseline: SequenceTemplateDraft,
     selected: DraftIdentity<SequenceNodeId>,
-    duplicateSources: SequenceTemplateDraft = baseline,
+    private val duplicateSources: SequenceTemplateDraft = baseline,
 ) {
-    private val undo = ArrayDeque<SequenceStructuralEdit>()
-    private val redo = ArrayDeque<SequenceStructuralEdit>()
+    private val undo = ArrayDeque<SequenceManipulationSnapshot>()
+    private val redo = ArrayDeque<SequenceManipulationSnapshot>()
     var selected = selected
         private set
-
-    val duplicatePreviews =
-        duplicateSources.nodes
-            .flatMap(SequenceNodeDraft::steps)
-            .mapNotNull { step ->
-                val id = (step.identity as? DraftIdentity.Existing)?.id ?: return@mapNotNull null
-                val activity = step.activity as? StepActivityDraft.Existing ?: return@mapNotNull null
-                id to activity.configuration
-            }.toMap()
 
     fun select(identity: DraftIdentity<SequenceNodeId>) {
         selected = identity
@@ -52,13 +40,12 @@ internal class SequenceManipulationSession(
         identity: DraftIdentity<SequenceNodeId>,
         destination: SequenceDropDestination,
     ): SequenceTemplateDraft? {
-        val source = draft.locationOf(identity) ?: return null
+        draft.locationOf(identity) ?: return null
         val moved = draft.move(identity, destination) ?: return null
         if (moved == draft) {
             selected = identity
             return draft
         }
-        record(SequenceStructuralEdit.Move(identity, source, destination, selected))
         selected = identity
         return moved
     }
@@ -71,84 +58,59 @@ internal class SequenceManipulationSession(
     ): SequenceTemplateDraft? {
         val source = draft.step(sourceIdentity) ?: return null
         val sourceId = (source.identity as? DraftIdentity.Existing)?.id ?: return null
-        if (source.activity !is StepActivityDraft.Existing) return null
+        val sourceActivity = source.activity as? StepActivityDraft.Existing ?: return null
+        val originalConfiguration =
+            (duplicateSources.step(sourceIdentity)?.activity as? StepActivityDraft.Existing)?.configuration
         val duplicate =
             ActivityStepDraft(
                 duplicateIdentity,
                 destination.position,
-                StepActivityDraft.Duplicate(sourceId),
+                StepActivityDraft.Duplicate(
+                    sourceId,
+                    sourceActivity.configuration,
+                    sourceActivity.sourceTemplateId,
+                    sourceActivity.sourceRevision,
+                    sourceActivity.statisticsSeriesId,
+                    sourceActivity.locallyModified || sourceActivity.configuration != originalConfiguration,
+                ),
                 source.overrides,
             )
         val changed = draft.insert(duplicate, destination) ?: return null
-        record(SequenceStructuralEdit.Duplicate(duplicate, destination, selected))
         selected = duplicateIdentity
         return changed
     }
 
-    fun undo(draft: SequenceTemplateDraft): SequenceTemplateDraft? {
-        val edit = undo.removeLastOrNull() ?: return null
-        val changed =
-            edit.undo(draft) ?: run {
-                undo.addLast(edit)
-                return null
-            }
-        redo.addLast(edit)
-        selected = edit.selectionBefore
-        return changed
-    }
-
-    fun redo(draft: SequenceTemplateDraft): SequenceTemplateDraft? {
-        val edit = redo.removeLastOrNull() ?: return null
-        val changed =
-            edit.redo(draft) ?: run {
-                redo.addLast(edit)
-                return null
-            }
-        undo.addLast(edit)
-        selected = edit.identity
-        return changed
-    }
-
-    fun uiState() =
-        SequenceManipulationUiState(selected, undo.isNotEmpty(), redo.isNotEmpty(), undo.size, duplicatePreviews)
-
-    private fun record(edit: SequenceStructuralEdit) {
-        undo.addLast(edit)
+    fun record(
+        before: SequenceManipulationSnapshot,
+        after: SequenceManipulationSnapshot,
+    ) {
+        if (before == after) return
+        undo.addLast(before)
         redo.clear()
     }
-}
 
-private sealed interface SequenceStructuralEdit {
-    val identity: DraftIdentity<SequenceNodeId>
-    val selectionBefore: DraftIdentity<SequenceNodeId>
-
-    fun undo(draft: SequenceTemplateDraft): SequenceTemplateDraft?
-
-    fun redo(draft: SequenceTemplateDraft): SequenceTemplateDraft?
-
-    data class Move(
-        override val identity: DraftIdentity<SequenceNodeId>,
-        val from: SequenceDropDestination,
-        val to: SequenceDropDestination,
-        override val selectionBefore: DraftIdentity<SequenceNodeId>,
-    ) : SequenceStructuralEdit {
-        override fun undo(draft: SequenceTemplateDraft) = draft.move(identity, from)
-
-        override fun redo(draft: SequenceTemplateDraft) = draft.move(identity, to)
+    fun undo(current: SequenceManipulationSnapshot): SequenceManipulationSnapshot? {
+        val target = undo.removeLastOrNull() ?: return null
+        redo.addLast(current)
+        selected = target.selected
+        return target
     }
 
-    data class Duplicate(
-        val step: ActivityStepDraft,
-        val destination: SequenceDropDestination,
-        override val selectionBefore: DraftIdentity<SequenceNodeId>,
-    ) : SequenceStructuralEdit {
-        override val identity = step.identity
-
-        override fun undo(draft: SequenceTemplateDraft) = draft.removeStep(identity)
-
-        override fun redo(draft: SequenceTemplateDraft) = draft.insert(step, destination)
+    fun redo(current: SequenceManipulationSnapshot): SequenceManipulationSnapshot? {
+        val target = redo.removeLastOrNull() ?: return null
+        undo.addLast(current)
+        selected = target.selected
+        return target
     }
+
+    fun uiState() = SequenceManipulationUiState(selected, undo.isNotEmpty(), redo.isNotEmpty(), undo.size)
 }
+
+internal data class SequenceManipulationSnapshot(
+    val draft: SequenceTemplateDraft,
+    val textInputs: Map<String, SequenceEditorTextInput>,
+    val selected: DraftIdentity<SequenceNodeId>,
+)
 
 private fun SequenceTemplateDraft.locationOf(identity: DraftIdentity<SequenceNodeId>): SequenceDropDestination? {
     nodes.forEachIndexed { position, node ->
@@ -262,9 +224,3 @@ private fun List<SequenceNodeDraft>.reindexNodes(): List<SequenceNodeDraft> =
     }
 
 private fun List<ActivityStepDraft>.reindexSteps() = mapIndexed { position, step -> step.copy(position = position) }
-
-private fun SequenceNodeDraft.steps(): List<ActivityStepDraft> =
-    when (this) {
-        is SequenceNodeDraft.Step -> listOf(value)
-        is SequenceNodeDraft.Repeat -> value.children
-    }

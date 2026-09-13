@@ -842,7 +842,7 @@ class SequenceTemplateEditorScreenPresentationTest {
                         "r2"
                 }
             val duplicate = secondRepeat.value.children.first()
-            assertEquals(StepActivityDraft.Duplicate(SequenceNodeId("a")), duplicate.activity)
+            assertEquals(SequenceNodeId("a"), (duplicate.activity as StepActivityDraft.Duplicate).sourceStepId)
             assertEquals(
                 1,
                 controller.state.value.manipulation

@@ -259,6 +259,54 @@ class ExpandedLiveSequenceControllerTest {
             owner.release(retained)
         }
 
+    @Test
+    fun currentValueDraftRejectsAllWritersWhileDurableCommandIsInFlight() =
+        runBlocking {
+            val expanded = expanded(withAllValueTypes = true)
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    {
+                        entered.complete(Unit)
+                        release.await()
+                    },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitLoaded()
+            val number = ActivitySnapshotFieldId("first-number")
+            val text = ActivitySnapshotFieldId("first-text")
+            val category = ActivitySnapshotFieldId("first-category")
+            controller.editNumber(number, "7")
+            val submitted = requireNotNull(controller.state.value.currentValueDraft)
+
+            controller.completeCurrent()
+            withTimeout(1_000) { entered.await() }
+            controller.editNumber(number, "8")
+            controller.editText(text, "after-submit")
+            controller.editCategory(
+                category,
+                com.alexandr5476.lifetracing.domain
+                    .ActivitySnapshotCategoryOptionId("first-option"),
+            )
+            controller.markMissing(number)
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+
+            release.complete(Unit)
+            withTimeout(1_000) {
+                controller.state.first { !it.commandInFlight }
+            }
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+            controller.close()
+        }
+
     private fun controller(
         scope: kotlinx.coroutines.CoroutineScope,
         initial: com.alexandr5476.lifetracing.domain.ExpandedLiveSequence,
@@ -298,11 +346,12 @@ class ExpandedLiveSequenceControllerTest {
         confirmJump: Boolean = false,
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         withValue: Boolean = false,
+        withAllValueTypes: Boolean = false,
     ): com.alexandr5476.lifetracing.domain.ExpandedLiveSequence {
         var occurrence = 0
         var child = 0
         var interval = 0
-        val first = activity("first", mode, withValue)
+        val first = activity("first", mode, withValue, withAllValueTypes)
         val second = activity("second")
         val activities = listOf(first, second).associateBy(ActivityConfigSnapshot::id)
         val snapshot =
@@ -365,6 +414,7 @@ class ExpandedLiveSequenceControllerTest {
         id: String,
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         withValue: Boolean = false,
+        withAllValueTypes: Boolean = false,
     ) = ActivityConfigSnapshot(
         ActivitySnapshotId(id),
         id,
@@ -377,7 +427,47 @@ class ExpandedLiveSequenceControllerTest {
         false,
         Instant.EPOCH,
         fields =
-            if (withValue) {
+            if (withAllValueTypes) {
+                listOf(
+                    ActivitySnapshotField(
+                        ActivitySnapshotFieldId("$id-number"),
+                        null,
+                        0,
+                        "Number",
+                        type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                        displayPrecision = 0,
+                        defaultNumberScaled = 5,
+                    ),
+                    ActivitySnapshotField(
+                        ActivitySnapshotFieldId("$id-text"),
+                        null,
+                        1,
+                        "Text",
+                        type = com.alexandr5476.lifetracing.domain.CustomFieldType.TEXT,
+                        defaultText = "before",
+                    ),
+                    ActivitySnapshotField(
+                        ActivitySnapshotFieldId("$id-category"),
+                        null,
+                        2,
+                        "Category",
+                        type = com.alexandr5476.lifetracing.domain.CustomFieldType.CATEGORY,
+                        defaultCategoryOptionId =
+                            com.alexandr5476.lifetracing.domain
+                                .ActivitySnapshotCategoryOptionId("$id-option"),
+                        categoryOptions =
+                            listOf(
+                                com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOption(
+                                    com.alexandr5476.lifetracing.domain
+                                        .ActivitySnapshotCategoryOptionId("$id-option"),
+                                    null,
+                                    0,
+                                    "Option",
+                                ),
+                            ),
+                    ),
+                )
+            } else if (withValue) {
                 listOf(
                     ActivitySnapshotField(
                         ActivitySnapshotFieldId("$id-value"),

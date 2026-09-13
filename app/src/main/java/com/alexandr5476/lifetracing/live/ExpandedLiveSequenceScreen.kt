@@ -417,20 +417,26 @@ private fun CurrentValueEditor(
                 LifeTracingOutlinedTextField(
                     value = draft.numberTexts[field.id].orEmpty(),
                     onValueChange = { controller.editNumber(field.id, it) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("expanded-sequence-current-value-${field.id.value}"),
                     label = { Text(field.label()) },
                     isError = field.id in draft.invalidNumberFields,
+                    enabled = !inFlight,
                 )
             CustomFieldType.TEXT ->
                 LifeTracingOutlinedTextField(
                     value = (draft.values[field.id] as? TextExecutionValue)?.value.orEmpty(),
                     onValueChange = { controller.editText(field.id, it) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("expanded-sequence-current-value-${field.id.value}"),
                     label = { Text(field.label()) },
+                    enabled = !inFlight,
                 )
-            CustomFieldType.CATEGORY -> CategoryEditor(field, draft.values[field.id], controller)
+            CustomFieldType.CATEGORY -> CategoryEditor(field, draft.values[field.id], inFlight, controller)
         }
-        TextButton(onClick = { controller.markMissing(field.id) }) {
+        TextButton(
+            onClick = { controller.markMissing(field.id) },
+            enabled = !inFlight,
+            modifier = Modifier.testTag("expanded-sequence-current-missing-${field.id.value}"),
+        ) {
             Text(stringResource(R.string.expanded_sequence_set_missing))
         }
     }
@@ -446,18 +452,23 @@ private fun CurrentValueEditor(
 private fun CategoryEditor(
     field: ActivitySnapshotField,
     value: ActivityExecutionFieldValue?,
+    inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
 ) {
     var open by remember(field.id) { mutableStateOf(false) }
     val selected = (value as? CategoryExecutionValue)?.optionId
     Box {
-        LifeTracingSecondaryButton(onClick = { open = true }) {
+        LifeTracingSecondaryButton(
+            onClick = { open = true },
+            enabled = !inFlight,
+            modifier = Modifier.testTag("expanded-sequence-current-value-${field.id.value}"),
+        ) {
             Text(
                 field.categoryOptions.singleOrNull { it.id == selected }?.label()
                     ?: stringResource(R.string.expanded_sequence_missing),
             )
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenu(expanded = open && !inFlight, onDismissRequest = { open = false }) {
             field.categoryOptions.sortedBy { it.position }.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(option.label()) },

@@ -69,19 +69,24 @@ class SequenceManipulationTest {
 
         assertEquals(listOf("duplicate-once"), draft.children("r2"))
         val duplicate = draft.step("duplicate-once")
-        assertEquals(StepActivityDraft.Duplicate(SequenceNodeId("a")), duplicate.activity)
+        assertEquals(
+            ActivitySnapshotDraft("a", null, TimeTrackingMode.STOPWATCH, null),
+            (duplicate.activity as StepActivityDraft.Duplicate).configuration,
+        )
+        session.record(snapshot(baseline, id("a")), snapshot(draft, duplicateIdentity))
         assertTrue(session.uiState().canUndo)
         session.select(id("d"))
         assertTrue(session.uiState().canUndo)
 
-        draft = requireNotNull(session.undo(draft))
+        draft = requireNotNull(session.undo(snapshot(draft, session.selected))).draft
         assertTrue(draft.children("r2").isEmpty())
         assertEquals(id("a"), session.uiState().selected)
-        draft = requireNotNull(session.redo(draft))
+        draft = requireNotNull(session.redo(snapshot(draft, session.selected))).draft
         assertEquals(duplicateIdentity, draft.step("duplicate-once").identity)
 
-        draft = requireNotNull(session.undo(draft))
+        draft = requireNotNull(session.undo(snapshot(draft, session.selected))).draft
         draft = requireNotNull(session.move(draft, id("d"), SequenceDropDestination(position = 0)))
+        session.record(snapshot(baseline, id("a")), snapshot(draft, id("d")))
         assertFalse(session.uiState().canRedo)
         assertEquals("ordinary unsaved name", session.baseline.name)
     }
@@ -106,14 +111,17 @@ class SequenceManipulationTest {
         val afterMoveOut =
             requireNotNull(session.move(afterDuplicate, id("b"), SequenceDropDestination(position = 2)))
 
-        assertEquals(afterDuplicate, session.undo(afterMoveOut))
-        assertEquals(afterCrossContainerMove, session.undo(afterDuplicate))
-        assertEquals(original, session.undo(afterCrossContainerMove))
-        assertEquals(afterCrossContainerMove, session.redo(original))
-        val duplicateRedo = requireNotNull(session.redo(afterCrossContainerMove))
+        session.record(snapshot(original, id("a")), snapshot(afterCrossContainerMove, id("c")))
+        session.record(snapshot(afterCrossContainerMove, id("c")), snapshot(afterDuplicate, duplicateIdentity))
+        session.record(snapshot(afterDuplicate, duplicateIdentity), snapshot(afterMoveOut, id("b")))
+        assertEquals(afterDuplicate, session.undo(snapshot(afterMoveOut, session.selected))?.draft)
+        assertEquals(afterCrossContainerMove, session.undo(snapshot(afterDuplicate, session.selected))?.draft)
+        assertEquals(original, session.undo(snapshot(afterCrossContainerMove, session.selected))?.draft)
+        assertEquals(afterCrossContainerMove, session.redo(snapshot(original, session.selected))?.draft)
+        val duplicateRedo = requireNotNull(session.redo(snapshot(afterCrossContainerMove, session.selected))).draft
         assertEquals(afterDuplicate, duplicateRedo)
         assertEquals(duplicateIdentity, duplicateRedo.step("same-duplicate").identity)
-        assertEquals(afterMoveOut, session.redo(duplicateRedo))
+        assertEquals(afterMoveOut, session.redo(snapshot(duplicateRedo, session.selected))?.draft)
         assertCanonical(afterMoveOut)
     }
 
@@ -178,6 +186,11 @@ class SequenceManipulationTest {
     )
 
     private fun id(value: String) = DraftIdentity.Existing(SequenceNodeId(value))
+
+    private fun snapshot(
+        draft: SequenceTemplateDraft,
+        selected: DraftIdentity<SequenceNodeId>,
+    ) = SequenceManipulationSnapshot(draft, emptyMap(), selected)
 
     private fun SequenceTemplateDraft.topIds() = nodes.map { it.identity.text() }
 

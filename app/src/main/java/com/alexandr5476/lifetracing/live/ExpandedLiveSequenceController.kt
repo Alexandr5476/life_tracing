@@ -487,6 +487,7 @@ internal class ExpandedLiveSequenceController(
         fieldId: ActivitySnapshotFieldId,
         transform: (ActivitySnapshotField, CurrentValueDraft) -> CurrentValueDraft,
     ) {
+        if (mutableState.value.commandInFlight) return
         val sequence = active() ?: return reject()
         if (!expandedActions(sequence.state).editCurrentValues) return reject()
         val occurrenceId = sequence.runtime.execution.currentOccurrenceId ?: return reject()

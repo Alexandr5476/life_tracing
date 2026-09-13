@@ -4,6 +4,7 @@ package com.alexandr5476.lifetracing.live
 
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
@@ -197,7 +198,63 @@ class ExpandedLiveSequenceScreenTest {
         assertTrue(commands.isEmpty())
     }
 
-    private fun expanded(count: Int): ExpandedLiveSequence {
+    @Test
+    fun currentValueControlsAreDisabledWhileACommandIsInFlight() {
+        val fields =
+            listOf(
+                ActivitySnapshotField(
+                    ActivitySnapshotFieldId("number"),
+                    null,
+                    0,
+                    "Number",
+                    type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                    displayPrecision = 0,
+                ),
+                ActivitySnapshotField(
+                    ActivitySnapshotFieldId("text"),
+                    null,
+                    1,
+                    "Text",
+                    type = com.alexandr5476.lifetracing.domain.CustomFieldType.TEXT,
+                ),
+                ActivitySnapshotField(
+                    ActivitySnapshotFieldId("category"),
+                    null,
+                    2,
+                    "Category",
+                    type = com.alexandr5476.lifetracing.domain.CustomFieldType.CATEGORY,
+                    categoryOptions = emptyList(),
+                ),
+            )
+        val expanded = expanded(2, fields)
+        val current = expanded.occurrences.single { it.occurrence.status == RuntimeOccurrenceStatus.CURRENT }
+        val draft = CurrentValueDraft(current.occurrence.id, emptyMap(), emptyMap())
+        composeRule.setContent {
+            LifeTracingTheme {
+                ExpandedLiveSequenceScreen(
+                    ExpandedLiveSequenceState(
+                        sequence = expanded,
+                        loading = false,
+                        commandInFlight = true,
+                        currentValueDraft = draft,
+                    ),
+                    controller(expanded),
+                    {},
+                    0,
+                )
+            }
+        }
+
+        fields.forEach { field ->
+            composeRule.onNodeWithTag("expanded-sequence-current-value-${field.id.value}").assertIsNotEnabled()
+            composeRule.onNodeWithTag("expanded-sequence-current-missing-${field.id.value}").assertIsNotEnabled()
+        }
+    }
+
+    private fun expanded(
+        count: Int,
+        fields: List<ActivitySnapshotField>? = null,
+    ): ExpandedLiveSequence {
         val valueField =
             ActivitySnapshotField(
                 ActivitySnapshotFieldId("value"),
@@ -222,7 +279,13 @@ class ExpandedLiveSequenceScreenTest {
                         null,
                         false,
                         Instant.EPOCH,
-                        fields = listOf(valueField.copy(defaultNumberScaled = if (index == 2) 5_000 else 6_000)),
+                        fields =
+                            fields
+                                ?: listOf(
+                                    valueField.copy(
+                                        defaultNumberScaled = if (index == 2) 5_000 else 6_000,
+                                    ),
+                                ),
                     )
                 activity.id to activity
             }

@@ -139,6 +139,7 @@ class SequenceTemplateEditorController internal constructor(
     private var durableTarget = target
     private var manipulationSession: SequenceManipulationSession? = null
     private var manipulationTextInputsBaseline: Map<String, SequenceEditorTextInput>? = null
+    private var recordingManipulationInput = false
     private var committedAwaitingReload: SequenceTemplate? = null
     private var sourceActionAwaitingReload: SequenceTemplateId? = null
 
@@ -170,9 +171,12 @@ class SequenceTemplateEditorController internal constructor(
         synchronized(commandLock) {
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
             if (closed || saving || hasCommittedAwaitingReload()) return
+            val before = manipulationSnapshot(ready)
+            val updated = transform(ready.draft)
             mutableState.update {
-                it.copy(load = ready.copy(draft = transform(ready.draft)), save = SequenceTemplateEditorSave.Idle)
+                it.copy(load = ready.copy(draft = updated), save = SequenceTemplateEditorSave.Idle)
             }
+            if (!recordingManipulationInput) recordManipulation(before)
         }
     }
 
@@ -186,6 +190,8 @@ class SequenceTemplateEditorController internal constructor(
     ) {
         synchronized(commandLock) {
             if (closed || saving || hasCommittedAwaitingReload()) return
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
+            val before = ready?.let(::manipulationSnapshot)
             val value = text.toLongOrNull()
             val valid = value != null && value in minimum..maximum
             mutableState.update { state ->
@@ -195,14 +201,23 @@ class SequenceTemplateEditorController internal constructor(
                     save = SequenceTemplateEditorSave.Idle,
                 )
             }
-            if (valid) onValid(requireNotNull(value))
+            recordingManipulationInput = true
+            try {
+                if (valid) onValid(requireNotNull(value))
+            } finally {
+                recordingManipulationInput = false
+            }
+            before?.let(::recordManipulation)
         }
     }
 
     fun clearNumberInput(key: String) {
         synchronized(commandLock) {
             if (closed || saving || hasCommittedAwaitingReload()) return
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
+            val before = ready?.let(::manipulationSnapshot)
             mutableState.update { it.copy(textInputs = it.textInputs - key, save = SequenceTemplateEditorSave.Idle) }
+            before?.let(::recordManipulation)
         }
     }
 
@@ -262,9 +277,9 @@ class SequenceTemplateEditorController internal constructor(
             session.duplicate(draft, identity, newKey("duplicate"), destination)
         }
 
-    fun undoManipulation(): Boolean = changeManipulation { session, draft -> session.undo(draft) }
+    fun undoManipulation(): Boolean = restoreManipulation { session, current -> session.undo(current) }
 
-    fun redoManipulation(): Boolean = changeManipulation { session, draft -> session.redo(draft) }
+    fun redoManipulation(): Boolean = restoreManipulation { session, current -> session.redo(current) }
 
     fun discardManipulation() {
         synchronized(commandLock) {
@@ -580,6 +595,7 @@ class SequenceTemplateEditorController internal constructor(
             val session = manipulationSession ?: return false
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
             if (closed || saving || hasCommittedAwaitingReload()) return false
+            val before = requireNotNull(manipulationSnapshot(ready))
             val changed = change(session, ready.draft) ?: return false
             mutableState.update {
                 it.copy(
@@ -588,8 +604,41 @@ class SequenceTemplateEditorController internal constructor(
                     manipulation = session.uiState(),
                 )
             }
+            recordManipulation(before)
             true
         }
+
+    private fun restoreManipulation(
+        restore: (SequenceManipulationSession, SequenceManipulationSnapshot) -> SequenceManipulationSnapshot?,
+    ): Boolean =
+        synchronized(commandLock) {
+            val session = manipulationSession ?: return false
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
+            if (closed || saving || hasCommittedAwaitingReload()) return false
+            val restored = restore(session, requireNotNull(manipulationSnapshot(ready))) ?: return false
+            mutableState.update {
+                it.copy(
+                    load = ready.copy(draft = restored.draft),
+                    textInputs = restored.textInputs,
+                    save = SequenceTemplateEditorSave.Idle,
+                    manipulation = session.uiState(),
+                )
+            }
+            true
+        }
+
+    private fun manipulationSnapshot(ready: SequenceTemplateEditorLoad.Ready): SequenceManipulationSnapshot? =
+        manipulationSession?.let { session ->
+            SequenceManipulationSnapshot(ready.draft, mutableState.value.textInputs, session.selected)
+        }
+
+    private fun recordManipulation(before: SequenceManipulationSnapshot?) {
+        if (before == null) return
+        val session = manipulationSession ?: return
+        val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
+        session.record(before, requireNotNull(manipulationSnapshot(ready)))
+        mutableState.update { it.copy(manipulation = session.uiState()) }
+    }
 
     private fun publishManipulation(session: SequenceManipulationSession) {
         mutableState.update { it.copy(manipulation = session.uiState(), save = SequenceTemplateEditorSave.Idle) }
