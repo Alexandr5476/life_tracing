@@ -533,37 +533,29 @@ internal class ExpandedLiveSequenceController(
         build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?,
     ) {
         val captured =
-            if (capturesCurrentValues) {
-                synchronized(commandCaptureLock) {
-                    if (mutableState.value.commandInFlight) {
-                        reject()
-                        return
-                    }
-                    val command = active()?.let(build)
-                    if (command == null || command.executionId != executionId) {
-                        reject()
-                        return
-                    }
-                    onCurrentValueCommandCaptured?.invoke()
-                    reserveCommand()
-                    command
+            synchronized(commandCaptureLock) {
+                if (capturesCurrentValues && mutableState.value.commandInFlight) {
+                    reject()
+                    return
                 }
-            } else {
-                synchronized(commandCaptureLock) { reserveCommand() }
-                null
+                val command = active()?.let(build)
+                if (command == null || command.executionId != executionId) {
+                    reject()
+                    return
+                }
+                if (capturesCurrentValues) {
+                    onCurrentValueCommandCaptured?.invoke()
+                }
+                reserveCommand()
+                command
             }
         scope.launch {
             var commandFailure: ExpandedSequenceFailure? = null
             try {
                 commandMutex.withLock {
-                    val command = captured ?: active()?.let(build)
-                    if (command == null || command.executionId != executionId) {
-                        commandFailure = ExpandedSequenceFailure.Rejected("Action is not valid for the loaded runtime")
-                        return@withLock
-                    }
                     mutableState.update { it.copy(commandFailure = null) }
                     try {
-                        execute(command)
+                        execute(captured)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: StaleSequenceRouteException) {

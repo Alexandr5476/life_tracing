@@ -1821,6 +1821,36 @@ class LiveSessionRepositoryTest {
     }
 
     @Test
+    fun preDeadlinePausePersistsAcrossReloadBeforeDelayedWorkerReconciliation() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence())).at
+        val admittedAt = deadline.minusSeconds(1)
+
+        repository.pauseActiveSequence(started.execution.id, admittedAt)
+        repository = repository(database, 100)
+        val reloaded = activeSequence()
+
+        assertEquals(ActiveSessionState.PAUSED, reloaded.session.state)
+        assertEquals(started.execution.currentOccurrenceId, reloaded.execution.currentOccurrenceId)
+        assertNull(reloaded.execution.occurrences[0].completedAt)
+        assertEquals(
+            admittedAt,
+            reloaded.execution.intervals
+                .single { it.endedAt == null }
+                .startedAt,
+        )
+
+        repository.reconcileActiveSession(deadline.plusSeconds(1))
+        assertEquals(reloaded.execution, repositorySequence(started.execution.id.value))
+    }
+
+    @Test
     fun oneStepDeltaUpdatesOnlyTheRowsThatChanged() {
         val sql = database.openHelper.writableDatabase
         sql.execSQL("CREATE TABLE mutation_audit (table_name TEXT NOT NULL)")

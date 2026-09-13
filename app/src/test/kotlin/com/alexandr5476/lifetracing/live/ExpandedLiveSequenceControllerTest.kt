@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
+import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
@@ -478,6 +479,51 @@ class ExpandedLiveSequenceControllerTest {
         }
 
     @Test
+    fun pauseCapturesPreDeadlineTimeBeforeBlockedWorkerRuns() =
+        runBlocking {
+            val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+            val scope = CoroutineScope(dispatcher)
+            val dispatcherBlocked = CompletableDeferred<Unit>()
+            val releaseDispatcher = CompletableDeferred<Unit>()
+            val writerEntered = CompletableDeferred<ExpandedSequenceCommand>()
+            var now = Instant.EPOCH.plusSeconds(59)
+            val expanded = expanded(mode = TimeTrackingMode.TIMER)
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(expanded.runtime)).at
+            val controller =
+                ExpandedLiveSequenceController(
+                    scope,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    { writerEntered.complete(it) },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { now },
+                )
+            try {
+                controller.awaitLoaded()
+                scope.launch {
+                    dispatcherBlocked.complete(Unit)
+                    releaseDispatcher.await()
+                }
+                dispatcherBlocked.await()
+
+                controller.pause()
+                now = deadline.plusSeconds(1)
+                releaseDispatcher.complete(Unit)
+
+                assertEquals(
+                    ExpandedSequenceCommand.Pause(expanded.runtime.execution.id, deadline.minusSeconds(1)),
+                    withTimeout(1_000) { writerEntered.await() },
+                )
+            } finally {
+                controller.close()
+                dispatcher.close()
+            }
+        }
+
+    @Test
     fun currentValueEditCannotSlipBetweenCommandCaptureAndDurableReservation() =
         runBlocking {
             val expanded = expanded(withValue = true)
@@ -640,7 +686,7 @@ class ExpandedLiveSequenceControllerTest {
         id,
         null,
         mode,
-        null,
+        if (mode == TimeTrackingMode.TIMER) Duration.ofSeconds(60) else null,
         null,
         null,
         null,
