@@ -75,6 +75,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.Collections
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
@@ -143,7 +144,7 @@ class LibraryRepositoryTest {
 
     @Test
     fun reusableActivityCatalogIncludesFolderedTemplatesInOneBoundedProjection() {
-        val queries: MutableList<Pair<String, List<Any?>>> = Collections.synchronizedList(mutableListOf())
+        val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
         rebuildDatabaseWithQueryCallback(queries)
         database.folderDao().insert(FolderEntity("folder", "Folder", null, 0, 0))
         activity("root", "Root")

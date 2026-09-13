@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -71,13 +72,15 @@ fun DailyRoute(
     onLibrary: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
 ) {
+    var entered by remember(controller) { mutableStateOf(false) }
     DisposableEffect(controller) {
         controller.onRouteEntered()
+        entered = true
         onDispose { controller.dispatch(DailyAction.Hidden) }
     }
     val state by controller.state.collectAsState()
     DailyScreen(
-        state = state,
+        state = if (entered) state else state.copy(load = DailyLoadState.Loading),
         onAction = controller::dispatch,
         onStartActivity = onStartActivity,
         onLibrary = onLibrary,
