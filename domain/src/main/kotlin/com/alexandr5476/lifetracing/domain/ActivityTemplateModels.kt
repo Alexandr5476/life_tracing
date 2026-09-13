@@ -8,6 +8,12 @@ value class ActivityTemplateId(
     val value: String,
 )
 
+data class ActivityTemplateSourceStatus(
+    val id: ActivityTemplateId,
+    val revision: Long,
+    val isArchived: Boolean,
+)
+
 @JvmInline
 value class ActivityTemplateFieldId(
     val value: String,

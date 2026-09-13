@@ -152,7 +152,8 @@ private fun SequenceEditorForm(
     controller: SequenceTemplateEditorController,
     onBack: () -> Unit,
 ) {
-    val editable = state.save !is SequenceTemplateEditorSave.Saving
+    val recoveryPending = (state.save as? SequenceTemplateEditorSave.Failure)?.committedAwaitingReload == true
+    val editable = state.save !is SequenceTemplateEditorSave.Saving && !recoveryPending
     val formEditable = editable && state.manipulation == null
     var settingsExpanded by rememberSaveable { mutableStateOf(false) }
     var pickerTarget by remember { mutableStateOf<SequencePickerTarget?>(null) }
@@ -288,18 +289,19 @@ private fun SequenceEditorForm(
             }
             if (state.manipulation == null) {
                 LifeTracingPrimaryButton(
-                    onClick = controller::save,
+                    onClick = if (recoveryPending) controller::retry else controller::save,
                     modifier = Modifier.fillMaxWidth(),
                     enabled =
-                        editable &&
+                        recoveryPending ||
+                            editable &&
                             state.save !is SequenceTemplateEditorSave.Committed &&
                             !state.hasInvalidInput(draft),
                 ) {
                     val label =
-                        if (state.save is SequenceTemplateEditorSave.Saving) {
-                            R.string.sequence_editor_saving
-                        } else {
-                            R.string.sequence_editor_done
+                        when {
+                            recoveryPending -> R.string.sequence_editor_retry
+                            state.save is SequenceTemplateEditorSave.Saving -> R.string.sequence_editor_saving
+                            else -> R.string.sequence_editor_done
                         }
                     Text(
                         stringResource(label),
@@ -871,12 +873,9 @@ private fun StepCard(
         val committedStepId = (step.identity as? DraftIdentity.Existing)?.id
         val sourceId = committedStepId?.let(state.stepSourceIds::get)
         if (committedStepId != null) {
-            sourceId?.let { source ->
-                LaunchedEffect(committedStepId, source) { controller.requestStepSource(committedStepId, source) }
-            }
             StepSourceActions(
                 committedStepId,
-                state.stepSources[committedStepId],
+                sourceId?.let(state.sourceStatuses::get),
                 state.sourceActionsAllowed(),
                 controller,
             )

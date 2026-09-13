@@ -31,6 +31,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldEvolution
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateRevisionPolicy
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.ActivityTemplateUserState
 import com.alexandr5476.lifetracing.domain.ActivityTemplateValidator
 import com.alexandr5476.lifetracing.domain.AuthoringSaveKind
@@ -77,6 +78,21 @@ class TemplateAuthoringRepository internal constructor(
 ) {
     fun getActivityTemplate(id: ActivityTemplateId): ActivityTemplate? =
         transaction { database.activityTemplateDao().getAggregate(id.value)?.toDomain() }
+
+    fun getActivityTemplateSourceStatuses(
+        ids: Collection<ActivityTemplateId>,
+    ): Map<ActivityTemplateId, ActivityTemplateSourceStatus> =
+        transaction {
+            ids
+                .distinct()
+                .chunked(SQLITE_SAFE_BIND_COUNT)
+                .flatMap { chunk ->
+                    database.activityTemplateDao().getSourceStatuses(chunk.map(ActivityTemplateId::value))
+                }.associate { row ->
+                    val id = ActivityTemplateId(row.id)
+                    id to ActivityTemplateSourceStatus(id, row.revision, row.deletedAtMs != null)
+                }
+        }
 
     fun getSequenceTemplate(id: SequenceTemplateId): SequenceTemplate? =
         transaction { database.sequenceTemplateDao().getAggregate(id.value)?.toDomain() }

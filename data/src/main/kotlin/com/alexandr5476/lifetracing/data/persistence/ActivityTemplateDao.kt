@@ -36,11 +36,20 @@ internal data class ActivitySourceOptionDisplayMetadataRow(
     val label: String,
 )
 
+internal data class ActivityTemplateSourceStatusRow(
+    val id: String,
+    val revision: Long,
+    @androidx.room.ColumnInfo(name = "deleted_at_ms") val deletedAtMs: Long?,
+)
+
 @Dao
 @Suppress("TooManyFunctions") // A single feature DAO keeps aggregate transaction boundaries explicit.
 internal abstract class ActivityTemplateDao {
     @Query("SELECT * FROM activity_templates WHERE id = :id")
     abstract fun getById(id: String): ActivityTemplateEntity?
+
+    @Query("SELECT id, revision, deleted_at_ms FROM activity_templates WHERE id IN (:ids)")
+    abstract fun getSourceStatuses(ids: List<String>): List<ActivityTemplateSourceStatusRow>
 
     @Query(
         "SELECT fields.id, fields.name FROM activity_template_fields AS fields " +

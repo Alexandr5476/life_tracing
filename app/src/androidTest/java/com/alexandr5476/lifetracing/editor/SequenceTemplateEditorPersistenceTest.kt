@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -628,6 +629,106 @@ class SequenceTemplateEditorPersistenceTest {
             }
         }
 
+    @Test
+    fun productionSourceActionBoundaryReloadsEachCommittedRepositoryShape() =
+        runBlocking {
+            val repository = TemplateAuthoringRepository.create(ApplicationProvider.getApplicationContext<Context>())
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val base = Instant.now()
+            val source = repository.createActivityTemplate(sourceDraft("actions"), createdAt = base)
+            val created =
+                repository.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "Source actions ${System.nanoTime()}",
+                        null,
+                        nodes =
+                            listOf(
+                                step(
+                                    "source-step",
+                                    0,
+                                    StepActivityDraft.FromTemplate(source.id),
+                                    SequenceStepOverrides(timerEndSound = false),
+                                ),
+                            ),
+                    ),
+                    createdAt = base.plusSeconds(1),
+                )
+            val stepId = created.nodes.single().id
+            repository.saveStepConfiguration(
+                created.id,
+                stepId,
+                1,
+                requireNotNull(repository.getStepSnapshot(created.id, stepId)).toAuthoringDraft().copy(
+                    name = "Local source value",
+                ),
+                base.plusSeconds(2),
+            )
+            val localState = requireNotNull(repository.getSequenceTemplateAuthoringState(created.id))
+            val localStep = localState.sequence.nodes.single() as ActivityStep
+            val localSnapshot = localState.activitySnapshots.getValue(localStep.activitySnapshotId)
+            var nextSecond = 3L
+            try {
+                val controller =
+                    SequenceTemplateEditorController(
+                        scope,
+                        SequenceTemplateEditorTarget.Existing(created.id),
+                        repository::getSequenceTemplateAuthoringState,
+                        { emptyList() },
+                        { _, _, _ -> error("Create is not used") },
+                        repository::saveSequenceTemplate,
+                        { base.plusSeconds(nextSecond++) },
+                        repository::getActivityTemplateSourceStatuses,
+                        repository::updateStepFromSourceTemplate,
+                        repository::updateSourceTemplateFromStep,
+                        { sequenceId, targetStepId, revision, savedAt ->
+                            repository.saveStepAsNewActivityTemplate(
+                                sequenceId,
+                                targetStepId,
+                                revision,
+                                savedAt = savedAt,
+                            )
+                        },
+                    )
+                controller.awaitReady()
+
+                controller.updateSourceTemplate(stepId)
+                controller.awaitApplied(1)
+                val updatedSource = requireNotNull(repository.getActivityTemplate(source.id))
+                assertEquals(source.id, updatedSource.id)
+                assertEquals(source.statisticsSeriesId, updatedSource.statisticsSeriesId)
+                assertEquals(2L, updatedSource.revision)
+                assertEquals("Local source value", updatedSource.name)
+                assertEquals(2L, repository.getSequenceTemplate(created.id)?.revision)
+                assertEquals(localSnapshot.id, repository.getStepSnapshot(created.id, stepId)?.id)
+
+                controller.updateStepFromSource(stepId)
+                controller.awaitApplied(2)
+                val refreshedState = requireNotNull(repository.getSequenceTemplateAuthoringState(created.id))
+                val refreshedStep = refreshedState.sequence.nodes.single() as ActivityStep
+                val refreshedSnapshot = refreshedState.activitySnapshots.getValue(refreshedStep.activitySnapshotId)
+                assertEquals(stepId, refreshedStep.id)
+                assertEquals(localStep.overrides, refreshedStep.overrides)
+                assertNotEquals(localSnapshot.id, refreshedSnapshot.id)
+                assertEquals(2L, refreshedSnapshot.sourceRevision)
+                assertFalse(refreshedSnapshot.locallyModified)
+
+                controller.saveStepAsNewTemplate(stepId)
+                controller.awaitApplied(3)
+                val relinkedState = requireNotNull(repository.getSequenceTemplateAuthoringState(created.id))
+                val relinkedStep = relinkedState.sequence.nodes.single() as ActivityStep
+                val relinked = relinkedState.activitySnapshots.getValue(relinkedStep.activitySnapshotId)
+                val newSource = requireNotNull(relinked.sourceTemplateId)
+                assertNotEquals(source.id, newSource)
+                assertNotEquals(source.statisticsSeriesId, relinked.statisticsSeriesId)
+                assertEquals(4L, relinkedState.sequence.revision)
+                assertEquals(relinkedState.toAuthoringDraft(), controller.state.value.readyDraft())
+                assertEquals("Local source value", repository.getActivityTemplate(source.id)?.name)
+                controller.close()
+            } finally {
+                scope.cancel()
+            }
+        }
+
     private fun controller(
         scope: CoroutineScope,
         target: SequenceTemplateEditorTarget,
@@ -649,6 +750,12 @@ class SequenceTemplateEditorPersistenceTest {
         { draft, _, _ -> create(draft) },
         save,
         { at },
+        repository::getActivityTemplateSourceStatuses,
+        repository::updateStepFromSourceTemplate,
+        repository::updateSourceTemplateFromStep,
+        { sequenceId, stepId, revision, savedAt ->
+            repository.saveStepAsNewActivityTemplate(sequenceId, stepId, revision, savedAt = savedAt)
+        },
     )
 
     private fun step(

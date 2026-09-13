@@ -350,12 +350,9 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         java.time.Instant::now,
-                        { id ->
+                        { ids ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                templateAuthoringRepository
-                                    .getActivityTemplate(id)
-                                    ?.takeIf { it.deletedAt == null }
-                                    ?.revision
+                                templateAuthoringRepository.getActivityTemplateSourceStatuses(ids)
                             }
                         },
                         { sequenceId, stepId, revision, at ->

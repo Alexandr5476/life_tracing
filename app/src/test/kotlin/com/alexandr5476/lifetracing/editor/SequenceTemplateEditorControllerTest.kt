@@ -8,6 +8,7 @@ import com.alexandr5476.lifetracing.domain.ActivityStep
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -115,13 +116,15 @@ class SequenceTemplateEditorControllerTest {
 
     @Test
     @Suppress("LongMethod") // Covers all three repository action adapters in one canonical-reload fixture.
-    fun sourceActionLoadsOnlyTheOpenedSourceAndRebasesTheEditorOnCanonicalState() =
+    fun sourceActionsRefreshSharedStatusAndRebaseOnEveryCanonicalReload() =
         runBlocking {
             val sourceId = ActivityTemplateId("activity")
+            val newSourceId = ActivityTemplateId("new-activity")
             val stepId = SequenceNodeId("step-1")
             val initial = authoringState().withLinkedSource(sourceId)
             var canonical = initial
             var sourceReads = 0
+            val sourceRevisions = mutableMapOf(sourceId to 4L)
             var sourceRefreshes = 0
             var sourceTemplateUpdates = 0
             var savedAsNew = 0
@@ -138,9 +141,12 @@ class SequenceTemplateEditorControllerTest {
                     { _, _, _ -> error("New save is not used") },
                     { _, _, _, _ -> error("Normal save is not used") },
                     { Instant.EPOCH.plusSeconds(1) },
-                    loadActiveSourceRevision = {
+                    loadSourceStatuses = { ids ->
                         sourceReads++
-                        4
+                        ids
+                            .mapNotNull { id ->
+                                sourceRevisions[id]?.let { id to ActivityTemplateSourceStatus(id, it, false) }
+                            }.toMap()
                     },
                     updateFromSource = { id, target, revision, _ ->
                         assertEquals(initial.sequence.id, id)
@@ -154,24 +160,27 @@ class SequenceTemplateEditorControllerTest {
                         assertEquals(8, sequenceRevision)
                         assertEquals(4, sourceRevision)
                         sourceTemplateUpdates++
+                        sourceRevisions[sourceId] = 5
                     },
                     saveAsNewSource = { _, target, revision, _ ->
                         assertEquals(stepId, target)
                         assertEquals(8, revision)
                         savedAsNew++
+                        sourceRevisions[newSourceId] = 1
+                        canonical =
+                            canonical
+                                .withLinkedSource(newSourceId)
+                                .copy(sequence = canonical.sequence.copy(revision = 9))
                     },
                 )
             controller.awaitReady()
 
-            assertEquals(0, sourceReads)
-            controller.requestStepSource(stepId, sourceId)
-            withTimeout(2_000) {
-                controller.state.first { it.stepSources[stepId] is SequenceEditorStepSource.Active }
-            }
+            assertEquals(1, sourceReads)
+            assertEquals(4, controller.state.value.activeRevision(sourceId))
             controller.updateStepFromSource(stepId)
             withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
 
-            assertEquals(1, sourceReads)
+            assertEquals(2, sourceReads)
             assertEquals(1, sourceRefreshes)
             assertEquals(2, sequenceReads)
             val ready = controller.state.value.load as SequenceTemplateEditorLoad.Ready
@@ -182,18 +191,113 @@ class SequenceTemplateEditorControllerTest {
             controller.updateStepFromSource(stepId)
             assertEquals(1, sourceRefreshes)
             controller.updateDraft { it.copy(name = "Workout") }
-            controller.requestStepSource(stepId, sourceId)
-            withTimeout(2_000) {
-                controller.state.first { it.stepSources[stepId] is SequenceEditorStepSource.Active }
-            }
+            controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "invalid", 0, 0) {}
+            controller.updateSourceTemplate(stepId)
+            assertEquals(0, sourceTemplateUpdates)
+            controller.clearNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN)
+            controller.enterManipulation(DraftIdentity.Existing(stepId))
+            controller.saveStepAsNewTemplate(stepId)
+            assertEquals(0, savedAsNew)
+            controller.discardManipulation()
             controller.updateSourceTemplate(stepId)
             withTimeout(2_000) { controller.state.first { it.appliedGeneration == 2L } }
+            assertEquals(5, controller.state.value.activeRevision(sourceId))
             controller.saveStepAsNewTemplate(stepId)
             withTimeout(2_000) { controller.state.first { it.appliedGeneration == 3L } }
 
             assertEquals(1, sourceTemplateUpdates)
             assertEquals(1, savedAsNew)
+            assertEquals(newSourceId, controller.state.value.stepSourceIds[stepId])
+            assertEquals(1, controller.state.value.activeRevision(newSourceId))
+            assertEquals(4, sourceReads)
+            var exits = 0
+            controller.updateDraft { it.copy(name = "Later unsaved change") }
+            controller.requestBack { exits++ }
+            assertTrue(controller.state.value.discardConfirmationVisible)
+            controller.discard { exits++ }
+            assertEquals(1, exits)
+            assertEquals("Workout", canonical.sequence.name)
             controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // Three writer shapes share one deterministic recovery contract.
+    fun committedSourceActionsRetryOnlyCanonicalRecovery() =
+        runBlocking {
+            SourceActionKind.entries.forEach { kind ->
+                val sourceId = ActivityTemplateId("source-$kind")
+                val replacementId = ActivityTemplateId("replacement-$kind")
+                val stepId = SequenceNodeId("step-1")
+                var canonical = authoringState().withLinkedSource(sourceId)
+                val revisions = mutableMapOf(sourceId to 4L)
+                var loads = 0
+                var writes = 0
+                val controller =
+                    SequenceTemplateEditorController(
+                        this,
+                        SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                        {
+                            loads++
+                            if (loads == 2) error("temporary canonical reload failure")
+                            canonical
+                        },
+                        { emptyList() },
+                        { _, _, _ -> error("Create is not used") },
+                        { _, _, _, _ -> error("Save is not used") },
+                        { Instant.EPOCH.plusSeconds(1) },
+                        loadSourceStatuses = { ids ->
+                            ids
+                                .mapNotNull { id ->
+                                    revisions[id]?.let { id to ActivityTemplateSourceStatus(id, it, false) }
+                                }.toMap()
+                        },
+                        updateFromSource = { _, _, _, _ ->
+                            if (kind != SourceActionKind.UPDATE_FROM) error("Wrong writer")
+                            writes++
+                            canonical = canonical.copy(sequence = canonical.sequence.copy(revision = 8))
+                        },
+                        updateSource = { _, _, _, _, _ ->
+                            if (kind != SourceActionKind.UPDATE_SOURCE) error("Wrong writer")
+                            writes++
+                            revisions[sourceId] = 5
+                        },
+                        saveAsNewSource = { _, _, _, _ ->
+                            if (kind != SourceActionKind.SAVE_NEW) error("Wrong writer")
+                            writes++
+                            revisions[replacementId] = 1
+                            canonical =
+                                canonical
+                                    .withLinkedSource(replacementId)
+                                    .copy(sequence = canonical.sequence.copy(revision = 8))
+                        },
+                    )
+                controller.awaitReady()
+
+                when (kind) {
+                    SourceActionKind.UPDATE_FROM -> controller.updateStepFromSource(stepId)
+                    SourceActionKind.UPDATE_SOURCE -> controller.updateSourceTemplate(stepId)
+                    SourceActionKind.SAVE_NEW -> controller.saveStepAsNewTemplate(stepId)
+                }
+                val failure = controller.awaitFailure()
+                assertTrue(failure.committedAwaitingReload)
+                val oldDraft = controller.state.value.readyDraft()
+                controller.updateDraft { it.copy(name = "must stay blocked") }
+                assertEquals(oldDraft, controller.state.value.readyDraft())
+
+                controller.retry()
+                withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+
+                assertEquals(1, writes)
+                assertEquals(3, loads)
+                assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
+                if (kind == SourceActionKind.UPDATE_SOURCE) {
+                    assertEquals(5, controller.state.value.activeRevision(sourceId))
+                }
+                if (kind == SourceActionKind.SAVE_NEW) {
+                    assertEquals(replacementId, controller.state.value.stepSourceIds[stepId])
+                }
+                controller.close()
+            }
         }
 
     @Test
@@ -653,6 +757,15 @@ class SequenceTemplateEditorControllerTest {
         withTimeout(2_000) {
             state.first { it.save is SequenceTemplateEditorSave.Failure }.save as SequenceTemplateEditorSave.Failure
         }
+
+    private fun SequenceTemplateEditorState.activeRevision(id: ActivityTemplateId): Long? =
+        (sourceStatuses[id] as? SequenceEditorStepSource.Active)?.revision
+
+    private enum class SourceActionKind {
+        UPDATE_FROM,
+        UPDATE_SOURCE,
+        SAVE_NEW,
+    }
 
     private fun authoringState(): SequenceTemplateAuthoringState {
         val firstSnapshot = ActivitySnapshotId("first")

@@ -28,6 +28,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityStep
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
@@ -59,6 +60,132 @@ import java.time.Instant
 class SequenceTemplateEditorScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun sourceActionsRemainVisibleAcrossCanonicalReloadsAndNewSourceRelink() {
+        val stepId = SequenceNodeId("source-step")
+        val sourceId = ActivityTemplateId("source")
+        val newSourceId = ActivityTemplateId("new-source")
+        var canonical = linkedAuthoring(stepId, ActivitySnapshotId("snapshot-1"), sourceId, 1, 1)
+        val revisions = mutableMapOf(sourceId to 1L)
+        var libraryRefreshes = 0
+        var sourceLoads = 0
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                { canonical },
+                { emptyList() },
+                { _, _, _ -> error("Create is not used") },
+                { _, _, _, _ -> error("Save is not used") },
+                Instant::now,
+                loadSourceStatuses = { ids ->
+                    sourceLoads++
+                    ids
+                        .mapNotNull { id ->
+                            revisions[id]?.let { id to ActivityTemplateSourceStatus(id, it, false) }
+                        }.toMap()
+                },
+                updateFromSource = { _, _, _, _ ->
+                    canonical = linkedAuthoring(stepId, ActivitySnapshotId("snapshot-2"), sourceId, 1, 2)
+                },
+                updateSource = { _, _, _, _, _ -> revisions[sourceId] = 2 },
+                saveAsNewSource = { _, _, _, _ ->
+                    revisions[newSourceId] = 1
+                    canonical = linkedAuthoring(stepId, ActivitySnapshotId("snapshot-3"), newSourceId, 1, 3)
+                },
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                SequenceTemplateEditorRoute(controller, onApplied = { libraryRefreshes++ }) {}
+            }
+        }
+        awaitReady(controller)
+
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_edit_step)).performClick()
+        assertSourceActionsVisible()
+        assertEquals(1, sourceLoads)
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_update_from_source))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) { controller.state.value.appliedGeneration == 1L }
+        assertSourceActionsVisible()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_update_source)).performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { controller.state.value.appliedGeneration == 2L }
+        assertEquals(2L, (controller.state.value.sourceStatuses[sourceId] as SequenceEditorStepSource.Active).revision)
+        assertSourceActionsVisible()
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_save_as_new_template))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) { controller.state.value.appliedGeneration == 3L }
+        assertEquals(newSourceId, controller.state.value.stepSourceIds[stepId])
+        assertSourceActionsVisible()
+        assertEquals(4, sourceLoads)
+        composeTestRule.waitUntil(5_000) { libraryRefreshes == 3 }
+        controller.close()
+    }
+
+    @Test
+    fun localAndArchivedCommittedStepsOfferOnlySaveAsNew() {
+        val localSnapshot = ActivitySnapshotId("local-snapshot")
+        val archivedSnapshot = ActivitySnapshotId("archived-snapshot")
+        val archivedSource = ActivityTemplateId("archived-source")
+        val authoring =
+            SequenceTemplateAuthoringState(
+                SequenceTemplate(
+                    SequenceTemplateId("availability-sequence"),
+                    "Availability",
+                    null,
+                    StatisticsSeriesId("availability-series"),
+                    createdAt = Instant.EPOCH,
+                    updatedAt = Instant.EPOCH,
+                    nodes =
+                        listOf(
+                            ActivityStep(SequenceNodeId("local-step"), 0, localSnapshot),
+                            ActivityStep(SequenceNodeId("archived-step"), 1, archivedSnapshot),
+                        ),
+                ),
+                mapOf(
+                    localSnapshot to snapshot(localSnapshot, "Local activity"),
+                    archivedSnapshot to
+                        snapshot(archivedSnapshot, "Archived activity").copy(
+                            sourceTemplateId = archivedSource,
+                            sourceRevision = 1,
+                        ),
+                ),
+            )
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(authoring.sequence.id),
+                { authoring },
+                { emptyList() },
+                { _, _, _ -> error("Create is not used") },
+                { _, _, _, _ -> error("Save is not used") },
+                Instant::now,
+                loadSourceStatuses = {
+                    mapOf(archivedSource to ActivityTemplateSourceStatus(archivedSource, 1, true))
+                },
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+
+        composeTestRule
+            .onAllNodes(hasText(text(R.string.sequence_editor_edit_step)))[1]
+            .performScrollTo()
+            .performClick()
+        assertOnlySaveAsNewVisible()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_close_step)).performScrollTo().performClick()
+
+        composeTestRule
+            .onAllNodes(hasText(text(R.string.sequence_editor_edit_step)))[0]
+            .performScrollTo()
+            .performClick()
+        assertOnlySaveAsNewVisible()
+        controller.close()
+    }
 
     @Test
     fun compactRowsKeepPendingAndLocalStepsIdentifiable() {
@@ -143,6 +270,7 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule
             .onNodeWithText(text(R.string.sequence_editor_pending_source_configuration))
             .assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_save_as_new_template)).assertDoesNotExist()
         assertEquals(
             3,
             composeTestRule
@@ -938,6 +1066,57 @@ class SequenceTemplateEditorScreenPresentationTest {
         false,
         Instant.EPOCH,
     )
+
+    private fun linkedAuthoring(
+        stepId: SequenceNodeId,
+        snapshotId: ActivitySnapshotId,
+        sourceId: ActivityTemplateId,
+        sourceRevision: Long,
+        sequenceRevision: Long,
+    ) = SequenceTemplateAuthoringState(
+        SequenceTemplate(
+            SequenceTemplateId("source-sequence"),
+            "Source sequence",
+            null,
+            StatisticsSeriesId("source-sequence-series"),
+            revision = sequenceRevision,
+            createdAt = Instant.EPOCH,
+            updatedAt = Instant.EPOCH,
+            nodes = listOf(ActivityStep(stepId, 0, snapshotId)),
+        ),
+        mapOf(
+            snapshotId to
+                snapshot(snapshotId, "Linked activity").copy(
+                    sourceTemplateId = sourceId,
+                    sourceRevision = sourceRevision,
+                    statisticsSeriesId = StatisticsSeriesId("source-series"),
+                ),
+        ),
+    )
+
+    private fun assertSourceActionsVisible() {
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_update_from_source))
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_update_source))
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_save_as_new_template))
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    private fun assertOnlySaveAsNewVisible() {
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_update_from_source)).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_update_source)).assertDoesNotExist()
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_editor_save_as_new_template))
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
 
     private fun text(
         id: Int,

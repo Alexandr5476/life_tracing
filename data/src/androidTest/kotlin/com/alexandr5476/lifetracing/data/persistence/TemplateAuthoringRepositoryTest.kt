@@ -54,6 +54,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
+import java.util.Collections
 import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
@@ -61,7 +62,7 @@ class TemplateAuthoringRepositoryTest {
     private lateinit var database: LifeTracingDatabase
     private lateinit var repository: TemplateAuthoringRepository
     private lateinit var baseIds: TemplateAuthoringIds
-    private val observedSql = mutableListOf<String>()
+    private val observedQueries = Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
 
     @Before
     fun setUp() {
@@ -69,7 +70,9 @@ class TemplateAuthoringRepositoryTest {
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
                 .allowMainThreadQueries()
-                .setQueryCallback({ sql, _ -> observedSql += sql }, Executor { it.run() })
+                .setQueryCallback({ sql, args ->
+                    observedQueries += sql to args.size
+                }, Executor { it.run() })
                 .build()
         baseIds = deterministicIds("test")
         repository = TemplateAuthoringRepository(database, baseIds)
@@ -171,6 +174,35 @@ class TemplateAuthoringRepositoryTest {
     }
 
     @Test
+    fun sourceStatusProjectionDeduplicatesChunksAndDoesNotHydrateActivityAggregates() {
+        val active = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val archived = repository.createActivityTemplate(activityDraft(), createdAt = at(2))
+        database.activityTemplateDao().archive(archived.id.value, at(3).toEpochMilli())
+        val ids =
+            buildList {
+                add(active.id)
+                add(active.id)
+                add(archived.id)
+                repeat(899) { add(ActivityTemplateId("missing-$it")) }
+            }
+        observedQueries.clear()
+
+        val statuses = repository.getActivityTemplateSourceStatuses(ids)
+        val queries = observedQueriesSnapshot()
+
+        assertEquals(false, statuses.getValue(active.id).isArchived)
+        assertEquals(active.revision, statuses.getValue(active.id).revision)
+        assertEquals(true, statuses.getValue(archived.id).isArchived)
+        val statusBindCounts =
+            queries
+                .filter { it.first.startsWith("SELECT id, revision, deleted_at_ms FROM activity_templates") }
+                .map(Pair<String, Int>::second)
+        assertEquals(listOf(900, 1), statusBindCounts)
+        assertFalse(queries.any { it.first.contains("activity_template_settings") })
+        assertFalse(queries.any { it.first.contains("activity_template_fields") })
+    }
+
+    @Test
     fun folderedActivityCatalogSelectionPersistsFrozenSourceProvenanceWithoutPerTemplateReads() {
         database.folderDao().insert(Folder(FolderId("folder"), "Folder", null, at(0), at(0)).toEntity())
         val source =
@@ -179,10 +211,10 @@ class TemplateAuthoringRepositoryTest {
                 TemplateLibraryPlacement(folderId = FolderId("folder")),
                 at(1),
             )
-        observedSql.clear()
+        observedQueries.clear()
 
         val choice = database.libraryDao().getReusableActivityCatalog().single()
-        val catalogSql = observedSql.toList()
+        val catalogSql = observedQueriesSnapshot().map(Pair<String, Int>::first)
         val sequence =
             repository.createSequenceTemplate(
                 SequenceTemplateDraft(
@@ -466,6 +498,12 @@ class TemplateAuthoringRepositoryTest {
         assertEquals(source.statisticsSeriesId, localSnapshot.statisticsSeriesId)
         assertEquals("Route distance", localSnapshot.fields.single().localNameOverride)
         assertNull(database.activitySnapshotDao().getById(oldSnapshotId.value))
+        insertSequenceSnapshotReference("source-action-frozen", localSnapshot.id.value)
+        insertSequenceOccurrenceReference("source-action-runtime", localSnapshot.id.value)
+        insertExecution("source-action-child", localSnapshot)
+        val frozenSnapshot = database.sequenceSnapshotDao().getAggregate("source-action-frozen")
+        val frozenOccurrences = database.sequenceExecutionDao().getOccurrences("source-action-runtime")
+        val frozenChild = database.activityExecutionDao().getById("source-action-child")
 
         val updatedSource =
             repository.updateSourceTemplateFromStep(sequence.id, sourceStep, 3, 1, at(5))
@@ -492,6 +530,60 @@ class TemplateAuthoringRepositoryTest {
         assertEquals(1L, relinked.sourceRevision)
         assertFalse(relinked.locallyModified)
         assertEquals("Route walk", repository.getActivityTemplate(source.id)?.name)
+        assertEquals(frozenSnapshot, database.sequenceSnapshotDao().getAggregate("source-action-frozen"))
+        assertEquals(frozenOccurrences, database.sequenceExecutionDao().getOccurrences("source-action-runtime"))
+        assertEquals(frozenChild, database.activityExecutionDao().getById("source-action-child"))
+        assertEquals(localSnapshot, database.activitySnapshotDao().getAggregate(localSnapshot.id.value)?.toDomain())
+    }
+
+    @Test
+    fun saveStepAsNewCollisionRollsBackCreationAndRelinkCompletely() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "collision"), createdAt = at(2))
+        val step = sequence.nodes.flatMap { it.stepIds() }.single()
+        val before = requireNotNull(repository.getSequenceTemplateAuthoringState(sequence.id))
+        val templateCount = count("activity_templates")
+        val seriesCount = count("statistics_series")
+        val snapshotCount = count("activity_snapshots")
+        val colliding =
+            TemplateAuthoringRepository(
+                database,
+                baseIds.copy(nextStatisticsSeriesId = { source.statisticsSeriesId }),
+            )
+
+        assertThrows(SQLiteConstraintException::class.java) {
+            colliding.saveStepAsNewActivityTemplate(sequence.id, step, 1, savedAt = at(3))
+        }
+
+        assertEquals(before, repository.getSequenceTemplateAuthoringState(sequence.id))
+        assertEquals(templateCount, count("activity_templates"))
+        assertEquals(seriesCount, count("statistics_series"))
+        assertEquals(snapshotCount, count("activity_snapshots"))
+    }
+
+    @Test
+    fun staleSequenceAndSourceRevisionsLeaveSourceActionStateUntouched() {
+        val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
+        val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "stale"), createdAt = at(2))
+        val step = sequence.nodes.flatMap { it.stepIds() }.single()
+        val updatedSource =
+            repository.saveActivityTemplate(
+                source.id,
+                1,
+                source.toAuthoringDraft().copy(name = "New source revision"),
+                at(3),
+            )
+        val before = requireNotNull(repository.getSequenceTemplateAuthoringState(sequence.id))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.updateStepFromSourceTemplate(sequence.id, step, 0, at(4))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.updateSourceTemplateFromStep(sequence.id, step, 1, 1, at(4))
+        }
+
+        assertEquals(before, repository.getSequenceTemplateAuthoringState(sequence.id))
+        assertEquals(updatedSource, repository.getActivityTemplate(source.id))
     }
 
     @Test
@@ -754,14 +846,15 @@ class TemplateAuthoringRepositoryTest {
                 createdAt = at(2),
             )
 
-        observedSql.clear()
+        observedQueries.clear()
         val state = repository.getSequenceTemplateAuthoringState(sequence.id)!!
+        val queries = observedQueriesSnapshot()
 
         assertEquals(901, state.activitySnapshots.size)
         assertEquals(901, state.toAuthoringDraft().nodes.size)
         assertEquals(
             2,
-            observedSql.count { it.startsWith("SELECT * FROM activity_snapshots WHERE id IN") },
+            queries.count { it.first.startsWith("SELECT * FROM activity_snapshots WHERE id IN") },
         )
     }
 
@@ -2024,6 +2117,8 @@ class TemplateAuthoringRepositoryTest {
             { ActivitySnapshotCategoryOptionId(id("snapshot-option")) },
         )
     }
+
+    private fun observedQueriesSnapshot() = synchronized(observedQueries) { observedQueries.toList() }
 
     private fun at(second: Long): Instant = Instant.ofEpochSecond(second)
 }

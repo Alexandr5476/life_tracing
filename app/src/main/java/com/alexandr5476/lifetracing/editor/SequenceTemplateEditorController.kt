@@ -12,6 +12,7 @@ package com.alexandr5476.lifetracing.editor
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
@@ -64,6 +65,7 @@ sealed interface SequenceTemplateEditorSave {
     data class Failure(
         val message: String,
         val isConflict: Boolean,
+        val committedAwaitingReload: Boolean = false,
     ) : SequenceTemplateEditorSave
 }
 
@@ -75,7 +77,7 @@ data class SequenceTemplateEditorState(
     val textInputs: Map<String, SequenceEditorTextInput> = emptyMap(),
     val manipulation: SequenceManipulationUiState? = null,
     val stepSourceIds: Map<SequenceNodeId, ActivityTemplateId?> = emptyMap(),
-    val stepSources: Map<SequenceNodeId, SequenceEditorStepSource> = emptyMap(),
+    val sourceStatuses: Map<ActivityTemplateId, SequenceEditorStepSource> = emptyMap(),
     val appliedGeneration: Long = 0,
 )
 
@@ -114,7 +116,10 @@ class SequenceTemplateEditorController internal constructor(
     private val createSequence: suspend (SequenceTemplateDraft, TemplateLibraryPlacement, Instant) -> SequenceTemplate,
     private val saveSequence: suspend (SequenceTemplateId, Long, SequenceTemplateDraft, Instant) -> SequenceTemplate,
     private val now: () -> Instant,
-    private val loadActiveSourceRevision: suspend (ActivityTemplateId) -> Long? = { null },
+    private val loadSourceStatuses:
+        suspend (
+            Collection<ActivityTemplateId>,
+        ) -> Map<ActivityTemplateId, ActivityTemplateSourceStatus> = { emptyMap() },
     private val updateFromSource: suspend (SequenceTemplateId, SequenceNodeId, Long, Instant) -> Unit = { _, _, _, _ ->
         error("Source actions are unavailable")
     },
@@ -135,6 +140,7 @@ class SequenceTemplateEditorController internal constructor(
     private var manipulationSession: SequenceManipulationSession? = null
     private var manipulationTextInputsBaseline: Map<String, SequenceEditorTextInput>? = null
     private var committedAwaitingReload: SequenceTemplate? = null
+    private var sourceActionAwaitingReload: SequenceTemplateId? = null
 
     @Volatile private var closed = false
 
@@ -146,12 +152,24 @@ class SequenceTemplateEditorController internal constructor(
         synchronized(commandLock) { closed = true }
     }
 
-    fun retry() = load()
+    fun retry() {
+        val recovery = synchronized(commandLock) { sourceActionAwaitingReload }
+        if (recovery == null) {
+            load()
+        } else {
+            synchronized(commandLock) {
+                if (closed || saving) return
+                saving = true
+                mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
+            }
+            scope.launch { recoverSourceAction(recovery) }
+        }
+    }
 
     fun updateDraft(transform: (SequenceTemplateDraft) -> SequenceTemplateDraft) {
         synchronized(commandLock) {
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             mutableState.update {
                 it.copy(load = ready.copy(draft = transform(ready.draft)), save = SequenceTemplateEditorSave.Idle)
             }
@@ -167,7 +185,7 @@ class SequenceTemplateEditorController internal constructor(
         onValid: (Long) -> Unit,
     ) {
         synchronized(commandLock) {
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             val value = text.toLongOrNull()
             val valid = value != null && value in minimum..maximum
             mutableState.update { state ->
@@ -183,7 +201,7 @@ class SequenceTemplateEditorController internal constructor(
 
     fun clearNumberInput(key: String) {
         synchronized(commandLock) {
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             mutableState.update { it.copy(textInputs = it.textInputs - key, save = SequenceTemplateEditorSave.Idle) }
         }
     }
@@ -191,28 +209,6 @@ class SequenceTemplateEditorController internal constructor(
     fun newKey(prefix: String): DraftIdentity.New = DraftIdentity.New("$prefix-${newIdentity.incrementAndGet()}")
 
     fun newLocalActivityDraft() = ActivitySnapshotDraft("", null, TimeTrackingMode.STOPWATCH, null)
-
-    fun requestStepSource(
-        stepId: SequenceNodeId,
-        sourceId: ActivityTemplateId,
-    ) {
-        synchronized(commandLock) {
-            if (closed || mutableState.value.stepSources.containsKey(stepId)) return
-            mutableState.update {
-                it.copy(stepSources = it.stepSources + (stepId to SequenceEditorStepSource.Loading))
-            }
-        }
-        scope.launch {
-            val source =
-                loadActiveSourceRevision(sourceId)
-                    ?.let(SequenceEditorStepSource::Active)
-                    ?: SequenceEditorStepSource.Unavailable
-            synchronized(commandLock) {
-                if (closed || mutableState.value.stepSourceIds[stepId] != sourceId) return@synchronized
-                mutableState.update { it.copy(stepSources = it.stepSources + (stepId to source)) }
-            }
-        }
-    }
 
     fun updateStepFromSource(stepId: SequenceNodeId) =
         runSourceAction(stepId, requireActiveSource = true) { id, revision, _, at ->
@@ -232,7 +228,7 @@ class SequenceTemplateEditorController internal constructor(
     fun enterManipulation(identity: DraftIdentity<SequenceNodeId>) {
         synchronized(commandLock) {
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             val session =
                 manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
                     manipulationSession = it
@@ -245,7 +241,7 @@ class SequenceTemplateEditorController internal constructor(
 
     fun selectManipulation(identity: DraftIdentity<SequenceNodeId>) {
         synchronized(commandLock) {
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             manipulationSession?.let {
                 it.select(identity)
                 publishManipulation(it)
@@ -272,7 +268,7 @@ class SequenceTemplateEditorController internal constructor(
 
     fun discardManipulation() {
         synchronized(commandLock) {
-            if (closed || saving || committedAwaitingReload != null) return
+            if (closed || saving || hasCommittedAwaitingReload()) return
             val session = manipulationSession ?: return
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
             val textInputs = requireNotNull(manipulationTextInputsBaseline)
@@ -291,7 +287,7 @@ class SequenceTemplateEditorController internal constructor(
     fun requestBack(onExit: () -> Unit) {
         val shouldExit =
             synchronized(commandLock) {
-                if (closed || saving || committedAwaitingReload != null) return
+                if (closed || saving || hasCommittedAwaitingReload()) return
                 val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready
                 (ready == null || !mutableState.value.isDirty(ready)).also {
                     if (!it) mutableState.update { state -> state.copy(discardConfirmationVisible = true) }
@@ -322,7 +318,7 @@ class SequenceTemplateEditorController internal constructor(
         val (ready, submittedDraft) =
             synchronized(commandLock) {
                 val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-                if (closed || saving) return
+                if (closed || saving || sourceActionAwaitingReload != null) return
                 saving = true
                 if (mutableState.value.hasInvalidInput(ready.draft)) {
                     saving = false
@@ -387,6 +383,7 @@ class SequenceTemplateEditorController internal constructor(
                         committedAwaitingReload = it
                     }
             val canonical = requireNotNull(loadSequence(committed.id)) { "Committed Sequence is unavailable" }
+            val loaded = loadEditorData(canonical)
             val canonicalDraft = canonical.toAuthoringDraft()
             synchronized(commandLock) {
                 durableTarget = SequenceTemplateEditorTarget.Existing(committed.id)
@@ -410,8 +407,9 @@ class SequenceTemplateEditorController internal constructor(
                                 },
                             manipulation = null,
                             textInputs = emptyMap(),
+                            availableActivities = loaded.activities,
                             stepSourceIds = canonical.stepSourceIds(),
-                            stepSources = emptyMap(),
+                            sourceStatuses = loaded.sourceStatuses,
                             appliedGeneration = it.appliedGeneration + if (exitAfter) 0 else 1,
                         )
                     }
@@ -423,7 +421,11 @@ class SequenceTemplateEditorController internal constructor(
         } catch (failure: Exception) {
             synchronized(commandLock) {
                 saving = false
-                if (!closed) mutableState.update { it.copy(save = failure.toSaveFailure()) }
+                if (!closed) {
+                    mutableState.update {
+                        it.copy(save = failure.toSaveFailure(committed = committedAwaitingReload != null))
+                    }
+                }
             }
         }
     }
@@ -444,13 +446,14 @@ class SequenceTemplateEditorController internal constructor(
                 ) { "Sequence template is unavailable" }
                 require(authoring?.sequence?.deletedAt == null) { "Sequence template is unavailable" }
                 val draft = authoring?.toAuthoringDraft() ?: SequenceTemplateDraft("", null)
-                val choices = loadActivities()
+                val loaded = loadEditorData(authoring)
                 if (!closed) {
                     mutableState.value =
                         SequenceTemplateEditorState(
                             load = SequenceTemplateEditorLoad.Ready(draft, authoring?.sequence?.revision, draft),
-                            availableActivities = choices,
+                            availableActivities = loaded.activities,
                             stepSourceIds = authoring?.stepSourceIds().orEmpty(),
+                            sourceStatuses = loaded.sourceStatuses,
                         )
                 }
             } catch (cancelled: CancellationException) {
@@ -480,8 +483,13 @@ class SequenceTemplateEditorController internal constructor(
                 val target = durableTarget as? SequenceTemplateEditorTarget.Existing ?: return
                 if (ready.draft.findExistingStep(stepId) == null) return
                 if (!canStartSourceAction(ready)) return
+                val sourceId = mutableState.value.stepSourceIds[stepId]
                 val sourceRevision =
-                    (mutableState.value.stepSources[stepId] as? SequenceEditorStepSource.Active)?.revision
+                    (
+                        sourceId?.let(
+                            mutableState.value.sourceStatuses::get,
+                        ) as? SequenceEditorStepSource.Active
+                    )?.revision
                 if (requireActiveSource && sourceRevision == null) return
                 saving = true
                 mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
@@ -490,9 +498,6 @@ class SequenceTemplateEditorController internal constructor(
         scope.launch {
             try {
                 action(command.sequenceId, command.expectedRevision, command.sourceRevision, now())
-                val canonical =
-                    requireNotNull(loadSequence(command.sequenceId)) { "Committed Sequence is unavailable" }
-                publishSourceActionReload(canonical)
             } catch (cancelled: CancellationException) {
                 synchronized(commandLock) { saving = false }
                 throw cancelled
@@ -501,34 +506,71 @@ class SequenceTemplateEditorController internal constructor(
                     saving = false
                     if (!closed) mutableState.update { it.copy(save = failure.toSaveFailure()) }
                 }
+                return@launch
+            }
+            synchronized(commandLock) { sourceActionAwaitingReload = command.sequenceId }
+            recoverSourceAction(command.sequenceId)
+        }
+    }
+
+    private suspend fun recoverSourceAction(sequenceId: SequenceTemplateId) {
+        try {
+            val canonical = requireNotNull(loadSequence(sequenceId)) { "Committed Sequence is unavailable" }
+            val loaded = loadEditorData(canonical)
+            val canonicalDraft = canonical.toAuthoringDraft()
+            synchronized(commandLock) {
+                saving = false
+                sourceActionAwaitingReload = null
+                clearManipulationSession()
+                if (!closed) {
+                    mutableState.update {
+                        it.copy(
+                            load =
+                                SequenceTemplateEditorLoad.Ready(
+                                    canonicalDraft,
+                                    canonical.sequence.revision,
+                                    canonicalDraft,
+                                ),
+                            save = SequenceTemplateEditorSave.Idle,
+                            manipulation = null,
+                            textInputs = emptyMap(),
+                            availableActivities = loaded.activities,
+                            stepSourceIds = canonical.stepSourceIds(),
+                            sourceStatuses = loaded.sourceStatuses,
+                            appliedGeneration = it.appliedGeneration + 1,
+                        )
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            synchronized(commandLock) { saving = false }
+            throw cancelled
+        } catch (failure: Exception) {
+            synchronized(commandLock) {
+                saving = false
+                if (!closed) mutableState.update { it.copy(save = failure.toSaveFailure(committed = true)) }
             }
         }
     }
 
-    private fun publishSourceActionReload(canonical: SequenceTemplateAuthoringState) {
-        val canonicalDraft = canonical.toAuthoringDraft()
-        synchronized(commandLock) {
-            saving = false
-            clearManipulationSession()
-            if (!closed) {
-                mutableState.update {
-                    it.copy(
-                        load =
-                            SequenceTemplateEditorLoad.Ready(
-                                canonicalDraft,
-                                canonical.sequence.revision,
-                                canonicalDraft,
-                            ),
-                        save = SequenceTemplateEditorSave.Idle,
-                        manipulation = null,
-                        textInputs = emptyMap(),
-                        stepSourceIds = canonical.stepSourceIds(),
-                        stepSources = emptyMap(),
-                        appliedGeneration = it.appliedGeneration + 1,
-                    )
-                }
-            }
-        }
+    private suspend fun loadEditorData(authoring: SequenceTemplateAuthoringState?): LoadedEditorData {
+        val sourceIds =
+            authoring
+                ?.stepSourceIds()
+                ?.values
+                ?.filterNotNull()
+                ?.distinct()
+                .orEmpty()
+        val statuses = if (sourceIds.isEmpty()) emptyMap() else loadSourceStatuses(sourceIds)
+        return LoadedEditorData(
+            loadActivities(),
+            sourceIds.associateWith { id ->
+                statuses[id]
+                    ?.takeUnless(ActivityTemplateSourceStatus::isArchived)
+                    ?.let { SequenceEditorStepSource.Active(it.revision) }
+                    ?: SequenceEditorStepSource.Unavailable
+            },
+        )
     }
 
     private fun changeManipulation(
@@ -537,7 +579,7 @@ class SequenceTemplateEditorController internal constructor(
         synchronized(commandLock) {
             val session = manipulationSession ?: return false
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
-            if (closed || saving || committedAwaitingReload != null) return false
+            if (closed || saving || hasCommittedAwaitingReload()) return false
             val changed = change(session, ready.draft) ?: return false
             mutableState.update {
                 it.copy(
@@ -558,10 +600,17 @@ class SequenceTemplateEditorController internal constructor(
         manipulationTextInputsBaseline = null
     }
 
-    private fun Throwable.toSaveFailure(): SequenceTemplateEditorSave.Failure {
+    private fun Throwable.toSaveFailure(committed: Boolean = false): SequenceTemplateEditorSave.Failure {
         val detail = message ?: "Unable to save the sequence template"
-        return SequenceTemplateEditorSave.Failure(detail, detail.contains("revision changed concurrently", true))
+        return SequenceTemplateEditorSave.Failure(
+            detail,
+            detail.contains("revision changed concurrently", true),
+            committed,
+        )
     }
+
+    private fun hasCommittedAwaitingReload(): Boolean =
+        committedAwaitingReload != null || sourceActionAwaitingReload != null
 
     private fun sourceActionsAllowed(ready: SequenceTemplateEditorLoad.Ready): Boolean =
         manipulationSession == null &&
@@ -569,7 +618,7 @@ class SequenceTemplateEditorController internal constructor(
             !mutableState.value.isDirty(ready)
 
     private fun canStartSourceAction(ready: SequenceTemplateEditorLoad.Ready): Boolean {
-        if (closed || saving || committedAwaitingReload != null) return false
+        if (closed || saving || hasCommittedAwaitingReload()) return false
         return sourceActionsAllowed(ready)
     }
 
@@ -618,8 +667,14 @@ internal fun SequenceTemplateEditorState.isDirty(ready: SequenceTemplateEditorLo
 internal fun SequenceTemplateEditorState.sourceActionsAllowed(): Boolean {
     val ready = load as? SequenceTemplateEditorLoad.Ready ?: return false
     if (manipulation != null || save is SequenceTemplateEditorSave.Saving) return false
+    if ((save as? SequenceTemplateEditorSave.Failure)?.committedAwaitingReload == true) return false
     return !hasInvalidInput(ready.draft) && !isDirty(ready)
 }
+
+private data class LoadedEditorData(
+    val activities: List<SequenceEditorActivityChoice>,
+    val sourceStatuses: Map<ActivityTemplateId, SequenceEditorStepSource>,
+)
 
 private data class SourceActionCommand(
     val sequenceId: SequenceTemplateId,
