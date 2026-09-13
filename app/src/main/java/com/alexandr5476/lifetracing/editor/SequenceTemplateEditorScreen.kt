@@ -210,9 +210,15 @@ private fun SequenceEditorForm(
                         Text(stringResource(R.string.sequence_editor_redo))
                     }
                     TextButton(
-                        onClick = controller::applyManipulation,
-                        enabled = editable && !state.hasInvalidInput(draft),
-                    ) { Text(stringResource(R.string.sequence_editor_apply)) }
+                        onClick = if (recoveryPending) controller::retry else controller::applyManipulation,
+                        enabled = recoveryPending || editable && !state.hasInvalidInput(draft),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (recoveryPending) R.string.sequence_editor_retry else R.string.sequence_editor_apply,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -287,7 +293,7 @@ private fun SequenceEditorForm(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            if (state.manipulation == null) {
+            if (recoveryPending || state.manipulation == null) {
                 LifeTracingPrimaryButton(
                     onClick = if (recoveryPending) controller::retry else controller::save,
                     modifier = Modifier.fillMaxWidth(),

@@ -1,4 +1,4 @@
-@file:Suppress("ReturnCount")
+@file:Suppress("ReturnCount", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing.editor
 
@@ -26,8 +26,9 @@ internal class SequenceManipulationSession(
     selected: DraftIdentity<SequenceNodeId>,
     private val duplicateSources: SequenceTemplateDraft = baseline,
 ) {
-    private val undo = ArrayDeque<SequenceManipulationSnapshot>()
-    private val redo = ArrayDeque<SequenceManipulationSnapshot>()
+    private val undo = ArrayDeque<SequenceManipulationHistoryEntry>()
+    private val redo = ArrayDeque<SequenceManipulationHistoryEntry>()
+    private val pendingStructures = ArrayDeque<SequenceManipulationStructure>()
     var selected = selected
         private set
 
@@ -46,6 +47,13 @@ internal class SequenceManipulationSession(
             selected = identity
             return draft
         }
+        pendingStructures.addLast(
+            SequenceManipulationStructure.Move(
+                identity,
+                requireNotNull(draft.locationOf(identity)),
+                destination,
+            ),
+        )
         selected = identity
         return moved
     }
@@ -76,6 +84,7 @@ internal class SequenceManipulationSession(
                 source.overrides,
             )
         val changed = draft.insert(duplicate, destination) ?: return null
+        pendingStructures.addLast(SequenceManipulationStructure.Duplicate(duplicate, destination))
         selected = duplicateIdentity
         return changed
     }
@@ -85,25 +94,28 @@ internal class SequenceManipulationSession(
         after: SequenceManipulationSnapshot,
     ) {
         if (before == after) return
-        undo.addLast(before)
+        val structure = pendingStructures.removeFirstOrNull()
+        undo.addLast(SequenceManipulationHistoryEntry.create(before, after, structure))
         redo.clear()
     }
 
     fun undo(current: SequenceManipulationSnapshot): SequenceManipulationSnapshot? {
-        val target = undo.removeLastOrNull() ?: return null
-        redo.addLast(current)
-        selected = target.selected
-        return target
+        val entry = undo.removeLastOrNull() ?: return null
+        redo.addLast(entry)
+        selected = entry.beforeSelected
+        return entry.undo(current)
     }
 
     fun redo(current: SequenceManipulationSnapshot): SequenceManipulationSnapshot? {
-        val target = redo.removeLastOrNull() ?: return null
-        undo.addLast(current)
-        selected = target.selected
-        return target
+        val entry = redo.removeLastOrNull() ?: return null
+        undo.addLast(entry)
+        selected = entry.afterSelected
+        return entry.redo(current)
     }
 
     fun uiState() = SequenceManipulationUiState(selected, undo.isNotEmpty(), redo.isNotEmpty(), undo.size)
+
+    internal fun retainedHistoryStepCount(): Int = undo.sumOf(SequenceManipulationHistoryEntry::retainedStepCount)
 }
 
 internal data class SequenceManipulationSnapshot(
@@ -111,6 +123,229 @@ internal data class SequenceManipulationSnapshot(
     val textInputs: Map<String, SequenceEditorTextInput>,
     val selected: DraftIdentity<SequenceNodeId>,
 )
+
+private data class SequenceManipulationHistoryEntry(
+    val beforeSelected: DraftIdentity<SequenceNodeId>,
+    val afterSelected: DraftIdentity<SequenceNodeId>,
+    val undoDelta: SequenceManipulationDelta,
+    val redoDelta: SequenceManipulationDelta,
+) {
+    fun undo(current: SequenceManipulationSnapshot) = undoDelta.apply(current).copy(selected = beforeSelected)
+
+    fun redo(current: SequenceManipulationSnapshot) = redoDelta.apply(current).copy(selected = afterSelected)
+
+    fun retainedStepCount() = undoDelta.retainedStepCount() + redoDelta.retainedStepCount()
+
+    companion object {
+        fun create(
+            before: SequenceManipulationSnapshot,
+            after: SequenceManipulationSnapshot,
+            structure: SequenceManipulationStructure?,
+        ) = SequenceManipulationHistoryEntry(
+            before.selected,
+            after.selected,
+            structure?.undoDelta() ?: SequenceManipulationDelta.between(after, before),
+            structure?.redoDelta() ?: SequenceManipulationDelta.between(before, after),
+        )
+    }
+}
+
+private sealed interface SequenceManipulationStructure {
+    fun undoDelta(): SequenceManipulationDelta
+
+    fun redoDelta(): SequenceManipulationDelta
+
+    data class Move(
+        val identity: DraftIdentity<SequenceNodeId>,
+        val from: SequenceDropDestination,
+        val to: SequenceDropDestination,
+    ) : SequenceManipulationStructure {
+        override fun undoDelta() =
+            SequenceManipulationDelta.Structural(SequenceManipulationOperation.Move(identity, from))
+
+        override fun redoDelta() =
+            SequenceManipulationDelta.Structural(SequenceManipulationOperation.Move(identity, to))
+    }
+
+    data class Duplicate(
+        val step: ActivityStepDraft,
+        val destination: SequenceDropDestination,
+    ) : SequenceManipulationStructure {
+        override fun undoDelta() =
+            SequenceManipulationDelta.Structural(SequenceManipulationOperation.Remove(step.identity))
+
+        override fun redoDelta() =
+            SequenceManipulationDelta.Structural(SequenceManipulationOperation.Insert(step, destination))
+    }
+}
+
+private sealed interface SequenceManipulationOperation {
+    fun apply(draft: SequenceTemplateDraft): SequenceTemplateDraft
+
+    data class Move(
+        val identity: DraftIdentity<SequenceNodeId>,
+        val destination: SequenceDropDestination,
+    ) : SequenceManipulationOperation {
+        override fun apply(draft: SequenceTemplateDraft) = requireNotNull(draft.move(identity, destination))
+    }
+
+    data class Insert(
+        val step: ActivityStepDraft,
+        val destination: SequenceDropDestination,
+    ) : SequenceManipulationOperation {
+        override fun apply(draft: SequenceTemplateDraft) = requireNotNull(draft.insert(step, destination))
+    }
+
+    data class Remove(
+        val identity: DraftIdentity<SequenceNodeId>,
+    ) : SequenceManipulationOperation {
+        override fun apply(draft: SequenceTemplateDraft) = requireNotNull(draft.removeStep(identity))
+    }
+}
+
+private sealed interface SequenceManipulationDelta {
+    fun apply(snapshot: SequenceManipulationSnapshot): SequenceManipulationSnapshot
+
+    fun retainedStepCount(): Int
+
+    data class Structural(
+        val operation: SequenceManipulationOperation,
+    ) : SequenceManipulationDelta {
+        override fun apply(snapshot: SequenceManipulationSnapshot): SequenceManipulationSnapshot =
+            snapshot.copy(
+                draft = operation.apply(snapshot.draft),
+            )
+
+        override fun retainedStepCount() = (operation as? SequenceManipulationOperation.Insert)?.step?.let { 1 } ?: 0
+    }
+
+    data class NonStructural(
+        val draft: SequenceDraftDelta,
+        val textInputs: Map<String, ValueChange<SequenceEditorTextInput?>>,
+    ) : SequenceManipulationDelta {
+        override fun apply(snapshot: SequenceManipulationSnapshot) =
+            snapshot.copy(
+                draft = draft.apply(snapshot.draft),
+                textInputs =
+                    textInputs.entries.fold(snapshot.textInputs) { values, (key, change) ->
+                        change.value?.let { values + (key to it) } ?: values - key
+                    },
+            )
+
+        override fun retainedStepCount() = draft.steps.size
+    }
+
+    companion object {
+        fun between(
+            before: SequenceManipulationSnapshot,
+            after: SequenceManipulationSnapshot,
+        ): SequenceManipulationDelta =
+            NonStructural(
+                SequenceDraftDelta.between(before.draft, after.draft),
+                changes(before.textInputs, after.textInputs),
+            )
+    }
+}
+
+private data class SequenceDraftDelta(
+    val name: ValueChange<String>?,
+    val shortComment: ValueChange<String?>?,
+    val noLiveTimeAccounting: ValueChange<com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting>?,
+    val settings: ValueChange<com.alexandr5476.lifetracing.domain.SequenceTemplateSettings>?,
+    val fields: ValueChange<List<com.alexandr5476.lifetracing.domain.SequenceFieldDraft>>?,
+    val steps: Map<DraftIdentity<SequenceNodeId>, ValueChange<ActivityStepDraft>>,
+    val repeatCounts: Map<DraftIdentity<SequenceNodeId>, ValueChange<Int>>,
+) {
+    fun apply(draft: SequenceTemplateDraft): SequenceTemplateDraft =
+        draft.copy(
+            name = name?.value ?: draft.name,
+            shortComment = if (shortComment != null) shortComment.value else draft.shortComment,
+            noLiveTimeAccounting = noLiveTimeAccounting?.value ?: draft.noLiveTimeAccounting,
+            settings = settings?.value ?: draft.settings,
+            fields = fields?.value ?: draft.fields,
+            nodes =
+                draft.nodes.map { node ->
+                    when (node) {
+                        is SequenceNodeDraft.Step ->
+                            steps[node.identity]?.value?.let(SequenceNodeDraft::Step) ?: node
+                        is SequenceNodeDraft.Repeat ->
+                            SequenceNodeDraft.Repeat(
+                                node.value.copy(
+                                    repeatCount = repeatCounts[node.identity]?.value ?: node.value.repeatCount,
+                                    children =
+                                        node.value.children.map { step ->
+                                            steps[step.identity]?.value ?: step
+                                        },
+                                ),
+                            )
+                    }
+                },
+        )
+
+    companion object {
+        fun between(
+            before: SequenceTemplateDraft,
+            after: SequenceTemplateDraft,
+        ): SequenceDraftDelta {
+            require(before.hasSameStructureAs(after)) { "Structural manipulation must use a structural delta" }
+            return SequenceDraftDelta(
+                change(before.name, after.name),
+                change(before.shortComment, after.shortComment),
+                change(before.noLiveTimeAccounting, after.noLiveTimeAccounting),
+                change(before.settings, after.settings),
+                change(before.fields, after.fields),
+                changedValues(before.stepsByIdentity(), after.stepsByIdentity()),
+                changedValues(before.repeatCounts(), after.repeatCounts()),
+            )
+        }
+    }
+}
+
+private data class ValueChange<T>(
+    val value: T,
+)
+
+private fun <T> change(
+    before: T,
+    after: T,
+): ValueChange<T>? = after.takeIf { it != before }?.let(::ValueChange)
+
+private fun <K, V> changes(
+    before: Map<K, V>,
+    after: Map<K, V>,
+): Map<K, ValueChange<V?>> =
+    (before.keys + after.keys)
+        .associateWith { key -> ValueChange(after[key]) }
+        .filter { (key, change) -> before[key] != change.value }
+
+private fun <K, V> changedValues(
+    before: Map<K, V>,
+    after: Map<K, V>,
+): Map<K, ValueChange<V>> =
+    after
+        .mapNotNull { (key, value) -> if (before[key] != value) key to ValueChange(value) else null }
+        .toMap()
+
+private fun SequenceTemplateDraft.hasSameStructureAs(other: SequenceTemplateDraft) =
+    nodes.map { it.identity to it.position } == other.nodes.map { it.identity to it.position } &&
+        nodes.filterIsInstance<SequenceNodeDraft.Repeat>().map { repeat ->
+            repeat.identity to repeat.value.children.map { child -> child.identity to child.position }
+        } ==
+        other.nodes.filterIsInstance<SequenceNodeDraft.Repeat>().map { repeat ->
+            repeat.identity to repeat.value.children.map { child -> child.identity to child.position }
+        }
+
+private fun SequenceTemplateDraft.stepsByIdentity(): Map<DraftIdentity<SequenceNodeId>, ActivityStepDraft> =
+    nodes
+        .flatMap { node ->
+            when (node) {
+                is SequenceNodeDraft.Step -> listOf(node.value)
+                is SequenceNodeDraft.Repeat -> node.value.children
+            }
+        }.associateBy(ActivityStepDraft::identity)
+
+private fun SequenceTemplateDraft.repeatCounts(): Map<DraftIdentity<SequenceNodeId>, Int> =
+    nodes.filterIsInstance<SequenceNodeDraft.Repeat>().associate { it.identity to it.value.repeatCount }
 
 private fun SequenceTemplateDraft.locationOf(identity: DraftIdentity<SequenceNodeId>): SequenceDropDestination? {
     nodes.forEachIndexed { position, node ->

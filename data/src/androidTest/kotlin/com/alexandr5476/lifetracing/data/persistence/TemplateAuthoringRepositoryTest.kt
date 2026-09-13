@@ -1134,6 +1134,76 @@ class TemplateAuthoringRepositoryTest {
     }
 
     @Test
+    fun duplicateRejectsForgedCanonicalProvenanceWithoutMutatingTheSequence() {
+        val source = repository.createActivityTemplate(categoryActivityDraft(), createdAt = at(1))
+        val foreign =
+            repository.createActivityTemplate(
+                categoryActivityDraft().copy(name = "Foreign"),
+                createdAt = at(2),
+            )
+        val sequence =
+            repository.createSequenceTemplate(
+                singleStepSequence(source.id, "provenance"),
+                createdAt = at(3),
+            )
+        val sourceStep = sequence.nodes.flatMap { it.stepIds() }.single()
+        val draft = repository.getSequenceTemplateAuthoringState(sequence.id)!!.toAuthoringDraft()
+        val valid = draft.duplicateActivity(sourceStep)
+        val foreignSequence =
+            repository.createSequenceTemplate(
+                singleStepSequence(foreign.id, "foreign"),
+                createdAt = at(4),
+            )
+        val foreignStep = foreignSequence.nodes.flatMap { it.stepIds() }.single()
+        val foreignSnapshot =
+            requireNotNull(repository.getStepSnapshot(foreignSequence.id, foreignStep))
+        val originalNodes = database.sequenceTemplateDao().getNodes(sequence.id.value)
+        val originalSnapshots = count("activity_snapshots")
+
+        listOf(
+            valid.copy(sourceTemplateId = null, sourceRevision = null, statisticsSeriesId = null),
+            valid.copy(
+                sourceTemplateId = foreign.id,
+                sourceRevision = foreign.revision,
+                statisticsSeriesId = foreign.statisticsSeriesId,
+                configuration =
+                    valid.configuration.copy(
+                        fields =
+                            valid.configuration.fields.map { field ->
+                                field.copy(
+                                    sourceFieldId = foreignSnapshot.fields.single().sourceFieldId,
+                                    categoryOptions =
+                                        field.categoryOptions.map { option ->
+                                            option.copy(
+                                                sourceOptionId =
+                                                    foreignSnapshot.fields
+                                                        .single()
+                                                        .categoryOptions
+                                                        .single()
+                                                        .sourceOptionId,
+                                            )
+                                        },
+                                )
+                            },
+                    ),
+            ),
+            valid.copy(configuration = valid.configuration.copy(name = "Edited capture"), locallyModified = false),
+        ).forEachIndexed { index, invalid ->
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.saveSequenceTemplate(
+                    sequence.id,
+                    1,
+                    draft.withDuplicate(invalid, "invalid-$index"),
+                    at(5L + index),
+                )
+            }
+            assertEquals(1L, repository.getSequenceTemplate(sequence.id)?.revision)
+            assertEquals(originalNodes, database.sequenceTemplateDao().getNodes(sequence.id.value))
+            assertEquals(originalSnapshots, count("activity_snapshots"))
+        }
+    }
+
+    @Test
     fun duplicateStaleRevisionAndSnapshotCollisionLeaveNoOrphan() {
         val source = repository.createActivityTemplate(activityDraft(), createdAt = at(1))
         val sequence = repository.createSequenceTemplate(singleStepSequence(source.id, "collision"), createdAt = at(2))
@@ -2160,6 +2230,13 @@ class TemplateAuthoringRepositoryTest {
             source.locallyModified,
         )
     }
+
+    private fun SequenceTemplateDraft.withDuplicate(
+        activity: StepActivityDraft.Duplicate,
+        key: String,
+    ) = copy(
+        nodes = nodes + SequenceNodeDraft.Step(ActivityStepDraft(DraftIdentity.New(key), nodes.size, activity)),
+    )
 
     private fun at(second: Long): Instant = Instant.ofEpochSecond(second)
 }

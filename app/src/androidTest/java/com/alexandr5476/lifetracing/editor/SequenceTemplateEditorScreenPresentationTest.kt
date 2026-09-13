@@ -735,6 +735,51 @@ class SequenceTemplateEditorScreenPresentationTest {
     }
 
     @Test
+    fun committedApplyReloadFailureKeepsRetryReachableFromManipulationToolbar() {
+        val authoring =
+            pointerAuthoring(
+                ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                ActivityStep(SequenceNodeId("b"), 1, ActivitySnapshotId("snapshot-b")),
+            )
+        var loads = 0
+        var writes = 0
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(authoring.sequence.id),
+                {
+                    loads++
+                    if (loads == 2) error("temporary reload failure")
+                    authoring
+                },
+                { emptyList() },
+                { _, _, _ -> error("Create is not used") },
+                { _, _, _, _ ->
+                    writes++
+                    authoring.sequence
+                },
+                Instant::now,
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        controller.enterManipulation(DraftIdentity.Existing(SequenceNodeId("a")))
+        controller.moveManipulation(
+            DraftIdentity.Existing(SequenceNodeId("a")),
+            SequenceDropDestination(position = 1),
+        )
+        controller.applyManipulation()
+        composeTestRule.waitUntil { controller.state.value.save is SequenceTemplateEditorSave.Failure }
+
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_retry)).assertIsDisplayed().performClick()
+        composeTestRule.waitUntil {
+            controller.state.value.save is SequenceTemplateEditorSave.Idle &&
+                controller.state.value.manipulation == null
+        }
+        assertEquals(1, writes)
+        controller.close()
+    }
+
+    @Test
     fun pointerDragMovesRepeatChildToTopLevel() {
         val controller =
             existingController(

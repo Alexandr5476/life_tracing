@@ -215,9 +215,11 @@ internal class ExpandedLiveSequenceController(
     private val displayBaseline: () -> RuntimeDisplayBaseline?,
     private val readCatalog: suspend () -> List<ReusableActivityCatalogItem>,
     private val wallClock: WallClock,
+    private val onCurrentValueCommandCaptured: (() -> Unit)? = null,
 ) {
     private val loadGeneration = AtomicLong()
     private val commandMutex = Mutex()
+    private val commandCaptureLock = Any()
     private val mutableState = MutableStateFlow(ExpandedLiveSequenceState())
     val state: StateFlow<ExpandedLiveSequenceState> = mutableState
     private val initialSemanticGeneration = semanticGeneration.value
@@ -304,7 +306,7 @@ internal class ExpandedLiveSequenceController(
         }
 
     fun completeCurrent() =
-        submit { sequence ->
+        submit(capturesCurrentValues = true) { sequence ->
             val occurrenceId = sequence.runtime.execution.currentOccurrenceId ?: return@submit null
             val draft = mutableState.value.currentValueDraft?.takeIf { it.occurrenceId == occurrenceId }
             if (draft?.invalidNumberFields?.isNotEmpty() == true) return@submit null
@@ -433,7 +435,7 @@ internal class ExpandedLiveSequenceController(
         }
 
     fun saveCurrentValues() =
-        submit { sequence ->
+        submit(capturesCurrentValues = true) { sequence ->
             val occurrenceId = sequence.runtime.execution.currentOccurrenceId ?: return@submit null
             val row = occurrence(sequence, occurrenceId) ?: return@submit null
             val draft =
@@ -487,17 +489,21 @@ internal class ExpandedLiveSequenceController(
         fieldId: ActivitySnapshotFieldId,
         transform: (ActivitySnapshotField, CurrentValueDraft) -> CurrentValueDraft,
     ) {
-        if (mutableState.value.commandInFlight) return
-        val sequence = active() ?: return reject()
-        if (!expandedActions(sequence.state).editCurrentValues) return reject()
-        val occurrenceId = sequence.runtime.execution.currentOccurrenceId ?: return reject()
-        val row = occurrence(sequence, occurrenceId) ?: return reject()
-        val field = row.activity.fields.singleOrNull { it.id == fieldId } ?: return reject()
-        val draft = mutableState.value.currentValueDraft?.takeIf { it.occurrenceId == occurrenceId } ?: return reject()
-        try {
-            mutableState.update { it.copy(currentValueDraft = transform(field, draft), commandFailure = null) }
-        } catch (failure: IllegalArgumentException) {
-            mutableState.update { it.copy(commandFailure = ExpandedSequenceFailure.Rejected(failure.message())) }
+        synchronized(commandCaptureLock) {
+            if (mutableState.value.commandInFlight) return
+            val sequence = active() ?: return reject()
+            if (!expandedActions(sequence.state).editCurrentValues) return reject()
+            val occurrenceId = sequence.runtime.execution.currentOccurrenceId ?: return reject()
+            val row = occurrence(sequence, occurrenceId) ?: return reject()
+            val field = row.activity.fields.singleOrNull { it.id == fieldId } ?: return reject()
+            val draft =
+                mutableState.value.currentValueDraft?.takeIf { it.occurrenceId == occurrenceId }
+                    ?: return reject()
+            try {
+                mutableState.update { it.copy(currentValueDraft = transform(field, draft), commandFailure = null) }
+            } catch (failure: IllegalArgumentException) {
+                mutableState.update { it.copy(commandFailure = ExpandedSequenceFailure.Rejected(failure.message())) }
+            }
         }
     }
 
@@ -521,15 +527,33 @@ internal class ExpandedLiveSequenceController(
         }
     }
 
-    private fun submit(build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?) {
+    private fun submit(
+        capturesCurrentValues: Boolean = false,
+        build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?,
+    ) {
+        val captured =
+            if (capturesCurrentValues) {
+                synchronized(commandCaptureLock) {
+                    val command = active()?.let(build)
+                    if (command == null || command.executionId != executionId) {
+                        reject()
+                        return
+                    }
+                    onCurrentValueCommandCaptured?.invoke()
+                    mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+                    command
+                }
+            } else {
+                null
+            }
         scope.launch {
             commandMutex.withLock {
-                val command = active()?.let(build)
+                val command = captured ?: active()?.let(build)
                 if (command == null || command.executionId != executionId) {
                     reject()
                     return@withLock
                 }
-                mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+                if (captured == null) mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
                 var commandFailure: ExpandedSequenceFailure? = null
                 try {
                     execute(command)

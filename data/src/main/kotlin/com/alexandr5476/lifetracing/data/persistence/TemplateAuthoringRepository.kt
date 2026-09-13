@@ -62,6 +62,7 @@ import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TemplateAuthoringDraftValidator
 import com.alexandr5476.lifetracing.domain.TemplateAuthoringPolicy
 import com.alexandr5476.lifetracing.domain.TemplateLibraryPlacement
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Callable
@@ -518,7 +519,12 @@ class TemplateAuthoringRepository internal constructor(
                                 "Duplicate source must be an existing Step in the current SequenceTemplate"
                             }
                         duplicateSources += source.id
-                        duplicateSnapshotFromCapturedDraft(activity, savedAt).also { newSnapshots += it }.id
+                        val sourceSnapshot = requireNotNull(currentSnapshots[source.activitySnapshotId])
+                        duplicateSnapshotFromCapturedDraft(
+                            activity,
+                            sourceSnapshot,
+                            savedAt,
+                        ).also { newSnapshots += it }.id
                     }
                 }
             return ActivityStep(id, draft.position, snapshotId, overrides)
@@ -807,59 +813,20 @@ class TemplateAuthoringRepository internal constructor(
 
     private fun duplicateSnapshotFromCapturedDraft(
         duplicate: StepActivityDraft.Duplicate,
+        source: ActivityConfigSnapshot,
         createdAt: Instant,
     ): ActivityConfigSnapshot {
-        val fieldIds = duplicate.configuration.fields.associate { it.identity to ids.nextActivitySnapshotFieldId() }
-        require(fieldIds.size == duplicate.configuration.fields.size) {
-            "Duplicate snapshot Field identities must be unique"
+        require(
+            duplicate.sourceTemplateId == source.sourceTemplateId &&
+                duplicate.sourceRevision == source.sourceRevision &&
+                duplicate.statisticsSeriesId == source.statisticsSeriesId,
+        ) { "Duplicate source lineage must match the canonical source Step" }
+        val locallyModified =
+            source.locallyModified || duplicate.configuration != source.toAuthoringDraft()
+        require(duplicate.locallyModified == locallyModified) {
+            "Duplicate locallyModified must match the captured source evolution"
         }
-        val optionIds =
-            duplicate.configuration.fields
-                .flatMap(ActivitySnapshotFieldDraft::categoryOptions)
-                .associate { it.identity to ids.nextActivitySnapshotCategoryOptionId() }
-        require(optionIds.size == duplicate.configuration.fields.sumOf { it.categoryOptions.size }) {
-            "Duplicate snapshot Category option identities must be unique"
-        }
-        val fields =
-            duplicate.configuration.fields.map { field ->
-                ActivitySnapshotField(
-                    requireNotNull(fieldIds[field.identity]),
-                    field.sourceFieldId,
-                    field.position,
-                    field.nameAtCreation,
-                    field.localNameOverride,
-                    field.type,
-                    field.unit,
-                    field.displayPrecision,
-                    field.defaultNumberScaled,
-                    field.defaultCategoryOption?.let { requireNotNull(optionIds[it]) },
-                    field.defaultText,
-                    field.isMainValue,
-                    field.categoryOptions.map { option ->
-                        ActivitySnapshotCategoryOption(
-                            requireNotNull(optionIds[option.identity]),
-                            option.sourceOptionId,
-                            option.position,
-                            option.labelAtCreation,
-                            option.localLabelOverride,
-                        )
-                    },
-                )
-            }
-        return ActivityConfigSnapshot(
-            ids.nextActivitySnapshotId(),
-            duplicate.configuration.name,
-            duplicate.configuration.shortComment,
-            duplicate.configuration.timeTrackingMode,
-            duplicate.configuration.timerTarget,
-            duplicate.sourceTemplateId,
-            duplicate.sourceRevision,
-            duplicate.statisticsSeriesId,
-            duplicate.locallyModified,
-            createdAt,
-            duplicate.configuration.settings,
-            fields,
-        ).also(com.alexandr5476.lifetracing.domain.ActivityConfigSnapshotValidator::requireValid)
+        return snapshotFromDraft(duplicate.configuration, source, locallyModified, createdAt)
     }
 
     private fun persistActivityPresentation(

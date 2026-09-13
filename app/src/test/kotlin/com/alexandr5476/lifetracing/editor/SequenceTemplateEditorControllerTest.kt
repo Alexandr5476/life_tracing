@@ -758,8 +758,8 @@ class SequenceTemplateEditorControllerTest {
                     { _, _, _ -> error("Create is not used") },
                     { id, revision, draft, _ ->
                         writes++
-                        assertEquals(7, revision)
-                        canonical = draft.toFakeAuthoring(id, 8)
+                        assertEquals(6L + writes, revision)
+                        canonical = draft.toFakeAuthoring(id, revision + 1)
                         canonical.sequence
                     },
                     { Instant.EPOCH.plusSeconds(1) },
@@ -782,7 +782,7 @@ class SequenceTemplateEditorControllerTest {
             val immediateRetry =
                 launch(inlineDispatcher, start = CoroutineStart.UNDISPATCHED) {
                     controller.state.first { it.save is SequenceTemplateEditorSave.Failure }
-                    controller.applyManipulation()
+                    controller.retry()
                 }
             controller.applyManipulation()
             immediateRetry.join()
@@ -792,6 +792,10 @@ class SequenceTemplateEditorControllerTest {
             assertEquals(3, loads)
             assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
             assertEquals(null, controller.state.value.manipulation)
+            controller.updateDraft { it.copy(name = "Recovered edit") }
+            controller.save()
+            withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
+            assertEquals(2, writes)
             controller.close()
         }
 

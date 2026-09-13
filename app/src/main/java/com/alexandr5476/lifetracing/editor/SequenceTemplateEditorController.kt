@@ -140,7 +140,7 @@ class SequenceTemplateEditorController internal constructor(
     private var manipulationSession: SequenceManipulationSession? = null
     private var manipulationTextInputsBaseline: Map<String, SequenceEditorTextInput>? = null
     private var recordingManipulationInput = false
-    private var committedAwaitingReload: SequenceTemplate? = null
+    private var committedAwaitingReload: CommittedReload? = null
     private var sourceActionAwaitingReload: SequenceTemplateId? = null
 
     @Volatile private var closed = false
@@ -154,16 +154,26 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     fun retry() {
+        val committed = synchronized(commandLock) { committedAwaitingReload }
         val recovery = synchronized(commandLock) { sourceActionAwaitingReload }
-        if (recovery == null) {
-            load()
-        } else {
-            synchronized(commandLock) {
-                if (closed || saving) return
-                saving = true
-                mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
+        when {
+            committed != null -> {
+                synchronized(commandLock) {
+                    if (closed || saving) return
+                    saving = true
+                    mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
+                }
+                scope.launch { recoverCommitted(committed) }
             }
-            scope.launch { recoverSourceAction(recovery) }
+            recovery != null -> {
+                synchronized(commandLock) {
+                    if (closed || saving) return
+                    saving = true
+                    mutableState.update { it.copy(save = SequenceTemplateEditorSave.Saving) }
+                }
+                scope.launch { recoverSourceAction(recovery) }
+            }
+            else -> load()
         }
     }
 
@@ -333,7 +343,7 @@ class SequenceTemplateEditorController internal constructor(
         val (ready, submittedDraft) =
             synchronized(commandLock) {
                 val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-                if (closed || saving || sourceActionAwaitingReload != null) return
+                if (closed || saving || hasCommittedAwaitingReload()) return
                 saving = true
                 if (mutableState.value.hasInvalidInput(ready.draft)) {
                     saving = false
@@ -393,43 +403,11 @@ class SequenceTemplateEditorController internal constructor(
                                 submittedDraft,
                                 now(),
                             )
-                    }.also {
-                        durableTarget = SequenceTemplateEditorTarget.Existing(it.id)
-                        committedAwaitingReload = it
+                    }.let { sequence ->
+                        durableTarget = SequenceTemplateEditorTarget.Existing(sequence.id)
+                        CommittedReload(sequence, exitAfter).also { committedAwaitingReload = it }
                     }
-            val canonical = requireNotNull(loadSequence(committed.id)) { "Committed Sequence is unavailable" }
-            val loaded = loadEditorData(canonical)
-            val canonicalDraft = canonical.toAuthoringDraft()
-            synchronized(commandLock) {
-                durableTarget = SequenceTemplateEditorTarget.Existing(committed.id)
-                committedAwaitingReload = null
-                clearManipulationSession()
-                saving = false
-                if (!closed) {
-                    mutableState.update {
-                        it.copy(
-                            load =
-                                SequenceTemplateEditorLoad.Ready(
-                                    canonicalDraft,
-                                    canonical.sequence.revision,
-                                    canonicalDraft,
-                                ),
-                            save =
-                                if (exitAfter) {
-                                    SequenceTemplateEditorSave.Committed
-                                } else {
-                                    SequenceTemplateEditorSave.Idle
-                                },
-                            manipulation = null,
-                            textInputs = emptyMap(),
-                            availableActivities = loaded.activities,
-                            stepSourceIds = canonical.stepSourceIds(),
-                            sourceStatuses = loaded.sourceStatuses,
-                            appliedGeneration = it.appliedGeneration + if (exitAfter) 0 else 1,
-                        )
-                    }
-                }
-            }
+            completeCommittedReload(committed)
         } catch (cancelled: CancellationException) {
             synchronized(commandLock) { saving = false }
             throw cancelled
@@ -446,12 +424,12 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     private fun load() {
-        val target =
+        val (target, recovery) =
             synchronized(commandLock) {
                 if (closed || saving) return
                 clearManipulationSession()
                 mutableState.value = SequenceTemplateEditorState()
-                durableTarget
+                durableTarget to committedAwaitingReload
             }
         scope.launch {
             try {
@@ -463,13 +441,23 @@ class SequenceTemplateEditorController internal constructor(
                 val draft = authoring?.toAuthoringDraft() ?: SequenceTemplateDraft("", null)
                 val loaded = loadEditorData(authoring)
                 if (!closed) {
-                    mutableState.value =
-                        SequenceTemplateEditorState(
-                            load = SequenceTemplateEditorLoad.Ready(draft, authoring?.sequence?.revision, draft),
-                            availableActivities = loaded.activities,
-                            stepSourceIds = authoring?.stepSourceIds().orEmpty(),
-                            sourceStatuses = loaded.sourceStatuses,
-                        )
+                    synchronized(commandLock) {
+                        committedAwaitingReload = null
+                        mutableState.value =
+                            SequenceTemplateEditorState(
+                                load = SequenceTemplateEditorLoad.Ready(draft, authoring?.sequence?.revision, draft),
+                                save =
+                                    if (recovery?.exitAfter == true) {
+                                        SequenceTemplateEditorSave.Committed
+                                    } else {
+                                        SequenceTemplateEditorSave.Idle
+                                    },
+                                availableActivities = loaded.activities,
+                                stepSourceIds = authoring?.stepSourceIds().orEmpty(),
+                                sourceStatuses = loaded.sourceStatuses,
+                                appliedGeneration = if (recovery?.exitAfter == false) 1 else 0,
+                            )
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -482,6 +470,56 @@ class SequenceTemplateEditorController internal constructor(
                                     failure.message ?: "Unknown error",
                                 ),
                         )
+                }
+            }
+        }
+    }
+
+    private suspend fun recoverCommitted(committed: CommittedReload) {
+        try {
+            completeCommittedReload(committed)
+        } catch (cancelled: CancellationException) {
+            synchronized(commandLock) { saving = false }
+            throw cancelled
+        } catch (failure: Exception) {
+            synchronized(commandLock) {
+                saving = false
+                if (!closed) mutableState.update { it.copy(save = failure.toSaveFailure(committed = true)) }
+            }
+        }
+    }
+
+    private suspend fun completeCommittedReload(committed: CommittedReload) {
+        val canonical = requireNotNull(loadSequence(committed.sequence.id)) { "Committed Sequence is unavailable" }
+        val loaded = loadEditorData(canonical)
+        val canonicalDraft = canonical.toAuthoringDraft()
+        synchronized(commandLock) {
+            durableTarget = SequenceTemplateEditorTarget.Existing(committed.sequence.id)
+            committedAwaitingReload = null
+            clearManipulationSession()
+            saving = false
+            if (!closed) {
+                mutableState.update {
+                    it.copy(
+                        load =
+                            SequenceTemplateEditorLoad.Ready(
+                                canonicalDraft,
+                                canonical.sequence.revision,
+                                canonicalDraft,
+                            ),
+                        save =
+                            if (committed.exitAfter) {
+                                SequenceTemplateEditorSave.Committed
+                            } else {
+                                SequenceTemplateEditorSave.Idle
+                            },
+                        manipulation = null,
+                        textInputs = emptyMap(),
+                        availableActivities = loaded.activities,
+                        stepSourceIds = canonical.stepSourceIds(),
+                        sourceStatuses = loaded.sourceStatuses,
+                        appliedGeneration = it.appliedGeneration + if (committed.exitAfter) 0 else 1,
+                    )
                 }
             }
         }
@@ -729,6 +767,11 @@ private data class SourceActionCommand(
     val sequenceId: SequenceTemplateId,
     val expectedRevision: Long,
     val sourceRevision: Long?,
+)
+
+private data class CommittedReload(
+    val sequence: SequenceTemplate,
+    val exitAfter: Boolean,
 )
 
 private fun SequenceTemplateAuthoringState.stepSourceIds(): Map<SequenceNodeId, ActivityTemplateId?> =

@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
@@ -45,6 +46,8 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ExpandedLiveSequenceControllerTest {
     @Test
@@ -304,6 +307,56 @@ class ExpandedLiveSequenceControllerTest {
                 controller.state.first { !it.commandInFlight }
             }
             assertEquals(submitted, controller.state.value.currentValueDraft)
+            controller.close()
+        }
+
+    @Test
+    fun currentValueEditCannotSlipBetweenCommandCaptureAndDurableReservation() =
+        runBlocking {
+            val expanded = expanded(withValue = true)
+            val captured = CountDownLatch(1)
+            val releaseCapture = CountDownLatch(1)
+            val editFinished = CountDownLatch(1)
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    { commands += it },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                    onCurrentValueCommandCaptured = {
+                        captured.countDown()
+                        releaseCapture.await()
+                    },
+                )
+            controller.awaitLoaded()
+            val field = ActivitySnapshotFieldId("first-value")
+            controller.editNumber(field, "7")
+            val submitted = requireNotNull(controller.state.value.currentValueDraft)
+
+            Thread { controller.completeCurrent() }.apply { start() }
+            assertTrue(captured.await(1, TimeUnit.SECONDS))
+            Thread {
+                controller.editNumber(field, "8")
+                editFinished.countDown()
+            }.apply { start() }
+            assertFalse(editFinished.await(100, TimeUnit.MILLISECONDS))
+            releaseCapture.countDown()
+            assertTrue(editFinished.await(1, TimeUnit.SECONDS))
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight && commands.size == 1 } }
+
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+            val command = commands.single() as ExpandedSequenceCommand.Complete
+            val current = expanded.occurrences.single { it.occurrence.id == submitted.occurrenceId }
+            assertEquals(
+                submitted.overrides(current.activity.fields),
+                command.values,
+            )
             controller.close()
         }
 

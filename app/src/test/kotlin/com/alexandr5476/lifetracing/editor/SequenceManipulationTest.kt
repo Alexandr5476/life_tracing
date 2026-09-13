@@ -158,6 +158,27 @@ class SequenceManipulationTest {
         assertEquals(0, session.uiState().operationCount)
     }
 
+    @Test
+    fun structuralHistoryRetainsNoSequenceStepsPerMove() {
+        var current =
+            SequenceTemplateDraft(
+                "Large",
+                null,
+                nodes = (0 until 100).map { index -> SequenceNodeDraft.Step(step("step-$index", index)) },
+            )
+        val session = SequenceManipulationSession(current, id("step-0"))
+
+        repeat(50) { index ->
+            val before = current
+            val identity = id("step-$index")
+            current = requireNotNull(session.move(current, identity, SequenceDropDestination(position = 99 - index)))
+            session.record(snapshot(before, identity), snapshot(current, identity))
+        }
+
+        assertEquals(50, session.uiState().operationCount)
+        assertEquals(0, session.retainedHistoryStepCount())
+    }
+
     private fun draft() =
         SequenceTemplateDraft(
             "Workout",
