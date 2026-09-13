@@ -350,6 +350,45 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         java.time.Instant::now,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository
+                                    .getActivityTemplate(id)
+                                    ?.takeIf { it.deletedAt == null }
+                                    ?.revision
+                            }
+                        },
+                        { sequenceId, stepId, revision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.updateStepFromSourceTemplate(
+                                    sequenceId,
+                                    stepId,
+                                    revision,
+                                    at,
+                                )
+                            }
+                        },
+                        { sequenceId, stepId, sequenceRevision, sourceRevision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.updateSourceTemplateFromStep(
+                                    sequenceId,
+                                    stepId,
+                                    sequenceRevision,
+                                    sourceRevision,
+                                    at,
+                                )
+                            }
+                        },
+                        { sequenceId, stepId, revision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveStepAsNewActivityTemplate(
+                                    sequenceId,
+                                    stepId,
+                                    revision,
+                                    savedAt = at,
+                                )
+                            }
+                        },
                     )
                 },
                 { executionId ->

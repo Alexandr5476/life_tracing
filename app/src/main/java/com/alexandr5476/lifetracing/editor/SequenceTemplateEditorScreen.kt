@@ -868,6 +868,19 @@ private fun StepCard(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        val committedStepId = (step.identity as? DraftIdentity.Existing)?.id
+        val sourceId = committedStepId?.let(state.stepSourceIds::get)
+        if (committedStepId != null) {
+            sourceId?.let { source ->
+                LaunchedEffect(committedStepId, source) { controller.requestStepSource(committedStepId, source) }
+            }
+            StepSourceActions(
+                committedStepId,
+                state.stepSources[committedStepId],
+                state.sourceActionsAllowed(),
+                controller,
+            )
+        }
         OverrideToggle(
             R.string.sequence_editor_override_sound,
             step.overrides.timerEndSound,
@@ -951,6 +964,37 @@ private fun StepCard(
         } else {
             Text(stringResource(R.string.sequence_editor_inherit), style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+@Composable
+private fun StepSourceActions(
+    stepId: com.alexandr5476.lifetracing.domain.SequenceNodeId,
+    source: SequenceEditorStepSource?,
+    enabled: Boolean,
+    controller: SequenceTemplateEditorController,
+) {
+    if (!enabled) {
+        Text(
+            stringResource(R.string.sequence_editor_source_actions_require_apply),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        if (source is SequenceEditorStepSource.Active) {
+            LifeTracingSecondaryButton(
+                onClick = { controller.updateStepFromSource(stepId) },
+                enabled = enabled,
+            ) { Text(stringResource(R.string.sequence_editor_update_from_source)) }
+            LifeTracingSecondaryButton(
+                onClick = { controller.updateSourceTemplate(stepId) },
+                enabled = enabled,
+            ) { Text(stringResource(R.string.sequence_editor_update_source)) }
+        }
+        LifeTracingSecondaryButton(
+            onClick = { controller.saveStepAsNewTemplate(stepId) },
+            enabled = enabled,
+        ) { Text(stringResource(R.string.sequence_editor_save_as_new_template)) }
     }
 }
 

@@ -262,6 +262,10 @@
     <string name="sequence_editor_duplicate_step">Duplicate and move step</string>
     <string name="sequence_editor_move_repeat">Move or reorder repeat</string>
     <string name="sequence_editor_pending_duplicate">Pending duplicate; apply before editing</string>
+    <string name="sequence_editor_update_from_source">Update from source template</string>
+    <string name="sequence_editor_update_source">Update source template</string>
+    <string name="sequence_editor_save_as_new_template">Save as new template</string>
+    <string name="sequence_editor_source_actions_require_apply">Apply or save current changes before managing this source.</string>
     <string name="sequence_editor_saving">Saving…</string>
     <string name="sequence_editor_save_failure">Could not save the sequence. Your draft is still available.</string>
     <string name="sequence_editor_conflict">This sequence changed elsewhere. Reload or discard this draft before continuing.</string>

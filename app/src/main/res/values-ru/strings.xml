@@ -262,6 +262,10 @@
     <string name="sequence_editor_duplicate_step">Дублировать и переместить шаг</string>
     <string name="sequence_editor_move_repeat">Переместить или изменить порядок повтора</string>
     <string name="sequence_editor_pending_duplicate">Ожидающее дублирование; примените перед редактированием</string>
+    <string name="sequence_editor_update_from_source">Обновить из исходного шаблона</string>
+    <string name="sequence_editor_update_source">Обновить исходный шаблон</string>
+    <string name="sequence_editor_save_as_new_template">Сохранить как новый шаблон</string>
+    <string name="sequence_editor_source_actions_require_apply">Примените или сохраните текущие изменения перед работой с источником.</string>
     <string name="sequence_editor_saving">Сохранение…</string>
     <string name="sequence_editor_save_failure">Не удалось сохранить последовательность. Черновик сохранён.</string>
     <string name="sequence_editor_conflict">Последовательность изменилась в другом месте. Перезагрузите или отмените черновик.</string>
