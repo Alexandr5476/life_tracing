@@ -1,0 +1,386 @@
+@file:Suppress("LongMethod")
+
+package com.alexandr5476.lifetracing.live
+
+import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSequenceState
+import com.alexandr5476.lifetracing.domain.ActiveSession
+import com.alexandr5476.lifetracing.domain.ActiveSessionKind
+import com.alexandr5476.lifetracing.domain.ActiveSessionState
+import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
+import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
+import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotField
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
+import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.NumberExecutionValue
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceMaterializer
+import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
+import com.alexandr5476.lifetracing.domain.SequenceExecutionFactory
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceIntervalId
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
+import com.alexandr5476.lifetracing.domain.SequenceRuntimeEngine
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneOffset
+
+class ExpandedLiveSequenceControllerTest {
+    @Test
+    fun fiveStateActionMatrixIsExact() {
+        assertEquals(
+            ExpandedSequenceActions(
+                pause = true,
+                completeCurrent = true,
+                editCurrentValues = true,
+                goNow = true,
+                makeNext = true,
+                runtimeAdd = true,
+                doAgain = true,
+            ),
+            expandedActions(ActiveSequenceState.RUNNING_CURRENT),
+        )
+        assertEquals(
+            ExpandedSequenceActions(resume = true, editCurrentValues = true),
+            expandedActions(ActiveSequenceState.PAUSED_CURRENT),
+        )
+        assertEquals(
+            ExpandedSequenceActions(startNext = true, goNow = true, runtimeAdd = true, doAgain = true),
+            expandedActions(ActiveSequenceState.WAITING_NEXT),
+        )
+        assertEquals(
+            ExpandedSequenceActions(pause = true, goNow = true, runtimeAdd = true, doAgain = true),
+            expandedActions(ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN),
+        )
+        assertEquals(
+            ExpandedSequenceActions(resume = true),
+            expandedActions(ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN),
+        )
+        assertEquals(
+            setOf(RuntimeInsertionPlacement.TO_END, RuntimeInsertionPlacement.AFTER_CURRENT),
+            validRuntimePlacements(ActiveSequenceState.RUNNING_CURRENT),
+        )
+        assertEquals(
+            setOf(RuntimeInsertionPlacement.TO_END, RuntimeInsertionPlacement.START_NOW),
+            validRuntimePlacements(ActiveSequenceState.WAITING_NEXT),
+        )
+        assertTrue(validRuntimePlacements(ActiveSequenceState.PAUSED_CURRENT).isEmpty())
+    }
+
+    @Test
+    fun frozenJumpConfirmationPreventsWriterUntilConfirmed() =
+        runBlocking {
+            val expanded = expanded(confirmJump = true)
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller = controller(this, expanded, commands)
+            controller.awaitLoaded()
+            val target =
+                expanded.occurrences
+                    .last()
+                    .occurrence.id
+
+            controller.requestGoNow(target)
+            assertInstanceOf(ExpandedSequenceConfirmation.GoNow::class.java, controller.state.value.confirmation)
+            assertTrue(commands.isEmpty())
+
+            controller.confirmPending()
+            withTimeout(1_000) { controller.state.first { commands.size == 1 && !it.commandInFlight } }
+            assertEquals(ExpandedSequenceCommand.GoNow::class, commands.single()::class)
+            controller.close()
+        }
+
+    @Test
+    fun staleUiActionIsRejectedAgainstLatestPausedProjection() =
+        runBlocking {
+            val running = expanded()
+            val pausedState = running.copy(state = ActiveSequenceState.PAUSED_CURRENT)
+            var current = running
+            val semantic = MutableStateFlow(0L)
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller = controller(this, running, commands, semantic) { current }
+            controller.awaitLoaded()
+
+            current = pausedState
+            semantic.value++
+            withTimeout(1_000) { controller.state.first { it.sequence?.state == ActiveSequenceState.PAUSED_CURRENT } }
+            controller.completeCurrent()
+            controller.makeNext(
+                running.occurrences
+                    .last()
+                    .occurrence.id,
+            )
+
+            assertTrue(commands.isEmpty())
+            val failure = withTimeout(1_000) { controller.state.first { it.commandFailure != null }.commandFailure }
+            assertInstanceOf(ExpandedSequenceFailure.Rejected::class.java, failure)
+            controller.close()
+        }
+
+    @Test
+    fun routeSessionRetainsExactControllerAndRejectsAnotherExecution() {
+        val owner = ExpandedLiveSequenceRouteSessionOwner()
+        val controller = stubController(SequenceExecutionId("a"))
+        val first = owner.acquire(SequenceExecutionId("a")) { controller }
+
+        assertSame(first, owner.acquire(SequenceExecutionId("a")) { error("must reuse") })
+        org.junit.jupiter.api.assertThrows<IllegalArgumentException> {
+            owner.acquire(SequenceExecutionId("b")) { stubController(SequenceExecutionId("b")) }
+        }
+        owner.release(first)
+    }
+
+    @Test
+    fun durableCommandsAreSerializedAndCoordinationFailureNeverRepeatsTheWriter() =
+        runBlocking {
+            val expanded = expanded()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var activeWriters = 0
+            var maxActiveWriters = 0
+            var writes = 0
+            var coordinationCalls = 0
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    {
+                        writes++
+                        activeWriters++
+                        maxActiveWriters = maxOf(maxActiveWriters, activeWriters)
+                        entered.complete(Unit)
+                        release.await()
+                        activeWriters--
+                    },
+                    {
+                        coordinationCalls++
+                        error("platform")
+                    },
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitLoaded()
+
+            controller.pause()
+            controller.pause()
+            withTimeout(1_000) { entered.await() }
+            assertEquals(1, writes)
+            assertEquals(1, maxActiveWriters)
+            release.complete(Unit)
+            withTimeout(1_000) { controller.state.first { coordinationCalls == 2 && !it.commandInFlight } }
+
+            assertEquals(2, writes)
+            assertEquals(1, maxActiveWriters)
+            assertEquals(2, coordinationCalls)
+            assertInstanceOf(ExpandedSequenceFailure.Coordination::class.java, controller.state.value.commandFailure)
+            controller.close()
+        }
+
+    @Test
+    fun noLiveDraftKeepsMissingDistinctFromZeroAcrossRetainedRouteSession() =
+        runBlocking {
+            val expanded = expanded(mode = TimeTrackingMode.NO_LIVE_TRACKING, withValue = true)
+            val controller = controller(this, expanded, mutableListOf())
+            controller.awaitLoaded()
+            val fieldId = ActivitySnapshotFieldId("first-value")
+            assertEquals(
+                5L,
+                (
+                    controller.state.value.currentValueDraft
+                        ?.values
+                        ?.get(fieldId) as NumberExecutionValue
+                ).scaledValue,
+            )
+
+            controller.editNumber(fieldId, "0")
+            assertEquals(
+                0L,
+                (
+                    controller.state.value.currentValueDraft
+                        ?.values
+                        ?.get(fieldId) as NumberExecutionValue
+                ).scaledValue,
+            )
+            val owner = ExpandedLiveSequenceRouteSessionOwner()
+            val retained = owner.acquire(expanded.runtime.execution.id) { controller }
+            assertSame(retained, owner.acquire(expanded.runtime.execution.id) { error("must retain") })
+            assertEquals(
+                0L,
+                (
+                    retained.controller.state.value.currentValueDraft
+                        ?.values
+                        ?.get(fieldId) as NumberExecutionValue
+                ).scaledValue,
+            )
+            retained.controller.markMissing(fieldId)
+            assertTrue(
+                retained.controller.state.value.currentValueDraft
+                    ?.values
+                    ?.containsKey(fieldId) == true,
+            )
+            assertEquals(
+                null,
+                retained.controller.state.value.currentValueDraft
+                    ?.values
+                    ?.get(fieldId),
+            )
+            owner.release(retained)
+        }
+
+    private fun controller(
+        scope: kotlinx.coroutines.CoroutineScope,
+        initial: com.alexandr5476.lifetracing.domain.ExpandedLiveSequence,
+        commands: MutableList<ExpandedSequenceCommand>,
+        semantic: MutableStateFlow<Long> = MutableStateFlow(0L),
+        read: () -> com.alexandr5476.lifetracing.domain.ExpandedLiveSequence = { initial },
+    ) = ExpandedLiveSequenceController(
+        scope,
+        initial.runtime.execution.id,
+        { ExpandedLiveSequenceRead.Active(read()) },
+        { commands += it },
+        { semantic.value++ },
+        semantic,
+        { null },
+        { emptyList() },
+        { Instant.EPOCH.plusSeconds(1) },
+    )
+
+    private fun stubController(id: SequenceExecutionId) =
+        ExpandedLiveSequenceController(
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+            id,
+            { ExpandedLiveSequenceRead.StaleOrInactive },
+            {},
+            {},
+            MutableStateFlow(0L),
+            { null },
+            { emptyList() },
+            { Instant.EPOCH },
+        )
+
+    private suspend fun ExpandedLiveSequenceController.awaitLoaded() {
+        withTimeout(1_000) { state.first { it.sequence != null && !it.loading } }
+    }
+
+    private fun expanded(
+        confirmJump: Boolean = false,
+        mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+        withValue: Boolean = false,
+    ): com.alexandr5476.lifetracing.domain.ExpandedLiveSequence {
+        var occurrence = 0
+        var child = 0
+        var interval = 0
+        val first = activity("first", mode, withValue)
+        val second = activity("second")
+        val activities = listOf(first, second).associateBy(ActivityConfigSnapshot::id)
+        val snapshot =
+            SequenceConfigSnapshot(
+                SequenceSnapshotId("snapshot"),
+                "Sequence A",
+                null,
+                null,
+                null,
+                null,
+                Instant.EPOCH,
+                SequenceSnapshotSettings(
+                    autoAdvance = false,
+                    sequenceStartCountdown = Duration.ZERO,
+                    beforeEachStepCountdown = Duration.ZERO,
+                    transitionSound = true,
+                    transitionVibration = true,
+                    keepScreenAwake = false,
+                    confirmJump = confirmJump,
+                    confirmEarlyEnd = true,
+                    noLiveTimeAccounting = NoLiveTimeAccounting.ACTIVE,
+                ),
+                nodes =
+                    listOf(
+                        SequenceSnapshotActivityStep(SequenceSnapshotNodeId("first"), 0, first.id),
+                        SequenceSnapshotActivityStep(SequenceSnapshotNodeId("second"), 1, second.id),
+                    ),
+            )
+        val engine =
+            SequenceRuntimeEngine(
+                SequenceExecutionFactory(
+                    { SequenceExecutionId("a") },
+                    RuntimeOccurrenceMaterializer { SequenceOccurrenceId("occurrence-${++occurrence}") },
+                ),
+                ActivityExecutionFactory { ActivityExecutionId("child-${++child}") },
+                { ActivityExecutionPauseId("pause") },
+                { SequenceIntervalId("interval-${++interval}") },
+                { SequenceOccurrenceId("added-${++occurrence}") },
+            )
+        val state = engine.start(snapshot, activities, Instant.EPOCH, Instant.EPOCH, ZoneOffset.UTC)
+        val runtime =
+            ActiveSequenceRuntime(
+                ActiveSession(
+                    ActiveSessionKind.SEQUENCE,
+                    ActiveSessionState.RUNNING,
+                    null,
+                    state.execution.id,
+                    state.execution.updatedAt,
+                ),
+                state.execution,
+                snapshot,
+                activities,
+                state.currentChild,
+                null,
+            )
+        return ExpandedLiveSequenceProjector.project(runtime, state.children.values.toList())
+    }
+
+    private fun activity(
+        id: String,
+        mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+        withValue: Boolean = false,
+    ) = ActivityConfigSnapshot(
+        ActivitySnapshotId(id),
+        id,
+        null,
+        mode,
+        null,
+        null,
+        null,
+        null,
+        false,
+        Instant.EPOCH,
+        fields =
+            if (withValue) {
+                listOf(
+                    ActivitySnapshotField(
+                        ActivitySnapshotFieldId("$id-value"),
+                        null,
+                        0,
+                        "Value",
+                        type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                        displayPrecision = 0,
+                        defaultNumberScaled = 5,
+                    ),
+                )
+            } else {
+                emptyList()
+            },
+    )
+}

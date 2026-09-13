@@ -47,6 +47,7 @@ import com.alexandr5476.lifetracing.domain.DailyPlan
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -68,6 +69,7 @@ fun DailyRoute(
     controller: DailyController,
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
+    onExpandSequence: (SequenceExecutionId) -> Unit = {},
 ) {
     DisposableEffect(controller) {
         controller.onRouteEntered()
@@ -79,6 +81,7 @@ fun DailyRoute(
         onAction = controller::dispatch,
         onStartActivity = onStartActivity,
         onLibrary = onLibrary,
+        onExpandSequence = onExpandSequence,
     )
 }
 
@@ -89,6 +92,7 @@ internal fun DailyScreen(
     displayElapsedRealtimeMs: Long? = null,
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
+    onExpandSequence: (SequenceExecutionId) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -105,8 +109,10 @@ internal fun DailyScreen(
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
                 is DailyLoadState.Failure -> FailureContent(onAction)
-                is DailyLoadState.Empty -> DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs)
-                is DailyLoadState.Content -> DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs)
+                is DailyLoadState.Empty ->
+                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence)
+                is DailyLoadState.Content ->
+                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence)
             }
         }
     }
@@ -213,11 +219,12 @@ private fun DailyContent(
     daily: com.alexandr5476.lifetracing.domain.DailyRead,
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long?,
+    onExpandSequence: (SequenceExecutionId) -> Unit,
 ) {
     val plans = daily.dayPlans + daily.weekPlans
     val active: @Composable () -> Unit = {
         if (state.dateRelation == DailyDateRelation.TODAY) {
-            daily.active?.let { ActiveSection(it, state, onAction, displayElapsedRealtimeMs) }
+            daily.active?.let { ActiveSection(it, state, onAction, displayElapsedRealtimeMs, onExpandSequence) }
         }
     }
     val planned: @Composable () -> Unit = { PlannedSection(plans, state.dateRelation) }
@@ -245,11 +252,13 @@ private fun ActiveSection(
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long?,
+    onExpandSequence: (SequenceExecutionId) -> Unit,
 ) {
     SectionTitle(R.string.daily_active)
     when (active) {
         is DailyActive.Activity -> ActiveActivityCard(active, state, onAction, displayElapsedRealtimeMs)
-        is DailyActive.Sequence -> ActiveSequenceCard(active, state, onAction, displayElapsedRealtimeMs)
+        is DailyActive.Sequence ->
+            ActiveSequenceCard(active, state, onAction, displayElapsedRealtimeMs, onExpandSequence)
     }
 }
 
@@ -317,6 +326,7 @@ private fun ActiveSequenceCard(
     state: DailyPresentationState,
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long?,
+    onExpandSequence: (SequenceExecutionId) -> Unit,
 ) {
     val elapsedNow = displayTick(state.runtimeDisplayBaseline, displayElapsedRealtimeMs)
     val runtime = active.runtime
@@ -352,6 +362,10 @@ private fun ActiveSequenceCard(
             -> TransitionSequenceContent(active, state.runtimeDisplayBaseline, elapsedNow)
         }
         SequenceControls(active, state.commandInFlight, onAction)
+        LifeTracingSecondaryButton(
+            onClick = { onExpandSequence(active.runtime.execution.id) },
+            enabled = !state.commandInFlight,
+        ) { Text(stringResource(R.string.daily_expand_sequence)) }
     }
 }
 

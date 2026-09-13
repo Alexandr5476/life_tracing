@@ -59,6 +59,75 @@ class MainActivityRouteSessionTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun productionExpandedSequenceRetainsExactRouteAcrossRecreationAndClosesWhenTerminal() {
+        val suffix = System.nanoTime().toString()
+        val name = "Expanded route $suffix"
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val createdAt = Instant.now()
+        val activity =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Expanded step $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = createdAt,
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    name,
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(activity.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = createdAt.plusMillis(1),
+            )
+        val started =
+            LibraryRepository.create(composeTestRule.activity).startSequenceFromTemplate(
+                sequence.id,
+                createdAt.plusMillis(2),
+                createdAt.plusMillis(2),
+                ZoneId.systemDefault(),
+                sequence.revision,
+            )
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
+        }
+        val retained = requireNotNull(composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertEquals(started.execution.id, retained.executionId)
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+        assertSame(retained, composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertEquals(started.execution.id, retained.controller.executionId)
+
+        LiveSessionRepository.create(composeTestRule.activity).endSequenceEarly(
+            started.execution.id,
+            Instant.now(),
+        )
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
+    }
+
+    @Test
     fun productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly() {
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
         composeTestRule

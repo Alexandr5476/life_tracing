@@ -4,6 +4,12 @@ import java.time.Instant
 
 class LiveSessionConflictException : IllegalArgumentException("Another live session is already active")
 
+class StaleSequenceRouteException : IllegalStateException("Expanded Sequence route is stale")
+
+class StaleSequenceTargetException(
+    message: String,
+) : IllegalArgumentException(message)
+
 enum class ActiveSessionKind {
     ACTIVITY,
     SEQUENCE,

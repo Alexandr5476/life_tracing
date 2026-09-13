@@ -397,6 +397,8 @@ class RuntimeDisplayBaseline private constructor(
     private val anchorElapsedRealtimeMs: Long,
     private val activeElapsedAtAnchor: Duration,
     private val activeProgresses: Boolean,
+    private val pauseElapsedAtAnchor: Duration?,
+    private val pauseProgresses: Boolean,
     private val currentStepStopwatchElapsedAtAnchor: Duration?,
     private val currentStepStopwatchProgresses: Boolean,
     private val timerZeroElapsedRealtimeMs: Long?,
@@ -413,6 +415,11 @@ class RuntimeDisplayBaseline private constructor(
             activeElapsedAtAnchor.plusMillis(monotonicDelta(elapsedRealtimeNowMs))
         } else {
             activeElapsedAtAnchor
+        }
+
+    fun pauseElapsed(elapsedRealtimeNowMs: Long): Duration? =
+        pauseElapsedAtAnchor?.let {
+            if (pauseProgresses) it.plusMillis(monotonicDelta(elapsedRealtimeNowMs)) else it
         }
 
     fun currentStepStopwatchElapsed(elapsedRealtimeNowMs: Long): Duration? =
@@ -457,14 +464,20 @@ class RuntimeDisplayBaseline private constructor(
                 (runtime as? ActiveSequenceRuntime)?.let {
                     TransitionCountdownProgressResolver.running(it) ?: TransitionCountdownProgressResolver.paused(it)
                 }
+            val sequenceTimeline =
+                (runtime as? ActiveSequenceRuntime)?.let { sequenceTimeline(it.execution, observedWall) }
             return RuntimeDisplayBaseline(
                 RuntimeDisplayIdentity.capture(runtime),
                 elapsedRealtimeNowMs,
                 when (runtime) {
                     is ActiveActivityRuntime -> activityElapsed(runtime.execution, observedWall)
-                    is ActiveSequenceRuntime -> sequenceElapsed(runtime.execution, observedWall)
+                    is ActiveSequenceRuntime -> requireNotNull(sequenceTimeline).active
                 },
                 activeProgresses(runtime),
+                sequenceTimeline?.pause,
+                runtime is ActiveSequenceRuntime &&
+                    !activeProgresses(runtime) &&
+                    runtime.session.state != ActiveSessionState.PAUSED,
                 currentStopwatch?.let { activityElapsed(it, observedWall) },
                 currentStopwatch != null && activeProgresses(runtime),
                 timerDeadline?.let(anchor::elapsedAt),
@@ -554,10 +567,10 @@ class RuntimeDisplayBaseline private constructor(
             return ActivityExecutionDurationCalculator.calculate(startedAt, effectiveEnd, pauses)
         }
 
-        private fun sequenceElapsed(
+        private fun sequenceTimeline(
             execution: SequenceExecution,
             observedWall: Instant,
-        ): Duration {
+        ): SequenceTimelineDurations {
             val effectiveEnd = maxOf(observedWall, execution.updatedAt, execution.startedAt)
             val intervals =
                 execution.intervals.map { interval ->
@@ -569,7 +582,7 @@ class RuntimeDisplayBaseline private constructor(
                         interval
                     }
                 }
-            return SequenceTimelineCalculator.calculate(execution.startedAt, effectiveEnd, intervals).active
+            return SequenceTimelineCalculator.calculate(execution.startedAt, effectiveEnd, intervals)
         }
     }
 }

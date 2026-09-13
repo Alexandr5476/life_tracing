@@ -32,6 +32,8 @@ import com.alexandr5476.lifetracing.launcher.toEntryValue
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
+import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
+import com.alexandr5476.lifetracing.live.ExpandedSequenceCommand
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -93,6 +95,11 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> SequenceTemplateEditorController = {
         error("Sequence editor is unavailable")
     },
+    private val expandedLiveSequenceControllerFactory: (
+        com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ) -> ExpandedLiveSequenceController = {
+        error("Expanded live Sequence is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -109,6 +116,10 @@ class LifeTracingRuntimeGraph internal constructor(
     fun createSequenceTemplateEditorController(
         target: SequenceTemplateEditorTarget,
     ): SequenceTemplateEditorController = sequenceTemplateEditorControllerFactory(target)
+
+    internal fun createExpandedLiveSequenceController(
+        executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ): ExpandedLiveSequenceController = expandedLiveSequenceControllerFactory(executionId)
 
     companion object {
         @Volatile
@@ -341,8 +352,67 @@ class LifeTracingRuntimeGraph internal constructor(
                         java.time.Instant::now,
                     )
                 },
+                { executionId ->
+                    ExpandedLiveSequenceController(
+                        scope,
+                        executionId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                repository.getExpandedSequence(id)
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executeExpandedSequenceCommand(command, repository)
+                            }
+                        },
+                        coordinator::onRuntimeStateChanged,
+                        coordinator.semanticGeneration,
+                        { coordinator.displayBaseline },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getReusableActivityCatalog()
+                            }
+                        },
+                        wallClock,
+                    )
+                },
             )
         }
+    }
+}
+
+internal fun executeExpandedSequenceCommand(
+    command: ExpandedSequenceCommand,
+    repository: LiveSessionRepository,
+) {
+    when (command) {
+        is ExpandedSequenceCommand.Pause -> repository.pauseActiveSequence(command.executionId, command.at)
+        is ExpandedSequenceCommand.Resume -> repository.resumeActiveSequence(command.executionId, command.at)
+        is ExpandedSequenceCommand.StartNext -> repository.startNextSequenceStep(command.executionId, command.at)
+        is ExpandedSequenceCommand.Complete ->
+            repository.completeCurrentSequenceStep(
+                command.executionId,
+                command.occurrenceId,
+                command.values,
+                command.at,
+            )
+        is ExpandedSequenceCommand.GoNow ->
+            repository.goNow(command.executionId, command.occurrenceId, command.at)
+        is ExpandedSequenceCommand.MakeNext ->
+            repository.makeNext(command.executionId, command.occurrenceId, command.at)
+        is ExpandedSequenceCommand.DoAgain ->
+            repository.doAgain(command.executionId, command.occurrenceId, command.placement, command.at)
+        is ExpandedSequenceCommand.RuntimeAdd ->
+            repository.runtimeAdd(command.executionId, command.source, command.placement, command.at)
+        is ExpandedSequenceCommand.SaveValues ->
+            repository.updateCurrentSequenceStepValues(
+                command.executionId,
+                command.occurrenceId,
+                command.values,
+                command.at,
+            )
+        is ExpandedSequenceCommand.EndEarly -> repository.endSequenceEarly(command.executionId, command.at)
     }
 }
 

@@ -108,4 +108,25 @@ class MainActivityNavigationTest {
         assertEquals(1, refreshes)
         assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
     }
+
+    @Test
+    fun expandedSequenceRouteRetainsItsConcreteExecutionIdentity() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openExpandedLiveSequence("sequence-a")
+        backStack.openExpandedLiveSequence("sequence-b")
+
+        assertEquals(listOf(DailyRoot, ExpandedLiveSequenceRoot("sequence-a")), backStack)
+    }
+
+    @Test
+    fun staleExpandedRouteCanOnlyRemoveItsOwnExecutionEntry() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, ExpandedLiveSequenceRoot("sequence-b"))
+
+        backStack.removeExpandedLiveSequence("sequence-a")
+        assertEquals(listOf(DailyRoot, ExpandedLiveSequenceRoot("sequence-b")), backStack)
+
+        backStack.removeExpandedLiveSequence("sequence-b")
+        assertEquals(listOf(DailyRoot), backStack)
+    }
 }

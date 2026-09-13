@@ -6,6 +6,7 @@
     "LargeClass",
     "ComplexCondition",
     "LongParameterList",
+    "TooGenericExceptionCaught",
 ) // One coordinator owns the single atomic live-runtime boundary.
 
 package com.alexandr5476.lifetracing.data.persistence
@@ -58,6 +59,8 @@ import com.alexandr5476.lifetracing.domain.SequenceRuntimeState
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
+import com.alexandr5476.lifetracing.domain.StaleSequenceRouteException
+import com.alexandr5476.lifetracing.domain.StaleSequenceTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
@@ -356,22 +359,86 @@ class LiveSessionRepository internal constructor(
     fun completeCurrentSequenceStep(
         expectedOccurrenceId: SequenceOccurrenceId,
         at: Instant,
+    ): SequenceRuntimeState = completeCurrentSequenceStepFor(null, expectedOccurrenceId, emptyList(), at)
+
+    fun completeCurrentSequenceStep(
+        expectedExecutionId: SequenceExecutionId,
+        expectedOccurrenceId: SequenceOccurrenceId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+        at: Instant,
     ): SequenceRuntimeState =
-        runSequenceCommand(at) { loaded, reconciled ->
+        completeCurrentSequenceStepFor(expectedExecutionId, expectedOccurrenceId, valueOverrides, at)
+
+    private fun completeCurrentSequenceStepFor(
+        expectedExecutionId: SequenceExecutionId?,
+        expectedOccurrenceId: SequenceOccurrenceId,
+        valueOverrides: List<ActivityExecutionValueOverride>,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(expectedExecutionId, at) { loaded, reconciled ->
             sequenceEngine.completeCurrent(
                 reconciled,
                 expectedOccurrenceId,
                 at,
                 loaded.snapshot,
                 loaded.activities,
+                valueOverrides,
             )
         }
+
+    fun updateCurrentSequenceStepValues(
+        expectedExecutionId: SequenceExecutionId,
+        expectedOccurrenceId: SequenceOccurrenceId,
+        valueOverrides: List<ActivityExecutionValueOverride>,
+        at: Instant,
+    ): ActivityExecution =
+        transaction {
+            requireSequenceSession(expectedExecutionId)
+            val loaded = loadSequenceRuntime(expectedExecutionId)
+            val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
+            persistSequenceRuntime(loaded, reconciled)
+            try {
+                if (reconciled.execution.currentOccurrenceId != expectedOccurrenceId) {
+                    throw StaleSequenceTargetException("Current value target changed before the command")
+                }
+                val occurrence = reconciled.execution.occurrences.single { it.id == expectedOccurrenceId }
+                val activity = loaded.activities.getValue(occurrence.activitySnapshotId)
+                require(activity.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+                    "No-live values remain transient until completion"
+                }
+                val before =
+                    requireNotNull(reconciled.currentChild) {
+                        "Timed current occurrence is missing its child execution"
+                    }
+                val after = ActivityExecutionValuePolicy.apply(before, activity, valueOverrides)
+                database.activityExecutionDao().replaceLiveSequenceChildValues(
+                    expectedExecutionId.value,
+                    expectedOccurrenceId.value,
+                    after.toEntityAggregate(),
+                )
+                Result.success(after)
+            } catch (failure: IllegalArgumentException) {
+                Result.failure(failure)
+            }
+        }.getOrThrow()
 
     fun goNow(
         targetOccurrenceId: SequenceOccurrenceId,
         at: Instant,
+    ): SequenceRuntimeState = goNowFor(null, targetOccurrenceId, at)
+
+    fun goNow(
+        expectedExecutionId: SequenceExecutionId,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState = goNowFor(expectedExecutionId, targetOccurrenceId, at)
+
+    private fun goNowFor(
+        expectedExecutionId: SequenceExecutionId?,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
     ): SequenceRuntimeState =
-        runSequenceCommand(at) { loaded, reconciled ->
+        runSequenceCommand(expectedExecutionId, at) { loaded, reconciled ->
             sequenceEngine.goNow(
                 reconciled,
                 targetOccurrenceId,
@@ -384,8 +451,20 @@ class LiveSessionRepository internal constructor(
     fun makeNext(
         targetOccurrenceId: SequenceOccurrenceId,
         at: Instant,
+    ): SequenceRuntimeState = makeNextFor(null, targetOccurrenceId, at)
+
+    fun makeNext(
+        expectedExecutionId: SequenceExecutionId,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
+    ): SequenceRuntimeState = makeNextFor(expectedExecutionId, targetOccurrenceId, at)
+
+    private fun makeNextFor(
+        expectedExecutionId: SequenceExecutionId?,
+        targetOccurrenceId: SequenceOccurrenceId,
+        at: Instant,
     ): SequenceRuntimeState =
-        runSequenceCommand(at) { loaded, reconciled ->
+        runSequenceCommand(expectedExecutionId, at) { loaded, reconciled ->
             sequenceEngine.makeNext(
                 reconciled,
                 targetOccurrenceId,
@@ -399,8 +478,22 @@ class LiveSessionRepository internal constructor(
         occurrenceId: SequenceOccurrenceId,
         placement: RuntimeInsertionPlacement,
         at: Instant,
+    ): SequenceRuntimeState = doAgainFor(null, occurrenceId, placement, at)
+
+    fun doAgain(
+        expectedExecutionId: SequenceExecutionId,
+        occurrenceId: SequenceOccurrenceId,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState = doAgainFor(expectedExecutionId, occurrenceId, placement, at)
+
+    private fun doAgainFor(
+        expectedExecutionId: SequenceExecutionId?,
+        occurrenceId: SequenceOccurrenceId,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
     ): SequenceRuntimeState =
-        runSequenceCommand(at) { loaded, reconciled ->
+        runSequenceCommand(expectedExecutionId, at) { loaded, reconciled ->
             sequenceEngine.doAgain(
                 reconciled,
                 occurrenceId,
@@ -416,10 +509,24 @@ class LiveSessionRepository internal constructor(
         source: ActivityEntrySource,
         placement: RuntimeInsertionPlacement,
         at: Instant,
+    ): SequenceRuntimeState = runtimeAddFor(null, source, placement, at)
+
+    fun runtimeAdd(
+        expectedExecutionId: SequenceExecutionId,
+        source: ActivityEntrySource,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
+    ): SequenceRuntimeState = runtimeAddFor(expectedExecutionId, source, placement, at)
+
+    private fun runtimeAddFor(
+        expectedExecutionId: SequenceExecutionId?,
+        source: ActivityEntrySource,
+        placement: RuntimeInsertionPlacement,
+        at: Instant,
     ): SequenceRuntimeState =
         transaction {
-            requireSequenceSession()
-            val loaded = loadSequenceRuntime()
+            requireSequenceSession(expectedExecutionId)
+            val loaded = loadSequenceRuntime(expectedExecutionId)
             val commandAt = persisted(at)
             val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, commandAt)
             persistSequenceRuntime(loaded, reconciled)
@@ -466,25 +573,55 @@ class LiveSessionRepository internal constructor(
             }
         }.getOrThrow()
 
-    fun endSequenceEarly(at: Instant): SequenceRuntimeState =
-        runSequenceCommand(at) { loaded, reconciled ->
+    fun endSequenceEarly(at: Instant): SequenceRuntimeState = endSequenceEarlyFor(null, at)
+
+    fun endSequenceEarly(
+        expectedExecutionId: SequenceExecutionId,
+        at: Instant,
+    ): SequenceRuntimeState = endSequenceEarlyFor(expectedExecutionId, at)
+
+    private fun endSequenceEarlyFor(
+        expectedExecutionId: SequenceExecutionId?,
+        at: Instant,
+    ): SequenceRuntimeState =
+        runSequenceCommand(expectedExecutionId, at) { loaded, reconciled ->
             sequenceEngine.endEarly(reconciled, at, loaded.snapshot, loaded.activities)
         }
 
-    fun startNextSequenceStep(at: Instant): SequenceRuntimeState =
+    fun startNextSequenceStep(at: Instant): SequenceRuntimeState = startNextSequenceStepFor(null, at)
+
+    fun startNextSequenceStep(
+        expectedExecutionId: SequenceExecutionId,
+        at: Instant,
+    ): SequenceRuntimeState = startNextSequenceStepFor(expectedExecutionId, at)
+
+    private fun startNextSequenceStepFor(
+        expectedExecutionId: SequenceExecutionId?,
+        at: Instant,
+    ): SequenceRuntimeState =
         transaction {
-            requireSequenceSession(ActiveSessionState.WAITING_NEXT)
-            val loaded = loadSequenceRuntime()
+            requireSequenceSession(expectedExecutionId, ActiveSessionState.WAITING_NEXT)
+            val loaded = loadSequenceRuntime(expectedExecutionId)
             val updated = sequenceEngine.startNext(loaded.state, at, loaded.snapshot, loaded.activities)
             persistSequenceRuntime(loaded, updated)
             updated
         }
 
-    fun pauseActiveSequence(at: Instant): SequenceRuntimeState {
+    fun pauseActiveSequence(at: Instant): SequenceRuntimeState = pauseActiveSequenceFor(null, at)
+
+    fun pauseActiveSequence(
+        expectedExecutionId: SequenceExecutionId,
+        at: Instant,
+    ): SequenceRuntimeState = pauseActiveSequenceFor(expectedExecutionId, at)
+
+    private fun pauseActiveSequenceFor(
+        expectedExecutionId: SequenceExecutionId?,
+        at: Instant,
+    ): SequenceRuntimeState {
         val result =
             transaction {
-                requireSequenceSession()
-                val loaded = loadSequenceRuntime()
+                requireSequenceSession(expectedExecutionId)
+                val loaded = loadSequenceRuntime(expectedExecutionId)
                 val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
                 if (reconciled.execution.status == SequenceExecutionStatus.COMPLETED) {
                     persistSequenceRuntime(loaded, reconciled)
@@ -507,10 +644,20 @@ class LiveSessionRepository internal constructor(
         return result.state
     }
 
-    fun resumeActiveSequence(at: Instant): SequenceRuntimeState =
+    fun resumeActiveSequence(at: Instant): SequenceRuntimeState = resumeActiveSequenceFor(null, at)
+
+    fun resumeActiveSequence(
+        expectedExecutionId: SequenceExecutionId,
+        at: Instant,
+    ): SequenceRuntimeState = resumeActiveSequenceFor(expectedExecutionId, at)
+
+    private fun resumeActiveSequenceFor(
+        expectedExecutionId: SequenceExecutionId?,
+        at: Instant,
+    ): SequenceRuntimeState =
         transaction {
-            requireSequenceSession(ActiveSessionState.PAUSED)
-            val loaded = loadSequenceRuntime()
+            requireSequenceSession(expectedExecutionId, ActiveSessionState.PAUSED)
+            val loaded = loadSequenceRuntime(expectedExecutionId)
             val resumed = sequenceEngine.resume(loaded.state, at, loaded.snapshot, loaded.activities)
             persistSequenceRuntime(loaded, resumed)
             resumed
@@ -736,12 +883,13 @@ class LiveSessionRepository internal constructor(
     }
 
     private fun runSequenceCommand(
+        expectedExecutionId: SequenceExecutionId?,
         at: Instant,
         command: (LoadedSequenceRuntime, SequenceRuntimeState) -> SequenceRuntimeState,
     ): SequenceRuntimeState =
         transaction {
-            requireSequenceSession()
-            val loaded = loadSequenceRuntime()
+            requireSequenceSession(expectedExecutionId)
+            val loaded = loadSequenceRuntime(expectedExecutionId)
             val reconciled = sequenceEngine.reconcile(loaded.state, loaded.snapshot, loaded.activities, at)
             val result =
                 try {
@@ -774,8 +922,8 @@ class LiveSessionRepository internal constructor(
                 throw IllegalArgumentException("Plan is not a Runtime Add source")
         }
 
-    private fun loadSequenceRuntime(): LoadedSequenceRuntime {
-        val session = requireSequenceSession()
+    private fun loadSequenceRuntime(expectedExecutionId: SequenceExecutionId? = null): LoadedSequenceRuntime {
+        val session = requireSequenceSession(expectedExecutionId)
         val id = requireNotNull(session.sequenceExecutionId).value
         val execution = requireNotNull(database.sequenceExecutionDao().getAggregate(id)).toDomain()
         val snapshot = loadSequenceSnapshot(execution.snapshotId)
@@ -938,12 +1086,22 @@ class LiveSessionRepository internal constructor(
             require(it.kind == ActiveSessionKind.ACTIVITY && it.state == state) { "Activity session state mismatch" }
         }
 
-    private fun requireSequenceSession(expectedState: ActiveSessionState? = null): ActiveSession =
-        requireNotNull(getActiveSessionLocked()).also {
+    private fun requireSequenceSession(
+        expectedExecutionId: SequenceExecutionId? = null,
+        expectedState: ActiveSessionState? = null,
+    ): ActiveSession {
+        if (expectedExecutionId != null) {
+            val raw = database.activeSessionDao().get()
+            if (raw?.kind != ActiveSessionKind.SEQUENCE || raw.sequenceExecutionId != expectedExecutionId) {
+                throw StaleSequenceRouteException()
+            }
+        }
+        return requireNotNull(getActiveSessionLocked()).also {
             require(it.kind == ActiveSessionKind.SEQUENCE && (expectedState == null || it.state == expectedState)) {
                 "Sequence session state mismatch"
             }
         }
+    }
 
     private fun updateSession(
         state: ActiveSessionState,
