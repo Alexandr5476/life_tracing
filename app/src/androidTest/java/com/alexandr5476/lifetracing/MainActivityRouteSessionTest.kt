@@ -44,6 +44,7 @@ import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -59,7 +60,7 @@ class MainActivityRouteSessionTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun productionExpandedSequenceRetainsExactRouteAcrossRecreationAndClosesWhenTerminal() {
+    fun productionExpandedSequenceSystemBackReleasesExactSessionAndAllowsTheNextExecution() {
         val suffix = System.nanoTime().toString()
         val name = "Expanded route $suffix"
         val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
@@ -100,7 +101,10 @@ class MainActivityRouteSessionTest {
 
         composeTestRule.activityRule.scenario.recreate()
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule
+                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
         }
         composeTestRule
             .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
@@ -108,7 +112,35 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
         }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.expanded_sequence_back))
+            .assertIsDisplayed()
+        val firstSession = requireNotNull(composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertEquals(started.execution.id, firstSession.executionId)
+
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
+        }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.expanded_sequence_back))
+            .assertIsDisplayed()
         val retained = requireNotNull(composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertNotSame(firstSession, retained)
         assertEquals(started.execution.id, retained.executionId)
 
         composeTestRule.activityRule.scenario.recreate()
@@ -116,13 +148,47 @@ class MainActivityRouteSessionTest {
         assertSame(retained, composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
         assertEquals(started.execution.id, retained.controller.executionId)
 
-        LiveSessionRepository.create(composeTestRule.activity).endSequenceEarly(
-            started.execution.id,
-            Instant.now(),
-        )
-        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
+        }
+        live.endSequenceEarly(started.execution.id, Instant.now())
+        val secondStartedAt = Instant.now()
+        val second =
+            LibraryRepository.create(composeTestRule.activity).startSequenceFromTemplate(
+                sequence.id,
+                secondStartedAt,
+                secondStartedAt,
+                ZoneId.systemDefault(),
+                sequence.revision,
+            )
+        assertNotEquals(started.execution.id, second.execution.id)
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
+                ?.executionId == second.execution.id
+        }
+        assertEquals(
+            second.execution.id,
+            requireNotNull(
+                composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession,
+            ).controller.executionId,
+        )
+
+        live.endSequenceEarly(second.execution.id, Instant.now())
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession ==
+                null
         }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
     }

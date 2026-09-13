@@ -292,6 +292,7 @@
     <string name="expanded_sequence_resume">Resume</string>
     <string name="expanded_sequence_pause">Pause</string>
     <string name="expanded_sequence_more">More</string>
+    <string name="expanded_sequence_global_actions">Sequence actions</string>
     <string name="expanded_sequence_row_actions">%1$s actions</string>
     <string name="expanded_sequence_go_now">Go now</string>
     <string name="expanded_sequence_make_next">Make next</string>

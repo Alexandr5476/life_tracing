@@ -292,6 +292,7 @@
     <string name="expanded_sequence_resume">Продолжить</string>
     <string name="expanded_sequence_pause">Пауза</string>
     <string name="expanded_sequence_more">Ещё</string>
+    <string name="expanded_sequence_global_actions">Действия последовательности</string>
     <string name="expanded_sequence_row_actions">Действия: %1$s</string>
     <string name="expanded_sequence_go_now">Перейти сейчас</string>
     <string name="expanded_sequence_make_next">Сделать следующим</string>

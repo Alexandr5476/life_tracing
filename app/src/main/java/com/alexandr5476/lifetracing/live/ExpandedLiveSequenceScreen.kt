@@ -122,6 +122,17 @@ internal fun ExpandedLiveSequenceScreen(
             item {
                 PrimaryControls(sequence, state.commandInFlight, controller)
             }
+            item {
+                GlobalActions(
+                    actions,
+                    state.commandInFlight,
+                    onRuntimeAdd = {
+                        controller.loadRuntimeAddCatalog()
+                        addOpen = true
+                    },
+                    onEndEarly = controller::requestEndEarly,
+                )
+            }
             items(
                 sequence.occurrences,
                 key = { it.occurrence.id.value },
@@ -137,26 +148,6 @@ internal fun ExpandedLiveSequenceScreen(
                     controller,
                 )
             }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(MaterialTheme.spacing.xLarge),
-                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                ) {
-                    if (actions.runtimeAdd) {
-                        LifeTracingSecondaryButton(
-                            enabled = !state.commandInFlight,
-                            onClick = {
-                                controller.loadRuntimeAddCatalog()
-                                addOpen = true
-                            },
-                        ) { Text(stringResource(R.string.expanded_sequence_runtime_add)) }
-                    }
-                    LifeTracingSecondaryButton(
-                        enabled = !state.commandInFlight,
-                        onClick = controller::requestEndEarly,
-                    ) { Text(stringResource(R.string.expanded_sequence_end_early)) }
-                }
-            }
         }
     }
     ConfirmationDialog(state.confirmation, controller)
@@ -167,6 +158,45 @@ internal fun ExpandedLiveSequenceScreen(
             controller,
             onDismiss = { addOpen = false },
         )
+    }
+}
+
+@Composable
+private fun GlobalActions(
+    actions: ExpandedSequenceActions,
+    inFlight: Boolean,
+    onRuntimeAdd: () -> Unit,
+    onEndEarly: () -> Unit,
+) {
+    var open by remember(actions) { mutableStateOf(false) }
+    val description = stringResource(R.string.expanded_sequence_global_actions)
+    Box(Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.xLarge)) {
+        TextButton(
+            enabled = !inFlight,
+            onClick = { open = true },
+            modifier =
+                Modifier
+                    .testTag("expanded-sequence-global-actions")
+                    .semantics { contentDescription = description },
+        ) { Text(stringResource(R.string.expanded_sequence_more)) }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (actions.runtimeAdd) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.expanded_sequence_runtime_add)) },
+                    onClick = {
+                        open = false
+                        onRuntimeAdd()
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.expanded_sequence_end_early)) },
+                onClick = {
+                    open = false
+                    onEndEarly()
+                },
+            )
+        }
     }
 }
 

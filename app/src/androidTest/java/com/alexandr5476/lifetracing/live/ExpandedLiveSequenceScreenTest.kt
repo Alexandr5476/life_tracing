@@ -2,6 +2,7 @@
 
 package com.alexandr5476.lifetracing.live
 
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollAction
@@ -9,6 +10,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.platform.app.InstrumentationRegistry
@@ -50,6 +52,7 @@ import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
@@ -82,9 +85,15 @@ class ExpandedLiveSequenceScreenTest {
             .assertTextEquals(string(R.string.expanded_sequence_field_value, "Value", "0"))
             .assertIsDisplayed()
         composeRule.onNodeWithText("Activity 1").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.expanded_sequence_repeat_iteration, 2)).assertIsDisplayed()
+        composeRule
+            .onNodeWithText(string(R.string.expanded_sequence_repeat_iteration, 2))
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule.onNodeWithText("Activity 2").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_added)).assertIsDisplayed()
+        composeRule
+            .onNodeWithText(string(R.string.expanded_sequence_runtime_added))
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule
             .onNodeWithTag("expanded-sequence-value-occurrence-2-value", useUnmergedTree = true)
             .performScrollTo()
@@ -94,12 +103,18 @@ class ExpandedLiveSequenceScreenTest {
             .onNode(hasScrollAction())
             .performScrollToNode(hasTestTag("expanded-sequence-occurrence-occurrence-3"))
         composeRule.onNodeWithText("Activity 3").assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.expanded_sequence_skipped)).assertIsDisplayed()
+        composeRule
+            .onNodeWithText(string(R.string.expanded_sequence_skipped))
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule
             .onNode(hasScrollAction())
             .performScrollToNode(hasTestTag("expanded-sequence-occurrence-occurrence-4"))
         composeRule.onNodeWithText("Activity 4").assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.expanded_sequence_deleted)).assertIsDisplayed()
+        composeRule
+            .onNodeWithText(string(R.string.expanded_sequence_deleted))
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     @Test
@@ -118,6 +133,68 @@ class ExpandedLiveSequenceScreenTest {
 
         composeRule.onNodeWithText("Activity 0").assertIsDisplayed()
         composeRule.onNodeWithText("Activity 9999").assertDoesNotExist()
+    }
+
+    @Test
+    fun globalSecondaryOverflowIsStateAwareAndNeverPermanentlyRendersItsActions() {
+        val expanded = expanded(1)
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        val controller = controller(expanded, commands)
+        val uiState = mutableStateOf(ExpandedLiveSequenceState(sequence = expanded, loading = false))
+        composeRule.setContent {
+            LifeTracingTheme {
+                ExpandedLiveSequenceScreen(uiState.value, controller, {}, 0)
+            }
+        }
+        val cases =
+            listOf(
+                ActiveSequenceState.RUNNING_CURRENT to true,
+                ActiveSequenceState.PAUSED_CURRENT to false,
+                ActiveSequenceState.WAITING_NEXT to true,
+                ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN to true,
+                ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN to false,
+            )
+
+        cases.forEach { (sequenceState, runtimeAdd) ->
+            composeRule.runOnIdle {
+                uiState.value =
+                    ExpandedLiveSequenceState(sequence = expanded.copy(state = sequenceState), loading = false)
+            }
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).assertDoesNotExist()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).assertDoesNotExist()
+            composeRule.onNodeWithTag("expanded-sequence-global-actions").performClick()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).assertIsDisplayed()
+            if (runtimeAdd) {
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).assertIsDisplayed()
+            } else {
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).assertDoesNotExist()
+            }
+        }
+        assertTrue(commands.isEmpty())
+    }
+
+    @Test
+    fun globalOverflowPreservesEarlyEndConfirmationAndRuntimeAddDialog() {
+        val expanded = expanded(1)
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        val controller = controller(expanded, commands)
+        composeRule.setContent {
+            LifeTracingTheme {
+                ExpandedLiveSequenceRoute(controller, {}, {})
+            }
+        }
+
+        composeRule.onNodeWithTag("expanded-sequence-global-actions").performClick()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).performClick()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm_end_title)).assertIsDisplayed()
+        assertTrue(commands.isEmpty())
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel)).performClick()
+
+        composeRule.onNodeWithTag("expanded-sequence-global-actions").performClick()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_reusable_activity)).assertIsDisplayed()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_one_off)).assertIsDisplayed()
+        assertTrue(commands.isEmpty())
     }
 
     private fun expanded(count: Int): ExpandedLiveSequence {
@@ -264,18 +341,20 @@ class ExpandedLiveSequenceScreenTest {
         )
     }
 
-    private fun controller(expanded: ExpandedLiveSequence) =
-        ExpandedLiveSequenceController(
-            CoroutineScope(Dispatchers.Unconfined),
-            expanded.runtime.execution.id,
-            { ExpandedLiveSequenceRead.Active(expanded) },
-            {},
-            {},
-            MutableStateFlow(0L),
-            { null },
-            { emptyList() },
-            { Instant.EPOCH },
-        )
+    private fun controller(
+        expanded: ExpandedLiveSequence,
+        commands: MutableList<ExpandedSequenceCommand> = mutableListOf(),
+    ) = ExpandedLiveSequenceController(
+        CoroutineScope(Dispatchers.Unconfined),
+        expanded.runtime.execution.id,
+        { ExpandedLiveSequenceRead.Active(expanded) },
+        { commands += it },
+        {},
+        MutableStateFlow(0L),
+        { null },
+        { emptyList() },
+        { Instant.EPOCH },
+    )
 
     private fun string(
         id: Int,

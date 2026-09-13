@@ -38,6 +38,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -146,7 +147,16 @@ class ExpandedLiveSequenceControllerTest {
         org.junit.jupiter.api.assertThrows<IllegalArgumentException> {
             owner.acquire(SequenceExecutionId("b")) { stubController(SequenceExecutionId("b")) }
         }
-        owner.release(first)
+        owner.release(SequenceExecutionId("b"))
+        assertSame(first, owner.activeSession)
+        owner.release(SequenceExecutionId("a"))
+        assertNull(owner.activeSession)
+
+        val second = owner.acquire(SequenceExecutionId("b")) { stubController(SequenceExecutionId("b")) }
+        owner.release(SequenceExecutionId("a"))
+        assertSame(second, owner.activeSession)
+        owner.release(second)
+        assertNull(owner.activeSession)
     }
 
     @Test

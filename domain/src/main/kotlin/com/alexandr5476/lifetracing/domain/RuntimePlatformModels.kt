@@ -476,8 +476,10 @@ class RuntimeDisplayBaseline private constructor(
                 activeProgresses(runtime),
                 sequenceTimeline?.pause,
                 runtime is ActiveSequenceRuntime &&
-                    !activeProgresses(runtime) &&
-                    runtime.session.state != ActiveSessionState.PAUSED,
+                    runtime.execution.intervals
+                        .singleOrNull { it.endedAt == null }
+                        ?.kind
+                        ?.let { it != SequenceIntervalKind.ACTIVE_STEP } == true,
                 currentStopwatch?.let { activityElapsed(it, observedWall) },
                 currentStopwatch != null && activeProgresses(runtime),
                 timerDeadline?.let(anchor::elapsedAt),

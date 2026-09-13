@@ -141,8 +141,19 @@ internal fun LifeTracingApp(
                 sequenceTemplateEditorRouteSessions ?: remember { SequenceTemplateEditorRouteSessionOwner() }
             val expandedSequenceSessions =
                 expandedLiveSequenceRouteSessions ?: remember { ExpandedLiveSequenceRouteSessionOwner() }
+            val closeExpanded: (String) -> Unit = { expectedExecutionId ->
+                expandedSequenceSessions.release(
+                    com.alexandr5476.lifetracing.domain
+                        .SequenceExecutionId(expectedExecutionId),
+                )
+                backStack.removeExpandedLiveSequence(expectedExecutionId)
+            }
             NavDisplay(
                 backStack = backStack,
+                onBack = {
+                    val expanded = backStack.lastOrNull() as? ExpandedLiveSequenceRoot
+                    if (expanded == null) backStack.removeLastOrNull() else closeExpanded(expanded.executionId)
+                },
                 entryProvider =
                     entryProvider {
                         entry<DailyRoot> {
@@ -327,10 +338,7 @@ internal fun LifeTracingApp(
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
                                     }
                                 }
-                            val close = {
-                                expandedSequenceSessions.release(session)
-                                backStack.removeExpandedLiveSequence(route.executionId)
-                            }
+                            val close = { closeExpanded(route.executionId) }
                             ExpandedLiveSequenceRoute(session.controller, onBack = close, onStale = close)
                         }
                     },

@@ -26,6 +26,10 @@ internal class ExpandedLiveSequenceRouteSessionOwner : ViewModel() {
         session = null
     }
 
+    fun release(expectedExecutionId: SequenceExecutionId) {
+        session?.takeIf { it.executionId == expectedExecutionId }?.let(::release)
+    }
+
     override fun onCleared() {
         session?.controller?.close()
         session = null
