@@ -1,4 +1,4 @@
-@file:Suppress("LongMethod")
+@file:Suppress("LargeClass", "LongMethod")
 
 package com.alexandr5476.lifetracing.live
 
@@ -32,8 +32,11 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -47,6 +50,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class ExpandedLiveSequenceControllerTest {
@@ -384,6 +388,93 @@ class ExpandedLiveSequenceControllerTest {
             val current = expanded.occurrences.single { it.occurrence.id == submitted.occurrenceId }
             assertEquals(submitted.overrides(current.activity.fields), command.values)
             controller.close()
+        }
+
+    @Test
+    fun queuedPauseKeepsTheValueGateOwnedWhenSaveValuesIsRejectedBeforeCapture() =
+        runBlocking {
+            val expanded = expanded(withAllValueTypes = true)
+            val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+            val scope = CoroutineScope(dispatcher)
+            val dispatcherBlocked = CompletableDeferred<Unit>()
+            val releaseDispatcher = CompletableDeferred<Unit>()
+            val pauseEntered = CompletableDeferred<Unit>()
+            val releasePause = CompletableDeferred<Unit>()
+            val coordinationEntered = CompletableDeferred<Unit>()
+            val releaseCoordination = CompletableDeferred<Unit>()
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            var captures = 0
+            val controller =
+                ExpandedLiveSequenceController(
+                    scope,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    {
+                        commands += it
+                        pauseEntered.complete(Unit)
+                        releasePause.await()
+                    },
+                    {
+                        coordinationEntered.complete(Unit)
+                        releaseCoordination.await()
+                    },
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                    onCurrentValueCommandCaptured = { captures++ },
+                )
+            try {
+                controller.awaitLoaded()
+                val number = ActivitySnapshotFieldId("first-number")
+                val text = ActivitySnapshotFieldId("first-text")
+                val category = ActivitySnapshotFieldId("first-category")
+                val option =
+                    com.alexandr5476.lifetracing.domain
+                        .ActivitySnapshotCategoryOptionId("first-option")
+                controller.editNumber(number, "7")
+                val submitted = requireNotNull(controller.state.value.currentValueDraft)
+
+                scope.launch {
+                    dispatcherBlocked.complete(Unit)
+                    releaseDispatcher.await()
+                }
+                dispatcherBlocked.await()
+                controller.pause()
+                controller.saveCurrentValues()
+
+                assertEquals(0, captures)
+                assertTrue(controller.state.value.commandInFlight)
+                assertInstanceOf(ExpandedSequenceFailure.Rejected::class.java, controller.state.value.commandFailure)
+                controller.editNumber(number, "8")
+                controller.editText(text, "after-submit")
+                controller.editCategory(category, option)
+                controller.markMissing(number)
+                assertEquals(submitted, controller.state.value.currentValueDraft)
+
+                releaseDispatcher.complete(Unit)
+                pauseEntered.await()
+                releasePause.complete(Unit)
+                coordinationEntered.await()
+                assertTrue(controller.state.value.commandInFlight)
+                controller.editNumber(number, "8")
+                controller.editText(text, "after-submit")
+                controller.editCategory(category, option)
+                controller.markMissing(number)
+                assertEquals(submitted, controller.state.value.currentValueDraft)
+
+                releaseCoordination.complete(Unit)
+                withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+
+                assertEquals(
+                    listOf(ExpandedSequenceCommand.Pause(expanded.runtime.execution.id, Instant.EPOCH.plusSeconds(1))),
+                    commands,
+                )
+                assertEquals(submitted, controller.state.value.currentValueDraft)
+            } finally {
+                controller.close()
+                dispatcher.close()
+            }
         }
 
     @Test

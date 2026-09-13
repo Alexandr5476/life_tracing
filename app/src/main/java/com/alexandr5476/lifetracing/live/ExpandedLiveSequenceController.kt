@@ -220,6 +220,7 @@ internal class ExpandedLiveSequenceController(
     private val loadGeneration = AtomicLong()
     private val commandMutex = Mutex()
     private val commandCaptureLock = Any()
+    private var commandReservations = 0
     private val mutableState = MutableStateFlow(ExpandedLiveSequenceState())
     val state: StateFlow<ExpandedLiveSequenceState> = mutableState
     private val initialSemanticGeneration = semanticGeneration.value
@@ -544,41 +545,63 @@ internal class ExpandedLiveSequenceController(
                         return
                     }
                     onCurrentValueCommandCaptured?.invoke()
-                    mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+                    reserveCommand()
                     command
                 }
             } else {
+                synchronized(commandCaptureLock) { reserveCommand() }
                 null
             }
         scope.launch {
-            commandMutex.withLock {
-                val command = captured ?: active()?.let(build)
-                if (command == null || command.executionId != executionId) {
-                    reject()
-                    return@withLock
+            var commandFailure: ExpandedSequenceFailure? = null
+            try {
+                commandMutex.withLock {
+                    val command = captured ?: active()?.let(build)
+                    if (command == null || command.executionId != executionId) {
+                        commandFailure = ExpandedSequenceFailure.Rejected("Action is not valid for the loaded runtime")
+                        return@withLock
+                    }
+                    mutableState.update { it.copy(commandFailure = null) }
+                    try {
+                        execute(command)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: StaleSequenceRouteException) {
+                        mutableState.update { it.copy(stale = true, currentValueDraft = null) }
+                    } catch (failure: StaleSequenceTargetException) {
+                        commandFailure = ExpandedSequenceFailure.StaleTarget(failure.message())
+                    } catch (failure: Exception) {
+                        commandFailure = ExpandedSequenceFailure.Rejected(failure.message())
+                    }
+                    try {
+                        coordinateRuntimeStateChanged()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        commandFailure = ExpandedSequenceFailure.Coordination(failure.message())
+                        refresh()
+                    }
                 }
-                if (captured == null) mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
-                var commandFailure: ExpandedSequenceFailure? = null
-                try {
-                    execute(command)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: StaleSequenceRouteException) {
-                    mutableState.update { it.copy(stale = true, currentValueDraft = null) }
-                } catch (failure: StaleSequenceTargetException) {
-                    commandFailure = ExpandedSequenceFailure.StaleTarget(failure.message())
-                } catch (failure: Exception) {
-                    commandFailure = ExpandedSequenceFailure.Rejected(failure.message())
-                }
-                try {
-                    coordinateRuntimeStateChanged()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: Exception) {
-                    commandFailure = ExpandedSequenceFailure.Coordination(failure.message())
-                    refresh()
-                }
-                mutableState.update { it.copy(commandInFlight = false, commandFailure = commandFailure) }
+            } finally {
+                releaseCommand(commandFailure)
+            }
+        }
+    }
+
+    private fun reserveCommand() {
+        commandReservations++
+        mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+    }
+
+    private fun releaseCommand(commandFailure: ExpandedSequenceFailure?) {
+        synchronized(commandCaptureLock) {
+            check(commandReservations > 0)
+            commandReservations--
+            mutableState.update {
+                it.copy(
+                    commandInFlight = commandReservations > 0,
+                    commandFailure = commandFailure,
+                )
             }
         }
     }
