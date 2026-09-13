@@ -534,6 +534,10 @@ internal class ExpandedLiveSequenceController(
         val captured =
             if (capturesCurrentValues) {
                 synchronized(commandCaptureLock) {
+                    if (mutableState.value.commandInFlight) {
+                        reject()
+                        return
+                    }
                     val command = active()?.let(build)
                     if (command == null || command.executionId != executionId) {
                         reject()

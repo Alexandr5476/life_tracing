@@ -311,6 +311,82 @@ class ExpandedLiveSequenceControllerTest {
         }
 
     @Test
+    fun secondSaveValuesIsRejectedWhileTheFirstValueCommandOwnsTheReservation() =
+        runBlocking {
+            val expanded = expanded(withAllValueTypes = true)
+            val writerEntered = CompletableDeferred<Unit>()
+            val releaseWriter = CompletableDeferred<Unit>()
+            val writerCompleted = CompletableDeferred<Unit>()
+            val coordinationEntered = CompletableDeferred<Unit>()
+            val releaseCoordination = CompletableDeferred<Unit>()
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            var captures = 0
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    {
+                        commands += it
+                        writerEntered.complete(Unit)
+                        releaseWriter.await()
+                        writerCompleted.complete(Unit)
+                    },
+                    {
+                        coordinationEntered.complete(Unit)
+                        releaseCoordination.await()
+                    },
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                    onCurrentValueCommandCaptured = { captures++ },
+                )
+            controller.awaitLoaded()
+            val number = ActivitySnapshotFieldId("first-number")
+            val text = ActivitySnapshotFieldId("first-text")
+            val category = ActivitySnapshotFieldId("first-category")
+            val option =
+                com.alexandr5476.lifetracing.domain
+                    .ActivitySnapshotCategoryOptionId("first-option")
+            controller.editNumber(number, "7")
+            val submitted = requireNotNull(controller.state.value.currentValueDraft)
+
+            controller.saveCurrentValues()
+            writerEntered.await()
+            controller.saveCurrentValues()
+
+            assertEquals(1, captures)
+            assertTrue(controller.state.value.commandInFlight)
+            assertInstanceOf(ExpandedSequenceFailure.Rejected::class.java, controller.state.value.commandFailure)
+
+            controller.editNumber(number, "8")
+            controller.editText(text, "after-submit")
+            controller.editCategory(category, option)
+            controller.markMissing(number)
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+
+            releaseWriter.complete(Unit)
+            writerCompleted.await()
+            coordinationEntered.await()
+            controller.editNumber(number, "8")
+            controller.editText(text, "after-submit")
+            controller.editCategory(category, option)
+            controller.markMissing(number)
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+
+            releaseCoordination.complete(Unit)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+
+            assertEquals(1, commands.size)
+            assertEquals(submitted, controller.state.value.currentValueDraft)
+            val command = commands.single() as ExpandedSequenceCommand.SaveValues
+            val current = expanded.occurrences.single { it.occurrence.id == submitted.occurrenceId }
+            assertEquals(submitted.overrides(current.activity.fields), command.values)
+            controller.close()
+        }
+
+    @Test
     fun currentValueEditCannotSlipBetweenCommandCaptureAndDurableReservation() =
         runBlocking {
             val expanded = expanded(withValue = true)

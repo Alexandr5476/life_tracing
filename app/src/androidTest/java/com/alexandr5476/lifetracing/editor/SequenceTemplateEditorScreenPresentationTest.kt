@@ -780,6 +780,81 @@ class SequenceTemplateEditorScreenPresentationTest {
     }
 
     @Test
+    fun doneRetryRecoversCanonicallyWithoutRepeatingTheWriterAndExitsOnce() {
+        val initial =
+            pointerAuthoring(
+                ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                ActivityStep(SequenceNodeId("b"), 1, ActivitySnapshotId("snapshot-b")),
+            )
+        var canonical = initial
+        var loads = 0
+        var writes = 0
+        var committed = 0
+        var backs = 0
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(initial.sequence.id),
+                {
+                    loads++
+                    if (loads == 2) error("temporary reload failure")
+                    canonical
+                },
+                { emptyList() },
+                { _, _, _ -> error("Create is not used") },
+                { _, revision, draft, _ ->
+                    writes++
+                    canonical =
+                        canonical.copy(
+                            sequence =
+                                canonical.sequence.copy(
+                                    name = draft.name,
+                                    revision = revision + 1,
+                                    updatedAt = Instant.EPOCH.plusSeconds(1),
+                                ),
+                        )
+                    canonical.sequence
+                },
+                Instant::now,
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                SequenceTemplateEditorRoute(
+                    controller,
+                    onCommitted = { committed++ },
+                    onBack = { backs++ },
+                )
+            }
+        }
+        awaitReady(controller)
+        controller.updateDraft { it.copy(name = "Recovered Done") }
+
+        controller.save()
+        composeTestRule.waitUntil { controller.state.value.save is SequenceTemplateEditorSave.Failure }
+        assertEquals(1, writes)
+        assertEquals(2, loads)
+        assertTrue(
+            (controller.state.value.save as SequenceTemplateEditorSave.Failure).committedAwaitingReload,
+        )
+
+        controller.retry()
+        composeTestRule.waitUntil {
+            val ready = controller.state.value.load as? SequenceTemplateEditorLoad.Ready
+            controller.state.value.save is SequenceTemplateEditorSave.Committed &&
+                ready?.expectedRevision == 2L &&
+                ready.draft.name == "Recovered Done"
+        }
+        composeTestRule.waitUntil { committed == 1 }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, writes)
+        assertEquals(3, loads)
+        assertEquals(1, committed)
+        assertEquals(0, backs)
+        controller.close()
+    }
+
+    @Test
     fun pointerDragMovesRepeatChildToTopLevel() {
         val controller =
             existingController(
