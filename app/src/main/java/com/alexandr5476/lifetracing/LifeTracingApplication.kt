@@ -140,10 +140,6 @@ class LifeTracingRuntimeGraph internal constructor(
                             Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
                         },
                 )
-            val editorScope =
-                kotlinx.coroutines.CoroutineScope(
-                    scope.coroutineContext + kotlinx.coroutines.Dispatchers.Main.immediate,
-                )
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
             val libraryRepository = LibraryRepository.create(context)
@@ -300,7 +296,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     ActivityTemplateEditorController(
-                        editorScope,
+                        scope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -322,7 +318,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     SequenceTemplateEditorController(
-                        editorScope,
+                        scope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {

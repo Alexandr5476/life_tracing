@@ -69,6 +69,14 @@ import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.Callable
 
+internal data class LivePlanLink(
+    val planId: String,
+    val kind: PlanTrackableKind,
+    val executionId: String,
+    val snapshotId: String,
+    val status: String,
+)
+
 class LiveSessionRepository internal constructor(
     private val database: LifeTracingDatabase,
     nextActivityExecutionId: () -> ActivityExecutionId,
@@ -100,6 +108,40 @@ class LiveSessionRepository internal constructor(
     fun getActiveSession(): ActiveSession? = transaction(::getActiveSessionLocked)
 
     fun getActiveRuntime(): ActiveRuntime? = transaction(::getActiveRuntimeLocked)
+
+    internal fun getActivePlanIdentityLocked(): LivePlanLink? {
+        val session = database.activeSessionDao().get() ?: return null
+        return when (session.kind) {
+            ActiveSessionKind.ACTIVITY -> {
+                val link =
+                    database
+                        .planEntryDao()
+                        .activityExecutionLinks(listOf(requireNotNull(session.activityExecutionId).value))
+                        .singleOrNull()
+                require(
+                    link != null && link.contextType == "STANDALONE" && session.state.name == link.status,
+                ) { "Canonical active Activity linkage is inconsistent" }
+                link.planEntryId?.let {
+                    LivePlanLink(it, PlanTrackableKind.ACTIVITY, link.id, link.snapshotId, link.status)
+                }
+            }
+            ActiveSessionKind.SEQUENCE -> {
+                val link =
+                    database
+                        .planEntryDao()
+                        .sequenceExecutionLinks(listOf(requireNotNull(session.sequenceExecutionId).value))
+                        .singleOrNull()
+                require(
+                    link != null &&
+                        (session.state == ActiveSessionState.PAUSED) == (link.status == "PAUSED") &&
+                        link.status in setOf("RUNNING", "PAUSED"),
+                ) { "Canonical active Sequence linkage is inconsistent" }
+                link.planEntryId?.let {
+                    LivePlanLink(it, PlanTrackableKind.SEQUENCE, link.id, link.snapshotId, link.status)
+                }
+            }
+        }
+    }
 
     fun getExpandedSequence(expectedExecutionId: SequenceExecutionId): ExpandedLiveSequenceRead =
         transaction {

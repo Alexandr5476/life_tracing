@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -228,20 +229,79 @@ class PlanReadRepositoryTest {
 
         assertFalse(
             sql.any {
-                "activity_snapshot_settings" in it ||
-                    "activity_snapshot_fields" in it ||
+                "activity_snapshot_fields" in it ||
                     "activity_snapshot_category_options" in it
             },
         )
         assertFalse(
             sql.any {
-                "sequence_snapshot_settings" in it ||
-                    "sequence_snapshot_fields" in it ||
+                "sequence_snapshot_fields" in it ||
                     "sequence_snapshot_category_options" in it ||
                     "sequence_snapshot_nodes" in it ||
                     "sequence_snapshot_step_overrides" in it
             },
         )
+        assertTrue(sql.any { "activity_snapshot_settings" in it })
+        assertTrue(sql.any { "sequence_snapshot_settings" in it })
+    }
+
+    @Test
+    fun weekRejectsActivitySnapshotWithoutRequiredSettings() {
+        database.planEntryDao().insert(plan("missing-activity-settings", activity = "no-live", day = "2026-08-20"))
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM activity_snapshot_settings WHERE snapshot_id = 'no-live'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) { week("2026-08-17", "2026-08-20") }
+    }
+
+    @Test
+    fun weekRejectsInvalidCompactActivityTrackingMetadata() {
+        database.planEntryDao().insert(plan("invalid-tracking", activity = "no-live", day = "2026-08-20"))
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("PRAGMA ignore_check_constraints = ON")
+        try {
+            sql.execSQL(
+                "UPDATE activity_snapshots SET time_tracking_mode = 'TIMER', timer_target_ms = NULL " +
+                    "WHERE id = 'no-live'",
+            )
+        } finally {
+            sql.execSQL("PRAGMA ignore_check_constraints = OFF")
+        }
+
+        assertThrows(IllegalArgumentException::class.java) { week("2026-08-17", "2026-08-20") }
+    }
+
+    @Test
+    fun weekRejectsSequenceSnapshotWithoutRequiredSettings() {
+        database.planEntryDao().insert(
+            plan("missing-sequence-settings", sequence = "sequence", precision = "WEEK", week = "2026-08-17"),
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM sequence_snapshot_settings WHERE sequence_snapshot_id = 'sequence'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) { week("2026-08-17", "2026-08-20") }
+    }
+
+    @Test
+    fun cancelledListRejectsSnapshotWithoutRequiredSettings() {
+        database.planEntryDao().insert(
+            plan(
+                "cancelled-missing-settings",
+                activity = "no-live",
+                day = "2026-08-20",
+                status = "CANCELLED",
+                cancelledAt = 2,
+            ),
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM activity_snapshot_settings WHERE snapshot_id = 'no-live'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            reads.getCancelledPage(CancelledPlanPageQuery(0, 10))
+        }
     }
 
     @Test
@@ -329,6 +389,39 @@ class PlanReadRepositoryTest {
     }
 
     @Test
+    fun engagementRejectsLinkedLiveRootThatDoesNotOwnTheActiveSession() {
+        database.planEntryDao().insert(plan("first", activity = "stopwatch", day = "2026-08-20"))
+        database.planEntryDao().insert(plan("second", activity = "stopwatch", day = "2026-08-20"))
+        val live = LiveSessionRepository.create(database)
+        val first =
+            live.startActivityFromPlan(
+                PlanEntryId("first"),
+                Instant.parse("2026-08-20T10:00:00Z"),
+                Instant.parse("2026-08-20T10:00:00Z"),
+                ZoneOffset.UTC,
+            )
+        assertEquals(1, database.activeSessionDao().clear())
+        live.startActivityFromPlan(
+            PlanEntryId("second"),
+            Instant.parse("2026-08-20T11:00:00Z"),
+            Instant.parse("2026-08-20T11:00:00Z"),
+            ZoneOffset.UTC,
+        )
+        assertEquals(1, database.activeSessionDao().clear())
+        database.activeSessionDao().insert(
+            com.alexandr5476.lifetracing.domain.ActiveSession(
+                com.alexandr5476.lifetracing.domain.ActiveSessionKind.ACTIVITY,
+                com.alexandr5476.lifetracing.domain.ActiveSessionState.RUNNING,
+                first.id,
+                null,
+                first.updatedAt,
+            ),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) { week("2026-08-17", "2026-08-20") }
+    }
+
+    @Test
     fun focusedActionHydratesOnlyItsFrozenConfigurationAndPreservesActionIdentity() {
         database.planEntryDao().insert(plan("activity", activity = "no-live", day = "2026-08-20"))
         database.planEntryDao().insert(plan("sequence", sequence = "sequence", precision = "WEEK", week = "2026-08-17"))
@@ -342,6 +435,81 @@ class PlanReadRepositoryTest {
         val sequenceSnapshot = sequence.snapshot as FocusedPlanAction.Snapshot.Sequence
         assertEquals(setOf(ActivitySnapshotId("stopwatch")), sequenceSnapshot.activitySnapshots.keys)
         assertEquals(PlanTarget.Week(LocalDate.parse("2026-08-17")), sequence.identity.target)
+    }
+
+    @Test
+    fun focusedIdentityChangesAfterEachPersistedStaleRelevantMutation() {
+        insertActivitySource("identity-source", 2, null)
+        insertActivitySnapshot("identity-v1", source = "identity-source", revision = 1)
+        insertActivitySnapshot("identity-v1-copy", source = "identity-source", revision = 1)
+        insertActivitySnapshot("identity-v2", source = "identity-source", revision = 2)
+        listOf("target", "snapshot", "status", "revision", "updated-at").forEach { id ->
+            database.planEntryDao().insert(
+                plan(id, activity = "identity-v1", day = "2026-08-20", source = "identity-source", revision = 1),
+            )
+        }
+
+        val targetBefore = reads.getFocusedAction(PlanEntryId("target")).identity
+        assertEquals(
+            1,
+            database.planEntryDao().reschedule(
+                "target",
+                "DAY",
+                "2026-08-21",
+                null,
+                null,
+                null,
+                null,
+                1,
+            ),
+        )
+        val targetAfter = reads.getFocusedAction(PlanEntryId("target")).identity
+        assertNotEquals(targetBefore, targetAfter)
+        assertEquals(PlanTarget.FloatingDay(LocalDate.parse("2026-08-21")), targetAfter.target)
+
+        val snapshotBefore = reads.getFocusedAction(PlanEntryId("snapshot")).identity
+        assertEquals(
+            1,
+            database.planEntryDao().replaceActivitySnapshot("snapshot", "identity-v1", "identity-v1-copy", 1, 1),
+        )
+        val snapshotAfter = reads.getFocusedAction(PlanEntryId("snapshot")).identity
+        assertNotEquals(snapshotBefore, snapshotAfter)
+        assertEquals(ActivitySnapshotId("identity-v1-copy"), snapshotAfter.activitySnapshotId)
+        assertEquals(snapshotBefore.sourceRevision, snapshotAfter.sourceRevision)
+
+        val statusBefore = reads.getFocusedAction(PlanEntryId("status")).identity
+        assertEquals(1, database.planEntryDao().cancel("status", 1))
+        val statusAfter = reads.getFocusedAction(PlanEntryId("status")).identity
+        assertNotEquals(statusBefore, statusAfter)
+        assertEquals(PlanEntryStatus.CANCELLED, statusAfter.status)
+
+        val revisionBefore = reads.getFocusedAction(PlanEntryId("revision")).identity
+        assertEquals(
+            1,
+            database.planEntryDao().replaceActivitySnapshot("revision", "identity-v1", "identity-v2", 2, 1),
+        )
+        val revisionAfter = reads.getFocusedAction(PlanEntryId("revision")).identity
+        assertNotEquals(revisionBefore, revisionAfter)
+        assertEquals(2L, revisionAfter.sourceRevision)
+
+        val updatedAtBefore = reads.getFocusedAction(PlanEntryId("updated-at")).identity
+        assertEquals(
+            1,
+            database.planEntryDao().reschedule(
+                "updated-at",
+                "DAY",
+                "2026-08-20",
+                null,
+                null,
+                null,
+                null,
+                1,
+            ),
+        )
+        val updatedAtAfter = reads.getFocusedAction(PlanEntryId("updated-at")).identity
+        assertNotEquals(updatedAtBefore, updatedAtAfter)
+        assertEquals(updatedAtBefore.copy(updatedAt = updatedAtAfter.updatedAt), updatedAtAfter)
+        assertEquals(Instant.ofEpochMilli(1), updatedAtAfter.updatedAt)
     }
 
     @Test
@@ -482,6 +650,19 @@ class PlanReadRepositoryTest {
         assertEquals(PlanSourceState.CHANGED, cancelled.getValue("cancelled-sequence").sourceState)
         assertEquals("Sequence note", cancelled.getValue("cancelled-sequence").shortComment)
         assertNull(cancelled.getValue("cancelled-activity").shortComment)
+        assertTrue(cancelled.values.none { it.engaged || it.overdue })
+        assertEquals(
+            PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+            cancelled.getValue("cancelled-activity").plan.target,
+        )
+        assertEquals(
+            PlanTarget.Week(LocalDate.parse("2026-08-17")),
+            cancelled.getValue("cancelled-sequence").plan.target,
+        )
+        assertEquals(ActivitySnapshotId("collision"), cancelled.getValue("cancelled-activity").plan.activitySnapshotId)
+        assertEquals(SequenceSnapshotId("collision"), cancelled.getValue("cancelled-sequence").plan.sequenceSnapshotId)
+        assertEquals(1L, cancelled.getValue("cancelled-activity").plan.sourceRevision)
+        assertEquals(1L, cancelled.getValue("cancelled-sequence").plan.sourceRevision)
     }
 
     @Test

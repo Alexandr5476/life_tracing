@@ -12,9 +12,6 @@ import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
-import com.alexandr5476.lifetracing.domain.ActiveSession
-import com.alexandr5476.lifetracing.domain.ActiveSessionKind
-import com.alexandr5476.lifetracing.domain.ActiveSessionState
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -299,52 +296,13 @@ class DailyReadRepository internal constructor(
         return plans.associate { it.id to (it.id.value in engagedIds) }
     }
 
-    internal fun loadPlanEngagement(
-        plans: List<PlanEntry>,
-        activeSession: ActiveSession?,
-    ): Map<PlanEntryId, Boolean> {
+    internal fun loadPlanEngagement(plans: List<PlanEntry>): Map<PlanEntryId, Boolean> {
         val links = loadLivePlanLinks(plans)
-        val activeIdentity = activeSession?.let(::loadActivePlanIdentity)
+        val activeIdentity = liveSessionRepository.getActivePlanIdentityLocked()
         validateLivePlanLinks(plans, links) { link -> activeIdentity == link }
         val engagedIds = links.mapTo(hashSetOf(), LivePlanLink::planId)
         return plans.associate { it.id to (it.id.value in engagedIds) }
     }
-
-    private fun loadActivePlanIdentity(session: ActiveSession): LivePlanLink? =
-        when (session.kind) {
-            ActiveSessionKind.ACTIVITY -> {
-                val link =
-                    database
-                        .planEntryDao()
-                        .activityExecutionLinks(
-                            listOf(requireNotNull(session.activityExecutionId).value),
-                        ).singleOrNull()
-                require(
-                    link != null &&
-                        link.contextType == "STANDALONE" &&
-                        session.state.name == link.status,
-                ) { "Canonical active Activity linkage is inconsistent" }
-                link.planEntryId?.let {
-                    LivePlanLink(it, PlanTrackableKind.ACTIVITY, link.id, link.snapshotId, link.status)
-                }
-            }
-            ActiveSessionKind.SEQUENCE -> {
-                val link =
-                    database
-                        .planEntryDao()
-                        .sequenceExecutionLinks(
-                            listOf(requireNotNull(session.sequenceExecutionId).value),
-                        ).singleOrNull()
-                require(
-                    link != null &&
-                        (session.state == ActiveSessionState.PAUSED) == (link.status == "PAUSED") &&
-                        link.status in setOf("RUNNING", "PAUSED"),
-                ) { "Canonical active Sequence linkage is inconsistent" }
-                link.planEntryId?.let {
-                    LivePlanLink(it, PlanTrackableKind.SEQUENCE, link.id, link.snapshotId, link.status)
-                }
-            }
-        }
 
     private fun loadLivePlanLinks(plans: List<PlanEntry>): List<LivePlanLink> {
         val planIds = plans.map { it.id.value }
@@ -456,12 +414,4 @@ class DailyReadRepository internal constructor(
         private const val DATABASE_NAME = "lifetracing.db"
         private const val SQLITE_BIND_CHUNK_SIZE = 900
     }
-
-    private data class LivePlanLink(
-        val planId: String,
-        val kind: PlanTrackableKind,
-        val executionId: String,
-        val snapshotId: String,
-        val status: String,
-    )
 }

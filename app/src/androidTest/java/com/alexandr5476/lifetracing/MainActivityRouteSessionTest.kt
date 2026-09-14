@@ -1,19 +1,16 @@
 package com.alexandr5476.lifetracing
 
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import com.alexandr5476.lifetracing.daily.DailyLoadState
@@ -848,11 +845,11 @@ class MainActivityRouteSessionTest {
     }
 
     private fun expandSequence() {
-        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction() and isEnabled()
+        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodes(expandSequence).fetchSemanticsNodes().isNotEmpty()
         }
-        composeTestRule.onNode(expandSequence).performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNode(expandSequence).performClick()
     }
 
     private fun daily() =

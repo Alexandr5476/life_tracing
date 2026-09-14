@@ -277,13 +277,18 @@ internal abstract class PlanEntryDao {
     abstract fun hasSequenceExecutionReference(id: String): Boolean
 
     @Query(
-        "SELECT id, name, short_comment, source_template_id, source_revision, time_tracking_mode, timer_target_ms " +
-            "FROM activity_snapshots WHERE id IN (:ids)",
+        "SELECT snapshots.id, snapshots.name, snapshots.short_comment, snapshots.source_template_id, " +
+            "snapshots.source_revision, snapshots.time_tracking_mode, snapshots.timer_target_ms " +
+            "FROM activity_snapshots AS snapshots INNER JOIN activity_snapshot_settings AS settings " +
+            "ON settings.snapshot_id = snapshots.id WHERE snapshots.id IN (:ids)",
     )
     abstract fun activitySummaries(ids: List<String>): List<PlanActivitySnapshotSummaryRow>
 
     @Query(
-        "SELECT id, name, short_comment, source_template_id, source_revision FROM sequence_snapshots WHERE id IN (:ids)",
+        "SELECT snapshots.id, snapshots.name, snapshots.short_comment, snapshots.source_template_id, " +
+            "snapshots.source_revision FROM sequence_snapshots AS snapshots " +
+            "INNER JOIN sequence_snapshot_settings AS settings ON settings.sequence_snapshot_id = snapshots.id " +
+            "WHERE snapshots.id IN (:ids)",
     )
     abstract fun sequenceSummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
 

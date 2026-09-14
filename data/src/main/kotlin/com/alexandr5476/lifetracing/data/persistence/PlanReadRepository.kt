@@ -7,7 +7,6 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
-import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -93,7 +92,7 @@ class PlanReadRepository internal constructor(
                     "Week Plan projection contains duplicate Plan identities"
                 }
                 val rows =
-                    loadWeekRows(selectedPlans + weekPlans, query.now, zone, database.activeSessionDao().get())
+                    loadWeekRows(selectedPlans + weekPlans, query.now, zone)
                         .associateBy { it.plan.id }
                 WeekPlanRead(
                     query.weekStart,
@@ -121,7 +120,6 @@ class PlanReadRepository internal constructor(
                     daily
                         .loadPlanEngagement(
                             listOf(plan),
-                            database.activeSessionDao().get(),
                         ).getValue(plan.id)
                 val activityLinks =
                     database
@@ -200,7 +198,7 @@ class PlanReadRepository internal constructor(
             Callable {
                 val rows = database.planEntryDao().getCancelledSupportedPage(query.limit + 1, query.offset)
                 val plans = rows.map { it.toDomain().also(PlanEntryValidator::requireValid) }
-                daily.loadPlanEngagement(plans, database.activeSessionDao().get())
+                daily.loadPlanEngagement(plans)
                 val page = plans.take(query.limit)
                 CancelledPlanPage(page.toSummaryRows(), plans.size > query.limit)
             },
@@ -291,7 +289,6 @@ class PlanReadRepository internal constructor(
         plans: List<PlanEntry>,
         now: java.time.Instant,
         zone: ZoneId,
-        activeSession: ActiveSession?,
     ): List<PlanReadRow> {
         if (plans.isEmpty()) return emptyList()
         val activityIds = plans.mapNotNull(PlanEntry::activitySnapshotId).distinct()
@@ -339,7 +336,7 @@ class PlanReadRepository internal constructor(
         }
 
         val sourceStates = daily.loadSourceStates(plans)
-        val engagement = daily.loadPlanEngagement(plans, activeSession)
+        val engagement = daily.loadPlanEngagement(plans)
         return plans.map { plan ->
             val activitySummary = plan.activitySnapshotId?.let(activitySummaries::getValue)
             val sequenceSummary = plan.sequenceSnapshotId?.let(sequenceSummaries::getValue)
