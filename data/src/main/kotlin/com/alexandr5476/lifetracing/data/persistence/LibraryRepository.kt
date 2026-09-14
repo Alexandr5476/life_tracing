@@ -119,10 +119,14 @@ class LibraryRepository internal constructor(
             )
         }
 
-    /** One bounded query for every active reusable Activity and the compact fact needed by pickers. */
-    fun getReusableActivityCatalog(): List<ReusableActivityCatalogItem> =
+    /** One bounded query for the next reusable-Activity picker page. */
+    fun getReusableActivityCatalog(
+        limit: Int,
+        after: ReusableActivityCatalogItem? = null,
+    ): List<ReusableActivityCatalogItem> =
         transaction {
-            database.libraryDao().getReusableActivityCatalog().map { row ->
+            require(limit > 0) { "Catalog page limit must be positive" }
+            database.libraryDao().getReusableActivityCatalog(limit, after?.name, after?.id?.value).map { row ->
                 ReusableActivityCatalogItem(
                     ActivityTemplateId(row.id),
                     row.name,

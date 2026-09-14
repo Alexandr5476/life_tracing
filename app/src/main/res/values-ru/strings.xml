@@ -232,6 +232,7 @@
     <string name="sequence_editor_add_local_step">Добавить локальный шаг</string>
     <string name="sequence_editor_add_repeat">Добавить повтор</string>
     <string name="sequence_editor_pick_activity">Выберите действие</string>
+    <string name="sequence_editor_load_more">Показать ещё</string>
     <string name="sequence_editor_cancel">Отмена</string>
     <string name="sequence_editor_edit_step">Изменить шаг</string>
     <string name="sequence_editor_close_step">Свернуть шаг</string>

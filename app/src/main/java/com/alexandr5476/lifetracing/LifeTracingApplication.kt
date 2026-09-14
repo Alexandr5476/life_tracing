@@ -194,6 +194,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
                         CoroutineLocalDateBoundaryScheduler(scope),
+                        mutationGate = coordinator.mutationGate,
                     )
                 },
                 { onPinnedOrderCommitted ->
@@ -325,18 +326,20 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         {
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                libraryRepository.getReusableActivityCatalog().map { activity ->
-                                    SequenceEditorActivityChoice(
-                                        activity.id,
-                                        activity.name,
-                                        activity.timeTrackingMode,
-                                        activity.timerTarget,
-                                        activity.mainValueName,
-                                        activity.mainValueUnit,
-                                        activity.mainValueDisplayPrecision,
-                                        activity.mainValueDefaultNumberScaled,
-                                    )
-                                }
+                                libraryRepository
+                                    .getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE)
+                                    .map { activity ->
+                                        SequenceEditorActivityChoice(
+                                            activity.id,
+                                            activity.name,
+                                            activity.timeTrackingMode,
+                                            activity.timerTarget,
+                                            activity.mainValueName,
+                                            activity.mainValueUnit,
+                                            activity.mainValueDisplayPrecision,
+                                            activity.mainValueDefaultNumberScaled,
+                                        )
+                                    }
                             }
                         },
                         { draft, placement, at ->
@@ -386,6 +389,24 @@ class LifeTracingRuntimeGraph internal constructor(
                                 )
                             }
                         },
+                        loadMoreActivities = { after ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository
+                                    .getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE, after.toCatalogItem())
+                                    .map { activity ->
+                                        SequenceEditorActivityChoice(
+                                            activity.id,
+                                            activity.name,
+                                            activity.timeTrackingMode,
+                                            activity.timerTarget,
+                                            activity.mainValueName,
+                                            activity.mainValueUnit,
+                                            activity.mainValueDisplayPrecision,
+                                            activity.mainValueDefaultNumberScaled,
+                                        )
+                                    }
+                            }
+                        },
                     )
                 },
                 { executionId ->
@@ -407,16 +428,31 @@ class LifeTracingRuntimeGraph internal constructor(
                         { coordinator.displayBaseline },
                         {
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                libraryRepository.getReusableActivityCatalog()
+                                libraryRepository.getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE)
                             }
                         },
                         wallClock,
+                        mutationGate = coordinator.mutationGate,
                     )
                 },
             )
         }
     }
 }
+
+private fun SequenceEditorActivityChoice.toCatalogItem() =
+    com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem(
+        id,
+        name,
+        timeTrackingMode,
+        timerTarget,
+        mainValueName,
+        mainValueUnit,
+        mainValueDisplayPrecision,
+        mainValueDefaultNumberScaled,
+    )
+
+private const val ACTIVITY_PICKER_PAGE_SIZE = 50
 
 internal fun executeExpandedSequenceCommand(
     command: ExpandedSequenceCommand,

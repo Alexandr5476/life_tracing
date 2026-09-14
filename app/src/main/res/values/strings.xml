@@ -232,6 +232,7 @@
     <string name="sequence_editor_add_local_step">Add local step</string>
     <string name="sequence_editor_add_repeat">Add repeat</string>
     <string name="sequence_editor_pick_activity">Choose an activity</string>
+    <string name="sequence_editor_load_more">Load more</string>
     <string name="sequence_editor_cancel">Cancel</string>
     <string name="sequence_editor_edit_step">Edit step</string>
     <string name="sequence_editor_close_step">Close step</string>

@@ -156,9 +156,16 @@ internal interface LibraryDao {
             "FROM activity_templates AS templates LEFT JOIN activity_template_fields AS fields " +
             "ON fields.activity_template_id = templates.id AND fields.deleted_at_ms IS NULL " +
             "AND fields.is_main_value = 1 AND fields.field_type = 'NUMBER' " +
-            "WHERE templates.deleted_at_ms IS NULL ORDER BY templates.name COLLATE NOCASE, templates.id",
+            "WHERE templates.deleted_at_ms IS NULL AND (:afterName IS NULL OR " +
+            "templates.name COLLATE NOCASE > :afterName COLLATE NOCASE OR " +
+            "(templates.name COLLATE NOCASE = :afterName COLLATE NOCASE AND templates.id > :afterId)) " +
+            "ORDER BY templates.name COLLATE NOCASE, templates.id LIMIT :limit",
     )
-    fun getReusableActivityCatalog(): List<ReusableActivityCatalogRow>
+    fun getReusableActivityCatalog(
+        limit: Int,
+        afterName: String? = null,
+        afterId: String? = null,
+    ): List<ReusableActivityCatalogRow>
 
     @Query(
         "SELECT templates.id, templates.name, templates.short_comment, templates.folder_id, " +

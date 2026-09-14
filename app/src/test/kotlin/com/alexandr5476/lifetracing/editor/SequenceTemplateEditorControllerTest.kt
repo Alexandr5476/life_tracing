@@ -48,6 +48,104 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
+    fun canonicalEditorLoadsNeverReadThePickerCatalog() =
+        runBlocking {
+            var pickerReads = 0
+            var sequenceReads = 0
+            val canonical = authoringState().withLinkedSource(ActivityTemplateId("activity"))
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(SequenceTemplateId("sequence")),
+                    {
+                        sequenceReads++
+                        canonical
+                    },
+                    {
+                        pickerReads++
+                        error("Picker catalog must not be read for canonical hydration")
+                    },
+                    { _, _, _ ->
+                        error("New save is not used")
+                    },
+                    { _, _, _, _ ->
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                    loadSourceStatuses = {
+                        val source = ActivityTemplateId("activity")
+                        mapOf(source to ActivityTemplateSourceStatus(source, 1, false))
+                    },
+                    updateFromSource = { _, _, _, _ -> },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Canonical") }
+            controller.save()
+            withTimeout(2_000) {
+                controller.state.first {
+                    it.save is SequenceTemplateEditorSave.Committed && sequenceReads == 2
+                }
+            }
+            controller.updateStepFromSource(SequenceNodeId("step-1"))
+            withTimeout(2_000) {
+                controller.state.first {
+                    it.save is SequenceTemplateEditorSave.Idle && it.appliedGeneration == 1L
+                }
+            }
+
+            assertEquals(0, pickerReads)
+            assertEquals(3, sequenceReads)
+            controller.close()
+        }
+
+    @Test
+    fun pickerLoadsBoundedPagesOnlyWhenOpened() =
+        runBlocking {
+            var firstPageReads = 0
+            var nextPageReads = 0
+            val firstPage =
+                (1..50).map { SequenceEditorActivityChoice(ActivityTemplateId("$it"), "Activity $it") }
+            val extra = SequenceEditorActivityChoice(ActivityTemplateId("51"), "Activity 51")
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.New,
+                    { null },
+                    {
+                        firstPageReads++
+                        firstPage
+                    },
+                    { _, _, _ ->
+                        error("New save is not used")
+                    },
+                    { _, _, _, _ ->
+                        error("Existing save is not used")
+                    },
+                    { Instant.EPOCH },
+                    loadMoreActivities = {
+                        nextPageReads++
+                        listOf(extra)
+                    },
+                )
+            controller.awaitReady()
+            assertEquals(0, firstPageReads)
+
+            controller.loadActivityPicker()
+            withTimeout(2_000) { controller.state.first { it.availableActivities.size == 50 } }
+            controller.loadMoreActivityPicker()
+            withTimeout(2_000) { controller.state.first { it.availableActivities.size == 51 } }
+
+            assertEquals(1, firstPageReads)
+            assertEquals(1, nextPageReads)
+            assertEquals(
+                extra,
+                controller.state.value.availableActivities
+                    .last(),
+            )
+            controller.close()
+        }
+
+    @Test
     fun newDraftChangesAndDiscardNeverWrite() =
         runBlocking {
             var writes = 0

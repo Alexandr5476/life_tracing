@@ -125,7 +125,7 @@ class LibraryRepositoryTest {
         )
         assertEquals(
             listOf("activity-folder", "activity-root"),
-            repository.getReusableActivityCatalog().map { it.id.value },
+            repository.getReusableActivityCatalog(50).map { it.id.value },
         )
         assertEquals(listOf("activity-folder"), repository.search("%").map { it.id.value })
         assertEquals(
@@ -152,7 +152,7 @@ class LibraryRepositoryTest {
         val repository = repository()
         queries.clear()
 
-        val catalog = repository.getReusableActivityCatalog()
+        val catalog = repository.getReusableActivityCatalog(50)
 
         assertEquals(listOf("foldered", "root"), catalog.map { it.id.value })
         assertEquals(Duration.ofMinutes(1), catalog.first().timerTarget)
@@ -163,6 +163,18 @@ class LibraryRepositoryTest {
                     it.first
             },
         )
+    }
+
+    @Test
+    fun reusableActivityCatalogUsesBoundedKeysetPages() {
+        (1..51).forEach { index -> activity("page-$index", "Page %03d".format(index)) }
+        val repository = repository()
+
+        val first = repository.getReusableActivityCatalog(50)
+        val second = repository.getReusableActivityCatalog(50, first.last())
+
+        assertEquals(50, first.size)
+        assertEquals(listOf("page-51"), second.map { it.id.value })
     }
 
     @Test

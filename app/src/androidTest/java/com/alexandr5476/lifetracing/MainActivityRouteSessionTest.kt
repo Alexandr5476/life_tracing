@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
@@ -24,6 +25,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
@@ -164,6 +166,22 @@ class MainActivityRouteSessionTest {
             )
         assertNotEquals(started.execution.id, second.execution.id)
         composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            val controller =
+                LifeTracingRuntimeGraph
+                    .from(composeTestRule.activity)
+                    .dailyController
+            val active =
+                (controller.state.value.load as? DailyLoadState.Content)
+                    ?.daily
+                    ?.active
+            val activeExecutionId =
+                (active as? DailyActive.Sequence)
+                    ?.runtime
+                    ?.execution
+                    ?.id
+            activeExecutionId == second.execution.id
+        }
         composeTestRule.waitUntil(5_000) {
             composeTestRule
                 .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))

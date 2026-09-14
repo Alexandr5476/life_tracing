@@ -5,6 +5,8 @@
     "ReturnCount",
     "TooGenericExceptionCaught",
     "TooManyFunctions",
+    "LargeClass",
+    "SwallowedException",
 )
 
 package com.alexandr5476.lifetracing.editor
@@ -74,6 +76,8 @@ data class SequenceTemplateEditorState(
     val save: SequenceTemplateEditorSave = SequenceTemplateEditorSave.Idle,
     val discardConfirmationVisible: Boolean = false,
     val availableActivities: List<SequenceEditorActivityChoice> = emptyList(),
+    val activityPickerLoading: Boolean = false,
+    val activityPickerCanLoadMore: Boolean = false,
     val textInputs: Map<String, SequenceEditorTextInput> = emptyMap(),
     val manipulation: SequenceManipulationUiState? = null,
     val stepSourceIds: Map<SequenceNodeId, ActivityTemplateId?> = emptyMap(),
@@ -130,6 +134,8 @@ class SequenceTemplateEditorController internal constructor(
     private val saveAsNewSource: suspend (SequenceTemplateId, SequenceNodeId, Long, Instant) -> Unit = { _, _, _, _ ->
         error("Source actions are unavailable")
     },
+    private val loadMoreActivities:
+        suspend (SequenceEditorActivityChoice) -> List<SequenceEditorActivityChoice> = { emptyList() },
 ) {
     private val mutableState = MutableStateFlow(SequenceTemplateEditorState())
     val state: StateFlow<SequenceTemplateEditorState> = mutableState
@@ -234,6 +240,54 @@ class SequenceTemplateEditorController internal constructor(
     fun newKey(prefix: String): DraftIdentity.New = DraftIdentity.New("$prefix-${newIdentity.incrementAndGet()}")
 
     fun newLocalActivityDraft() = ActivitySnapshotDraft("", null, TimeTrackingMode.STOPWATCH, null)
+
+    fun loadActivityPicker() {
+        if (mutableState.value.availableActivities.isNotEmpty() || mutableState.value.activityPickerLoading) return
+        mutableState.update { it.copy(activityPickerLoading = true) }
+        scope.launch {
+            try {
+                val activities = loadActivities()
+                mutableState.update {
+                    it.copy(
+                        availableActivities = activities,
+                        activityPickerLoading = false,
+                        activityPickerCanLoadMore = activities.size == ACTIVITY_PICKER_PAGE_SIZE,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableState.update { it.copy(activityPickerLoading = false) }
+            }
+        }
+    }
+
+    fun loadMoreActivityPicker() {
+        val last = mutableState.value.availableActivities.lastOrNull()
+        if (last == null ||
+            mutableState.value.activityPickerLoading ||
+            !mutableState.value.activityPickerCanLoadMore
+        ) {
+            return
+        }
+        mutableState.update { it.copy(activityPickerLoading = true) }
+        scope.launch {
+            try {
+                val activities = loadMoreActivities(last)
+                mutableState.update {
+                    it.copy(
+                        availableActivities = it.availableActivities + activities,
+                        activityPickerLoading = false,
+                        activityPickerCanLoadMore = activities.size == ACTIVITY_PICKER_PAGE_SIZE,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableState.update { it.copy(activityPickerLoading = false) }
+            }
+        }
+    }
 
     fun updateStepFromSource(stepId: SequenceNodeId) =
         runSourceAction(stepId, requireActiveSource = true) { id, revision, _, at ->
@@ -452,7 +506,6 @@ class SequenceTemplateEditorController internal constructor(
                                     } else {
                                         SequenceTemplateEditorSave.Idle
                                     },
-                                availableActivities = loaded.activities,
                                 stepSourceIds = authoring?.stepSourceIds().orEmpty(),
                                 sourceStatuses = loaded.sourceStatuses,
                                 appliedGeneration = if (recovery?.exitAfter == false) 1 else 0,
@@ -515,7 +568,6 @@ class SequenceTemplateEditorController internal constructor(
                             },
                         manipulation = null,
                         textInputs = emptyMap(),
-                        availableActivities = loaded.activities,
                         stepSourceIds = canonical.stepSourceIds(),
                         sourceStatuses = loaded.sourceStatuses,
                         appliedGeneration = it.appliedGeneration + if (committed.exitAfter) 0 else 1,
@@ -587,7 +639,6 @@ class SequenceTemplateEditorController internal constructor(
                             save = SequenceTemplateEditorSave.Idle,
                             manipulation = null,
                             textInputs = emptyMap(),
-                            availableActivities = loaded.activities,
                             stepSourceIds = canonical.stepSourceIds(),
                             sourceStatuses = loaded.sourceStatuses,
                             appliedGeneration = it.appliedGeneration + 1,
@@ -616,7 +667,6 @@ class SequenceTemplateEditorController internal constructor(
                 .orEmpty()
         val statuses = if (sourceIds.isEmpty()) emptyMap() else loadSourceStatuses(sourceIds)
         return LoadedEditorData(
-            loadActivities(),
             sourceIds.associateWith { id ->
                 statuses[id]
                     ?.takeUnless(ActivityTemplateSourceStatus::isArchived)
@@ -759,9 +809,10 @@ internal fun SequenceTemplateEditorState.sourceActionsAllowed(): Boolean {
 }
 
 private data class LoadedEditorData(
-    val activities: List<SequenceEditorActivityChoice>,
     val sourceStatuses: Map<ActivityTemplateId, SequenceEditorStepSource>,
 )
+
+private const val ACTIVITY_PICKER_PAGE_SIZE = 50
 
 private data class SourceActionCommand(
     val sequenceId: SequenceTemplateId,

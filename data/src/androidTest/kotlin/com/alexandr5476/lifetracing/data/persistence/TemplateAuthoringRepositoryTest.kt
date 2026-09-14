@@ -213,7 +213,7 @@ class TemplateAuthoringRepositoryTest {
             )
         observedQueries.clear()
 
-        val choice = database.libraryDao().getReusableActivityCatalog().single()
+        val choice = database.libraryDao().getReusableActivityCatalog(50).single()
         val catalogSql = observedQueriesSnapshot().map(Pair<String, Int>::first)
         val sequence =
             repository.createSequenceTemplate(

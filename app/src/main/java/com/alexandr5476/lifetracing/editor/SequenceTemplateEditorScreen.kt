@@ -269,6 +269,7 @@ private fun SequenceEditorForm(
                         RepeatHeader(row.repeat, state, controller, editable, draft, dropState, autoScroll)
                     is SequenceEditorRow.RepeatAdd ->
                         AddStepAction(row.repeat.repeatCount, formEditable) {
+                            controller.loadActivityPicker()
                             pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
                         }
                     is SequenceEditorRow.TopEnd -> Unit
@@ -277,7 +278,10 @@ private fun SequenceEditorForm(
         }
         item(key = topEnd.key) {
             SequenceDropTarget(topEnd, dropState) {
-                AddTopLevel(draft, controller, formEditable) { pickerTarget = SequencePickerTarget.TopLevel }
+                AddTopLevel(draft, controller, formEditable) {
+                    controller.loadActivityPicker()
+                    pickerTarget = SequencePickerTarget.TopLevel
+                }
             }
         }
         item {
@@ -320,6 +324,9 @@ private fun SequenceEditorForm(
         AddStepPicker(
             state.availableActivities,
             formEditable,
+            state.activityPickerLoading,
+            state.activityPickerCanLoadMore,
+            controller::loadMoreActivityPicker,
             onDismiss = { pickerTarget = null },
             onSelect = { activity ->
                 controller.updateDraft { it.insertStep(target, controller.newKey("step"), activity) }
@@ -738,6 +745,9 @@ private fun AddStepAction(
 private fun AddStepPicker(
     choices: List<SequenceEditorActivityChoice>,
     editable: Boolean,
+    loading: Boolean,
+    canLoadMore: Boolean,
+    onLoadMore: () -> Unit,
     onDismiss: () -> Unit,
     onSelect: (StepActivityDraft) -> Unit,
 ) {
@@ -755,6 +765,19 @@ private fun AddStepPicker(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text(choice.name)
                             Text(choice.compactFact(), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                if (canLoadMore) {
+                    item {
+                        TextButton(
+                            onClick = onLoadMore,
+                            enabled = editable && !loading,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            val label =
+                                if (loading) R.string.sequence_editor_saving else R.string.sequence_editor_load_more
+                            Text(stringResource(label))
                         }
                     }
                 }

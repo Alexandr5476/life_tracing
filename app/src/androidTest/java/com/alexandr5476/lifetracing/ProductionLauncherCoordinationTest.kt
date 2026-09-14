@@ -22,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.MonotonicClock
+import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
@@ -45,6 +46,7 @@ import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
+import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.InProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.RuntimeDeadlineScheduler
@@ -74,6 +76,97 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class ProductionLauncherCoordinationTest {
+    @Test
+    fun admittedPausePrecedesTheSameSequenceTimersDeadlineReconciliation() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val startedAt = Instant.ofEpochMilli(Instant.now().toEpochMilli())
+            val deadlineAt = startedAt.plusSeconds(1)
+            val pauseAt = deadlineAt.minusMillis(1)
+            val suffix = startedAt.toEpochMilli()
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, startedAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val activity =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft("gate timer $suffix", null, TimeTrackingMode.TIMER, Duration.ofSeconds(1)),
+                    createdAt = startedAt,
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "gate sequence $suffix",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("gate-step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(activity.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = startedAt,
+                )
+            val runtime =
+                LibraryRepository
+                    .create(context)
+                    .startSequenceFromTemplate(sequence.id, startedAt, startedAt, ZoneOffset.UTC)
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(live.getActiveRuntime())))
+            assertEquals(deadlineAt, deadline.at)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val enteredRepository = CompletableDeferred<Unit>()
+            val releaseRepository = CompletableDeferred<Unit>()
+            val coordinator =
+                AndroidRuntimeCoordinator(
+                    live,
+                    FixedWallClock(deadlineAt),
+                    MonotonicClock { 0 },
+                    noOpDeadlineScheduler(),
+                    noOpDeadlineDriver(),
+                    RuntimeFeedbackDispatcher {},
+                    noOpNotificationPublisher(),
+                )
+            val controller =
+                ExpandedLiveSequenceController(
+                    scope,
+                    runtime.execution.id,
+                    live::getExpandedSequence,
+                    { command ->
+                        enteredRepository.complete(Unit)
+                        releaseRepository.await()
+                        executeExpandedSequenceCommand(command, live)
+                    },
+                    coordinator::onRuntimeStateChanged,
+                    coordinator.semanticGeneration,
+                    { coordinator.displayBaseline },
+                    { emptyList() },
+                    FixedWallClock(pauseAt),
+                    mutationGate = coordinator.mutationGate,
+                )
+            try {
+                withTimeout(5_000) { controller.state.first { it.sequence != null && !it.loading } }
+                controller.pause()
+                withTimeout(5_000) { enteredRepository.await() }
+                val deadlineJob = launch { coordinator.onDeadlineSignal(deadline) }
+
+                releaseRepository.complete(Unit)
+                deadlineJob.join()
+                withTimeout(5_000) { controller.state.first { !it.commandInFlight } }
+
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.ActiveSessionState.PAUSED,
+                    requireNotNull(LiveSessionRepository.create(context).getActiveSession()).state,
+                )
+            } finally {
+                controller.close()
+                scope.cancel()
+                clearLiveSession(live, deadlineAt.plusSeconds(1))
+            }
+        }
+
     @Test
     @Suppress("LongMethod") // The three existing launcher variants share one real Library-entry boundary.
     fun libraryPrimedRoutesUseTheExistingProductionLaunchWriters() =
@@ -1040,6 +1133,36 @@ class ProductionLauncherCoordinationTest {
             override fun canPostRuntimeNotifications(): Boolean = true
         },
     )
+
+    private fun noOpDeadlineScheduler() =
+        object : RuntimeDeadlineScheduler {
+            override fun schedule(deadline: RuntimeDeadline) = Unit
+
+            override fun cancel() = Unit
+
+            override fun canScheduleExactRuntimeDeadlines(): Boolean = true
+        }
+
+    private fun noOpDeadlineDriver() =
+        object : InProcessRuntimeDeadlineDriver {
+            override fun arm(
+                deadline: RuntimeDeadline,
+                anchor: WallMonotonicAnchor,
+                callback: suspend (RuntimeDeadline) -> Unit,
+            ) = Unit
+
+            override fun cancel() = Unit
+        }
+
+    private fun noOpNotificationPublisher() =
+        object : RuntimeNotificationPublisher {
+            override fun publish(
+                runtime: com.alexandr5476.lifetracing.domain.ActiveRuntime?,
+                completion: com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback?,
+            ) = Unit
+
+            override fun canPostRuntimeNotifications(): Boolean = true
+        }
 
     private fun clearLiveSession(
         live: LiveSessionRepository,

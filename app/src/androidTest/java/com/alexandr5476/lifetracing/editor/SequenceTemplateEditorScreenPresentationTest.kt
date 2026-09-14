@@ -215,6 +215,12 @@ class SequenceTemplateEditorScreenPresentationTest {
         val controller = controller(choices)
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
+        controller.loadActivityPicker()
+        composeTestRule
+            .waitUntil(5_000) {
+                controller.state.value.availableActivities
+                    .isNotEmpty()
+            }
 
         composeTestRule.runOnIdle {
             controller.updateDraft {

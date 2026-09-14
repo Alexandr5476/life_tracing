@@ -37,6 +37,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
+import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -44,8 +45,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
@@ -216,9 +215,9 @@ internal class ExpandedLiveSequenceController(
     private val readCatalog: suspend () -> List<ReusableActivityCatalogItem>,
     private val wallClock: WallClock,
     private val onCurrentValueCommandCaptured: (() -> Unit)? = null,
+    private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
 ) {
     private val loadGeneration = AtomicLong()
-    private val commandMutex = Mutex()
     private val commandCaptureLock = Any()
     private var commandReservations = 0
     private val mutableState = MutableStateFlow(ExpandedLiveSequenceState())
@@ -549,10 +548,11 @@ internal class ExpandedLiveSequenceController(
                 reserveCommand()
                 command
             }
+        val turn = mutationGate.admit()
         scope.launch {
             var commandFailure: ExpandedSequenceFailure? = null
             try {
-                commandMutex.withLock {
+                turn.run {
                     mutableState.update { it.copy(commandFailure = null) }
                     try {
                         execute(captured)
@@ -565,14 +565,14 @@ internal class ExpandedLiveSequenceController(
                     } catch (failure: Exception) {
                         commandFailure = ExpandedSequenceFailure.Rejected(failure.message())
                     }
-                    try {
-                        coordinateRuntimeStateChanged()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        commandFailure = ExpandedSequenceFailure.Coordination(failure.message())
-                        refresh()
-                    }
+                }
+                try {
+                    coordinateRuntimeStateChanged()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    commandFailure = ExpandedSequenceFailure.Coordination(failure.message())
+                    refresh()
                 }
             } finally {
                 releaseCommand(commandFailure)

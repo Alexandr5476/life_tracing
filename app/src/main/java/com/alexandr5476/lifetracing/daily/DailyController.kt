@@ -8,6 +8,7 @@ import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -195,6 +196,7 @@ class DailyController internal constructor(
     private val nextPauseId: () -> ActivityExecutionPauseId,
     private val dateBoundaryScheduler: LocalDateBoundaryScheduler,
     private val completedHistoryLimit: Int = DEFAULT_COMPLETED_HISTORY_LIMIT,
+    private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
 ) {
     private val loadGeneration = AtomicLong()
     private val commandMutex = Mutex()
@@ -239,7 +241,7 @@ class DailyController internal constructor(
             DailyAction.Retry -> refresh()
             DailyAction.Visible -> onVisible()
             DailyAction.Hidden -> onHidden()
-            is DailyAction.Runtime -> scope.launch { runCommand(action) }
+            is DailyAction.Runtime -> submitRuntimeCommand(action)
         }
     }
 
@@ -323,19 +325,28 @@ class DailyController internal constructor(
     }
 
     @Suppress("TooGenericExceptionCaught") // The boundary must distinguish both failure phases without crashing UI.
-    private suspend fun runCommand(action: DailyAction.Runtime) {
-        commandMutex.withLock {
-            val command = command(action)
-            if (command == null) {
-                mutableState.update {
-                    it.copy(commandFailure = DailyCommandFailure.Rejected("Action is not valid for the loaded runtime"))
-                }
-                return
+    private fun submitRuntimeCommand(action: DailyAction.Runtime) {
+        val command = command(action)
+        if (command == null) {
+            mutableState.update {
+                it.copy(commandFailure = DailyCommandFailure.Rejected("Action is not valid for the loaded runtime"))
             }
-            mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+            return
+        }
+        mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
+        val turn = mutationGate.admit()
+        scope.launch { runCommand(command, turn) }
+    }
+
+    @Suppress("TooGenericExceptionCaught") // Presentation boundary maps repository and coordination failures.
+    private suspend fun runCommand(
+        command: DailyRuntimeCommand,
+        turn: com.alexandr5476.lifetracing.runtime.RuntimeMutationTurn,
+    ) {
+        commandMutex.withLock {
             var rejection: Exception? = null
             try {
-                executeRuntimeCommand(command)
+                turn.run { executeRuntimeCommand(command) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
