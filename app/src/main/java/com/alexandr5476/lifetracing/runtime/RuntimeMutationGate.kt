@@ -12,7 +12,22 @@ internal class RuntimeMutationGate {
         synchronized(lock) {
             RuntimeMutationTurn(tail, CompletableDeferred<Unit>()).also { tail = it.completion }
         }
+
+    /** Captures a user command and registers its FIFO turn under the same lock. */
+    fun <T : Any> admit(capture: () -> T?): RuntimeMutationAdmission<T>? =
+        synchronized(lock) {
+            capture()?.let { command ->
+                RuntimeMutationAdmission(command, RuntimeMutationTurn(tail, CompletableDeferred<Unit>())).also {
+                    tail = it.turn.completion
+                }
+            }
+        }
 }
+
+internal data class RuntimeMutationAdmission<T : Any>(
+    val command: T,
+    val turn: RuntimeMutationTurn,
+)
 
 internal class RuntimeMutationTurn internal constructor(
     private val previous: Deferred<Unit>,

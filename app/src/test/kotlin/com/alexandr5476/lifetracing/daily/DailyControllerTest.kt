@@ -426,6 +426,46 @@ class DailyControllerTest {
         }
 
     @Test
+    fun secondCommandIsRejectedBeforeGateAdmissionWhileTheFirstWriterIsBlocked() =
+        runBlocking {
+            val writerEntered = CompletableDeferred<Unit>()
+            val releaseWriter = CompletableDeferred<Unit>()
+            val commands = mutableListOf<DailyRuntimeCommand>()
+            var coordinated = false
+            val controller =
+                DailyController(
+                    this,
+                    { daily(activityRuntime("active")) },
+                    {
+                        commands += it
+                        writerEntered.complete(Unit)
+                        releaseWriter.await()
+                    },
+                    { coordinated = true },
+                    MutableStateFlow(0L),
+                    { null },
+                    MutableWallClock(harnessInstant),
+                    { ZoneOffset.UTC },
+                    { ActivityExecutionPauseId("pause-id") },
+                    FakeBoundary(),
+                )
+            controller.awaitLoaded()
+
+            controller.dispatch(DailyAction.PauseActivity)
+            writerEntered.await()
+            controller.dispatch(DailyAction.FinishActivity)
+
+            assertEquals(1, commands.size)
+            assertTrue(controller.state.value.commandInFlight)
+            assertInstanceOf(DailyCommandFailure.Rejected::class.java, controller.state.value.commandFailure)
+
+            releaseWriter.complete(Unit)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight && coordinated } }
+            assertEquals(1, commands.size)
+            controller.close()
+        }
+
+    @Test
     fun commandCoordinationUsesOneSemanticGenerationReadAndRefreshesWhenItFails() =
         runBlocking {
             val rejected =

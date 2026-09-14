@@ -251,6 +251,7 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         onPinnedOrderCommitted = onPinnedOrderCommitted,
+                        mutationGate = coordinator.mutationGate,
                     )
                 },
                 {
@@ -426,9 +427,9 @@ class LifeTracingRuntimeGraph internal constructor(
                         coordinator::onRuntimeStateChanged,
                         coordinator.semanticGeneration,
                         { coordinator.displayBaseline },
-                        {
+                        { after ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                libraryRepository.getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE)
+                                libraryRepository.getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE, after)
                             }
                         },
                         wallClock,

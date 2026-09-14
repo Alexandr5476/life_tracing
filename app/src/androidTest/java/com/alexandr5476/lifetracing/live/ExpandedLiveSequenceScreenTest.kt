@@ -415,7 +415,7 @@ class ExpandedLiveSequenceScreenTest {
         {},
         MutableStateFlow(0L),
         { null },
-        { emptyList() },
+        { _ -> emptyList() },
         { Instant.EPOCH },
     )
 

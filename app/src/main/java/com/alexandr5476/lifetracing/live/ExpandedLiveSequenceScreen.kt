@@ -629,6 +629,25 @@ private fun RuntimeAddDialog(
                             },
                         ) { Text(item.name) }
                     }
+                    if (state.catalogCanLoadMore) {
+                        item {
+                            TextButton(
+                                onClick = controller::loadMoreRuntimeAddCatalog,
+                                enabled = !state.catalogLoading,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    stringResource(
+                                        if (state.catalogLoading) {
+                                            R.string.sequence_editor_saving
+                                        } else {
+                                            R.string.sequence_editor_load_more
+                                        },
+                                    ),
+                                )
+                            }
+                        }
+                    }
                 }
                 Text(stringResource(R.string.expanded_sequence_one_off))
                 LifeTracingOutlinedTextField(

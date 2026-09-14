@@ -17,8 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -199,7 +197,8 @@ class DailyController internal constructor(
     private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
 ) {
     private val loadGeneration = AtomicLong()
-    private val commandMutex = Mutex()
+    private val commandCaptureLock = Any()
+    private var commandReservations = 0
 
     @Volatile
     private var visible = true
@@ -326,16 +325,39 @@ class DailyController internal constructor(
 
     @Suppress("TooGenericExceptionCaught") // The boundary must distinguish both failure phases without crashing UI.
     private fun submitRuntimeCommand(action: DailyAction.Runtime) {
-        val command = command(action)
-        if (command == null) {
-            mutableState.update {
-                it.copy(commandFailure = DailyCommandFailure.Rejected("Action is not valid for the loaded runtime"))
+        val admission =
+            synchronized(commandCaptureLock) {
+                mutationGate.admit {
+                    if (commandReservations > 0) {
+                        mutableState.update {
+                            it.copy(
+                                commandFailure =
+                                    DailyCommandFailure.Rejected("A runtime command is already in progress"),
+                            )
+                        }
+                        null
+                    } else {
+                        command(action)?.also {
+                            commandReservations++
+                            mutableState.update { state ->
+                                state.copy(commandInFlight = true, commandFailure = null)
+                            }
+                        } ?: run {
+                            mutableState.update {
+                                it.copy(
+                                    commandFailure =
+                                        DailyCommandFailure.Rejected(
+                                            "Action is not valid for the loaded runtime",
+                                        ),
+                                )
+                            }
+                            null
+                        }
+                    }
+                }
             }
-            return
-        }
-        mutableState.update { it.copy(commandInFlight = true, commandFailure = null) }
-        val turn = mutationGate.admit()
-        scope.launch { runCommand(command, turn) }
+        admission ?: return
+        scope.launch { runCommand(admission.command, admission.turn) }
     }
 
     @Suppress("TooGenericExceptionCaught") // Presentation boundary maps repository and coordination failures.
@@ -343,35 +365,35 @@ class DailyController internal constructor(
         command: DailyRuntimeCommand,
         turn: com.alexandr5476.lifetracing.runtime.RuntimeMutationTurn,
     ) {
-        commandMutex.withLock {
-            var rejection: Exception? = null
-            try {
-                turn.run { executeRuntimeCommand(command) }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                rejection = failure
-            }
+        var rejection: Exception? = null
+        try {
+            turn.run { executeRuntimeCommand(command) }
+        } catch (cancelled: CancellationException) {
+            finishCommand(null)
+            throw cancelled
+        } catch (failure: Exception) {
+            rejection = failure
+        }
 
-            try {
-                coordinateRuntimeStateChanged()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                mutableState.update {
-                    it.copy(
-                        commandInFlight = false,
-                        commandFailure = DailyCommandFailure.Coordination(failure.message()),
-                    )
-                }
-                refresh()
-                return
-            }
+        try {
+            coordinateRuntimeStateChanged()
+        } catch (cancelled: CancellationException) {
+            finishCommand(null)
+            throw cancelled
+        } catch (failure: Exception) {
+            finishCommand(DailyCommandFailure.Coordination(failure.message()))
+            refresh()
+            return
+        }
+        finishCommand(rejection?.let { failure -> DailyCommandFailure.Rejected(failure.message()) })
+    }
+
+    private fun finishCommand(failure: DailyCommandFailure?) {
+        synchronized(commandCaptureLock) {
+            check(commandReservations > 0)
+            commandReservations--
             mutableState.update {
-                it.copy(
-                    commandInFlight = false,
-                    commandFailure = rejection?.let { failure -> DailyCommandFailure.Rejected(failure.message()) },
-                )
+                it.copy(commandInFlight = commandReservations > 0, commandFailure = failure)
             }
         }
     }

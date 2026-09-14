@@ -91,6 +91,8 @@ internal data class ExpandedLiveSequenceState(
     val currentValueDraft: CurrentValueDraft? = null,
     val confirmation: ExpandedSequenceConfirmation? = null,
     val catalog: List<ReusableActivityCatalogItem>? = null,
+    val catalogLoading: Boolean = false,
+    val catalogCanLoadMore: Boolean = false,
     val catalogFailure: String? = null,
 )
 
@@ -212,7 +214,7 @@ internal class ExpandedLiveSequenceController(
     private val coordinateRuntimeStateChanged: suspend () -> Unit,
     semanticGeneration: StateFlow<Long>,
     private val displayBaseline: () -> RuntimeDisplayBaseline?,
-    private val readCatalog: suspend () -> List<ReusableActivityCatalogItem>,
+    private val readCatalog: suspend (ReusableActivityCatalogItem?) -> List<ReusableActivityCatalogItem>,
     private val wallClock: WallClock,
     private val onCurrentValueCommandCaptured: (() -> Unit)? = null,
     private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
@@ -271,15 +273,33 @@ internal class ExpandedLiveSequenceController(
     }
 
     fun loadRuntimeAddCatalog() {
-        if (mutableState.value.catalog != null) return
+        if (mutableState.value.catalog != null || mutableState.value.catalogLoading) return
+        loadRuntimeAddCatalogPage(null)
+    }
+
+    fun loadMoreRuntimeAddCatalog() {
+        val catalog = mutableState.value.catalog ?: return
+        if (!mutableState.value.catalogCanLoadMore || mutableState.value.catalogLoading) return
+        loadRuntimeAddCatalogPage(catalog.last())
+    }
+
+    private fun loadRuntimeAddCatalogPage(after: ReusableActivityCatalogItem?) {
+        mutableState.update { it.copy(catalogLoading = true) }
         scope.launch {
             try {
-                val catalog = readCatalog()
-                mutableState.update { it.copy(catalog = catalog, catalogFailure = null) }
+                val page = readCatalog(after)
+                mutableState.update {
+                    it.copy(
+                        catalog = if (after == null) page else it.catalog.orEmpty() + page,
+                        catalogLoading = false,
+                        catalogCanLoadMore = page.size == ACTIVITY_PICKER_PAGE_SIZE,
+                        catalogFailure = null,
+                    )
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                mutableState.update { it.copy(catalogFailure = failure.message()) }
+                mutableState.update { it.copy(catalogLoading = false, catalogFailure = failure.message()) }
             }
         }
     }
@@ -531,31 +551,31 @@ internal class ExpandedLiveSequenceController(
         capturesCurrentValues: Boolean = false,
         build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?,
     ) {
-        val captured =
+        val admission =
             synchronized(commandCaptureLock) {
-                if (capturesCurrentValues && mutableState.value.commandInFlight) {
-                    reject()
-                    return
+                mutationGate.admit {
+                    if (capturesCurrentValues && mutableState.value.commandInFlight) {
+                        reject()
+                        return@admit null
+                    }
+                    val command = active()?.let(build)
+                    if (command == null || command.executionId != executionId) {
+                        reject()
+                        return@admit null
+                    }
+                    if (capturesCurrentValues) onCurrentValueCommandCaptured?.invoke()
+                    reserveCommand()
+                    command
                 }
-                val command = active()?.let(build)
-                if (command == null || command.executionId != executionId) {
-                    reject()
-                    return
-                }
-                if (capturesCurrentValues) {
-                    onCurrentValueCommandCaptured?.invoke()
-                }
-                reserveCommand()
-                command
             }
-        val turn = mutationGate.admit()
+        admission ?: return
         scope.launch {
             var commandFailure: ExpandedSequenceFailure? = null
             try {
-                turn.run {
+                admission.turn.run {
                     mutableState.update { it.copy(commandFailure = null) }
                     try {
-                        execute(captured)
+                        execute(admission.command)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: StaleSequenceRouteException) {
@@ -645,3 +665,5 @@ internal class ExpandedLiveSequenceController(
 
     private fun Throwable.message(): String = message ?: javaClass.simpleName
 }
+
+private const val ACTIVITY_PICKER_PAGE_SIZE = 50

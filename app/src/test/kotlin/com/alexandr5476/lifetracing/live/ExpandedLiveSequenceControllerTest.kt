@@ -8,17 +8,20 @@ import com.alexandr5476.lifetracing.domain.ActiveSession
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotField
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
+import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceMaterializer
 import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
@@ -168,6 +171,48 @@ class ExpandedLiveSequenceControllerTest {
     }
 
     @Test
+    fun runtimeAddCatalogIsPagedAndDispatchesTheLaterTemplateIdentity() =
+        runBlocking {
+            val expanded = expanded()
+            val firstPage = (0 until 50).map { catalogItem("item-$it") }
+            val later = catalogItem("later")
+            val after = mutableListOf<ReusableActivityCatalogItem?>()
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    expanded.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(expanded) },
+                    { commands += it },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { cursor ->
+                        after += cursor
+                        if (cursor == null) firstPage else listOf(later)
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitLoaded()
+
+            controller.loadRuntimeAddCatalog()
+            withTimeout(1_000) { controller.state.first { it.catalog?.size == 50 && it.catalogCanLoadMore } }
+            assertEquals(listOf<ReusableActivityCatalogItem?>(null), after)
+
+            controller.loadMoreRuntimeAddCatalog()
+            withTimeout(1_000) { controller.state.first { it.catalog?.size == 51 && !it.catalogCanLoadMore } }
+            assertEquals(firstPage.last(), after.last())
+
+            controller.runtimeAddTemplate(later.id, RuntimeInsertionPlacement.TO_END)
+            withTimeout(1_000) { controller.state.first { commands.size == 1 && !it.commandInFlight } }
+            assertEquals(
+                ActivityEntrySource.Template(later.id),
+                (commands.single() as ExpandedSequenceCommand.RuntimeAdd).source,
+            )
+            controller.close()
+        }
+
+    @Test
     fun durableCommandsAreSerializedAndCoordinationFailureNeverRepeatsTheWriter() =
         runBlocking {
             val expanded = expanded()
@@ -196,7 +241,7 @@ class ExpandedLiveSequenceControllerTest {
                     },
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { Instant.EPOCH.plusSeconds(1) },
                 )
             controller.awaitLoaded()
@@ -285,7 +330,7 @@ class ExpandedLiveSequenceControllerTest {
                     {},
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { Instant.EPOCH.plusSeconds(1) },
                 )
             controller.awaitLoaded()
@@ -343,7 +388,7 @@ class ExpandedLiveSequenceControllerTest {
                     },
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { Instant.EPOCH.plusSeconds(1) },
                     onCurrentValueCommandCaptured = { captures++ },
                 )
@@ -421,7 +466,7 @@ class ExpandedLiveSequenceControllerTest {
                     },
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { Instant.EPOCH.plusSeconds(1) },
                     onCurrentValueCommandCaptured = { captures++ },
                 )
@@ -498,7 +543,7 @@ class ExpandedLiveSequenceControllerTest {
                     {},
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { now },
                 )
             try {
@@ -540,7 +585,7 @@ class ExpandedLiveSequenceControllerTest {
                     {},
                     MutableStateFlow(0L),
                     { null },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     { Instant.EPOCH.plusSeconds(1) },
                     onCurrentValueCommandCaptured = {
                         captured.countDown()
@@ -587,7 +632,7 @@ class ExpandedLiveSequenceControllerTest {
         { semantic.value++ },
         semantic,
         { null },
-        { emptyList() },
+        { _ -> emptyList() },
         { Instant.EPOCH.plusSeconds(1) },
     )
 
@@ -600,8 +645,20 @@ class ExpandedLiveSequenceControllerTest {
             {},
             MutableStateFlow(0L),
             { null },
-            { emptyList() },
+            { _ -> emptyList() },
             { Instant.EPOCH },
+        )
+
+    private fun catalogItem(id: String) =
+        ReusableActivityCatalogItem(
+            ActivityTemplateId(id),
+            id,
+            TimeTrackingMode.STOPWATCH,
+            null,
+            null,
+            null,
+            null,
+            null,
         )
 
     private suspend fun ExpandedLiveSequenceController.awaitLoaded() {

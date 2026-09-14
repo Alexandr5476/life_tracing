@@ -142,7 +142,7 @@ class ProductionLauncherCoordinationTest {
                     coordinator::onRuntimeStateChanged,
                     coordinator.semanticGeneration,
                     { coordinator.displayBaseline },
-                    { emptyList() },
+                    { _ -> emptyList() },
                     FixedWallClock(pauseAt),
                     mutationGate = coordinator.mutationGate,
                 )
