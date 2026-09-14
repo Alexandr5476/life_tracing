@@ -28,6 +28,7 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 sealed interface LibraryLoad<out T> {
     data object Loading : LibraryLoad<Nothing>
@@ -255,6 +256,7 @@ class LibraryController internal constructor(
     private val folderDeletionGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
     private val mutationInFlight = AtomicBoolean()
+    private val nextSearchPublicationGate = AtomicReference<(suspend () -> Unit)?>(null)
     private val mutableState = MutableStateFlow(LibraryPresentationState())
     val state: StateFlow<LibraryPresentationState> = mutableState
 
@@ -301,6 +303,11 @@ class LibraryController internal constructor(
         organizationGeneration.incrementAndGet()
         folderDeletionGeneration.incrementAndGet()
         searchGeneration.incrementAndGet()
+    }
+
+    /** Test-only synchronization for a retained controller publication across host recreation. */
+    internal fun deferNextSearchPublicationForTest(gate: suspend () -> Unit) {
+        check(nextSearchPublicationGate.compareAndSet(null, gate))
     }
 
     private fun retry() {
@@ -531,13 +538,21 @@ class LibraryController internal constructor(
             try {
                 val results = searchLibrary(query, filter).filterNot(LibraryTrackable::isArchived)
                 if (!closed && generation == searchGeneration.get()) {
-                    mutableState.update { it.copy(search = LibraryLoad.Content(results)) }
+                    nextSearchPublicationGate.getAndSet(null)?.invoke()
+                    if (!closed && generation == searchGeneration.get()) {
+                        mutableState.update { it.copy(search = LibraryLoad.Content(results)) }
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
                 if (!closed && generation == searchGeneration.get()) {
-                    mutableState.update { it.copy(search = LibraryLoad.Failure(failure.message ?: "Unknown error")) }
+                    nextSearchPublicationGate.getAndSet(null)?.invoke()
+                    if (!closed && generation == searchGeneration.get()) {
+                        mutableState.update {
+                            it.copy(search = LibraryLoad.Failure(failure.message ?: "Unknown error"))
+                        }
+                    }
                 }
             }
         }

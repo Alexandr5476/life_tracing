@@ -1,13 +1,13 @@
 package com.alexandr5476.lifetracing
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -47,6 +47,8 @@ import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
+import com.alexandr5476.lifetracing.library.LibraryLoad
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
@@ -104,15 +106,7 @@ class MainActivityRouteSessionTest {
             )
 
         composeTestRule.activityRule.scenario.recreate()
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule
-                .onAllNodesWithTag("daily-expand-sequence")
-                .fetchSemanticsNodes()
-                .isNotEmpty()
-        }
-        composeTestRule
-            .onNodeWithTag("daily-expand-sequence")
-            .performClick()
+        expandSequence()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
         }
@@ -127,16 +121,7 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
         }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule
-                .onAllNodesWithTag("daily-expand-sequence")
-                .fetchSemanticsNodes()
-                .isNotEmpty()
-        }
-
-        composeTestRule
-            .onNodeWithTag("daily-expand-sequence")
-            .performClick()
+        expandSequence()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
         }
@@ -185,15 +170,7 @@ class MainActivityRouteSessionTest {
             activeExecutionId == second.execution.id
         }
         composeTestRule.waitForIdle()
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule
-                .onAllNodesWithTag("daily-expand-sequence")
-                .fetchSemanticsNodes()
-                .isNotEmpty()
-        }
-        composeTestRule
-            .onNodeWithTag("daily-expand-sequence")
-            .performClick()
+        expandSequence()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
                 ?.executionId == second.execution.id
@@ -472,16 +449,42 @@ class MainActivityRouteSessionTest {
                 error("Library route must initialize the retained controller")
             }
         val projection = controller.state.value
-
-        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.browse is LibraryLoad.Content &&
+                controller.state.value.organization is LibraryLoad.Content
+        }
         composeTestRule.waitForIdle()
+        val publicationStarted = CompletableDeferred<Unit>()
+        val releasePublication = CompletableDeferred<Unit>()
+        controller.deferNextSearchPublicationForTest {
+            publicationStarted.complete(Unit)
+            releasePublication.await()
+        }
+        composeTestRule
+            .onNode(hasText(composeTestRule.activity.getString(R.string.library_search_hint)) and hasSetTextAction())
+            .performTextInput(name)
+        composeTestRule.waitUntil(5_000) { publicationStarted.isCompleted }
 
-        val recreated =
-            composeTestRule.activity.libraryControllerOwner.get {
-                error("Activity recreation must reuse the retained controller")
+        try {
+            composeTestRule.activityRule.scenario.recreate()
+
+            val recreated =
+                composeTestRule.activity.libraryControllerOwner.get {
+                    error("Activity recreation must reuse the retained controller")
+                }
+            assertSame(controller, recreated)
+            composeTestRule.runOnUiThread { releasePublication.complete(Unit) }
+            composeTestRule.waitUntil(5_000) {
+                (recreated.state.value.search as? LibraryLoad.Content)
+                    ?.value
+                    ?.any { it.name == name } == true
             }
-        assertSame(controller, recreated)
-        assertSame(projection, recreated.state.value)
+            composeTestRule.waitForIdle()
+            assertEquals(projection.browse, recreated.state.value.browse)
+            assertEquals(2, composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().size)
+        } finally {
+            releasePublication.complete(Unit)
+        }
     }
 
     @Test
@@ -839,6 +842,14 @@ class MainActivityRouteSessionTest {
             .assertIsDisplayed()
         composeTestRule.onNodeWithText(fixture.activity.name).assertIsDisplayed()
         composeTestRule.onNodeWithText("${fixture.query} sequence").assertDoesNotExist()
+    }
+
+    private fun expandSequence() {
+        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodes(expandSequence).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNode(expandSequence).performClick()
     }
 
     private fun daily() =
