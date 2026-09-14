@@ -26,6 +26,7 @@ class AndroidRuntimeCoordinator internal constructor(
     private val feedbackDispatcher: RuntimeFeedbackDispatcher,
     private val notificationPublisher: RuntimeNotificationPublisher,
     private val log: (String) -> Unit,
+    internal val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
 ) {
     private val mutex = Mutex()
     private val mutableSemanticGeneration = MutableStateFlow(0L)
@@ -59,71 +60,83 @@ class AndroidRuntimeCoordinator internal constructor(
     suspend fun recoverAndSchedule() = reconcileAndSchedule(emitFeedback = false)
 
     suspend fun onForeground() {
-        mutex.withLock {
-            clockAnchor.reset()
-            reconcileAndScheduleLocked(emitFeedback = true)
-            invalidateSemanticState()
+        mutationGate.admit().run {
+            mutex.withLock {
+                clockAnchor.reset()
+                reconcileAndScheduleLocked(emitFeedback = true)
+                invalidateSemanticState()
+            }
         }
     }
 
     suspend fun onSystemTimeChanged() {
-        mutex.withLock {
-            localDeadlineDriver.cancel()
-            scheduler.cancel()
-            clockAnchor.reset()
-            reconcileAndScheduleLocked(emitFeedback = false)
-            invalidateSemanticState()
+        mutationGate.admit().run {
+            mutex.withLock {
+                localDeadlineDriver.cancel()
+                scheduler.cancel()
+                clockAnchor.reset()
+                reconcileAndScheduleLocked(emitFeedback = false)
+                invalidateSemanticState()
+            }
         }
     }
 
     suspend fun onBootCompleted() {
-        mutex.withLock {
-            clockAnchor.reset()
-            reconcileAndScheduleLocked(emitFeedback = false)
-            invalidateSemanticState()
+        mutationGate.admit().run {
+            mutex.withLock {
+                clockAnchor.reset()
+                reconcileAndScheduleLocked(emitFeedback = false)
+                invalidateSemanticState()
+            }
         }
     }
 
     suspend fun onRuntimeStateChanged() {
-        mutex.withLock {
-            val runtime = loadRuntime()
-            schedule(runtime)
-            bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, null) }
-            invalidateSemanticState()
+        mutationGate.admit().run {
+            mutex.withLock {
+                val runtime = loadRuntime()
+                schedule(runtime)
+                bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, null) }
+                invalidateSemanticState()
+            }
         }
     }
 
     suspend fun onDeadlineSignal(expected: RuntimeDeadline) {
-        mutex.withLock {
-            val before = loadRuntime()
-            val current = before?.let(NextRuntimeDeadlineResolver::resolve)
-            val now = wallClock.now()
-            val elapsedNow = clockAnchor.elapsedRealtimeNow()
-            if (current != expected || now < expected.at) {
-                log("stale_runtime_deadline_signal_ignored kind=${expected.kind}")
-                if (current != null &&
-                    now < current.at &&
-                    clockAnchor.snapshot().elapsedAt(current.at) <= elapsedNow
-                ) {
-                    clockAnchor.reset(now, elapsedNow)
+        mutationGate.admit().run {
+            mutex.withLock {
+                val before = loadRuntime()
+                val current = before?.let(NextRuntimeDeadlineResolver::resolve)
+                val now = wallClock.now()
+                val elapsedNow = clockAnchor.elapsedRealtimeNow()
+                if (current != expected || now < expected.at) {
+                    log("stale_runtime_deadline_signal_ignored kind=${expected.kind}")
+                    if (current != null &&
+                        now < current.at &&
+                        clockAnchor.snapshot().elapsedAt(current.at) <= elapsedNow
+                    ) {
+                        clockAnchor.reset(now, elapsedNow)
+                    }
+                    schedule(before)
+                    return@withLock
                 }
-                schedule(before)
-                return@withLock
+                val result = reconcile(now)
+                val runtime = loadRuntime()
+                val latest = result.appliedEvents.maxByOrNull { it.deadline.at }
+                schedule(runtime)
+                latest?.let { bestEffort("runtime_feedback_failed") { feedbackDispatcher.dispatch(it) } }
+                bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, latest) }
+                invalidateSemanticState()
             }
-            val result = reconcile(now)
-            val runtime = loadRuntime()
-            val latest = result.appliedEvents.maxByOrNull { it.deadline.at }
-            schedule(runtime)
-            latest?.let { bestEffort("runtime_feedback_failed") { feedbackDispatcher.dispatch(it) } }
-            bestEffort("runtime_notification_failed") { notificationPublisher.publish(runtime, latest) }
-            invalidateSemanticState()
         }
     }
 
     private suspend fun reconcileAndSchedule(emitFeedback: Boolean) {
-        mutex.withLock {
-            reconcileAndScheduleLocked(emitFeedback)
-            invalidateSemanticState()
+        mutationGate.admit().run {
+            mutex.withLock {
+                reconcileAndScheduleLocked(emitFeedback)
+                invalidateSemanticState()
+            }
         }
     }
 

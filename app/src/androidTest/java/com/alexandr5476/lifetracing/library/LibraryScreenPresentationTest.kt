@@ -31,7 +31,6 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -106,11 +105,14 @@ class LibraryScreenPresentationTest {
     }
 
     @Test
-    fun activityRowsOpenTheEditorWhileSequenceRowsRemainNonEditorActions() {
+    fun activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent() {
         val activity = trackable("Editable activity", false).copy(shortComment = "Ordinary row content")
-        val sequence = trackable("Sequence without editor", true)
+        val sequence = trackable("Editable sequence", true)
         val actions = mutableListOf<LibraryAction>()
         val opened = mutableListOf<ActivityTemplateId>()
+        val openedSequences = mutableListOf<SequenceTemplateId>()
+        var createdActivities = 0
+        var createdSequences = 0
         val quickStarts = mutableListOf<LibraryTemplateId>()
         composeTestRule.setContent {
             LifeTracingTheme {
@@ -129,32 +131,36 @@ class LibraryScreenPresentationTest {
                             organization = LibraryLoad.Content(LibraryOrganization(emptyList(), emptyList())),
                         ),
                     onAction = actions::add,
+                    onCreateActivity = { createdActivities += 1 },
+                    onCreateSequence = { createdSequences += 1 },
                     onOpenActivity = opened::add,
+                    onOpenSequence = openedSequences::add,
                     onQuickStart = quickStarts::add,
                     onRouteBack = {},
                 )
             }
         }
 
+        composeTestRule.onNodeWithText(text(R.string.library_new_activity)).performClick()
+        composeTestRule.onNodeWithText(text(R.string.library_new_sequence)).performClick()
+        assertEquals(1, createdActivities)
+        assertEquals(1, createdSequences)
         composeTestRule.onNodeWithText("Ordinary row content").performClick()
+        composeTestRule.onNodeWithText("Editable sequence").performClick()
 
         assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
-        assertFalse(
-            composeTestRule
-                .onNodeWithText("Sequence without editor")
-                .fetchSemanticsNode()
-                .config
-                .contains(SemanticsActions.OnClick),
-        )
+        assertEquals(listOf((sequence.id as LibraryTemplateId.Sequence).id), openedSequences)
         composeTestRule.onAllNodesWithText(text(R.string.library_quick_start))[0].performClick()
         composeTestRule.onAllNodesWithText(text(R.string.library_quick_start))[1].performClick()
 
         assertEquals(listOf(activity.id, sequence.id), quickStarts)
         assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+        assertEquals(listOf((sequence.id as LibraryTemplateId.Sequence).id), openedSequences)
         composeTestRule.onAllNodesWithText(text(R.string.library_organize))[0].performClick()
         composeTestRule.onNodeWithText(text(R.string.library_pin)).performClick()
         assertEquals(LibraryAction.SetPinned(activity.id, true), actions.last())
         assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+        assertEquals(listOf((sequence.id as LibraryTemplateId.Sequence).id), openedSequences)
         assertEquals(listOf(activity.id, sequence.id), quickStarts)
     }
 
@@ -329,6 +335,7 @@ class LibraryScreenPresentationTest {
         val unpinned = trackable("Unpinned activity", false)
         val actions = mutableListOf<LibraryAction>()
         val opened = mutableListOf<ActivityTemplateId>()
+        val openedSequences = mutableListOf<SequenceTemplateId>()
         val quickStarts = mutableListOf<LibraryTemplateId>()
         composeTestRule.setContent {
             CompositionLocalProvider(
@@ -356,6 +363,7 @@ class LibraryScreenPresentationTest {
                                 ),
                             onAction = actions::add,
                             onOpenActivity = opened::add,
+                            onOpenSequence = openedSequences::add,
                             onQuickStart = quickStarts::add,
                             onRouteBack = {},
                         )
@@ -385,13 +393,8 @@ class LibraryScreenPresentationTest {
         clickInside(composeTestRule.onAllNodesWithText(moveDestination)[0], widthPixels)
         assertEquals(LibraryAction.MoveTemplate(activity.id, destination.id), actions.last())
 
-        assertFalse(
-            composeTestRule
-                .onNodeWithText(sequence.name)
-                .fetchSemanticsNode()
-                .config
-                .contains(SemanticsActions.OnClick),
-        )
+        clickInside(composeTestRule.onNodeWithText(sequence.name), widthPixels)
+        assertEquals(listOf((sequence.id as LibraryTemplateId.Sequence).id), openedSequences)
         clickInside(composeTestRule.onAllNodesWithText(organize)[1], widthPixels)
         clickInside(composeTestRule.onAllNodesWithText(unpin)[1], widthPixels)
         assertEquals(LibraryAction.SetPinned(sequence.id, false), actions.last())

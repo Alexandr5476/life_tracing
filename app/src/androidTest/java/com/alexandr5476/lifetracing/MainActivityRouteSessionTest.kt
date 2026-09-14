@@ -1,7 +1,9 @@
 package com.alexandr5476.lifetracing
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -11,30 +13,44 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
+import com.alexandr5476.lifetracing.editor.SequenceDropDestination
+import com.alexandr5476.lifetracing.editor.SequenceEditorInputKey
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
+import com.alexandr5476.lifetracing.editor.inputIsInvalid
+import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
+import com.alexandr5476.lifetracing.library.LibraryLoad
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -48,6 +64,292 @@ import java.time.ZoneId
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun productionExpandedSequenceSystemBackReleasesExactSessionAndAllowsTheNextExecution() {
+        val suffix = System.nanoTime().toString()
+        val name = "Expanded route $suffix"
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val createdAt = Instant.now()
+        val activity =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Expanded step $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = createdAt,
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    name,
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(activity.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = createdAt.plusMillis(1),
+            )
+        val started =
+            LibraryRepository.create(composeTestRule.activity).startSequenceFromTemplate(
+                sequence.id,
+                createdAt.plusMillis(2),
+                createdAt.plusMillis(2),
+                ZoneId.systemDefault(),
+                sequence.revision,
+            )
+
+        composeTestRule.activityRule.scenario.recreate()
+        expandSequence()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
+        }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.expanded_sequence_back))
+            .assertIsDisplayed()
+        val firstSession = requireNotNull(composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertEquals(started.execution.id, firstSession.executionId)
+
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
+        expandSequence()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
+        }
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.expanded_sequence_back))
+            .assertIsDisplayed()
+        val retained = requireNotNull(composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertNotSame(firstSession, retained)
+        assertEquals(started.execution.id, retained.executionId)
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+        assertSame(retained, composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
+        assertEquals(started.execution.id, retained.controller.executionId)
+
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
+        }
+        live.endSequenceEarly(started.execution.id, Instant.now())
+        val secondStartedAt = Instant.now()
+        val second =
+            LibraryRepository.create(composeTestRule.activity).startSequenceFromTemplate(
+                sequence.id,
+                secondStartedAt,
+                secondStartedAt,
+                ZoneId.systemDefault(),
+                sequence.revision,
+            )
+        assertNotEquals(started.execution.id, second.execution.id)
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            val controller =
+                LifeTracingRuntimeGraph
+                    .from(composeTestRule.activity)
+                    .dailyController
+            val active =
+                (controller.state.value.load as? DailyLoadState.Content)
+                    ?.daily
+                    ?.active
+            val activeExecutionId =
+                (active as? DailyActive.Sequence)
+                    ?.runtime
+                    ?.execution
+                    ?.id
+            activeExecutionId == second.execution.id
+        }
+        composeTestRule.waitForIdle()
+        expandSequence()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
+                ?.executionId == second.execution.id
+        }
+        assertEquals(
+            second.execution.id,
+            requireNotNull(
+                composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession,
+            ).controller.executionId,
+        )
+
+        live.endSequenceEarly(second.execution.id, Instant.now())
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession ==
+                null
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
+    }
+
+    @Test
+    fun productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly() {
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession != null
+        }
+        val first = requireNotNull(composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        composeTestRule.waitUntil(5_000) {
+            first.controller.state.value.load is SequenceTemplateEditorLoad.Ready
+        }
+        composeTestRule.runOnUiThread {
+            first.controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "bad", 0, 0) {}
+        }
+
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+
+        assertSame(first, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(
+            "bad",
+            first.controller.state.value
+                .inputText(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "0"),
+        )
+        assertTrue(
+            first.controller.state.value
+                .inputIsInvalid(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN),
+        )
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.sequence_editor_discard_title),
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.sequence_editor_discard),
+            ).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+
+        val name = "Sequence editor ${System.nanoTime()}"
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession != null
+        }
+        val second = requireNotNull(composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        composeTestRule.waitUntil(5_000) {
+            second.controller.state.value.load is SequenceTemplateEditorLoad.Ready
+        }
+        val firstStep = DraftIdentity.New("first")
+        val secondStep = DraftIdentity.New("second")
+        composeTestRule.runOnUiThread {
+            second.controller.updateDraft {
+                it.copy(
+                    name = name,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    firstStep,
+                                    0,
+                                    StepActivityDraft.Local(
+                                        ActivitySnapshotDraft("First", null, TimeTrackingMode.STOPWATCH, null),
+                                    ),
+                                ),
+                            ),
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    secondStep,
+                                    1,
+                                    StepActivityDraft.Local(
+                                        ActivitySnapshotDraft("Second", null, TimeTrackingMode.STOPWATCH, null),
+                                    ),
+                                ),
+                            ),
+                        ),
+                )
+            }
+            second.controller.enterManipulation(firstStep)
+            second.controller.moveManipulation(secondStep, SequenceDropDestination(position = 0))
+            second.controller.moveManipulation(firstStep, SequenceDropDestination(position = 0))
+            second.controller.undoManipulation()
+            second.controller.selectManipulation(secondStep)
+        }
+        val manipulationDraft =
+            second.controller.state.value
+                .readyDraft()
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(
+            manipulationDraft,
+            second.controller.state.value
+                .readyDraft(),
+        )
+        assertEquals(
+            secondStep,
+            second.controller.state.value.manipulation
+                ?.selected,
+        )
+        assertTrue(
+            second.controller.state.value.manipulation
+                ?.canUndo == true,
+        )
+        assertTrue(
+            second.controller.state.value.manipulation
+                ?.canRedo == true,
+        )
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.sequence_editor_apply))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 1L }
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+        composeTestRule
+            .onNode(
+                hasText(composeTestRule.activity.getString(R.string.library_search_hint)) and hasSetTextAction(),
+            ).performTextInput(name)
+        val sequenceRow = hasText(name) and hasText(composeTestRule.activity.getString(R.string.library_sequence))
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodes(sequenceRow).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNode(sequenceRow).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession != null
+        }
+        val existing = requireNotNull(composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        composeTestRule.waitUntil(5_000) {
+            existing.controller.state.value.load is SequenceTemplateEditorLoad.Ready
+        }
+        composeTestRule.runOnUiThread { existing.controller.updateDraft { it.copy(shortComment = "retained") } }
+        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitForIdle()
+        assertSame(existing, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(
+            "retained",
+            existing.controller.state.value
+                .readyDraft()
+                ?.shortComment,
+        )
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.sequence_editor_discard),
+            ).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+    }
 
     @Test
     fun productionLauncherSessionSurvivesActivityRecreationAndIsReleasedOnlyWhenPopped() {
@@ -147,16 +449,42 @@ class MainActivityRouteSessionTest {
                 error("Library route must initialize the retained controller")
             }
         val projection = controller.state.value
-
-        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.browse is LibraryLoad.Content &&
+                controller.state.value.organization is LibraryLoad.Content
+        }
         composeTestRule.waitForIdle()
+        val publicationStarted = CompletableDeferred<Unit>()
+        val releasePublication = CompletableDeferred<Unit>()
+        controller.deferNextSearchPublicationForTest {
+            publicationStarted.complete(Unit)
+            releasePublication.await()
+        }
+        composeTestRule
+            .onNode(hasText(composeTestRule.activity.getString(R.string.library_search_hint)) and hasSetTextAction())
+            .performTextInput(name)
+        composeTestRule.waitUntil(5_000) { publicationStarted.isCompleted }
 
-        val recreated =
-            composeTestRule.activity.libraryControllerOwner.get {
-                error("Activity recreation must reuse the retained controller")
+        try {
+            composeTestRule.activityRule.scenario.recreate()
+
+            val recreated =
+                composeTestRule.activity.libraryControllerOwner.get {
+                    error("Activity recreation must reuse the retained controller")
+                }
+            assertSame(controller, recreated)
+            composeTestRule.runOnUiThread { releasePublication.complete(Unit) }
+            composeTestRule.waitUntil(5_000) {
+                (recreated.state.value.search as? LibraryLoad.Content)
+                    ?.value
+                    ?.any { it.name == name } == true
             }
-        assertSame(controller, recreated)
-        assertSame(projection, recreated.state.value)
+            composeTestRule.waitForIdle()
+            assertEquals(projection.browse, recreated.state.value.browse)
+            assertEquals(2, composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().size)
+        } finally {
+            releasePublication.complete(Unit)
+        }
     }
 
     @Test
@@ -514,6 +842,14 @@ class MainActivityRouteSessionTest {
             .assertIsDisplayed()
         composeTestRule.onNodeWithText(fixture.activity.name).assertIsDisplayed()
         composeTestRule.onNodeWithText("${fixture.query} sequence").assertDoesNotExist()
+    }
+
+    private fun expandSequence() {
+        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodes(expandSequence).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNode(expandSequence).performClick()
     }
 
     private fun daily() =

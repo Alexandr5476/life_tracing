@@ -229,6 +229,29 @@ class ActivitySnapshotFactory(
         ).also(ActivityConfigSnapshotValidator::requireValid)
     }
 
+    fun duplicate(
+        source: ActivityConfigSnapshot,
+        createdAt: Instant,
+    ): ActivityConfigSnapshot {
+        val fieldIds = source.fields.associate { it.id to nextFieldId() }
+        val optionIds =
+            source.fields.flatMap(ActivitySnapshotField::categoryOptions).associate { it.id to nextOptionId() }
+        return source
+            .copy(
+                id = nextSnapshotId(),
+                createdAt = Instant.ofEpochMilli(createdAt.toEpochMilli()),
+                fields =
+                    source.fields.map { field ->
+                        field.copy(
+                            id = fieldIds.getValue(field.id),
+                            defaultCategoryOptionId = field.defaultCategoryOptionId?.let(optionIds::getValue),
+                            categoryOptions =
+                                field.categoryOptions.map { option -> option.copy(id = optionIds.getValue(option.id)) },
+                        )
+                    },
+            ).also(ActivityConfigSnapshotValidator::requireValid)
+    }
+
     @Suppress("LongMethod") // Field and option IDs are allocated together so defaults cannot drift.
     fun fromOneOff(
         draft: ActivitySnapshotDraft,

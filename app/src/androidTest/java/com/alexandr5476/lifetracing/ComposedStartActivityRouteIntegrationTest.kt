@@ -44,6 +44,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -240,7 +241,7 @@ class ComposedStartActivityRouteIntegrationTest {
         val live = LiveSessionRepository.create(context)
         clearLiveSession(live, now)
         val commands = ActivityCommandRepository.create(context)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val writerCalls = AtomicInteger()
         val selectCalls = AtomicInteger()
         val durableCommands = java.util.Collections.synchronizedList(mutableListOf<LauncherDurableCommand>())
@@ -251,19 +252,25 @@ class ComposedStartActivityRouteIntegrationTest {
                 { emptyList() },
                 { emptyList() },
                 { LibraryContents(emptyList(), emptyList(), emptyList()) },
-                library::getLaunchTarget,
+                { id -> withContext(Dispatchers.IO) { library.getLaunchTarget(id) } },
                 {},
-                { live.getActiveSession() != null },
+                { withContext(Dispatchers.IO) { live.getActiveSession() != null } },
                 { command ->
                     writerCalls.incrementAndGet()
                     durableCommands += command
-                    executeLauncherCommand(command, commands, library)
+                    withContext(Dispatchers.IO) {
+                        executeLauncherCommand(command, commands, library)
+                    }
                 },
                 {},
                 FixedWallClock(now),
                 { ZoneOffset.UTC },
                 PreflightScheduler { _, _ -> PreflightHandle {} },
-                initialLiveConflict = { target -> library.hasLiveLaunchConflict(target.id, target.revision) },
+                initialLiveConflict = { target ->
+                    withContext(Dispatchers.IO) {
+                        library.hasLiveLaunchConflict(target.id, target.revision)
+                    }
+                },
                 onSelectObserved = { selectCalls.incrementAndGet() },
             )
         val owner = StartActivityRouteSessionOwner()

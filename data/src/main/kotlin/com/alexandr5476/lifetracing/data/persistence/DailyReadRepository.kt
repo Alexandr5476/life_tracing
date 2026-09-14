@@ -11,14 +11,13 @@ import android.content.Context
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
-import com.alexandr5476.lifetracing.domain.ActiveSessionState
+import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
-import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyPlan
 import com.alexandr5476.lifetracing.domain.DailyPlanSnapshot
 import com.alexandr5476.lifetracing.domain.DailyQuery
@@ -331,19 +330,7 @@ class DailyReadRepository internal constructor(
                 val next = nextRemainingOccurrence(execution)
                 DailyActive.Sequence(
                     this,
-                    when {
-                        current != null && session.state == ActiveSessionState.RUNNING ->
-                            DailyActiveSequenceState.RUNNING_CURRENT
-                        current != null && session.state == ActiveSessionState.PAUSED ->
-                            DailyActiveSequenceState.PAUSED_CURRENT
-                        current == null && session.state == ActiveSessionState.WAITING_NEXT ->
-                            DailyActiveSequenceState.WAITING_NEXT
-                        current == null && session.state == ActiveSessionState.RUNNING ->
-                            DailyActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN
-                        current == null && session.state == ActiveSessionState.PAUSED ->
-                            DailyActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN
-                        else -> error("Unsupported canonical active Sequence state")
-                    },
+                    ActiveSequenceStateResolver.resolve(this),
                     current?.toDailyOccurrence(this),
                     next?.toDailyOccurrence(this),
                 )

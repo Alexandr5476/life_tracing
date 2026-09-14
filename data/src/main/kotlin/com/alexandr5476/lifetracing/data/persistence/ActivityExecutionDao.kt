@@ -597,10 +597,12 @@ internal abstract class ActivityExecutionDao {
             "Sequence child transitions cannot remove pauses"
         }
         val beforeValues = before.values.associateBy(ActivityExecutionFieldValueEntity::snapshotFieldId)
-        require(beforeValues.keys == after.values.map(ActivityExecutionFieldValueEntity::snapshotFieldId).toSet()) {
-            "Sequence child transitions cannot add or remove values"
+        if (beforeValues.keys == after.values.map(ActivityExecutionFieldValueEntity::snapshotFieldId).toSet()) {
+            after.values.filter { beforeValues[it.snapshotFieldId] != it }.forEach(::upsertValueUnchecked)
+        } else {
+            deleteValuesUnchecked(after.execution.id)
+            if (after.values.isNotEmpty()) insertValuesUnchecked(after.values)
         }
-        after.values.filter { beforeValues[it.snapshotFieldId] != it }.forEach(::upsertValueUnchecked)
         if (before.execution != after.execution) {
             val execution = after.execution
             check(
@@ -617,6 +619,33 @@ internal abstract class ActivityExecutionDao {
                     execution.updatedAtMs,
                 ) == 1,
             )
+        }
+    }
+
+    @Transaction
+    open fun replaceLiveSequenceChildValues(
+        expectedSequenceExecutionId: String,
+        expectedOccurrenceId: String,
+        after: ActivityExecutionAggregateEntity,
+    ) {
+        val current =
+            requireNotNull(getAggregate(after.execution.id)) {
+                "Unknown execution: ${after.execution.id}"
+            }
+        require(
+            current.execution.contextType == "SEQUENCE_CHILD" &&
+                current.execution.sequenceExecutionId == expectedSequenceExecutionId &&
+                current.execution.sequenceOccurrenceId == expectedOccurrenceId &&
+                current.execution.status in setOf("RUNNING", "PAUSED") &&
+                current.execution.deletedAtMs == null,
+        ) { "Current value target is stale" }
+        require(current.execution == after.execution && current.pauses == after.pauses) {
+            "Live value editing may only replace the exact child values"
+        }
+        requireValidAggregate(after)
+        if (after.values != current.values) {
+            deleteValuesUnchecked(after.execution.id)
+            if (after.values.isNotEmpty()) insertValuesUnchecked(after.values)
         }
     }
 

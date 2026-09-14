@@ -103,10 +103,22 @@ data class ActivitySnapshotDraft(
     val fields: List<ActivitySnapshotFieldDraft> = emptyList(),
 )
 
+/** The complete immutable graph needed to author an existing SequenceTemplate. */
+data class SequenceTemplateAuthoringState(
+    val sequence: SequenceTemplate,
+    val activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+) {
+    fun toAuthoringDraft(): SequenceTemplateDraft = sequence.toAuthoringDraft(activitySnapshots)
+}
+
 sealed interface StepActivityDraft {
     data class Existing(
         val snapshotId: ActivitySnapshotId,
         val configuration: ActivitySnapshotDraft,
+        val sourceTemplateId: ActivityTemplateId? = null,
+        val sourceRevision: Long? = null,
+        val statisticsSeriesId: StatisticsSeriesId? = null,
+        val locallyModified: Boolean = false,
     ) : StepActivityDraft
 
     data class FromTemplate(
@@ -115,6 +127,16 @@ sealed interface StepActivityDraft {
 
     data class Local(
         val configuration: ActivitySnapshotDraft,
+    ) : StepActivityDraft
+
+    /** A new physical Step copied from this Sequence's already-frozen Step snapshot. */
+    data class Duplicate(
+        val sourceStepId: SequenceNodeId,
+        val configuration: ActivitySnapshotDraft,
+        val sourceTemplateId: ActivityTemplateId?,
+        val sourceRevision: Long?,
+        val statisticsSeriesId: StatisticsSeriesId?,
+        val locallyModified: Boolean,
     ) : StepActivityDraft
 }
 
@@ -470,15 +492,24 @@ fun SequenceTemplate.toAuthoringDraft(activitySnapshots: Map<ActivitySnapshotId,
         },
     )
 
-private fun ActivityStep.toAuthoringDraft(activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>) =
-    ActivityStepDraft(
+private fun ActivityStep.toAuthoringDraft(
+    activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+): ActivityStepDraft {
+    val snapshot =
+        requireNotNull(activitySnapshots[activitySnapshotId]) {
+            "ActivitySnapshot is missing for Step ${id.value}"
+        }
+    return ActivityStepDraft(
         DraftIdentity.Existing(id),
         position,
         StepActivityDraft.Existing(
             activitySnapshotId,
-            requireNotNull(activitySnapshots[activitySnapshotId]) {
-                "ActivitySnapshot is missing for Step ${id.value}"
-            }.toAuthoringDraft(),
+            snapshot.toAuthoringDraft(),
+            snapshot.sourceTemplateId,
+            snapshot.sourceRevision,
+            snapshot.statisticsSeriesId,
+            snapshot.locallyModified,
         ),
         overrides,
     )
+}

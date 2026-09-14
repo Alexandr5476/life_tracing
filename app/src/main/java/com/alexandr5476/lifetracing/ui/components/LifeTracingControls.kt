@@ -60,6 +60,8 @@ fun LifeTracingOutlinedTextField(
     label: @Composable (() -> Unit)? = null,
     readOnly: Boolean = false,
     enabled: Boolean = true,
+    isError: Boolean = false,
+    supportingText: @Composable (() -> Unit)? = null,
 ) {
     OutlinedTextField(
         value = value,
@@ -68,6 +70,8 @@ fun LifeTracingOutlinedTextField(
         label = label,
         readOnly = readOnly,
         enabled = enabled,
+        isError = isError,
+        supportingText = supportingText,
         shape = MaterialTheme.shapes.small,
     )
 }

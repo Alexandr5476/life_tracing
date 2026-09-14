@@ -9,6 +9,7 @@ import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
@@ -19,7 +20,9 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
+import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
@@ -32,6 +35,8 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator
+import com.alexandr5476.lifetracing.domain.StaleSequenceRouteException
+import com.alexandr5476.lifetracing.domain.StaleSequenceTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -331,6 +336,123 @@ class LiveSessionRepositoryTest {
         assertEquals(reconciled, active.execution)
         assertEquals(reconciled.occurrences[1].id, active.execution.currentOccurrenceId)
         assertNull(NextRuntimeDeadlineResolver.resolve(active))
+    }
+
+    @Test
+    fun exactExpandedRouteIdentityNeverMutatesAReplacementSequence() {
+        val first =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-navigation"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        assertThrows(StaleSequenceRouteException::class.java) {
+            repository.pauseActiveSequence(SequenceExecutionId("another"), instant(1))
+        }
+        assertEquals(first.execution, activeSequence().execution)
+
+        repository.endSequenceEarly(first.execution.id, instant(2))
+        val second =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-navigation"),
+                instant(3),
+                instant(3),
+                ZoneOffset.UTC,
+            )
+        assertThrows(StaleSequenceRouteException::class.java) {
+            repository.endSequenceEarly(first.execution.id, instant(4))
+        }
+
+        assertEquals(second.execution.id, activeSequence().execution.id)
+        assertEquals(SequenceExecutionStatus.RUNNING, activeSequence().execution.status)
+    }
+
+    @Test
+    fun exactCurrentValueCommandsPreserveZeroMissingAndDeadlineStaleness() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-defaults"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val occurrenceId = requireNotNull(started.execution.currentOccurrenceId)
+        val fieldId = ActivitySnapshotFieldId("defaults-number")
+        repository.updateCurrentSequenceStepValues(
+            started.execution.id,
+            occurrenceId,
+            listOf(ActivityExecutionValueOverride(fieldId, null)),
+            instant(10),
+        )
+        assertTrue(requireNotNull(activeSequence().currentChild).values.isEmpty())
+        repository.updateCurrentSequenceStepValues(
+            started.execution.id,
+            occurrenceId,
+            listOf(ActivityExecutionValueOverride(fieldId, NumberExecutionValue(fieldId, 0))),
+            instant(20),
+        )
+        assertEquals(
+            0L,
+            (requireNotNull(activeSequence().currentChild).values.single() as NumberExecutionValue).scaledValue,
+        )
+
+        assertThrows(StaleSequenceTargetException::class.java) {
+            repository.updateCurrentSequenceStepValues(
+                started.execution.id,
+                occurrenceId,
+                emptyList(),
+                instant(60),
+            )
+        }
+        assertEquals(RuntimeOccurrenceStatus.NOT_STARTED, activeSequence().execution.occurrences[1].status)
+        assertNull(activeSequence().currentChild)
+        assertEquals(
+            0L,
+            (repositoryExecution(requireNotNull(started.currentChild).id.value).values.single() as NumberExecutionValue)
+                .scaledValue,
+        )
+    }
+
+    @Test
+    fun noLiveCompletionAppliesTransientOverridesAtomicallyWithChildCreation() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-defaults"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        repository.completeCurrentSequenceStep(started.execution.currentOccurrenceId!!, instant(10))
+        val added =
+            repository.runtimeAdd(
+                started.execution.id,
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.NO_LIVE_TRACKING)),
+                RuntimeInsertionPlacement.START_NOW,
+                instant(20),
+            )
+        val occurrenceId = requireNotNull(added.execution.currentOccurrenceId)
+        val expanded = repository.getExpandedSequence(started.execution.id) as ExpandedLiveSequenceRead.Active
+        val fieldId =
+            expanded.value.occurrences
+                .single { it.occurrence.id == occurrenceId }
+                .activity.fields
+                .single()
+                .id
+
+        repository.completeCurrentSequenceStep(
+            started.execution.id,
+            occurrenceId,
+            listOf(ActivityExecutionValueOverride(fieldId, NumberExecutionValue(fieldId, 0))),
+            instant(30),
+        )
+
+        val child =
+            requireNotNull(
+                database.activityExecutionDao().getAggregateByOccurrence(occurrenceId.value),
+            ).toDomain()
+        assertEquals(0L, (child.values.single() as NumberExecutionValue).scaledValue)
+        assertEquals(ActivityExecutionStatus.COMPLETED, child.status)
     }
 
     @Test
@@ -1696,6 +1818,36 @@ class LiveSessionRepositoryTest {
 
         repository.reconcileActiveSession(instant(70))
         assertEquals(persisted, repositorySequence(started.execution.id.value))
+    }
+
+    @Test
+    fun preDeadlinePausePersistsAcrossReloadBeforeDelayedWorkerReconciliation() {
+        val started =
+            repository.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence-waiting"),
+                instant(0),
+                instant(0),
+                ZoneOffset.UTC,
+            )
+        val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(activeSequence())).at
+        val admittedAt = deadline.minusSeconds(1)
+
+        repository.pauseActiveSequence(started.execution.id, admittedAt)
+        repository = repository(database, 100)
+        val reloaded = activeSequence()
+
+        assertEquals(ActiveSessionState.PAUSED, reloaded.session.state)
+        assertEquals(started.execution.currentOccurrenceId, reloaded.execution.currentOccurrenceId)
+        assertNull(reloaded.execution.occurrences[0].completedAt)
+        assertEquals(
+            admittedAt,
+            reloaded.execution.intervals
+                .single { it.endedAt == null }
+                .startedAt,
+        )
+
+        repository.reconcileActiveSession(deadline.plusSeconds(1))
+        assertEquals(reloaded.execution, repositorySequence(started.execution.id.value))
     }
 
     @Test

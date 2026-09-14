@@ -82,11 +82,14 @@ class SequenceRuntimeEngine(
         at: Instant,
         snapshot: SequenceConfigSnapshot,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): SequenceRuntimeState {
         val reconciled = reconcile(initial, snapshot, activitySnapshots, at)
         require(reconciled.execution.status == SequenceExecutionStatus.RUNNING) { "Sequence is no longer active" }
         val current = requireNotNull(current(reconciled.execution)) { "Sequence is not running a Step" }
-        require(current.id == expectedOccurrenceId) { "Stale current-occurrence command" }
+        if (current.id != expectedOccurrenceId) {
+            throw StaleSequenceTargetException("Stale current-occurrence command")
+        }
         return completeCurrent(
             reconciled,
             expectedOccurrenceId,
@@ -94,6 +97,7 @@ class SequenceRuntimeEngine(
             OccurrenceCompletionReason.MANUAL_FINISH,
             snapshot,
             activitySnapshots,
+            valueOverrides,
         )
     }
 
@@ -126,7 +130,9 @@ class SequenceRuntimeEngine(
         var state = reconcile(initial, snapshot, activitySnapshots, commandAt)
         require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Go now requires a running Sequence" }
         val target = occurrence(state.execution, targetOccurrenceId)
-        require(target.status == RuntimeOccurrenceStatus.NOT_STARTED) { "Go now target must be not started" }
+        if (target.status != RuntimeOccurrenceStatus.NOT_STARTED) {
+            throw StaleSequenceTargetException("Go now target must still be not started")
+        }
         requireNotNull(openInterval(state.execution)) { "Go now requires an active runtime interval" }
         val current = current(state.execution)
         if (current !=
@@ -174,7 +180,9 @@ class SequenceRuntimeEngine(
         require(state.execution.status == SequenceExecutionStatus.RUNNING) { "Make next requires a running Sequence" }
         val current = requireNotNull(current(state.execution)) { "Make next requires a current Step" }
         val target = occurrence(state.execution, targetOccurrenceId)
-        require(target.status == RuntimeOccurrenceStatus.NOT_STARTED) { "Make next target must be not started" }
+        if (target.status != RuntimeOccurrenceStatus.NOT_STARTED) {
+            throw StaleSequenceTargetException("Make next target must still be not started")
+        }
         val future =
             state.execution.occurrences
                 .filter {
@@ -298,7 +306,9 @@ class SequenceRuntimeEngine(
     ): SequenceRuntimeState {
         val reconciled = reconcile(initial, snapshot, activitySnapshots, persisted(at))
         val prior = occurrence(reconciled.execution, occurrenceId)
-        require(prior.status == RuntimeOccurrenceStatus.COMPLETED) { "Do again requires a completed occurrence" }
+        if (prior.status != RuntimeOccurrenceStatus.COMPLETED) {
+            throw StaleSequenceTargetException("Do again source must still be completed")
+        }
         val activity = activitySnapshots.requireSnapshot(prior.activitySnapshotId)
         return insertOccurrence(
             reconciled,
@@ -486,8 +496,9 @@ class SequenceRuntimeEngine(
         reason: OccurrenceCompletionReason,
         snapshot: SequenceConfigSnapshot,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): SequenceRuntimeState {
-        val completed = finalizeCurrent(state, occurrenceId, at, reason, activitySnapshots)
+        val completed = finalizeCurrent(state, occurrenceId, at, reason, activitySnapshots, valueOverrides)
         val next = nextRemainingOccurrence(completed.execution)
         if (next == null) return finish(completed, at)
         if (!snapshot.settings.autoAdvance) {
@@ -509,6 +520,7 @@ class SequenceRuntimeEngine(
         at: Instant,
         reason: OccurrenceCompletionReason,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): SequenceRuntimeState {
         val current = occurrence(state.execution, occurrenceId)
         require(current.status == RuntimeOccurrenceStatus.CURRENT) { "Only the current occurrence can finish" }
@@ -527,7 +539,8 @@ class SequenceRuntimeEngine(
                 TimeTrackingMode.TIMER,
                 -> ActivityExecutionTransitions.complete(requireNotNull(state.currentChild), at)
             }
-        val closed = closeOpen(state.withChild(occurrenceId, child), at)
+        val completedChild = ActivityExecutionValuePolicy.apply(child, activity, valueOverrides)
+        val closed = closeOpen(state.withChild(occurrenceId, completedChild), at)
         return closed.copy(
             execution =
                 closed.execution.copy(

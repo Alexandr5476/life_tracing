@@ -1,4 +1,4 @@
-@file:Suppress("FunctionNaming", "LongParameterList", "TooManyFunctions")
+@file:Suppress("FunctionNaming", "LongMethod", "LongParameterList", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing.library
 
@@ -41,6 +41,7 @@ import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
+import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -51,7 +52,9 @@ fun LibraryRoute(
     controller: LibraryController,
     onBack: () -> Unit,
     onCreateActivity: () -> Unit = {},
+    onCreateSequence: () -> Unit = {},
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
+    onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
 ) {
     val state by controller.state.collectAsState()
@@ -60,7 +63,9 @@ fun LibraryRoute(
         onAction = controller::dispatch,
         onRouteBack = onBack,
         onCreateActivity = onCreateActivity,
+        onCreateSequence = onCreateSequence,
         onOpenActivity = onOpenActivity,
+        onOpenSequence = onOpenSequence,
         onQuickStart = onQuickStart,
     )
 }
@@ -70,7 +75,9 @@ internal fun LibraryScreen(
     state: LibraryPresentationState,
     onAction: (LibraryAction) -> Unit,
     onCreateActivity: () -> Unit = {},
+    onCreateSequence: () -> Unit = {},
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
+    onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
     onRouteBack: () -> Unit,
 ) {
@@ -90,6 +97,9 @@ internal fun LibraryScreen(
                 LifeTracingPrimaryButton(onClick = onCreateActivity, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.library_new_activity))
                 }
+                LifeTracingPrimaryButton(onClick = onCreateSequence, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.library_new_sequence))
+                }
             }
             val browse = (state.browse as? LibraryLoad.Content)?.value
             if (browse != null) Breadcrumb(browse.path)
@@ -108,6 +118,7 @@ internal fun LibraryScreen(
                     state.isMutating,
                     onAction,
                     onOpenActivity,
+                    onOpenSequence,
                     onQuickStart,
                 )
             } else {
@@ -117,6 +128,7 @@ internal fun LibraryScreen(
                     state.isMutating,
                     onAction,
                     onOpenActivity,
+                    onOpenSequence,
                     onQuickStart,
                 )
             }
@@ -185,6 +197,7 @@ private fun BrowseContent(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     when (load) {
@@ -202,6 +215,7 @@ private fun BrowseContent(
                     isMutating,
                     onAction,
                     onOpenActivity,
+                    onOpenSequence,
                     onQuickStart,
                 )
             }
@@ -214,6 +228,7 @@ private fun BrowseContent(
                     isMutating,
                     onAction,
                     onOpenActivity,
+                    onOpenSequence,
                     onQuickStart,
                 )
             }
@@ -231,6 +246,7 @@ private fun SearchContent(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     when (load) {
@@ -247,6 +263,7 @@ private fun SearchContent(
                     isMutating,
                     onAction,
                     onOpenActivity,
+                    onOpenSequence,
                     onQuickStart,
                 )
             }
@@ -298,11 +315,12 @@ private fun TrackableSection(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     SectionTitle(title)
     items.forEach {
-        TrackableRow(it, organization, isMutating, onAction, onOpenActivity, onQuickStart)
+        TrackableRow(it, organization, isMutating, onAction, onOpenActivity, onOpenSequence, onQuickStart)
     }
 }
 
@@ -315,6 +333,7 @@ private fun PinnedSection(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     var showOrdering by remember { mutableStateOf(false) }
@@ -329,7 +348,7 @@ private fun PinnedSection(
         }
     }
     allPinned.filtered(filter).forEach { item ->
-        TrackableRow(item, organization, isMutating, onAction, onOpenActivity, onQuickStart)
+        TrackableRow(item, organization, isMutating, onAction, onOpenActivity, onOpenSequence, onQuickStart)
     }
     if (showOrdering) {
         allPinned.forEachIndexed { index, item ->
@@ -377,9 +396,11 @@ private fun TrackableRow(
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
     onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
+    val sequenceId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence
     val shape = MaterialTheme.shapes.medium
     var showOrganization by remember(item.id) { mutableStateOf(false) }
     Card(
@@ -389,6 +410,8 @@ private fun TrackableRow(
                 .then(
                     if (activityId != null) {
                         Modifier.clip(shape).clickable { onOpenActivity(activityId.id) }
+                    } else if (sequenceId != null) {
+                        Modifier.clip(shape).clickable { onOpenSequence(sequenceId.id) }
                     } else {
                         Modifier
                     },

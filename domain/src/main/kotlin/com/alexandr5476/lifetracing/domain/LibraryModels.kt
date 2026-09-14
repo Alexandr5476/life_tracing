@@ -104,6 +104,18 @@ data class LibraryRoot(
     val pinned: List<LibraryTrackable>,
 )
 
+/** Bounded, editor-facing metadata for choosing a reusable Activity without hydrating each Template. */
+data class ReusableActivityCatalogItem(
+    val id: ActivityTemplateId,
+    val name: String,
+    val timeTrackingMode: TimeTrackingMode,
+    val timerTarget: Duration?,
+    val mainValueName: String?,
+    val mainValueUnit: String?,
+    val mainValueDisplayPrecision: Int?,
+    val mainValueDefaultNumberScaled: Long?,
+)
+
 sealed interface LibraryLaunchTarget {
     val id: LibraryTemplateId
     val name: String

@@ -101,6 +101,8 @@ class RuntimePlatformModelsTest {
         )
         assertEquals(Duration.ofSeconds(2), pausedBaseline.transitionCountdownRemaining(2_000))
         assertEquals(Duration.ofSeconds(2), pausedBaseline.transitionCountdownRemaining(2_000_000))
+        assertEquals(Duration.ofSeconds(10), pausedBaseline.activeElapsed(7_000))
+        assertEquals(Duration.ofSeconds(16), pausedBaseline.pauseElapsed(7_000))
     }
 
     @Test
@@ -176,6 +178,30 @@ class RuntimePlatformModelsTest {
     }
 
     @Test
+    fun waitingSequencePauseDisplayAdvancesFromOneImmutableBaseline() {
+        val timer = activity("timer", TimeTrackingMode.TIMER, 10)
+        val next = activity("next", TimeTrackingMode.STOPWATCH)
+        val snapshot = sequence(listOf(timer.id, next.id), countdownSeconds = 0, autoAdvance = false)
+        val engine = engine()
+        val started =
+            engine.start(snapshot, mapOf(timer.id to timer, next.id to next), instant(0), instant(0), ZoneOffset.UTC)
+        val waiting = engine.reconcile(started, snapshot, mapOf(timer.id to timer, next.id to next), instant(10))
+        val runtime =
+            sequenceRuntime(
+                waiting,
+                snapshot,
+                mapOf(timer.id to timer, next.id to next),
+            )
+
+        val baseline = RuntimeDisplayBaseline.capture(runtime, WallMonotonicAnchor(instant(10), 10_000), 10_000)
+
+        assertEquals(Duration.ofSeconds(10), baseline.activeElapsed(15_000))
+        assertEquals(Duration.ofSeconds(5), baseline.pauseElapsed(15_000))
+        repeat(1_000) { baseline.pauseElapsed(15_000L + it) }
+        assertEquals(Duration.ofSeconds(5), baseline.pauseElapsed(15_000))
+    }
+
+    @Test
     fun pausedCurrentStopwatchKeepsChildElapsedDistinctFromSequenceTotal() {
         val first = activity("first", TimeTrackingMode.TIMER, 10)
         val second = activity("second", TimeTrackingMode.STOPWATCH)
@@ -200,6 +226,30 @@ class RuntimePlatformModelsTest {
         assertEquals(Duration.ofSeconds(2), baseline.currentStepStopwatchElapsed(1_000))
         assertEquals(Duration.ofSeconds(12), baseline.activeElapsed(1_000_000))
         assertEquals(Duration.ofSeconds(2), baseline.currentStepStopwatchElapsed(1_000_000))
+        assertEquals(Duration.ofSeconds(999), baseline.pauseElapsed(1_000_000))
+    }
+
+    @Test
+    fun pausedCurrentTimerFreezesWhileExplicitPauseDisplayAdvances() {
+        val timer = activity("timer", TimeTrackingMode.TIMER, 10)
+        val activities = mapOf(timer.id to timer)
+        val snapshot = sequence(listOf(timer.id), countdownSeconds = 0)
+        val engine = engine()
+        val started = engine.start(snapshot, activities, instant(0), instant(0), ZoneOffset.UTC)
+        val paused = engine.pause(started, instant(2), snapshot, activities)
+        val baseline =
+            RuntimeDisplayBaseline.capture(
+                sequenceRuntime(paused, snapshot, activities),
+                WallMonotonicAnchor(instant(2), 1_000),
+                1_000,
+            )
+
+        repeat(1_000) { delta ->
+            val tick = 1_000L + delta
+            assertEquals(Duration.ofSeconds(2), baseline.activeElapsed(tick))
+            assertEquals(Duration.ofSeconds(8), baseline.timerRemaining(tick))
+            assertEquals(Duration.ofMillis(delta.toLong()), baseline.pauseElapsed(tick))
+        }
     }
 
     @Test

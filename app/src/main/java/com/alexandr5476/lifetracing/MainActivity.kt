@@ -1,4 +1,4 @@
-@file:Suppress("TooManyFunctions")
+@file:Suppress("LongParameterList", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing
 
@@ -27,10 +27,15 @@ import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRoute
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRouteSessionOwner
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryRoute
+import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRoute
+import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -45,8 +50,14 @@ class MainActivity : AppCompatActivity() {
     internal val activityTemplateEditorRouteSessions by lazy {
         ViewModelProvider(this)[ActivityTemplateEditorRouteSessionOwner::class.java]
     }
+    internal val sequenceTemplateEditorRouteSessions by lazy {
+        ViewModelProvider(this)[SequenceTemplateEditorRouteSessionOwner::class.java]
+    }
     internal val libraryControllerOwner by lazy {
         ViewModelProvider(this)[LibraryControllerOwner::class.java]
+    }
+    internal val expandedLiveSequenceRouteSessions by lazy {
+        ViewModelProvider(this)[ExpandedLiveSequenceRouteSessionOwner::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,7 +68,9 @@ class MainActivity : AppCompatActivity() {
                 appearance,
                 startActivityRouteSessions = startActivityRouteSessions,
                 activityTemplateEditorRouteSessions = activityTemplateEditorRouteSessions,
+                sequenceTemplateEditorRouteSessions = sequenceTemplateEditorRouteSessions,
                 libraryControllerOwner = libraryControllerOwner,
+                expandedLiveSequenceRouteSessions = expandedLiveSequenceRouteSessions,
             )
         }
     }
@@ -83,6 +96,16 @@ data class ExistingActivityTemplateEditor(
     val id: String,
 ) : NavKey
 
+@Serializable data object NewSequenceTemplateEditor : NavKey
+
+@Serializable data class ExistingSequenceTemplateEditor(
+    val id: String,
+) : NavKey
+
+@Serializable data class ExpandedLiveSequenceRoot(
+    val executionId: String,
+) : NavKey
+
 internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
 @Composable
@@ -92,7 +115,9 @@ internal fun LifeTracingApp(
     systemIsDark: Boolean = isSystemInDarkTheme(),
     startActivityRouteSessions: StartActivityRouteSessionOwner? = null,
     activityTemplateEditorRouteSessions: ActivityTemplateEditorRouteSessionOwner? = null,
+    sequenceTemplateEditorRouteSessions: SequenceTemplateEditorRouteSessionOwner? = null,
     libraryControllerOwner: LibraryControllerOwner? = null,
+    expandedLiveSequenceRouteSessions: ExpandedLiveSequenceRouteSessionOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -112,8 +137,23 @@ internal fun LifeTracingApp(
             val launcherSessions = startActivityRouteSessions ?: remember { StartActivityRouteSessionOwner() }
             val editorSessions =
                 activityTemplateEditorRouteSessions ?: remember { ActivityTemplateEditorRouteSessionOwner() }
+            val sequenceEditorSessions =
+                sequenceTemplateEditorRouteSessions ?: remember { SequenceTemplateEditorRouteSessionOwner() }
+            val expandedSequenceSessions =
+                expandedLiveSequenceRouteSessions ?: remember { ExpandedLiveSequenceRouteSessionOwner() }
+            val closeExpanded: (String) -> Unit = { expectedExecutionId ->
+                expandedSequenceSessions.release(
+                    com.alexandr5476.lifetracing.domain
+                        .SequenceExecutionId(expectedExecutionId),
+                )
+                backStack.removeExpandedLiveSequence(expectedExecutionId)
+            }
             NavDisplay(
                 backStack = backStack,
+                onBack = {
+                    val expanded = backStack.lastOrNull() as? ExpandedLiveSequenceRoot
+                    if (expanded == null) backStack.removeLastOrNull() else closeExpanded(expanded.executionId)
+                },
                 entryProvider =
                     entryProvider {
                         entry<DailyRoot> {
@@ -126,6 +166,12 @@ internal fun LifeTracingApp(
                                     backStack.openStartActivity()
                                 },
                                 onLibrary = { backStack.openLibrary() },
+                                onExpandSequence = { executionId ->
+                                    expandedSequenceSessions.acquire(executionId) {
+                                        runtimeGraph.createExpandedLiveSequenceController(executionId)
+                                    }
+                                    backStack.openExpandedLiveSequence(executionId.value)
+                                },
                             )
                         }
                         entry<StartActivityRoot> {
@@ -162,12 +208,27 @@ internal fun LifeTracingApp(
                                     }
                                     backStack.openNewActivityTemplateEditor()
                                 },
+                                onCreateSequence = {
+                                    sequenceEditorSessions.acquire(SequenceTemplateEditorTarget.New) {
+                                        runtimeGraph.createSequenceTemplateEditorController(
+                                            SequenceTemplateEditorTarget.New,
+                                        )
+                                    }
+                                    backStack.openNewSequenceTemplateEditor()
+                                },
                                 onOpenActivity = { id ->
                                     val target = ActivityTemplateEditorTarget.Existing(id)
                                     editorSessions.acquire(target) {
                                         runtimeGraph.createActivityTemplateEditorController(target)
                                     }
                                     backStack.openExistingActivityTemplateEditor(id.value)
+                                },
+                                onOpenSequence = { id ->
+                                    val target = SequenceTemplateEditorTarget.Existing(id)
+                                    sequenceEditorSessions.acquire(target) {
+                                        runtimeGraph.createSequenceTemplateEditorController(target)
+                                    }
+                                    backStack.openExistingSequenceTemplateEditor(id.value)
                                 },
                                 onQuickStart = { id ->
                                     val session =
@@ -226,6 +287,60 @@ internal fun LifeTracingApp(
                                 )
                             }
                         }
+                        entry<NewSequenceTemplateEditor> {
+                            val session = sequenceEditorSessions.activeSession
+                            if (session?.target != SequenceTemplateEditorTarget.New) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredSequenceTemplateEditor() }
+                            } else {
+                                SequenceTemplateEditorRoute(session.controller, onBack = {
+                                    sequenceEditorSessions.release(session)
+                                    backStack.removeSequenceTemplateEditor()
+                                }, onApplied = {
+                                    libraryOwner.refreshIfInitialized()
+                                }, onCommitted = {
+                                    session.exitPolicy.deliverCommitted {
+                                        sequenceEditorSessions.release(session)
+                                        backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
+                                    }
+                                })
+                            }
+                        }
+                        entry<ExistingSequenceTemplateEditor> { route ->
+                            val session = sequenceEditorSessions.activeSession
+                            val target =
+                                SequenceTemplateEditorTarget.Existing(
+                                    com.alexandr5476.lifetracing.domain
+                                        .SequenceTemplateId(route.id),
+                                )
+                            if (session?.target != target) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredSequenceTemplateEditor() }
+                            } else {
+                                SequenceTemplateEditorRoute(session.controller, onBack = {
+                                    sequenceEditorSessions.release(session)
+                                    backStack.removeSequenceTemplateEditor()
+                                }, onApplied = {
+                                    libraryOwner.refreshIfInitialized()
+                                }, onCommitted = {
+                                    session.exitPolicy.deliverCommitted {
+                                        sequenceEditorSessions.release(session)
+                                        backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
+                                    }
+                                })
+                            }
+                        }
+                        entry<ExpandedLiveSequenceRoot> { route ->
+                            val executionId =
+                                com.alexandr5476.lifetracing.domain
+                                    .SequenceExecutionId(route.executionId)
+                            val session =
+                                remember(route.executionId) {
+                                    expandedSequenceSessions.acquire(executionId) {
+                                        runtimeGraph.createExpandedLiveSequenceController(executionId)
+                                    }
+                                }
+                            val close = { closeExpanded(route.executionId) }
+                            ExpandedLiveSequenceRoute(session.controller, onBack = close, onStale = close)
+                        }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },
                 popTransitionSpec = { lifeTracingNavigationTransition() },
@@ -276,6 +391,29 @@ internal fun MutableList<NavKey>.normalizeRestoredActivityTemplateEditor() {
     removeActivityTemplateEditor()
 }
 
+internal fun MutableList<NavKey>.openNewSequenceTemplateEditor() {
+    if (lastOrNull() !is NewSequenceTemplateEditor) add(NewSequenceTemplateEditor)
+}
+
+internal fun MutableList<NavKey>.openExistingSequenceTemplateEditor(id: String) {
+    if (lastOrNull() !is ExistingSequenceTemplateEditor) add(ExistingSequenceTemplateEditor(id))
+}
+
+internal fun MutableList<NavKey>.removeSequenceTemplateEditor() {
+    if (lastOrNull() is NewSequenceTemplateEditor || lastOrNull() is ExistingSequenceTemplateEditor) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.completeSequenceTemplateEditor(refreshLibrary: () -> Unit) {
+    if (lastOrNull() is NewSequenceTemplateEditor || lastOrNull() is ExistingSequenceTemplateEditor) {
+        refreshLibrary()
+        removeSequenceTemplateEditor()
+    }
+}
+
+internal fun MutableList<NavKey>.normalizeRestoredSequenceTemplateEditor() {
+    removeSequenceTemplateEditor()
+}
+
 /** A restored launcher route has no durable command state and must never acquire a new controller. */
 internal fun MutableList<NavKey>.normalizeRestoredStartActivity() {
     removeStartActivity()
@@ -284,6 +422,14 @@ internal fun MutableList<NavKey>.normalizeRestoredStartActivity() {
 internal fun MutableList<NavKey>.completeStartActivity(selectToday: () -> Unit) {
     selectToday()
     removeStartActivity()
+}
+
+internal fun MutableList<NavKey>.openExpandedLiveSequence(executionId: String) {
+    if (lastOrNull() !is ExpandedLiveSequenceRoot) add(ExpandedLiveSequenceRoot(executionId))
+}
+
+internal fun MutableList<NavKey>.removeExpandedLiveSequence(expectedExecutionId: String) {
+    if ((lastOrNull() as? ExpandedLiveSequenceRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
 }
 
 private fun lifeTracingNavigationTransition(): ContentTransform =

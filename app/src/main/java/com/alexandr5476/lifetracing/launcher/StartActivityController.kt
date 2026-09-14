@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -244,6 +245,7 @@ class StartActivityController internal constructor(
     private val onReadPublicationChecked: (LauncherReadChannel) -> Unit = {},
     private val onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {},
     private val onPinnedOrderCommitted: () -> Unit = {},
+    private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
 ) {
     private val homeGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
@@ -613,21 +615,29 @@ class StartActivityController internal constructor(
         target: LibraryLaunchTarget,
         override: QuickMainValueOverride?,
     ) {
-        val now = wallClock.now()
-        val command =
-            when (target) {
-                is LibraryLaunchTarget.Activity ->
-                    if (target.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
-                        LauncherDurableCommand.CompleteNoLive(target.id.id, override, target.revision, now, zoneId())
-                    } else {
-                        LauncherDurableCommand.StartActivity(target.id.id, target.revision, now, zoneId())
-                    }
-                is LibraryLaunchTarget.Sequence ->
-                    LauncherDurableCommand.StartSequence(target.id.id, target.revision, now, zoneId())
+        val admission =
+            mutationGate.admit {
+                val now = wallClock.now()
+                when (target) {
+                    is LibraryLaunchTarget.Activity ->
+                        if (target.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                            LauncherDurableCommand.CompleteNoLive(
+                                target.id.id,
+                                override,
+                                target.revision,
+                                now,
+                                zoneId(),
+                            )
+                        } else {
+                            LauncherDurableCommand.StartActivity(target.id.id, target.revision, now, zoneId())
+                        }
+                    is LibraryLaunchTarget.Sequence ->
+                        LauncherDurableCommand.StartSequence(target.id.id, target.revision, now, zoneId())
+                }
             }
         val committed =
             try {
-                execute(command)
+                requireNotNull(admission).turn.run { execute(admission.command) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (conflict: LiveSessionConflictException) {

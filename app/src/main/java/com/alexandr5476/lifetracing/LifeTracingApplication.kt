@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package com.alexandr5476.lifetracing
 
 import android.app.Activity
@@ -19,6 +21,9 @@ import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
+import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -27,6 +32,8 @@ import com.alexandr5476.lifetracing.launcher.toEntryValue
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
+import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
+import com.alexandr5476.lifetracing.live.ExpandedSequenceCommand
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -83,6 +90,16 @@ class LifeTracingRuntimeGraph internal constructor(
     private val activityTemplateEditorControllerFactory: (
         ActivityTemplateEditorTarget,
     ) -> ActivityTemplateEditorController,
+    private val sequenceTemplateEditorControllerFactory: (
+        SequenceTemplateEditorTarget,
+    ) -> SequenceTemplateEditorController = {
+        error("Sequence editor is unavailable")
+    },
+    private val expandedLiveSequenceControllerFactory: (
+        com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ) -> ExpandedLiveSequenceController = {
+        error("Expanded live Sequence is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -95,6 +112,14 @@ class LifeTracingRuntimeGraph internal constructor(
     fun createActivityTemplateEditorController(
         target: ActivityTemplateEditorTarget,
     ): ActivityTemplateEditorController = activityTemplateEditorControllerFactory(target)
+
+    fun createSequenceTemplateEditorController(
+        target: SequenceTemplateEditorTarget,
+    ): SequenceTemplateEditorController = sequenceTemplateEditorControllerFactory(target)
+
+    internal fun createExpandedLiveSequenceController(
+        executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ): ExpandedLiveSequenceController = expandedLiveSequenceControllerFactory(executionId)
 
     companion object {
         @Volatile
@@ -169,6 +194,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
                         CoroutineLocalDateBoundaryScheduler(scope),
+                        mutationGate = coordinator.mutationGate,
                     )
                 },
                 { onPinnedOrderCommitted ->
@@ -225,6 +251,7 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         onPinnedOrderCommitted = onPinnedOrderCommitted,
+                        mutationGate = coordinator.mutationGate,
                     )
                 },
                 {
@@ -289,8 +316,176 @@ class LifeTracingRuntimeGraph internal constructor(
                         java.time.Instant::now,
                     )
                 },
+                { target ->
+                    SequenceTemplateEditorController(
+                        scope,
+                        target,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getSequenceTemplateAuthoringState(id)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository
+                                    .getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE)
+                                    .map { activity ->
+                                        SequenceEditorActivityChoice(
+                                            activity.id,
+                                            activity.name,
+                                            activity.timeTrackingMode,
+                                            activity.timerTarget,
+                                            activity.mainValueName,
+                                            activity.mainValueUnit,
+                                            activity.mainValueDisplayPrecision,
+                                            activity.mainValueDefaultNumberScaled,
+                                        )
+                                    }
+                            }
+                        },
+                        { draft, placement, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.createSequenceTemplate(draft, placement, at)
+                            }
+                        },
+                        { id, revision, draft, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveSequenceTemplate(id, revision, draft, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                        { ids ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplateSourceStatuses(ids)
+                            }
+                        },
+                        { sequenceId, stepId, revision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.updateStepFromSourceTemplate(
+                                    sequenceId,
+                                    stepId,
+                                    revision,
+                                    at,
+                                )
+                            }
+                        },
+                        { sequenceId, stepId, sequenceRevision, sourceRevision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.updateSourceTemplateFromStep(
+                                    sequenceId,
+                                    stepId,
+                                    sequenceRevision,
+                                    sourceRevision,
+                                    at,
+                                )
+                            }
+                        },
+                        { sequenceId, stepId, revision, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.saveStepAsNewActivityTemplate(
+                                    sequenceId,
+                                    stepId,
+                                    revision,
+                                    savedAt = at,
+                                )
+                            }
+                        },
+                        loadMoreActivities = { after ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository
+                                    .getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE, after.toCatalogItem())
+                                    .map { activity ->
+                                        SequenceEditorActivityChoice(
+                                            activity.id,
+                                            activity.name,
+                                            activity.timeTrackingMode,
+                                            activity.timerTarget,
+                                            activity.mainValueName,
+                                            activity.mainValueUnit,
+                                            activity.mainValueDisplayPrecision,
+                                            activity.mainValueDefaultNumberScaled,
+                                        )
+                                    }
+                            }
+                        },
+                    )
+                },
+                { executionId ->
+                    ExpandedLiveSequenceController(
+                        scope,
+                        executionId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                repository.getExpandedSequence(id)
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executeExpandedSequenceCommand(command, repository)
+                            }
+                        },
+                        coordinator::onRuntimeStateChanged,
+                        coordinator.semanticGeneration,
+                        { coordinator.displayBaseline },
+                        { after ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getReusableActivityCatalog(ACTIVITY_PICKER_PAGE_SIZE, after)
+                            }
+                        },
+                        wallClock,
+                        mutationGate = coordinator.mutationGate,
+                    )
+                },
             )
         }
+    }
+}
+
+private fun SequenceEditorActivityChoice.toCatalogItem() =
+    com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem(
+        id,
+        name,
+        timeTrackingMode,
+        timerTarget,
+        mainValueName,
+        mainValueUnit,
+        mainValueDisplayPrecision,
+        mainValueDefaultNumberScaled,
+    )
+
+private const val ACTIVITY_PICKER_PAGE_SIZE = 50
+
+internal fun executeExpandedSequenceCommand(
+    command: ExpandedSequenceCommand,
+    repository: LiveSessionRepository,
+) {
+    when (command) {
+        is ExpandedSequenceCommand.Pause -> repository.pauseActiveSequence(command.executionId, command.at)
+        is ExpandedSequenceCommand.Resume -> repository.resumeActiveSequence(command.executionId, command.at)
+        is ExpandedSequenceCommand.StartNext -> repository.startNextSequenceStep(command.executionId, command.at)
+        is ExpandedSequenceCommand.Complete ->
+            repository.completeCurrentSequenceStep(
+                command.executionId,
+                command.occurrenceId,
+                command.values,
+                command.at,
+            )
+        is ExpandedSequenceCommand.GoNow ->
+            repository.goNow(command.executionId, command.occurrenceId, command.at)
+        is ExpandedSequenceCommand.MakeNext ->
+            repository.makeNext(command.executionId, command.occurrenceId, command.at)
+        is ExpandedSequenceCommand.DoAgain ->
+            repository.doAgain(command.executionId, command.occurrenceId, command.placement, command.at)
+        is ExpandedSequenceCommand.RuntimeAdd ->
+            repository.runtimeAdd(command.executionId, command.source, command.placement, command.at)
+        is ExpandedSequenceCommand.SaveValues ->
+            repository.updateCurrentSequenceStepValues(
+                command.executionId,
+                command.occurrenceId,
+                command.values,
+                command.at,
+            )
+        is ExpandedSequenceCommand.EndEarly -> repository.endSequenceEarly(command.executionId, command.at)
     }
 }
 

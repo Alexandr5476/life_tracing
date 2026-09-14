@@ -31,6 +31,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldEvolution
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateRevisionPolicy
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.ActivityTemplateUserState
 import com.alexandr5476.lifetracing.domain.ActivityTemplateValidator
 import com.alexandr5476.lifetracing.domain.AuthoringSaveKind
@@ -45,6 +46,7 @@ import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
+import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
@@ -60,6 +62,7 @@ import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TemplateAuthoringDraftValidator
 import com.alexandr5476.lifetracing.domain.TemplateAuthoringPolicy
 import com.alexandr5476.lifetracing.domain.TemplateLibraryPlacement
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Callable
@@ -77,8 +80,35 @@ class TemplateAuthoringRepository internal constructor(
     fun getActivityTemplate(id: ActivityTemplateId): ActivityTemplate? =
         transaction { database.activityTemplateDao().getAggregate(id.value)?.toDomain() }
 
+    fun getActivityTemplateSourceStatuses(
+        ids: Collection<ActivityTemplateId>,
+    ): Map<ActivityTemplateId, ActivityTemplateSourceStatus> =
+        transaction {
+            ids
+                .distinct()
+                .chunked(SQLITE_SAFE_BIND_COUNT)
+                .flatMap { chunk ->
+                    database.activityTemplateDao().getSourceStatuses(chunk.map(ActivityTemplateId::value))
+                }.associate { row ->
+                    val id = ActivityTemplateId(row.id)
+                    id to ActivityTemplateSourceStatus(id, row.revision, row.deletedAtMs != null)
+                }
+        }
+
     fun getSequenceTemplate(id: SequenceTemplateId): SequenceTemplate? =
         transaction { database.sequenceTemplateDao().getAggregate(id.value)?.toDomain() }
+
+    fun getSequenceTemplateAuthoringState(id: SequenceTemplateId): SequenceTemplateAuthoringState? =
+        transaction {
+            val sequence = database.sequenceTemplateDao().getAggregate(id.value)?.toDomain() ?: return@transaction null
+            val snapshotIds = sequence.nodes.flatMap { it.activitySnapshotIds() }.distinct()
+            val snapshots =
+                loadActivitySnapshots(
+                    snapshotIds.map(ActivitySnapshotId::value),
+                ).associateBy(ActivityConfigSnapshot::id)
+            require(snapshots.size == snapshotIds.size) { "SequenceTemplate is missing ActivitySnapshot data" }
+            SequenceTemplateAuthoringState(sequence, snapshots)
+        }
 
     fun getStepSnapshot(
         sequenceTemplateId: SequenceTemplateId,
@@ -435,10 +465,12 @@ class TemplateAuthoringRepository internal constructor(
                 .associateWith(::requireActiveActivity)
         val newSnapshots = mutableListOf<ActivityConfigSnapshot>()
         val replacements = mutableListOf<SequenceStepSnapshotReplacement>()
+        val duplicateSources = mutableSetOf<SequenceNodeId>()
 
         fun resolveStep(draft: ActivityStepDraft): ActivityStep {
             val id = resolveNodeIdentity(draft.identity)
             val previous = existingNodes[id]
+            val overrides = draft.overrides
             when (draft.identity) {
                 is DraftIdentity.Existing ->
                     require(previous is ActivityStep) { "Existing Step must belong to the current SequenceTemplate" }
@@ -480,8 +512,22 @@ class TemplateAuthoringRepository internal constructor(
                         require(previous == null) { "Existing Step must preserve its committed snapshot identity" }
                         snapshotFromDraft(activity.configuration, null, true, savedAt).also { newSnapshots += it }.id
                     }
+                    is StepActivityDraft.Duplicate -> {
+                        require(draft.identity is DraftIdentity.New) { "Duplicate Step must receive a new identity" }
+                        val source =
+                            requireNotNull(existingNodes[activity.sourceStepId] as? ActivityStep) {
+                                "Duplicate source must be an existing Step in the current SequenceTemplate"
+                            }
+                        duplicateSources += source.id
+                        val sourceSnapshot = requireNotNull(currentSnapshots[source.activitySnapshotId])
+                        duplicateSnapshotFromCapturedDraft(
+                            activity,
+                            sourceSnapshot,
+                            savedAt,
+                        ).also { newSnapshots += it }.id
+                    }
                 }
-            return ActivityStep(id, draft.position, snapshotId, draft.overrides)
+            return ActivityStep(id, draft.position, snapshotId, overrides)
         }
 
         val nodes =
@@ -508,6 +554,16 @@ class TemplateAuthoringRepository internal constructor(
                     }
                 }
             }
+        require(
+            duplicateSources.all { sourceId ->
+                nodes.any { node ->
+                    when (node) {
+                        is ActivityStep -> node.id == sourceId
+                        is SequenceRepeatBlock -> node.children.any { it.id == sourceId }
+                    }
+                }
+            },
+        ) { "Duplicate source Step must remain in the committed SequenceTemplate" }
         return ResolvedSequenceNodes(nodes, replacements, newSnapshots)
     }
 
@@ -753,6 +809,24 @@ class TemplateAuthoringRepository internal constructor(
             draft.settings,
             fields,
         ).also(com.alexandr5476.lifetracing.domain.ActivityConfigSnapshotValidator::requireValid)
+    }
+
+    private fun duplicateSnapshotFromCapturedDraft(
+        duplicate: StepActivityDraft.Duplicate,
+        source: ActivityConfigSnapshot,
+        createdAt: Instant,
+    ): ActivityConfigSnapshot {
+        require(
+            duplicate.sourceTemplateId == source.sourceTemplateId &&
+                duplicate.sourceRevision == source.sourceRevision &&
+                duplicate.statisticsSeriesId == source.statisticsSeriesId,
+        ) { "Duplicate source lineage must match the canonical source Step" }
+        val locallyModified =
+            source.locallyModified || duplicate.configuration != source.toAuthoringDraft()
+        require(duplicate.locallyModified == locallyModified) {
+            "Duplicate locallyModified must match the captured source evolution"
+        }
+        return snapshotFromDraft(duplicate.configuration, source, locallyModified, createdAt)
     }
 
     private fun persistActivityPresentation(

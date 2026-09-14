@@ -67,19 +67,13 @@ sealed interface DailyActive {
 
     data class Sequence(
         override val runtime: ActiveSequenceRuntime,
-        val state: DailyActiveSequenceState,
+        val state: ActiveSequenceState,
         val current: DailySequenceOccurrence?,
         val next: DailySequenceOccurrence?,
     ) : DailyActive
 }
 
-enum class DailyActiveSequenceState {
-    RUNNING_CURRENT,
-    PAUSED_CURRENT,
-    WAITING_NEXT,
-    RUNNING_TRANSITION_COUNTDOWN,
-    PAUSED_TRANSITION_COUNTDOWN,
-}
+typealias DailyActiveSequenceState = ActiveSequenceState
 
 data class DailySequenceOccurrence(
     val occurrence: RuntimeOccurrence,
