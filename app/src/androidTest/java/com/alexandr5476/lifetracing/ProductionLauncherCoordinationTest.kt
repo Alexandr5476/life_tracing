@@ -54,6 +54,7 @@ import com.alexandr5476.lifetracing.runtime.RuntimeFeedbackDispatcher
 import com.alexandr5476.lifetracing.runtime.RuntimeNotificationPublisher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -62,6 +63,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -150,10 +152,14 @@ class ProductionLauncherCoordinationTest {
                 withTimeout(5_000) { controller.state.first { it.sequence != null && !it.loading } }
                 controller.pause()
                 withTimeout(5_000) { enteredRepository.await() }
-                val deadlineJob = launch { coordinator.onDeadlineSignal(deadline) }
+                val deadlineJob =
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        coordinator.onDeadlineSignal(deadline)
+                    }
+                assertFalse(deadlineJob.isCompleted)
 
                 releaseRepository.complete(Unit)
-                deadlineJob.join()
+                withTimeout(5_000) { deadlineJob.join() }
                 withTimeout(5_000) { controller.state.first { !it.commandInFlight } }
 
                 assertEquals(

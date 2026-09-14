@@ -112,7 +112,6 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule
             .onNodeWithTag("daily-expand-sequence")
-            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -137,7 +136,6 @@ class MainActivityRouteSessionTest {
 
         composeTestRule
             .onNodeWithTag("daily-expand-sequence")
-            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -186,6 +184,7 @@ class MainActivityRouteSessionTest {
                     ?.id
             activeExecutionId == second.execution.id
         }
+        composeTestRule.waitForIdle()
         composeTestRule.waitUntil(5_000) {
             composeTestRule
                 .onAllNodesWithTag("daily-expand-sequence")
@@ -194,7 +193,6 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule
             .onNodeWithTag("daily-expand-sequence")
-            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
