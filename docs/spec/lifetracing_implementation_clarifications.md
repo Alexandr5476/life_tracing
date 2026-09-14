@@ -4,7 +4,14 @@ Read this addendum together with the frozen product v0.16, domain v0.10, and dat
 
 ## First coded Plan UI scope
 
-`PlanTarget.Month` remains valid durable domain and persistence state. The first production Plan UI exposes actionable Day and Week only: Month creation, rescheduling, list/calendar/navigation/management, and reinterpretation are deferred. Existing Month rows remain untouched and are not coerced into Day or Week reads. Plan recurrence remains deferred.
+The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.
+
+- `PlanTarget.Month` remains valid durable domain and persistence state. Existing Month rows remain untouched and are not coerced into Day or Week reads.
+- Add to Plan and reschedule must not dispatch Month writes.
+- Month precision may be hidden or visibly disabled with a localized unavailable/coming-soon treatment.
+- A Month scale or tab may exist only as a non-functional localized placeholder.
+- Month creation, list/calendar/navigation/management, and reinterpretation remain deferred.
+- Plan recurrence remains deferred.
 
 ## Start new statistics and Template revision
 

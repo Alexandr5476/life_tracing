@@ -128,6 +128,38 @@ class PlanModelsTest {
         assertEquals(PlanSourceState.UNAVAILABLE, PlanSourceStateResolver.resolve(2, null, false))
     }
 
+    @Test
+    fun `focused action identity changes for every stale relevant fact`() {
+        val base =
+            PlanActionIdentity(
+                PlanEntryId("plan"),
+                PlanTrackableKind.ACTIVITY,
+                ActivitySnapshotId("snapshot"),
+                null,
+                PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+                PlanEntryStatus.PLANNED,
+                2,
+                createdAt,
+            )
+        val identities =
+            listOf(
+                base,
+                base.copy(planEntryId = PlanEntryId("other-plan")),
+                base.copy(
+                    kind = PlanTrackableKind.SEQUENCE,
+                    activitySnapshotId = null,
+                    sequenceSnapshotId = SequenceSnapshotId("snapshot"),
+                ),
+                base.copy(activitySnapshotId = ActivitySnapshotId("other-snapshot")),
+                base.copy(target = PlanTarget.Week(LocalDate.parse("2026-08-17"))),
+                base.copy(status = PlanEntryStatus.FULFILLED),
+                base.copy(sourceRevision = 3),
+                base.copy(updatedAt = createdAt.plusMillis(1)),
+            )
+
+        assertEquals(identities.size, identities.toSet().size)
+    }
+
     private fun activityPlan(
         target: PlanTarget = PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
         sourceId: ActivityTemplateId? = ActivityTemplateId("template"),

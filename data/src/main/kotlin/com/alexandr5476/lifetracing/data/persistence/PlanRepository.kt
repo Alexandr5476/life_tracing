@@ -235,47 +235,49 @@ class PlanRepository internal constructor(
         transaction {
             val activitySnapshotIds = plans.mapNotNull { it.activitySnapshotId?.value }.distinct()
             val sequenceSnapshotIds = plans.mapNotNull { it.sequenceSnapshotId?.value }.distinct()
-            val summaries =
-                (
-                    if (activitySnapshotIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().activitySummaries(activitySnapshotIds)
-                    }
-                ) + (
-                    if (sequenceSnapshotIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().sequenceSummaries(sequenceSnapshotIds)
-                    }
-                )
-            val summaryById = summaries.associateBy(PlanSnapshotSummaryRow::id)
+            val activitySummaries =
+                activitySnapshotIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::activitySummaries)
+                    .associateBy(PlanActivitySnapshotSummaryRow::id)
+            val sequenceSummaries =
+                sequenceSnapshotIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::sequenceSummaries)
+                    .associateBy(PlanSnapshotSummaryRow::id)
             val activitySourceIds = plans.mapNotNull { it.sourceActivityTemplateId?.value }.distinct()
             val sequenceSourceIds = plans.mapNotNull { it.sourceSequenceTemplateId?.value }.distinct()
-            val sources =
-                (
-                    if (activitySourceIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().activitySources(activitySourceIds)
-                    }
-                ) + (
-                    if (sequenceSourceIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().sequenceSources(sequenceSourceIds)
-                    }
-                )
-            val sourceById = sources.associateBy(PlanSourceMetadataRow::id)
+            val activitySources =
+                activitySourceIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::activitySources)
+                    .associateBy(PlanSourceMetadataRow::id)
+            val sequenceSources =
+                sequenceSourceIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::sequenceSources)
+                    .associateBy(PlanSourceMetadataRow::id)
             plans.map { plan ->
-                val snapshotId = plan.activitySnapshotId?.value ?: requireNotNull(plan.sequenceSnapshotId).value
-                val sourceId = plan.sourceActivityTemplateId?.value ?: plan.sourceSequenceTemplateId?.value
-                val summary = requireNotNull(summaryById[snapshotId]) { "Plan snapshot summary is missing" }
-                val source = sourceId?.let(sourceById::get)
+                val (name, shortComment) =
+                    when (plan.kind) {
+                        PlanTrackableKind.ACTIVITY ->
+                            requireNotNull(activitySummaries[requireNotNull(plan.activitySnapshotId).value]) {
+                                "Plan snapshot summary is missing"
+                            }.let { it.name to it.shortComment }
+                        PlanTrackableKind.SEQUENCE ->
+                            requireNotNull(sequenceSummaries[requireNotNull(plan.sequenceSnapshotId).value]) {
+                                "Plan snapshot summary is missing"
+                            }.let { it.name to it.shortComment }
+                    }
+                val source =
+                    when (plan.kind) {
+                        PlanTrackableKind.ACTIVITY -> plan.sourceActivityTemplateId?.value?.let(activitySources::get)
+                        PlanTrackableKind.SEQUENCE -> plan.sourceSequenceTemplateId?.value?.let(sequenceSources::get)
+                    }
                 PlanListEntry(
                     plan,
-                    summary.name,
-                    summary.shortComment,
+                    name,
+                    shortComment,
                     PlanSourceStateResolver.resolve(
                         plan.sourceRevision,
                         source?.revision,
@@ -474,6 +476,8 @@ class PlanRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        private const val SQLITE_BIND_CHUNK_SIZE = 900
+
         fun create(
             context: Context,
             zoneIdProvider: CurrentZoneIdProvider = CurrentZoneIdProvider(ZoneId::systemDefault),

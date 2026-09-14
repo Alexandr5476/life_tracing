@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.domain
 
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -41,6 +42,12 @@ data class PlanReadRow(
     val sourceState: PlanSourceState,
     val engaged: Boolean,
     val overdue: Boolean,
+    val activityMetadata: PlanActivityRowMetadata?,
+)
+
+data class PlanActivityRowMetadata(
+    val timeTrackingMode: TimeTrackingMode,
+    val timerTarget: Duration?,
 )
 
 data class PlanActionIdentity(
@@ -67,6 +74,7 @@ data class FocusedPlanAction(
 
         data class Sequence(
             val value: SequenceConfigSnapshot,
+            val activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
         ) : Snapshot
     }
 }

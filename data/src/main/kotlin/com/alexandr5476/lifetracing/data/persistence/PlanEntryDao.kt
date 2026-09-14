@@ -15,6 +15,16 @@ internal data class PlanSnapshotSummaryRow(
     @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
 )
 
+internal data class PlanActivitySnapshotSummaryRow(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
+    @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
+    @androidx.room.ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
+    @androidx.room.ColumnInfo(name = "timer_target_ms") val timerTargetMs: Long?,
+)
+
 internal data class PlanSourceMetadataRow(
     val id: String,
     val revision: Long,
@@ -73,6 +83,26 @@ internal abstract class PlanEntryDao {
             "ORDER BY scheduled_instant_ms, created_at_ms, id",
     )
     abstract fun getDailyExactDay(
+        startMs: Long,
+        endMs: Long,
+    ): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms IS NULL AND planned_day BETWEEN :startDate AND :endDate " +
+            "ORDER BY planned_day, created_at_ms, id",
+    )
+    abstract fun getSupportedFloatingDays(
+        startDate: String,
+        endDate: String,
+    ): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms >= :startMs AND scheduled_instant_ms < :endMs " +
+            "ORDER BY scheduled_instant_ms, created_at_ms, id",
+    )
+    abstract fun getSupportedExactDays(
         startMs: Long,
         endMs: Long,
     ): List<PlanEntryEntity>
@@ -247,9 +277,10 @@ internal abstract class PlanEntryDao {
     abstract fun hasSequenceExecutionReference(id: String): Boolean
 
     @Query(
-        "SELECT id, name, short_comment, source_template_id, source_revision FROM activity_snapshots WHERE id IN (:ids)",
+        "SELECT id, name, short_comment, source_template_id, source_revision, time_tracking_mode, timer_target_ms " +
+            "FROM activity_snapshots WHERE id IN (:ids)",
     )
-    abstract fun activitySummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
+    abstract fun activitySummaries(ids: List<String>): List<PlanActivitySnapshotSummaryRow>
 
     @Query(
         "SELECT id, name, short_comment, source_template_id, source_revision FROM sequence_snapshots WHERE id IN (:ids)",
