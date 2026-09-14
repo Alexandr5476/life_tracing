@@ -82,11 +82,12 @@ class DailyReadRepository internal constructor(
             },
         )
 
-    private fun loadPlans(
+    internal fun loadPlans(
         selectedDate: LocalDate,
         now: java.time.Instant,
         zone: ZoneId,
         activeRuntime: ActiveRuntime?,
+        includeWeek: Boolean = true,
     ): List<DailyPlan> {
         val start = selectedDate.atStartOfDay(zone).toInstant()
         val end = selectedDate.plusDays(1).atStartOfDay(zone).toInstant()
@@ -94,7 +95,7 @@ class DailyReadRepository internal constructor(
         val rows =
             database.planEntryDao().getDailyFloatingDay(selectedDate.toString()) +
                 database.planEntryDao().getDailyExactDay(start.toEpochMilli(), end.toEpochMilli()) +
-                database.planEntryDao().getDailyWeek(weekStart.toString())
+                if (includeWeek) database.planEntryDao().getDailyWeek(weekStart.toString()) else emptyList()
         val plans = rows.map { it.toDomain().also(PlanEntryValidator::requireValid) }
         require(plans.map(PlanEntry::id).distinct().size == plans.size) { "Daily Plan selectors returned duplicates" }
 
@@ -183,7 +184,7 @@ class DailyReadRepository internal constructor(
             )
     }
 
-    private fun validatePlanSnapshotsAndFulfillment(
+    internal fun validatePlanSnapshotsAndFulfillment(
         plans: List<PlanEntry>,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
         sequenceSnapshots: Map<SequenceSnapshotId, DailySequencePlanMetadata>,
@@ -247,7 +248,7 @@ class DailyReadRepository internal constructor(
         }
     }
 
-    private fun DailySequencePlanMetadataEntity.toDailyPlanMetadata() =
+    internal fun DailySequencePlanMetadataEntity.toDailyPlanMetadata() =
         DailySequencePlanMetadata(
             SequenceSnapshotId(id),
             name,
@@ -256,7 +257,7 @@ class DailyReadRepository internal constructor(
             sourceRevision,
         )
 
-    private fun loadSourceStates(plans: List<PlanEntry>): Map<PlanEntryId, PlanSourceState> {
+    internal fun loadSourceStates(plans: List<PlanEntry>): Map<PlanEntryId, PlanSourceState> {
         val activitySources =
             plans
                 .mapNotNull { it.sourceActivityTemplateId?.value }
@@ -284,7 +285,7 @@ class DailyReadRepository internal constructor(
         }
     }
 
-    private fun loadEngagement(
+    internal fun loadEngagement(
         plans: List<PlanEntry>,
         activeRuntime: ActiveRuntime?,
     ): Map<PlanEntryId, Boolean> {

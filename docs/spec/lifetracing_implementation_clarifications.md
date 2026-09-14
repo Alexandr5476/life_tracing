@@ -2,6 +2,10 @@
 
 Read this addendum together with the frozen product v0.16, domain v0.10, and database v0.6 specifications. The historical versioned documents remain unchanged.
 
+## First coded Plan UI scope
+
+`PlanTarget.Month` remains valid durable domain and persistence state. The first production Plan UI exposes actionable Day and Week only: Month creation, rescheduling, list/calendar/navigation/management, and reinterpretation are deferred. Existing Month rows remain untouched and are not coerced into Day or Week reads. Plan recurrence remains deferred.
+
 ## Start new statistics and Template revision
 
 `Start new statistics from here` changes the Template's current `StatisticsSeriesId`, which is copied into future snapshots. It is therefore a semantic, snapshot-affecting Template change: the operation increments the Template revision exactly once in the same transaction that inserts the new Series and switches the Template pointer. Existing snapshots, Plans, Executions, and the old Series remain unchanged.

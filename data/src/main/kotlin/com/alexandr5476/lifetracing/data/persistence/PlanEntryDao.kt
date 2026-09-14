@@ -11,6 +11,8 @@ internal data class PlanSnapshotSummaryRow(
     val id: String,
     val name: String,
     @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
+    @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
 )
 
 internal data class PlanSourceMetadataRow(
@@ -93,6 +95,15 @@ internal abstract class PlanEntryDao {
 
     @Query("SELECT * FROM plan_entries WHERE status = 'CANCELLED' ORDER BY cancelled_at_ms DESC, id")
     abstract fun getCancelled(): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status = 'CANCELLED' AND precision IN ('DAY', 'WEEK') " +
+            "ORDER BY cancelled_at_ms DESC, id LIMIT :limit OFFSET :offset",
+    )
+    abstract fun getCancelledSupportedPage(
+        limit: Int,
+        offset: Int,
+    ): List<PlanEntryEntity>
 
     @Query(
         "SELECT EXISTS(SELECT 1 FROM activity_executions WHERE plan_entry_id = :id AND context_type = 'STANDALONE' AND status IN ('RUNNING', 'PAUSED') LIMIT 1)",
@@ -235,10 +246,14 @@ internal abstract class PlanEntryDao {
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE snapshot_id = :id LIMIT 1)")
     abstract fun hasSequenceExecutionReference(id: String): Boolean
 
-    @Query("SELECT id, name, short_comment FROM activity_snapshots WHERE id IN (:ids)")
+    @Query(
+        "SELECT id, name, short_comment, source_template_id, source_revision FROM activity_snapshots WHERE id IN (:ids)",
+    )
     abstract fun activitySummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
 
-    @Query("SELECT id, name, short_comment FROM sequence_snapshots WHERE id IN (:ids)")
+    @Query(
+        "SELECT id, name, short_comment, source_template_id, source_revision FROM sequence_snapshots WHERE id IN (:ids)",
+    )
     abstract fun sequenceSummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
 
     @Query("SELECT id, revision, deleted_at_ms FROM activity_templates WHERE id IN (:ids)")
