@@ -24,6 +24,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.alexandr5476.lifetracing.R
@@ -405,7 +406,7 @@ class DailyScreenPresentationTest {
         val harness = screen(daily(running, runningBaseline), actions, 12_000, expanded)
         composeTestRule.onNodeWithText(string(R.string.daily_sequence_total, durationText(12))).assertIsDisplayed()
         composeTestRule.onNodeWithText(durationText(2)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(string(R.string.daily_expand_sequence)).performClick()
+        composeTestRule.onNodeWithTag("daily-expand-sequence").performClick()
         assertEquals(listOf(running.runtime.execution.id), expanded)
 
         composeTestRule.runOnIdle { harness.tick.longValue = 15_000 }

@@ -4,8 +4,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -104,12 +106,13 @@ class MainActivityRouteSessionTest {
         composeTestRule.activityRule.scenario.recreate()
         composeTestRule.waitUntil(5_000) {
             composeTestRule
-                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .onAllNodesWithTag("daily-expand-sequence")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .onNodeWithTag("daily-expand-sequence")
+            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -127,13 +130,14 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
         composeTestRule.waitUntil(5_000) {
             composeTestRule
-                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .onAllNodesWithTag("daily-expand-sequence")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
 
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .onNodeWithTag("daily-expand-sequence")
+            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -184,12 +188,13 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.waitUntil(5_000) {
             composeTestRule
-                .onAllNodesWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+                .onAllNodesWithTag("daily-expand-sequence")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.daily_expand_sequence))
+            .onNodeWithTag("daily-expand-sequence")
+            .performScrollTo()
             .performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
