@@ -115,7 +115,7 @@ data class ExistingActivityTemplateEditor(
 internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
 @Composable
-@Suppress("FunctionNaming", "LongMethod")
+@Suppress("CyclomaticComplexMethod", "FunctionNaming", "LongMethod")
 internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
@@ -160,7 +160,14 @@ internal fun LifeTracingApp(
                 backStack = backStack,
                 onBack = {
                     val expanded = backStack.lastOrNull() as? ExpandedLiveSequenceRoot
-                    if (expanded == null) backStack.removeLastOrNull() else closeExpanded(expanded.executionId)
+                    when {
+                        expanded != null -> closeExpanded(expanded.executionId)
+                        backStack.lastOrNull() is PlanRoot -> {
+                            planOwner.get(runtimeGraph::createPlanController).onRouteExited()
+                            backStack.removePlan()
+                        }
+                        else -> backStack.removeLastOrNull()
+                    }
                 },
                 entryProvider =
                     entryProvider {
@@ -252,7 +259,11 @@ internal fun LifeTracingApp(
                             )
                         }
                         entry<PlanRoot> {
-                            PlanRoute(planOwner.get(runtimeGraph::createPlanController), backStack::removePlan)
+                            val planController = planOwner.get(runtimeGraph::createPlanController)
+                            PlanRoute(planController) {
+                                planController.onRouteExited()
+                                backStack.removePlan()
+                            }
                         }
                         entry<NewActivityTemplateEditor> {
                             val session = editorSessions.activeSession

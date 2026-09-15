@@ -138,10 +138,11 @@
     <string name="plan_floating_day">Any time</string>
     <string name="plan_exact_day">Exact time</string>
     <string name="plan_week">Week</string>
+    <string name="plan_week_placement">Scheduled for this week</string>
     <string name="plan_exact_at">At %1$s</string>
     <string name="plan_anytime">Any time on this day</string>
-    <string name="plan_complete_action">Completion available later</string>
-    <string name="plan_start_action">Start available later</string>
+    <string name="plan_complete_action">Complete (available later)</string>
+    <string name="plan_start_action">Start (available later)</string>
     <string name="plan_fulfilled">Fulfilled</string>
     <string name="plan_engaged">In progress</string>
     <string name="plan_overdue">Overdue</string>
@@ -150,6 +151,10 @@
     <string name="plan_source_changed">Source changed</string>
     <string name="plan_source_archived">Source archived</string>
     <string name="plan_source_unavailable">Source unavailable</string>
+    <string name="plan_retry">Retry</string>
+    <string name="plan_load_failed">Couldn’t load Plan data.</string>
+    <string name="plan_invalid_schedule">Enter a valid date and time.</string>
+    <string name="plan_action_unavailable">That action is no longer available.</string>
     <string name="library_title">Library</string>
     <string name="library_back">Back</string>
     <string name="library_root">Library</string>

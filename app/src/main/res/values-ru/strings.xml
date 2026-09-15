@@ -80,10 +80,11 @@
     <string name="plan_floating_day">В любое время</string>
     <string name="plan_exact_day">Точное время</string>
     <string name="plan_week">Неделя</string>
+    <string name="plan_week_placement">Запланировано на эту неделю</string>
     <string name="plan_exact_at">В %1$s</string>
     <string name="plan_anytime">В любое время в этот день</string>
-    <string name="plan_complete_action">Завершение будет доступно позже</string>
-    <string name="plan_start_action">Запуск будет доступен позже</string>
+    <string name="plan_complete_action">Завершить (будет доступно позже)</string>
+    <string name="plan_start_action">Запустить (будет доступно позже)</string>
     <string name="plan_fulfilled">Выполнено</string>
     <string name="plan_engaged">Выполняется</string>
     <string name="plan_overdue">Просрочено</string>
@@ -92,6 +93,10 @@
     <string name="plan_source_changed">Источник изменён</string>
     <string name="plan_source_archived">Источник архивирован</string>
     <string name="plan_source_unavailable">Источник недоступен</string>
+    <string name="plan_retry">Повторить</string>
+    <string name="plan_load_failed">Не удалось загрузить данные плана.</string>
+    <string name="plan_invalid_schedule">Введите корректные дату и время.</string>
+    <string name="plan_action_unavailable">Это действие больше недоступно.</string>
     <string name="daily_no_plans">Ничего не запланировано.</string>
     <string name="daily_exact_time">В %1$s</string>
     <string name="daily_exact_time_unavailable">Точное время недоступно</string>

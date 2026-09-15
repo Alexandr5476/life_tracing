@@ -178,6 +178,47 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun reusablePlanCatalogUsesTypedDeterministicBoundedKeysetWithoutGraphHydration() {
+        val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
+        rebuildDatabaseWithQueryCallback(queries)
+        activity("a-lower", "alpha")
+        activity("a-upper", "ALPHA")
+        activity("same", "Same")
+        sequence("s-lower", "alpha")
+        sequence("same", "Same")
+        sequence("zeta", "Zeta")
+        activity("archived", "Archived", deleted = 1)
+        val repository = repository()
+        queries.clear()
+
+        val pages = mutableListOf<List<com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem>>()
+        var after: com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem? = null
+        do {
+            val page = repository.getReusablePlanCatalog("", 2, after)
+            pages += page
+            after = page.lastOrNull()
+        } while (page.size == 2)
+        val items = pages.flatten()
+
+        assertEquals(6, items.size)
+        assertEquals(6, items.map { it.id }.distinct().size)
+        assertEquals(2, items.count { it.id.value == "same" })
+        assertTrue(items.none { it.id.value == "archived" })
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.getReusablePlanCatalog("", LibraryRepository.PLAN_CATALOG_MAX_PAGE_SIZE + 1)
+        }
+        val catalogQueries = queries.filter { "UNION ALL" in it.first }
+        assertEquals(pages.size, catalogQueries.size)
+        assertTrue(
+            catalogQueries.all {
+                "activity_template_fields" !in it.first &&
+                    "activity_template_category_options" !in it.first &&
+                    "sequence_nodes" !in it.first
+            },
+        )
+    }
+
+    @Test
     fun activeSequenceKeepsItsFrozenGraphAfterTheSourceEditorCommits() {
         val authoring = TemplateAuthoringRepository(database, deterministicAuthoringIds("frozen"))
         val source =

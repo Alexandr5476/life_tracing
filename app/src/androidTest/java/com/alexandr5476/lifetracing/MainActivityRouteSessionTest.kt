@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
@@ -64,6 +65,47 @@ import java.time.ZoneId
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun productionPlanAffordanceUsesOneDestinationBackAndFreshTransientRouteState() {
+        val planLabel = composeTestRule.activity.getString(R.string.daily_plan)
+        val planTitle = composeTestRule.activity.getString(R.string.plan_title)
+        val addLabel = composeTestRule.activity.getString(R.string.plan_add)
+        val chooseLabel = composeTestRule.activity.getString(R.string.plan_choose_template)
+
+        composeTestRule.onNodeWithText(planLabel).assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(planTitle).fetchSemanticsNodes().size == 1
+        }
+        val controller =
+            composeTestRule.activity.planControllerOwner.get {
+                error("Plan route must initialize the retained controller")
+            }
+        val selected =
+            if (controller.state.value.selectedDate.dayOfWeek == java.time.DayOfWeek.SUNDAY) {
+                controller.state.value.selectedDate
+                    .minusDays(1)
+            } else {
+                controller.state.value.selectedDate
+                    .plusDays(1)
+            }
+        composeTestRule.onNode(hasTestTag("plan-day-$selected")).performClick()
+        composeTestRule.waitUntil(5_000) { controller.state.value.selectedDate == selected }
+        composeTestRule.activityRule.scenario.recreate()
+        assertSame(
+            controller,
+            composeTestRule.activity.planControllerOwner.get { error("Plan controller must survive recreation") },
+        )
+        assertEquals(selected, controller.state.value.selectedDate)
+        composeTestRule.onNodeWithText(addLabel).performClick()
+        composeTestRule.onNodeWithText(chooseLabel).assertIsDisplayed()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+        composeTestRule.onNodeWithText(planLabel).assertIsDisplayed().performClick()
+
+        composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText(planTitle).assertCountEquals(1)
+    }
 
     @Test
     fun productionExpandedSequenceSystemBackReleasesExactSessionAndAllowsTheNextExecution() {

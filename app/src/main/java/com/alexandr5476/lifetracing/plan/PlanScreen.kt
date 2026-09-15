@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -38,6 +39,7 @@ fun PlanRoute(
     controller: PlanController,
     onBack: () -> Unit,
 ) {
+    LaunchedEffect(controller) { controller.onRouteEntered() }
     val state by controller.state.collectAsState()
     PlanScreen(state, controller::dispatch, onBack)
 }
@@ -66,18 +68,24 @@ fun PlanScreen(
         TextButton(onClick = { onAction(PlanAction.Today) }) { Text(stringResource(R.string.plan_today)) }
         when (val load = state.week) {
             PlanLoad.Loading -> Text(stringResource(R.string.plan_loading))
-            is PlanLoad.Failure -> Text(load.message)
+            is PlanLoad.Failure -> {
+                Text(load.message.label())
+                TextButton(onClick = { onAction(PlanAction.Refresh) }) {
+                    Text(stringResource(R.string.plan_retry))
+                }
+            }
             is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction)
         }
-        state.mutationFailure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        state.mutationFailure?.let { Text(it.label(), color = MaterialTheme.colorScheme.error) }
         LifeTracingPrimaryButton(
+            enabled = !state.isMutating,
             onClick = { onAction(PlanAction.OpenCatalog) },
         ) { Text(stringResource(R.string.plan_add)) }
         TextButton(onClick = { onAction(PlanAction.OpenCancelled) }) { Text(stringResource(R.string.plan_cancelled)) }
     }
     state.catalog?.let { CatalogDialog(it, onAction) }
     state.form?.let { ScheduleDialog(it, state.isMutating, onAction) }
-    state.cancelled?.let { CancelledDialog(state, onAction) }
+    if (state.cancelledOpen) CancelledDialog(state, onAction)
 }
 
 @Composable
@@ -124,10 +132,11 @@ private fun PlanRow(
         ) {
             Text(row.title, style = MaterialTheme.typography.titleMedium)
             row.shortComment?.let { Text(it) }
-            Text(row.timingLabel())
+            Text(row.scheduleLabel())
             Text(row.lifecycleLabel())
             Text(row.sourceLabel())
             if (row.plan.status == PlanEntryStatus.PLANNED && !row.engaged) {
+                Text(row.executionLabel())
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                     LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
                         onAction(PlanAction.Reschedule(row))
@@ -165,6 +174,12 @@ private fun CatalogDialog(
                     }) { Text(item.name) }
                 }
                 if (catalog.loading) Text(stringResource(R.string.plan_loading))
+                catalog.failure?.let {
+                    Text(it.label(), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { onAction(PlanAction.SearchCatalog(catalog.query)) }) {
+                        Text(stringResource(R.string.plan_retry))
+                    }
+                }
                 if (catalog.hasNextPage) {
                     TextButton(onClick = {
                         onAction(PlanAction.LoadMoreCatalog)
@@ -244,7 +259,12 @@ private fun CancelledDialog(
             Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                 when (val load = state.cancelled) {
                     PlanLoad.Loading -> Text(stringResource(R.string.plan_loading))
-                    is PlanLoad.Failure -> Text(load.message)
+                    is PlanLoad.Failure -> {
+                        Text(load.message.label())
+                        TextButton(onClick = { onAction(PlanAction.OpenCancelled) }) {
+                            Text(stringResource(R.string.plan_retry))
+                        }
+                    }
                     is PlanLoad.Content ->
                         state.cancelledItems.forEach { row ->
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -257,7 +277,7 @@ private fun CancelledDialog(
                     null -> Unit
                 }
                 if (state.cancelledHasNextPage) {
-                    TextButton(onClick = {
+                    TextButton(enabled = !state.isMutating, onClick = {
                         onAction(PlanAction.LoadMoreCancelled)
                     }) { Text(stringResource(R.string.plan_load_more)) }
                 }
@@ -267,6 +287,7 @@ private fun CancelledDialog(
         },
         dismissButton = {
             TextButton(
+                enabled = !state.isMutating,
                 onClick = { onAction(PlanAction.DismissCancelled) },
             ) { Text(stringResource(R.string.plan_close)) }
         },
@@ -280,22 +301,33 @@ private fun CancelledDialog(
         PlanScheduleKind.WEEK -> stringResource(R.string.plan_week)
     }
 
-@Composable private fun PlanReadRow.timingLabel(): String =
-    when (val exactTime = exactLocalTime) {
-        null ->
-            when {
-                plan.target is com.alexandr5476.lifetracing.domain.PlanTarget.FloatingDay ->
-                    stringResource(
-                        R.string.plan_anytime,
-                    )
-                activityMetadata?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING ->
-                    stringResource(
-                        R.string.plan_complete_action,
-                    )
-                else -> stringResource(R.string.plan_start_action)
-            }
-        else -> stringResource(R.string.plan_exact_at, exactTime.format(DateTimeFormatter.ofPattern("HH:mm")))
+@Composable private fun PlanReadRow.scheduleLabel(): String =
+    when (plan.target) {
+        is com.alexandr5476.lifetracing.domain.PlanTarget.FloatingDay -> stringResource(R.string.plan_anytime)
+        is com.alexandr5476.lifetracing.domain.PlanTarget.ExactDay ->
+            stringResource(
+                R.string.plan_exact_at,
+                requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
+            )
+        is com.alexandr5476.lifetracing.domain.PlanTarget.Week -> stringResource(R.string.plan_week_placement)
+        is com.alexandr5476.lifetracing.domain.PlanTarget.Month -> error("Month Plans are not rendered")
     }
+
+@Composable private fun PlanReadRow.executionLabel() =
+    if (activityMetadata?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+        stringResource(R.string.plan_complete_action)
+    } else {
+        stringResource(R.string.plan_start_action)
+    }
+
+@Composable private fun PlanMessage.label() =
+    stringResource(
+        when (this) {
+            PlanMessage.LOAD_FAILED -> R.string.plan_load_failed
+            PlanMessage.INVALID_SCHEDULE -> R.string.plan_invalid_schedule
+            PlanMessage.ACTION_UNAVAILABLE -> R.string.plan_action_unavailable
+        },
+    )
 
 @Composable private fun PlanReadRow.lifecycleLabel() =
     when {

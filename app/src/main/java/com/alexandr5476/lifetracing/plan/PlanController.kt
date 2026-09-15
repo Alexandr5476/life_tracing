@@ -19,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem
+import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.domain.actionIdentity
@@ -46,9 +47,11 @@ sealed interface PlanLoad<out T> {
     ) : PlanLoad<T>
 
     data class Failure(
-        val message: String,
+        val message: PlanMessage,
     ) : PlanLoad<Nothing>
 }
+
+enum class PlanMessage { LOAD_FAILED, INVALID_SCHEDULE, ACTION_UNAVAILABLE }
 
 enum class PlanScheduleKind { FLOATING_DAY, EXACT_DAY, WEEK }
 
@@ -65,6 +68,7 @@ data class PlanCatalogState(
     val items: List<ReusablePlanCatalogItem> = emptyList(),
     val hasNextPage: Boolean = false,
     val loading: Boolean = false,
+    val failure: PlanMessage? = null,
 )
 
 data class PlanPresentationState(
@@ -73,11 +77,12 @@ data class PlanPresentationState(
     val week: PlanLoad<WeekPlanRead> = PlanLoad.Loading,
     val catalog: PlanCatalogState? = null,
     val form: PlanScheduleForm? = null,
+    val cancelledOpen: Boolean = false,
     val cancelled: PlanLoad<CancelledPlanPage>? = null,
     val cancelledItems: List<PlanReadRow> = emptyList(),
     val cancelledHasNextPage: Boolean = false,
     val isMutating: Boolean = false,
-    val mutationFailure: String? = null,
+    val mutationFailure: PlanMessage? = null,
 )
 
 sealed interface PlanAction {
@@ -194,11 +199,14 @@ class PlanController internal constructor(
     private val catalogGeneration = AtomicLong()
     private val cancelledGeneration = AtomicLong()
     private val mutationInFlight = AtomicBoolean()
+    private val recoveryLock = Any()
     private val initialDate = now().atZone(zoneId()).toLocalDate()
     private val mutableState = MutableStateFlow(PlanPresentationState(initialDate.monday(), initialDate))
     val state: StateFlow<PlanPresentationState> = mutableState
 
     @Volatile private var closed = false
+
+    @Volatile private var recovery: MutationRecovery? = null
 
     init {
         loadWeek()
@@ -210,9 +218,17 @@ class PlanController internal constructor(
             PlanAction.NextWeek -> changeWeek(1)
             PlanAction.Today -> today()
             is PlanAction.SelectDate -> selectDate(action.date)
-            PlanAction.Refresh -> loadWeek(clearFailure = true)
+            PlanAction.Refresh ->
+                if (recovery == null) {
+                    loadWeek(clearFailure = true)
+                } else {
+                    retryRecovery()
+                }
             PlanAction.OpenCatalog -> openCatalog()
-            PlanAction.DismissCatalog -> mutableState.update { it.copy(catalog = null) }
+            PlanAction.DismissCatalog -> {
+                catalogGeneration.incrementAndGet()
+                mutableState.update { it.copy(catalog = null) }
+            }
             is PlanAction.SearchCatalog -> loadCatalog(action.query, null, false)
             PlanAction.LoadMoreCatalog ->
                 mutableState.value.catalog?.let {
@@ -256,11 +272,22 @@ class PlanController internal constructor(
             PlanAction.SubmitForm -> submitForm()
             is PlanAction.Cancel -> mutate(PlanMutation.Cancel(action.row.plan.actionIdentity(), now()))
             is PlanAction.UpdateFromTemplate -> mutate(PlanMutation.Update(action.row.plan.actionIdentity(), now()))
-            PlanAction.OpenCancelled -> loadCancelled(false)
-            PlanAction.DismissCancelled ->
+            PlanAction.OpenCancelled -> {
+                mutableState.update { it.copy(cancelledOpen = true) }
+                loadCancelled(false)
+            }
+            PlanAction.DismissCancelled -> {
+                cancelledGeneration.incrementAndGet()
                 mutableState.update {
-                    it.copy(cancelled = null, cancelledItems = emptyList(), cancelledHasNextPage = false)
+                    it.copy(
+                        cancelledOpen = false,
+                        cancelled = null,
+                        cancelledItems = emptyList(),
+                        cancelledHasNextPage = false,
+                    )
                 }
+                if (recovery?.needsCancelled == true) loadCancelled(false)
+            }
             PlanAction.LoadMoreCancelled -> if (mutableState.value.cancelledHasNextPage) loadCancelled(true)
             is PlanAction.Restore -> mutate(PlanMutation.Restore(action.row.plan.actionIdentity(), now()))
         }
@@ -271,6 +298,25 @@ class PlanController internal constructor(
         readGeneration.incrementAndGet()
         catalogGeneration.incrementAndGet()
         cancelledGeneration.incrementAndGet()
+    }
+
+    fun onRouteEntered() = loadWeek(clearFailure = true)
+
+    fun onRouteExited() {
+        catalogGeneration.incrementAndGet()
+        cancelledGeneration.incrementAndGet()
+        mutableState.update {
+            it.copy(
+                catalog = null,
+                form = null,
+                cancelledOpen = false,
+                cancelled = null,
+                cancelledItems = emptyList(),
+                cancelledHasNextPage = false,
+                mutationFailure = null,
+            )
+        }
+        if (recovery?.needsCancelled == true) loadCancelled(false)
     }
 
     private fun changeWeek(delta: Long) {
@@ -309,6 +355,12 @@ class PlanController internal constructor(
 
     private fun loadWeek(clearFailure: Boolean = false) {
         val generation = readGeneration.incrementAndGet()
+        synchronized(recoveryLock) {
+            recovery?.let {
+                it.weekGeneration = generation
+                it.weekPublished = false
+            }
+        }
         val state = mutableState.value
         mutableState.update {
             it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
@@ -320,19 +372,18 @@ class PlanController internal constructor(
                     generation == readGeneration.get()
                 ) {
                     mutableState.update { it.copy(week = PlanLoad.Content(read)) }
+                    canonicalPublished(CanonicalSurface.WEEK, generation)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: Exception) {
+            } catch (_: Exception) {
                 if (!closed &&
                     generation == readGeneration.get()
                 ) {
                     mutableState.update {
                         it.copy(
                             week =
-                                PlanLoad.Failure(
-                                    failure.message ?: "Unknown error",
-                                ),
+                                PlanLoad.Failure(PlanMessage.LOAD_FAILED),
                         )
                     }
                 }
@@ -358,6 +409,7 @@ class PlanController internal constructor(
                         query = query,
                         loading = true,
                         items = if (append) it.catalog?.items.orEmpty() else emptyList(),
+                        failure = null,
                     ),
             )
         }
@@ -374,6 +426,7 @@ class PlanController internal constructor(
                                     (prior + page.take(CATALOG_PAGE_SIZE)).distinctBy { it.id },
                                     page.size > CATALOG_PAGE_SIZE,
                                     false,
+                                    null,
                                 ),
                         )
                     }
@@ -390,7 +443,7 @@ class PlanController internal constructor(
                                 (
                                     it.catalog
                                         ?: PlanCatalogState(query = query)
-                                ).copy(loading = false),
+                                ).copy(loading = false, failure = PlanMessage.LOAD_FAILED),
                         )
                     }
                 }
@@ -416,7 +469,7 @@ class PlanController internal constructor(
     }
 
     private fun openReschedule(row: PlanReadRow) {
-        if (!row.isMutable()) return
+        if (mutableState.value.isMutating || !row.isMutable()) return
         val (kind, date, time) = row.plan.target.toForm(zoneId())
         mutableState.update { it.copy(form = PlanScheduleForm(null, row.plan.actionIdentity(), kind, date, time)) }
     }
@@ -425,7 +478,7 @@ class PlanController internal constructor(
         val form = mutableState.value.form ?: return
         val schedule =
             runCatching { form.toSchedule(zoneId()) }.getOrElse {
-                mutableState.update { it.copy(mutationFailure = "Enter a valid date and time.") }
+                mutableState.update { it.copy(mutationFailure = PlanMessage.INVALID_SCHEDULE) }
                 return
             }
         val at = now()
@@ -442,38 +495,81 @@ class PlanController internal constructor(
         if (closed || !mutationInFlight.compareAndSet(false, true)) return
         mutableState.update { it.copy(isMutating = true, mutationFailure = null) }
         scope.launch {
+            var failureMessage: PlanMessage? = null
             try {
                 commitMutation(command)
-                if (!closed) {
-                    mutableState.update { it.copy(form = null) }
-                    loadWeek()
-                    if (mutableState.value.cancelled !=
-                        null
-                    ) {
-                        loadCancelled(false)
-                    }
-                }
             } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                if (!closed) {
-                    mutableState.update {
-                        it.copy(
-                            mutationFailure =
-                                failure.message ?: "That action is no longer available.",
-                        )
-                    }
-                    loadWeek()
-                }
-            } finally {
                 mutationInFlight.set(false)
-                if (!closed) mutableState.update { it.copy(isMutating = false) }
+                throw cancelled
+            } catch (_: StalePlanActionException) {
+                failureMessage = PlanMessage.ACTION_UNAVAILABLE
+            } catch (_: Exception) {
+                failureMessage = PlanMessage.ACTION_UNAVAILABLE
             }
+            if (!closed) {
+                mutableState.update {
+                    it.copy(
+                        form = null,
+                        mutationFailure = failureMessage,
+                    )
+                }
+                beginRecovery(command is PlanMutation.Cancel || command is PlanMutation.Restore)
+            } else {
+                mutationInFlight.set(false)
+            }
+        }
+    }
+
+    private fun beginRecovery(needsCancelled: Boolean) {
+        synchronized(recoveryLock) { recovery = MutationRecovery(needsCancelled) }
+        retryRecovery()
+    }
+
+    private fun retryRecovery() {
+        loadWeek()
+        if (recovery?.needsCancelled == true) loadCancelled(false)
+    }
+
+    private fun canonicalPublished(
+        surface: CanonicalSurface,
+        generation: Long,
+    ) {
+        val completed =
+            synchronized(recoveryLock) {
+                val pending = recovery
+                val ownsSurface =
+                    pending != null &&
+                        when (surface) {
+                            CanonicalSurface.WEEK -> generation == pending.weekGeneration
+                            CanonicalSurface.CANCELLED -> generation == pending.cancelledGeneration
+                        }
+                if (ownsSurface && surface == CanonicalSurface.WEEK) pending?.weekPublished = true
+                if (ownsSurface && surface == CanonicalSurface.CANCELLED) pending?.cancelledPublished = true
+                val weekReady = pending?.weekPublished == true
+                val cancelledReady = pending != null && (!pending.needsCancelled || pending.cancelledPublished)
+                if (ownsSurface && weekReady && cancelledReady) {
+                    recovery = null
+                    true
+                } else {
+                    false
+                }
+            }
+        if (completed) {
+            mutationInFlight.set(false)
+            mutableState.update { it.copy(isMutating = false) }
         }
     }
 
     private fun loadCancelled(append: Boolean) {
         val generation = cancelledGeneration.incrementAndGet()
+        if (!append) {
+            synchronized(recoveryLock) {
+                recovery?.let {
+                    it.cancelledGeneration = generation
+                    it.cancelledPublished = false
+                }
+            }
+        }
         val offset = if (append) mutableState.value.cancelledItems.size else 0
         mutableState.update { it.copy(cancelled = PlanLoad.Loading) }
         scope.launch {
@@ -488,19 +584,18 @@ class PlanController internal constructor(
                             cancelledHasNextPage = page.hasNextPage,
                         )
                     }
+                    if (!append) canonicalPublished(CanonicalSurface.CANCELLED, generation)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: Exception) {
+            } catch (_: Exception) {
                 if (!closed &&
                     generation == cancelledGeneration.get()
                 ) {
                     mutableState.update {
                         it.copy(
                             cancelled =
-                                PlanLoad.Failure(
-                                    failure.message ?: "Unknown error",
-                                ),
+                                PlanLoad.Failure(PlanMessage.LOAD_FAILED),
                         )
                     }
                 }
@@ -546,6 +641,16 @@ class PlanController internal constructor(
         const val CATALOG_PAGE_SIZE = 30
         const val CANCELLED_PAGE_SIZE = 30
     }
+
+    private enum class CanonicalSurface { WEEK, CANCELLED }
+
+    private data class MutationRecovery(
+        val needsCancelled: Boolean,
+        var weekGeneration: Long = 0,
+        var cancelledGeneration: Long = 0,
+        var weekPublished: Boolean = false,
+        var cancelledPublished: Boolean = false,
+    )
 }
 
 internal class PlanControllerOwner : ViewModel() {
