@@ -1,9 +1,12 @@
 package com.alexandr5476.lifetracing.plan
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -14,6 +17,7 @@ import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.PlanActivityRowMetadata
 import com.alexandr5476.lifetracing.domain.PlanDayPresence
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -28,9 +32,11 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -53,17 +59,33 @@ class PlanScreenPresentationTest {
                 PlanTarget.ExactDay(Instant.parse("2026-09-15T12:30:00Z"), java.time.ZoneOffset.UTC),
                 noLive = true,
             )
-        val timed = row("timed", PlanTarget.FloatingDay(selected), noLive = false)
+        val timed = row("timed", PlanTarget.FloatingDay(selected), timerTarget = Duration.ofSeconds(90))
         val sequence = row("sequence", PlanTarget.Week(monday), sequence = true)
         val weekNoLive = row("week-no-live", PlanTarget.Week(monday), noLive = true)
-        setScreen(listOf(floatingNoLive, exactNoLive, timed), listOf(sequence, weekNoLive))
+        val densities = listOf(0, 3, 2, 1, 4, 1, 0)
+        setScreen(listOf(floatingNoLive, exactNoLive, timed), listOf(sequence, weekNoLive), densities)
 
-        (0L..6L).forEach { offset -> compose.onNode(hasTestTag("plan-day-${monday.plusDays(offset)}")).assertExists() }
+        val dayTags =
+            compose
+                .onAllNodes(
+                    SemanticsMatcher("Plan day") {
+                        it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("plan-day-") == true
+                    },
+                ).fetchSemanticsNodes()
+                .map { it.config[SemanticsProperties.TestTag] }
+        assertEquals((0L..6L).map { "plan-day-${monday.plusDays(it)}" }, dayTags)
+        densities.forEachIndexed { offset, density ->
+            val date = monday.plusDays(offset.toLong())
+            compose
+                .onNodeWithContentDescription(context.getString(R.string.plan_day_density, date.toString(), density))
+                .assertExists()
+        }
         compose.onNodeWithText(context.getString(R.string.plan_selected_day, selected.toString())).assertExists()
         compose.onNodeWithText(context.getString(R.string.plan_this_week)).assertExists()
         compose.onAllNodesWithText(context.getString(R.string.plan_anytime)).assertCountEquals(2)
         compose.onNodeWithText(context.getString(R.string.plan_exact_at, "12:30")).assertExists()
-        compose.onAllNodesWithText(context.getString(R.string.plan_week_placement)).assertCountEquals(2)
+        compose.onAllNodesWithText(context.getString(R.string.plan_week_placement)).assertCountEquals(0)
+        compose.onNodeWithText(context.getString(R.string.plan_timer_target, "01:30")).assertExists()
         compose.onAllNodesWithText(context.getString(R.string.plan_complete_action)).assertCountEquals(3)
         compose.onAllNodesWithText(context.getString(R.string.plan_start_action)).assertCountEquals(2)
         compose
@@ -117,9 +139,57 @@ class PlanScreenPresentationTest {
         compose.onNodeWithText(arbitrary).assertDoesNotExist()
     }
 
+    @Test
+    fun hiddenCanonicalRecoveryFailureHasVisibleLocalizedRetry() {
+        val read =
+            WeekPlanRead(
+                monday,
+                selected,
+                emptyList(),
+                emptyList(),
+                (0L..6L).map { PlanDayPresence(monday.plusDays(it), 0) },
+            )
+        val state =
+            PlanPresentationState(
+                monday,
+                selected,
+                week = PlanLoad.Content(read),
+                isMutating = true,
+                recoveryFailure = PlanMessage.LOAD_FAILED,
+            )
+        compose.setContent { LifeTracingTheme { PlanScreen(state, {}, {}) } }
+
+        compose.onNodeWithText(context.getString(R.string.plan_load_failed)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.plan_retry)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.plan_add)).assertIsNotEnabled()
+    }
+
+    @Test
+    fun weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen() {
+        val state =
+            PlanPresentationState(
+                monday,
+                selected,
+                week = PlanLoad.Failure(PlanMessage.LOAD_FAILED),
+                cancelledOpen = true,
+                cancelled = PlanLoad.Content(CancelledPlanPage(emptyList(), false)),
+                isMutating = true,
+                recoveryFailure = PlanMessage.LOAD_FAILED,
+            )
+        compose.setContent { LifeTracingTheme { PlanScreen(state, {}, {}) } }
+
+        compose
+            .onAllNodesWithText(
+                context.getString(R.string.plan_load_failed),
+            ).assertCountEquals(2)[1]
+            .assertIsDisplayed()
+        compose.onAllNodesWithText(context.getString(R.string.plan_retry)).assertCountEquals(2)[1].assertIsDisplayed()
+    }
+
     private fun setScreen(
         day: List<PlanReadRow>,
         week: List<PlanReadRow>,
+        densities: List<Int> = List(7) { if (it == 1) day.size else 0 },
     ) {
         val read =
             WeekPlanRead(
@@ -127,7 +197,7 @@ class PlanScreenPresentationTest {
                 selected,
                 day,
                 week,
-                (0L..6L).map { PlanDayPresence(monday.plusDays(it), if (it == 1L) day.size else 0) },
+                (0L..6L).map { PlanDayPresence(monday.plusDays(it), densities[it.toInt()]) },
             )
         compose.setContent {
             LifeTracingTheme {
@@ -146,6 +216,7 @@ class PlanScreenPresentationTest {
         engaged: Boolean = false,
         fulfilled: Boolean = false,
         overdue: Boolean = false,
+        timerTarget: Duration? = null,
     ): PlanReadRow {
         val at = Instant.parse("2026-09-15T10:00:00Z")
         val plan =
@@ -176,8 +247,12 @@ class PlanScreenPresentationTest {
             engaged,
             overdue,
             PlanActivityRowMetadata(
-                if (noLive) TimeTrackingMode.NO_LIVE_TRACKING else TimeTrackingMode.STOPWATCH,
-                null,
+                when {
+                    noLive -> TimeTrackingMode.NO_LIVE_TRACKING
+                    timerTarget != null -> TimeTrackingMode.TIMER
+                    else -> TimeTrackingMode.STOPWATCH
+                },
+                timerTarget,
             ).takeUnless { sequence },
         )
     }

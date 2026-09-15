@@ -141,6 +141,7 @@
     <string name="plan_week_placement">Scheduled for this week</string>
     <string name="plan_exact_at">At %1$s</string>
     <string name="plan_anytime">Any time on this day</string>
+    <string name="plan_timer_target">Timer target: %1$s</string>
     <string name="plan_complete_action">Complete (available later)</string>
     <string name="plan_start_action">Start (available later)</string>
     <string name="plan_fulfilled">Fulfilled</string>

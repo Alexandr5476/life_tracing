@@ -128,6 +128,51 @@ class PlanControllerTest {
         }
 
     @Test
+    fun failedWeekRecoveryExposesRetryAndOnlyFreshIdentityReenablesMutation() =
+        runBlocking {
+            val oldRow = row("plan", 1)
+            val freshRow = row("plan", 2)
+            val mutations = mutableListOf<PlanMutation>()
+            var reads = 0
+            val controller =
+                controller(
+                    readWeek = { query ->
+                        reads++
+                        when (reads) {
+                            1 -> week(query, oldRow)
+                            2 -> error("week recovery failed")
+                            else -> week(query, freshRow)
+                        }
+                    },
+                    commit = {
+                        mutations += it
+                        throw StalePlanActionException()
+                    },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.Reschedule(oldRow))
+                controller.dispatch(PlanAction.SubmitForm)
+                withTimeout(2_000) {
+                    controller.state.first {
+                        it.week is PlanLoad.Failure && it.recoveryFailure == PlanMessage.LOAD_FAILED
+                    }
+                }
+                controller.dispatch(PlanAction.Reschedule(oldRow))
+                assertEquals(1, mutations.size)
+
+                controller.dispatch(PlanAction.Refresh)
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+                controller.dispatch(PlanAction.Reschedule(freshRow))
+                controller.dispatch(PlanAction.SubmitForm)
+                withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
+                assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Reschedule).identity.updatedAt)
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
     fun staleRestoreWaitsForFreshCancelledPageBeforeFreshIdentityCanDispatch() =
         runBlocking {
             val recoveryEntered = CompletableDeferred<Unit>()
@@ -170,6 +215,88 @@ class PlanControllerTest {
                 assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Restore).identity.updatedAt)
             } finally {
                 releaseRecovery.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun hiddenCancelledRecoveryFailureStaysLockedAndExposesRetryUntilBothSurfacesPublish() =
+        runBlocking {
+            val row = row("plan", 1)
+            var cancelledReads = 0
+            var mutations = 0
+            val controller =
+                controller(
+                    readWeek = { week(it, row) },
+                    readCancelled = {
+                        cancelledReads++
+                        if (cancelledReads == 1) error("hidden cancelled reload failed")
+                        CancelledPlanPage(emptyList(), false)
+                    },
+                    commit = { mutations++ },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.Cancel(row))
+                withTimeout(2_000) { controller.state.first { it.recoveryFailure == PlanMessage.LOAD_FAILED } }
+
+                assertTrue(controller.state.value.isMutating)
+                assertFalse(controller.state.value.cancelledOpen)
+                controller.dispatch(PlanAction.Cancel(row))
+                assertEquals(1, mutations)
+
+                controller.dispatch(PlanAction.Refresh)
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+                assertNull(controller.state.value.recoveryFailure)
+                assertEquals(2, cancelledReads)
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun failedStaleRestoreRecoveryKeepsOldIdentityBlockedUntilCancelledRetryPublishesFreshIdentity() =
+        runBlocking {
+            val oldRow = row("cancelled", 1, PlanEntryStatus.CANCELLED)
+            val freshRow = row("cancelled", 2, PlanEntryStatus.CANCELLED)
+            val mutations = mutableListOf<PlanMutation>()
+            var cancelledReads = 0
+            val controller =
+                controller(
+                    readCancelled = {
+                        cancelledReads++
+                        when (cancelledReads) {
+                            1 -> CancelledPlanPage(listOf(oldRow), false)
+                            2 -> error("cancelled recovery failed")
+                            else -> CancelledPlanPage(listOf(freshRow), false)
+                        }
+                    },
+                    commit = {
+                        mutations += it
+                        throw StalePlanActionException()
+                    },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.OpenCancelled)
+                withTimeout(2_000) { controller.state.first { it.cancelledItems == listOf(oldRow) } }
+                controller.dispatch(PlanAction.Restore(oldRow))
+                withTimeout(2_000) {
+                    controller.state.first {
+                        it.cancelled is PlanLoad.Failure && it.recoveryFailure == PlanMessage.LOAD_FAILED
+                    }
+                }
+
+                controller.dispatch(PlanAction.Restore(oldRow))
+                assertEquals(1, mutations.size)
+                controller.dispatch(PlanAction.OpenCancelled)
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+                assertEquals(listOf(freshRow), controller.state.value.cancelledItems)
+
+                controller.dispatch(PlanAction.Restore(freshRow))
+                withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
+                assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Restore).identity.updatedAt)
+            } finally {
                 controller.close()
             }
         }
@@ -268,6 +395,75 @@ class PlanControllerTest {
             } finally {
                 releaseOldCatalog.complete(Unit)
                 releaseCancelled.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    @Suppress("LongMethod") // Two ownership resets share one deterministic delayed append fixture.
+    fun delayedCatalogAppendCannotPublishAfterQueryResetOrRouteExit() =
+        runBlocking {
+            val appendEntered = CompletableDeferred<Unit>()
+            val releaseAppend = CompletableDeferred<Unit>()
+            val appendFinished = CompletableDeferred<Unit>()
+            val exitAppendEntered = CompletableDeferred<Unit>()
+            val releaseExitAppend = CompletableDeferred<Unit>()
+            val exitAppendFinished = CompletableDeferred<Unit>()
+            val pageOne = (1..31).map { source.copy(name = "A %02d".format(it)) }
+            val queryB = source.copy(name = "B")
+            var appendCalls = 0
+            val controller =
+                controller(
+                    readCatalog = { query, _, after ->
+                        when {
+                            query == "A" && after == null -> pageOne
+                            query == "A" -> {
+                                appendCalls++
+                                if (appendCalls == 1) {
+                                    appendEntered.complete(Unit)
+                                    releaseAppend.await()
+                                    appendFinished.complete(Unit)
+                                } else {
+                                    exitAppendEntered.complete(Unit)
+                                    releaseExitAppend.await()
+                                    exitAppendFinished.complete(Unit)
+                                }
+                                listOf(source.copy(name = "stale append"))
+                            }
+                            query == "B" -> listOf(queryB)
+                            else -> emptyList()
+                        }
+                    },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.OpenCatalog)
+                withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
+                controller.dispatch(PlanAction.SearchCatalog("A"))
+                withTimeout(2_000) { controller.state.first { it.catalog?.hasNextPage == true } }
+                controller.dispatch(PlanAction.LoadMoreCatalog)
+                withTimeout(2_000) { appendEntered.await() }
+                controller.dispatch(PlanAction.SearchCatalog("B"))
+                withTimeout(2_000) { controller.state.first { it.catalog?.items == listOf(queryB) } }
+                releaseAppend.complete(Unit)
+                withTimeout(2_000) { appendFinished.await() }
+                assertEquals(
+                    listOf(queryB),
+                    controller.state.value.catalog
+                        ?.items,
+                )
+
+                controller.dispatch(PlanAction.SearchCatalog("A"))
+                withTimeout(2_000) { controller.state.first { it.catalog?.hasNextPage == true } }
+                controller.dispatch(PlanAction.LoadMoreCatalog)
+                withTimeout(2_000) { exitAppendEntered.await() }
+                controller.onRouteExited()
+                releaseExitAppend.complete(Unit)
+                withTimeout(2_000) { exitAppendFinished.await() }
+                assertNull(controller.state.value.catalog)
+            } finally {
+                releaseAppend.complete(Unit)
+                releaseExitAppend.complete(Unit)
                 controller.close()
             }
         }

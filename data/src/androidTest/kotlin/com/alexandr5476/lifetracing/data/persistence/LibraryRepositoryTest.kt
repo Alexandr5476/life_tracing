@@ -200,15 +200,24 @@ class LibraryRepositoryTest {
         } while (page.size == 2)
         val items = pages.flatten()
 
-        assertEquals(6, items.size)
-        assertEquals(6, items.map { it.id }.distinct().size)
-        assertEquals(2, items.count { it.id.value == "same" })
+        val expected =
+            listOf(
+                LibraryTemplateId.Activity(ActivityTemplateId("a-lower")),
+                LibraryTemplateId.Activity(ActivityTemplateId("a-upper")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("s-lower")),
+                LibraryTemplateId.Activity(ActivityTemplateId("same")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("same")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("zeta")),
+            )
+        assertEquals(expected, items.map { it.id })
+        assertTrue(expected.all { expectedId -> items.count { it.id == expectedId } == 1 })
         assertTrue(items.none { it.id.value == "archived" })
+        assertEquals(expected.take(3), repository.getReusablePlanCatalog("alp", 10).map { it.id })
         assertThrows(IllegalArgumentException::class.java) {
             repository.getReusablePlanCatalog("", LibraryRepository.PLAN_CATALOG_MAX_PAGE_SIZE + 1)
         }
         val catalogQueries = queries.filter { "UNION ALL" in it.first }
-        assertEquals(pages.size, catalogQueries.size)
+        assertEquals(pages.size + 1, catalogQueries.size)
         assertTrue(
             catalogQueries.all {
                 "activity_template_fields" !in it.first &&

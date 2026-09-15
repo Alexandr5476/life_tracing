@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
@@ -34,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
@@ -67,11 +69,15 @@ class MainActivityRouteSessionTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    @Suppress("LongMethod") // One production route is exercised across recreation, exit, refresh, and all transients.
     fun productionPlanAffordanceUsesOneDestinationBackAndFreshTransientRouteState() {
         val planLabel = composeTestRule.activity.getString(R.string.daily_plan)
         val planTitle = composeTestRule.activity.getString(R.string.plan_title)
         val addLabel = composeTestRule.activity.getString(R.string.plan_add)
         val chooseLabel = composeTestRule.activity.getString(R.string.plan_choose_template)
+        val closeLabel = composeTestRule.activity.getString(R.string.plan_close)
+        val rescheduleLabel = composeTestRule.activity.getString(R.string.plan_reschedule)
+        val cancelledLabel = composeTestRule.activity.getString(R.string.plan_cancelled)
 
         composeTestRule.onNodeWithText(planLabel).assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
@@ -89,6 +95,9 @@ class MainActivityRouteSessionTest {
                 controller.state.value.selectedDate
                     .plusDays(1)
             }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodes(hasTestTag("plan-day-$selected")).fetchSemanticsNodes().isNotEmpty()
+        }
         composeTestRule.onNode(hasTestTag("plan-day-$selected")).performClick()
         composeTestRule.waitUntil(5_000) { controller.state.value.selectedDate == selected }
         composeTestRule.activityRule.scenario.recreate()
@@ -99,12 +108,66 @@ class MainActivityRouteSessionTest {
         assertEquals(selected, controller.state.value.selectedDate)
         composeTestRule.onNodeWithText(addLabel).performClick()
         composeTestRule.onNodeWithText(chooseLabel).assertIsDisplayed()
-        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(closeLabel).performClick()
         composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+
+        // No dialog is present: this exercises the production route Back callback itself.
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(addLabel).assertDoesNotExist()
+
+        val suffix = System.nanoTime().toString()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val template =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Plan route refresh $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = Instant.now(),
+            )
+        PlanRepository
+            .create(composeTestRule.activity)
+            .createActivityPlanFromTemplate(template.id, PlanSchedule.FloatingDay(selected), Instant.now())
+
         composeTestRule.onNodeWithText(planLabel).assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(template.name).fetchSemanticsNodes().isNotEmpty()
+        }
+        assertEquals(selected, controller.state.value.selectedDate)
+
+        composeTestRule.onNodeWithText(addLabel).performClick()
+        composeTestRule.onNodeWithText(chooseLabel).assertIsDisplayed()
+        composeTestRule.runOnUiThread {
+            controller.onRouteExited()
+            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeTestRule.onNodeWithText(planLabel).performClick()
+        composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(template.name).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeTestRule
+            .onAllNodesWithText(composeTestRule.activity.getString(R.string.plan_reschedule))[0]
+            .performClick()
+        composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(2)
+        composeTestRule.runOnUiThread {
+            controller.onRouteExited()
+            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeTestRule.onNodeWithText(planLabel).performClick()
+        composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
+
+        composeTestRule.onNodeWithText(cancelledLabel).performClick()
+        composeTestRule.runOnUiThread {
+            controller.onRouteExited()
+            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeTestRule.onNodeWithText(planLabel).performClick()
 
         composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
+        composeTestRule.onAllNodesWithText(cancelledLabel).assertCountEquals(1)
         composeTestRule.onAllNodesWithText(planTitle).assertCountEquals(1)
+        assertEquals(selected, controller.state.value.selectedDate)
     }
 
     @Test
@@ -211,7 +274,6 @@ class MainActivityRouteSessionTest {
                     ?.id
             activeExecutionId == second.execution.id
         }
-        composeTestRule.waitForIdle()
         expandSequence()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
@@ -887,6 +949,7 @@ class MainActivityRouteSessionTest {
     }
 
     private fun expandSequence() {
+        composeTestRule.waitForIdle()
         val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()

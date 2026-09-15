@@ -83,6 +83,7 @@
     <string name="plan_week_placement">Запланировано на эту неделю</string>
     <string name="plan_exact_at">В %1$s</string>
     <string name="plan_anytime">В любое время в этот день</string>
+    <string name="plan_timer_target">Цель таймера: %1$s</string>
     <string name="plan_complete_action">Завершить (будет доступно позже)</string>
     <string name="plan_start_action">Запустить (будет доступно позже)</string>
     <string name="plan_fulfilled">Выполнено</string>

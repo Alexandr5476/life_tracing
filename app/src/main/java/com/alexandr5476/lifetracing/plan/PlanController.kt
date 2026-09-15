@@ -83,6 +83,7 @@ data class PlanPresentationState(
     val cancelledHasNextPage: Boolean = false,
     val isMutating: Boolean = false,
     val mutationFailure: PlanMessage? = null,
+    val recoveryFailure: PlanMessage? = null,
 )
 
 sealed interface PlanAction {
@@ -362,30 +363,26 @@ class PlanController internal constructor(
             }
         }
         val state = mutableState.value
-        mutableState.update {
-            it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
+        if (!publishIfOwned(readGeneration, generation) {
+                it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
+            }
+        ) {
+            return
         }
         scope.launch {
             try {
                 val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, now()))
-                if (!closed &&
-                    generation == readGeneration.get()
-                ) {
-                    mutableState.update { it.copy(week = PlanLoad.Content(read)) }
+                if (publishIfOwned(readGeneration, generation) { it.copy(week = PlanLoad.Content(read)) }) {
                     canonicalPublished(CanonicalSurface.WEEK, generation)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (!closed &&
-                    generation == readGeneration.get()
-                ) {
-                    mutableState.update {
-                        it.copy(
-                            week =
-                                PlanLoad.Failure(PlanMessage.LOAD_FAILED),
-                        )
+                if (publishIfOwned(readGeneration, generation) {
+                        it.copy(week = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
                     }
+                ) {
+                    canonicalFailed(CanonicalSurface.WEEK, generation)
                 }
             }
         }
@@ -402,50 +399,43 @@ class PlanController internal constructor(
         append: Boolean,
     ) {
         val generation = catalogGeneration.incrementAndGet()
-        mutableState.update {
-            it.copy(
-                catalog =
-                    (it.catalog ?: PlanCatalogState()).copy(
-                        query = query,
-                        loading = true,
-                        items = if (append) it.catalog?.items.orEmpty() else emptyList(),
-                        failure = null,
-                    ),
-            )
+        if (!publishIfOwned(catalogGeneration, generation) {
+                it.copy(
+                    catalog =
+                        (it.catalog ?: PlanCatalogState()).copy(
+                            query = query,
+                            loading = true,
+                            items = if (append) it.catalog?.items.orEmpty() else emptyList(),
+                            failure = null,
+                        ),
+                )
+            }
+        ) {
+            return
         }
         scope.launch {
             try {
                 val page = readCatalog(query, CATALOG_PAGE_SIZE + 1, after)
-                if (!closed && generation == catalogGeneration.get()) {
-                    mutableState.update { state ->
-                        val prior = if (append) state.catalog?.items.orEmpty() else emptyList()
-                        state.copy(
-                            catalog =
-                                PlanCatalogState(
-                                    query,
-                                    (prior + page.take(CATALOG_PAGE_SIZE)).distinctBy { it.id },
-                                    page.size > CATALOG_PAGE_SIZE,
-                                    false,
-                                    null,
-                                ),
-                        )
-                    }
+                publishIfOwned(catalogGeneration, generation) { state ->
+                    val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
+                    val prior = if (append) catalog.items else emptyList()
+                    state.copy(
+                        catalog =
+                            PlanCatalogState(
+                                query,
+                                (prior + page.take(CATALOG_PAGE_SIZE)).distinctBy { it.id },
+                                page.size > CATALOG_PAGE_SIZE,
+                                false,
+                                null,
+                            ),
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (!closed &&
-                    generation == catalogGeneration.get()
-                ) {
-                    mutableState.update {
-                        it.copy(
-                            catalog =
-                                (
-                                    it.catalog
-                                        ?: PlanCatalogState(query = query)
-                                ).copy(loading = false, failure = PlanMessage.LOAD_FAILED),
-                        )
-                    }
+                publishIfOwned(catalogGeneration, generation) { state ->
+                    val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
+                    state.copy(catalog = catalog.copy(loading = false, failure = PlanMessage.LOAD_FAILED))
                 }
             }
         }
@@ -526,8 +516,30 @@ class PlanController internal constructor(
     }
 
     private fun retryRecovery() {
-        loadWeek()
-        if (recovery?.needsCancelled == true) loadCancelled(false)
+        synchronized(recoveryLock) {
+            mutableState.update { it.copy(recoveryFailure = null) }
+            loadWeek()
+            if (recovery?.needsCancelled == true) loadCancelled(false)
+        }
+    }
+
+    private fun canonicalFailed(
+        surface: CanonicalSurface,
+        generation: Long,
+    ) {
+        synchronized(recoveryLock) {
+            val ownsRecovery =
+                recovery?.let {
+                    generation ==
+                        when (surface) {
+                            CanonicalSurface.WEEK -> it.weekGeneration
+                            CanonicalSurface.CANCELLED -> it.cancelledGeneration
+                        }
+                } == true
+            if (ownsRecovery) {
+                mutableState.update { it.copy(recoveryFailure = PlanMessage.LOAD_FAILED) }
+            }
+        }
     }
 
     private fun canonicalPublished(
@@ -556,7 +568,7 @@ class PlanController internal constructor(
             }
         if (completed) {
             mutationInFlight.set(false)
-            mutableState.update { it.copy(isMutating = false) }
+            mutableState.update { it.copy(isMutating = false, recoveryFailure = null) }
         }
     }
 
@@ -571,12 +583,11 @@ class PlanController internal constructor(
             }
         }
         val offset = if (append) mutableState.value.cancelledItems.size else 0
-        mutableState.update { it.copy(cancelled = PlanLoad.Loading) }
+        if (!publishIfOwned(cancelledGeneration, generation) { it.copy(cancelled = PlanLoad.Loading) }) return
         scope.launch {
             try {
                 val page = readCancelled(CancelledPlanPageQuery(offset, CANCELLED_PAGE_SIZE))
-                if (!closed && generation == cancelledGeneration.get()) {
-                    mutableState.update { state ->
+                if (publishIfOwned(cancelledGeneration, generation) { state ->
                         val items = if (append) state.cancelledItems + page.items else page.items
                         state.copy(
                             cancelled = PlanLoad.Content(page),
@@ -584,23 +595,36 @@ class PlanController internal constructor(
                             cancelledHasNextPage = page.hasNextPage,
                         )
                     }
+                ) {
                     if (!append) canonicalPublished(CanonicalSurface.CANCELLED, generation)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (!closed &&
-                    generation == cancelledGeneration.get()
-                ) {
-                    mutableState.update {
-                        it.copy(
-                            cancelled =
-                                PlanLoad.Failure(PlanMessage.LOAD_FAILED),
-                        )
+                if (publishIfOwned(cancelledGeneration, generation) {
+                        it.copy(cancelled = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
                     }
+                ) {
+                    if (!append) canonicalFailed(CanonicalSurface.CANCELLED, generation)
                 }
             }
         }
+    }
+
+    private inline fun publishIfOwned(
+        owner: AtomicLong,
+        generation: Long,
+        transform: (PlanPresentationState) -> PlanPresentationState?,
+    ): Boolean {
+        var published = false
+        var eligible = !closed && generation == owner.get()
+        while (eligible && !published) {
+            val current = mutableState.value
+            val replacement = transform(current)
+            eligible = replacement != null && !closed && generation == owner.get()
+            if (eligible) published = mutableState.compareAndSet(current, requireNotNull(replacement))
+        }
+        return published
     }
 
     private fun LocalDate.monday() = with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
