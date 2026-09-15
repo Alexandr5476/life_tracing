@@ -22,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -128,6 +129,36 @@ class PlanExecutionControllerTest {
         }
 
     @Test
+    fun lifecycleExitAfterCommittingDoesNotCancelTheAdmittedCommand() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val harness =
+                Harness(activityAction(Duration.ofSeconds(3))).apply {
+                    beforeExecute = {
+                        entered.complete(Unit)
+                        release.await()
+                    }
+                }
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            controller.launch()
+            controller.awaitPreflight()
+
+            harness.scheduler.fireTwice()
+            withTimeout(2_000) { entered.await() }
+            assertTrue(controller.state.value.command is PlanExecutionCommandState.Committing)
+            controller.setVisible(false)
+            controller.cancelPreflight()
+            controller.close()
+            release.complete(Unit)
+            controller.awaitCommitted()
+
+            assertEquals(1, harness.commands.size)
+            assertEquals(1, harness.coordinations)
+        }
+
+    @Test
     fun sequenceUsesFrozenFirstStepOverridePrecedence() {
         val action = sequenceAction(Duration.ofSeconds(7), Duration.ofSeconds(2))
         assertEquals(Duration.ofSeconds(2), preparePlanExecutionTarget(action).countdown)
@@ -140,6 +171,7 @@ class PlanExecutionControllerTest {
         val commands = mutableListOf<PlanExecutionDurableCommand>()
         var failure: Exception? = null
         var coordinations = 0
+        var beforeExecute: suspend () -> Unit = {}
 
         fun controller(scope: CoroutineScope) =
             PlanExecutionController(
@@ -148,6 +180,7 @@ class PlanExecutionControllerTest {
                 { action },
                 { false },
                 { command ->
+                    beforeExecute()
                     commands += command
                     failure?.let { throw it }
                     if (command.identity.kind == PlanTrackableKind.ACTIVITY) {
