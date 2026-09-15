@@ -153,6 +153,7 @@ private fun PlanRow(
                 LifeTracingPrimaryButton(
                     enabled = !isMutating,
                     onClick = { onExecute(row.plan.actionIdentity()) },
+                    modifier = Modifier.semantics { testTag = "plan-plan-action-${row.plan.id.value}" },
                 ) { Text(row.executionLabel()) }
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                     LifeTracingSecondaryButton(enabled = !isMutating, onClick = {

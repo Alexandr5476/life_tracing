@@ -1,8 +1,19 @@
 package com.alexandr5476.lifetracing
 
 import androidx.navigation3.runtime.NavKey
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.Instant
+import java.time.LocalDate
 
 class MainActivityNavigationTest {
     @Test
@@ -64,15 +75,55 @@ class MainActivityNavigationTest {
     @Test
     fun planExecutionKeepsOneExactRouteAndRestoredRouteNormalizesToItsOrigin() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
+        val first = planIdentity("plan-a")
+        val second = planIdentity("plan-b")
 
-        backStack.openPlanExecution("plan-a")
-        backStack.openPlanExecution("plan-b")
-        assertEquals(listOf(DailyRoot, PlanRoot, PlanExecutionRoot("plan-a")), backStack)
+        backStack.openPlanExecution(first, PlanExecutionOrigin.PLAN)
+        backStack.openPlanExecution(second, PlanExecutionOrigin.PLAN)
+        assertEquals(
+            listOf(DailyRoot, PlanRoot, PlanExecutionRoot(first.routeIdentity(), PlanExecutionOrigin.PLAN.name)),
+            backStack,
+        )
 
-        backStack.removePlanExecution("plan-b")
-        assertEquals(listOf(DailyRoot, PlanRoot, PlanExecutionRoot("plan-a")), backStack)
+        backStack.removePlanExecution(second, PlanExecutionOrigin.PLAN)
+        assertEquals(
+            listOf(DailyRoot, PlanRoot, PlanExecutionRoot(first.routeIdentity(), PlanExecutionOrigin.PLAN.name)),
+            backStack,
+        )
         backStack.normalizeRestoredPlanExecution()
         assertEquals(listOf(DailyRoot, PlanRoot), backStack)
+    }
+
+    @Test
+    fun planExecutionRouteMatchesTheFullIdentityAndOrigin() {
+        val identity = planIdentity("plan")
+        val route = PlanExecutionRoot(identity.routeIdentity(), PlanExecutionOrigin.DAILY.name)
+
+        assertTrue(route.matches(identity, PlanExecutionOrigin.DAILY))
+        assertFalse(
+            route.matches(identity.copy(updatedAt = identity.updatedAt.plusSeconds(1)), PlanExecutionOrigin.DAILY),
+        )
+        assertFalse(
+            route.matches(
+                identity.copy(target = PlanTarget.Week(LocalDate.parse("2026-09-14"))),
+                PlanExecutionOrigin.DAILY,
+            ),
+        )
+        assertFalse(route.matches(identity, PlanExecutionOrigin.PLAN))
+    }
+
+    @Test
+    fun restoredPlanExecutionWithoutRetainedSessionNormalizesWithoutAcquisition() {
+        val identity = planIdentity("restored")
+        val backStack: MutableList<NavKey> =
+            mutableListOf(
+                DailyRoot,
+                PlanExecutionRoot(identity.routeIdentity(), PlanExecutionOrigin.DAILY.name),
+            )
+
+        backStack.normalizeRestoredPlanExecution()
+
+        assertEquals(listOf(DailyRoot), backStack)
     }
 
     @Test
@@ -155,4 +206,16 @@ class MainActivityNavigationTest {
         backStack.removeExpandedLiveSequence("sequence-b")
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    private fun planIdentity(id: String) =
+        PlanActionIdentity(
+            PlanEntryId(id),
+            PlanTrackableKind.ACTIVITY,
+            ActivitySnapshotId("snapshot-$id"),
+            null,
+            PlanTarget.FloatingDay(LocalDate.parse("2026-09-15")),
+            PlanEntryStatus.PLANNED,
+            1,
+            Instant.parse("2026-09-15T10:00:00Z"),
+        )
 }

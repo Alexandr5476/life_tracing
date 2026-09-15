@@ -2,6 +2,8 @@ package com.alexandr5476.lifetracing
 
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
@@ -19,6 +21,7 @@ import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
@@ -29,21 +32,27 @@ import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
+import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import com.alexandr5476.lifetracing.editor.SequenceDropDestination
 import com.alexandr5476.lifetracing.editor.SequenceEditorInputKey
@@ -52,10 +61,14 @@ import com.alexandr5476.lifetracing.editor.inputIsInvalid
 import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
+import com.alexandr5476.lifetracing.launcher.PreflightHandle
+import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import com.alexandr5476.lifetracing.library.LibraryLoad
+import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
@@ -251,6 +264,17 @@ class MainActivityRouteSessionTest {
                 PlanSchedule.FloatingDay(today),
                 now.plusMillis(2),
             )
+        val frozen =
+            (
+                PlanReadRepository.create(composeTestRule.activity).getFocusedAction(plan.id).snapshot as
+                    FocusedPlanAction.Snapshot.Activity
+            ).value
+        val zero = frozen.fields.single { it.nameAtCreation.startsWith("Zero ") }
+        val missing = frozen.fields.single { it.nameAtCreation.startsWith("Missing ") }
+        val main = frozen.fields.single { it.nameAtCreation.startsWith("Main ") }
+        val category = frozen.fields.single { it.nameAtCreation.startsWith("Category ") }
+        val text = frozen.fields.single { it.nameAtCreation.startsWith("Text ") }
+        val easy = category.categoryOptions.single { it.labelAtCreation.startsWith("Easy ") }
         val unrelatedExecution = library.startActivityFromTemplate(unrelated.id, now, now.plusMillis(3), zone)
         composeTestRule.runOnUiThread {
             LifeTracingRuntimeGraph
@@ -270,21 +294,55 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.planExecutionRouteSessions.activeSession
                 ?.quickDraft != null
         }
-        val draft =
+        val retained =
             requireNotNull(
-                composeTestRule.activity.planExecutionRouteSessions.activeSession
-                    ?.quickDraft,
+                composeTestRule.activity.planExecutionRouteSessions.activeSession,
             )
+        val draft = requireNotNull(retained.quickDraft)
         assertEquals(4, draft.values.values.count { it != null })
-        assertTrue(draft.numberTexts.values.contains("0"))
-        assertTrue(draft.numberTexts.values.contains("12.345"))
+        assertEquals("0", draft.numberTexts[zero.id])
+        assertNull(draft.values[missing.id])
+        assertEquals("12.345", draft.numberTexts[main.id])
+        assertEquals(category.defaultCategoryOptionId, (draft.values[category.id] as CategoryExecutionValue).optionId)
+        assertEquals("Default $suffix", (draft.values[text.id] as TextExecutionValue).value)
+
+        composeTestRule.onNodeWithTag("plan-value-${missing.id.value}").performTextReplacement("invalid")
+        composeTestRule.onNodeWithTag("plan-execution-submit").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("plan-value-${missing.id.value}").performTextReplacement("7.5")
+        composeTestRule.onNodeWithTag("plan-missing-${main.id.value}").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("plan-value-${category.id.value}").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(easy.labelAtCreation).performClick()
+        composeTestRule
+            .onNodeWithTag("plan-value-${text.id.value}")
+            .performScrollTo()
+            .performTextReplacement("Edited $suffix")
+        composeTestRule.onNodeWithTag("plan-execution-submit").performScrollTo().assertIsEnabled()
+
+        composeTestRule.activityRule.scenario.recreate()
+        assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
+        val recreatedDraft = requireNotNull(retained.quickDraft)
+        assertEquals("7.5", recreatedDraft.numberTexts[missing.id])
+        assertNull(recreatedDraft.values[main.id])
+        assertEquals(easy.id, (recreatedDraft.values[category.id] as CategoryExecutionValue).optionId)
+        assertEquals("Edited $suffix", (recreatedDraft.values[text.id] as TextExecutionValue).value)
+
         composeTestRule.onNodeWithTag("plan-execution-submit").performScrollTo().performClick()
+        composeTestRule.runOnUiThread {
+            retained.controller.launch(recreatedDraft.overrides(frozen.fields))
+        }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.planExecutionRouteSessions.activeSession == null
         }
 
         assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
-        assertEquals(4, executionValueCount(plan.id.value))
+        val persisted = executionValues(plan.id.value).associateBy(PersistedExecutionValue::fieldId)
+        assertEquals(4, persisted.size)
+        assertEquals(0L, persisted.getValue(zero.id.value).numberScaled)
+        assertEquals(7_500L, persisted.getValue(missing.id.value).numberScaled)
+        assertTrue(main.id.value !in persisted)
+        assertEquals(easy.id.value, persisted.getValue(category.id.value).categoryOptionId)
+        assertEquals("Edited $suffix", persisted.getValue(text.id.value).textValue)
+        assertEquals(1, planExecutionCount(plan.id.value))
         assertEquals(unrelatedExecution.id, live.getActiveSession()?.activityExecutionId)
         assertEquals(
             1,
@@ -293,6 +351,82 @@ class MainActivityRouteSessionTest {
             },
         )
         clearLiveSession(live)
+    }
+
+    @Test
+    fun productionBackWaitsForBlockedPlanCommitBeforeDeliveringAndReleasing() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val today = now.atZone(zone).toLocalDate()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val plans = PlanRepository.create(composeTestRule.activity)
+        val reads = PlanReadRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val template =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Blocked Plan commit $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now,
+            )
+        val plan =
+            plans.createActivityPlanFromTemplate(template.id, PlanSchedule.FloatingDay(today), now.plusMillis(1))
+        val identity = reads.getFocusedAction(plan.id).identity
+        val entered = CompletableDeferred<Unit>()
+        val releaseCommit = CompletableDeferred<Unit>()
+        val graph = LifeTracingRuntimeGraph.from(composeTestRule.activity)
+        val controller =
+            PlanExecutionController(
+                graph.scope,
+                identity,
+                reads::getFocusedAction,
+                { false },
+                { command ->
+                    entered.complete(Unit)
+                    releaseCommit.await()
+                    executePlanCommand(command, live)
+                },
+                {},
+                WallClock(Instant::now),
+                { zone },
+                object : PreflightScheduler {
+                    override fun schedule(
+                        duration: Duration,
+                        onBoundary: () -> Unit,
+                    ): PreflightHandle = error("No-live completion has no preflight")
+                },
+                graph.coordinator.mutationGate,
+            )
+        val retained =
+            requireNotNull(
+                composeTestRule.activity.planExecutionRouteSessions.acquire(
+                    identity,
+                    com.alexandr5476.lifetracing.plan.PlanExecutionOrigin.DAILY,
+                ) { controller },
+            )
+
+        openDailyPlan(plan.id, template.name)
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            entered.isCompleted &&
+                retained.controller.state.value.command is
+                    com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Committing
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitForIdle()
+        assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.plan_execution_committing))
+            .assertIsDisplayed()
+        assertEquals(0, planExecutionCount(plan.id.value))
+
+        releaseCommit.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null
+        }
+        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
+        assertEquals(1, planExecutionCount(plan.id.value))
     }
 
     @Test
@@ -365,6 +499,312 @@ class MainActivityRouteSessionTest {
                 it is CompletedActivityHistoryRoot && it.title == template.name
             },
         )
+    }
+
+    @Test
+    fun nonZeroTimedPlanCompletesThroughProductionPreflightOnce() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val today = now.atZone(zone).toLocalDate()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val plans = PlanRepository.create(composeTestRule.activity)
+        val library = LibraryRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val template =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft(
+                    "Timed production preflight $suffix",
+                    null,
+                    TimeTrackingMode.STOPWATCH,
+                    null,
+                    ActivityTemplateSettings(startCountdown = Duration.ofSeconds(1)),
+                ),
+                createdAt = now,
+            )
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                template.id,
+                PlanSchedule.FloatingDay(today),
+                now.plusMillis(1),
+            )
+
+        openDailyPlan(plan.id, template.name)
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
+        }
+        assertNull(live.getActiveSession())
+        assertEquals(0, planExecutionCount(plan.id.value))
+
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null
+        }
+        val active =
+            requireNotNull(
+                live.getActiveRuntime(),
+            ) as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+        assertEquals(plan.id, active.execution.planEntryId)
+        assertEquals(plan.activitySnapshotId, active.snapshot.id)
+        assertEquals(1, planExecutionCount(plan.id.value))
+        assertEquals(PlanEntryStatus.PLANNED, plans.getPlan(plan.id)?.status)
+        assertTrue(PlanReadRepository.create(composeTestRule.activity).getFocusedAction(plan.id).engaged)
+        assertTrue(library.getRecent(100).any { it.id == LibraryTemplateId.Activity(template.id) })
+        clearLiveSession(live)
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun planOriginDeliversLiveToDailyAndNoLiveBackToRefreshedPlan() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val today = now.atZone(zone).toLocalDate()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val plans = PlanRepository.create(composeTestRule.activity)
+        val reads = PlanReadRepository.create(composeTestRule.activity)
+        val library = LibraryRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val timed =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft(
+                    "Plan origin timed $suffix",
+                    null,
+                    TimeTrackingMode.TIMER,
+                    Duration.ofMinutes(5),
+                ),
+                createdAt = now,
+            )
+        val noLive =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Plan origin no-live $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now.plusMillis(1),
+            )
+        val timedPlan =
+            plans.createActivityPlanFromTemplate(timed.id, PlanSchedule.FloatingDay(today), now.plusMillis(2))
+        val noLivePlan =
+            plans.createActivityPlanFromTemplate(noLive.id, PlanSchedule.FloatingDay(today), now.plusMillis(3))
+        val expectedTimedIdentity = reads.getFocusedAction(timedPlan.id).identity
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_plan)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(timed.name).fetchSemanticsNodes().isNotEmpty()
+        }
+        val timedAction = composeTestRule.onNodeWithTag("plan-plan-action-${timedPlan.id.value}")
+        timedAction.performScrollTo()
+        composeTestRule.waitForIdle()
+        timedAction.performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession != null
+        }
+        assertEquals(
+            expectedTimedIdentity,
+            composeTestRule.activity.planExecutionRouteSessions.activeSession
+                ?.expectedIdentity,
+        )
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null
+        }
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
+        val active =
+            requireNotNull(
+                live.getActiveRuntime(),
+            ) as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+        assertEquals(timedPlan.id, active.execution.planEntryId)
+        assertEquals(timedPlan.activitySnapshotId, active.snapshot.id)
+        assertEquals(PlanEntryStatus.PLANNED, plans.getPlan(timedPlan.id)?.status)
+        assertTrue(reads.getFocusedAction(timedPlan.id).engaged)
+        assertTrue(library.getRecent(100).any { it.id == LibraryTemplateId.Activity(timed.id) })
+        live.completeActiveActivity(Instant.now())
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_plan)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(noLive.name).fetchSemanticsNodes().isNotEmpty()
+        }
+        val noLiveAction = composeTestRule.onNodeWithTag("plan-plan-action-${noLivePlan.id.value}")
+        noLiveAction.performScrollTo()
+        composeTestRule.waitForIdle()
+        noLiveAction.performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession
+                ?.quickDraft != null
+        }
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null &&
+                plans.getPlan(noLivePlan.id)?.status == PlanEntryStatus.FULFILLED
+        }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodes(hasTestTag("plan-plan-action-${noLivePlan.id.value}"))
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.plan_title)).assertIsDisplayed()
+        composeTestRule.onAllNodesWithText(composeTestRule.activity.getString(R.string.plan_title)).assertCountEquals(1)
+        composeTestRule.onNodeWithTag("plan-plan-action-${noLivePlan.id.value}").assertDoesNotExist()
+        assertNull(live.getActiveSession())
+        assertEquals(1, planExecutionCount(noLivePlan.id.value))
+    }
+
+    @Test
+    fun lateLiveConflictThroughProductionRoutePreservesTheUnrelatedRuntime() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val today = now.atZone(zone).toLocalDate()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val library = LibraryRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val plans = PlanRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val planned =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft(
+                    "Late conflict plan $suffix",
+                    null,
+                    TimeTrackingMode.STOPWATCH,
+                    null,
+                    ActivityTemplateSettings(startCountdown = Duration.ofSeconds(1)),
+                ),
+                createdAt = now,
+            )
+        val unrelated =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Late conflict active $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = now.plusMillis(1),
+            )
+        val plan =
+            plans.createActivityPlanFromTemplate(planned.id, PlanSchedule.FloatingDay(today), now.plusMillis(2))
+
+        openDailyPlan(plan.id, planned.name)
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
+        }
+        val unrelatedStartedAt = Instant.now()
+        val unrelatedExecution =
+            library.startActivityFromTemplate(unrelated.id, unrelatedStartedAt, unrelatedStartedAt, zone)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(
+                    composeTestRule.activity.getString(R.string.plan_execution_conflict),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        assertEquals(0, planExecutionCount(plan.id.value))
+        assertEquals(unrelatedExecution.id, live.getActiveSession()?.activityExecutionId)
+        assertFalse(library.getRecent(100).any { it.id == LibraryTemplateId.Activity(planned.id) })
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null
+        }
+        clearLiveSession(live)
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun productionRouteRejectsStalePlanButKeepsFrozenSourceDivergenceExecutable() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        val today = now.atZone(zone).toLocalDate()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val plans = PlanRepository.create(composeTestRule.activity)
+        val reads = PlanReadRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val staleTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Stale production plan $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = now,
+            )
+        val stalePlan =
+            plans.createActivityPlanFromTemplate(
+                staleTemplate.id,
+                PlanSchedule.FloatingDay(today),
+                now.plusMillis(1),
+            )
+        val staleIdentity = reads.getFocusedAction(stalePlan.id).identity
+
+        openDailyPlan(stalePlan.id, staleTemplate.name)
+        val moved =
+            plans.reschedulePlanEntry(
+                staleIdentity,
+                PlanSchedule.ExactDay(today.atTime(23, 59), zone),
+                Instant.now().plusSeconds(1),
+            )
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(
+                    composeTestRule.activity.getString(R.string.plan_execution_stale),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        assertEquals(0, planExecutionCount(stalePlan.id.value))
+        assertEquals(moved.actionIdentity(), plans.getPlan(stalePlan.id)?.actionIdentity())
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.plan_execution_reload))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null &&
+                composeTestRule
+                    .onAllNodes(hasTestTag("daily-plan-action-${stalePlan.id.value}"))
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+        }
+
+        val sourceAt = Instant.now()
+        val sourceTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Frozen source plan $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = sourceAt,
+            )
+        val sourcePlan =
+            plans.createActivityPlanFromTemplate(
+                sourceTemplate.id,
+                PlanSchedule.FloatingDay(today),
+                sourceAt.plusMillis(1),
+            )
+        val original = reads.getFocusedAction(sourcePlan.id)
+        val originalSnapshot = (original.snapshot as FocusedPlanAction.Snapshot.Activity).value
+        openDailyPlan(sourcePlan.id, sourceTemplate.name)
+        authoring.saveActivityTemplate(
+            sourceTemplate.id,
+            sourceTemplate.revision,
+            sourceTemplate.toAuthoringDraft().copy(name = "Changed source $suffix"),
+            Instant.now(),
+        )
+        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.planExecutionRouteSessions.activeSession == null
+        }
+
+        val active =
+            requireNotNull(
+                live.getActiveRuntime(),
+            ) as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+        assertEquals(sourcePlan.id, active.execution.planEntryId)
+        assertEquals(originalSnapshot.id, active.snapshot.id)
+        assertEquals(originalSnapshot.name, active.snapshot.name)
+        val retained = (reads.getFocusedAction(sourcePlan.id).snapshot as FocusedPlanAction.Snapshot.Activity).value
+        assertEquals(originalSnapshot, retained)
+        clearLiveSession(live)
     }
 
     @Test
@@ -1060,7 +1500,7 @@ class MainActivityRouteSessionTest {
         composeTestRule
             .onNodeWithText(composeTestRule.activity.getString(R.string.daily_return_today))
             .assertDoesNotExist()
-        composeTestRule.onNodeWithText(fixture.activity.name).assertIsDisplayed()
+        composeTestRule.onNodeWithText(fixture.activity.name).performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -1234,6 +1674,30 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNode(expandSequence, useUnmergedTree = true).performScrollTo().performClick()
     }
 
+    private fun openDailyPlan(
+        planId: PlanEntryId,
+        title: String,
+    ) {
+        composeTestRule.runOnUiThread {
+            LifeTracingRuntimeGraph
+                .from(composeTestRule.activity)
+                .dailyController
+                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+        }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithTag("daily-plan-action-${planId.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            val session = composeTestRule.activity.planExecutionRouteSessions.activeSession
+            session?.expectedIdentity?.planEntryId == planId &&
+                session.controller.state.value.prepared is com.alexandr5476.lifetracing.plan.PlanExecutionLoad.Content
+        }
+    }
+
     private fun daily() =
         Instant.now().let { now ->
             DailyReadRepository.create(composeTestRule.activity).getDaily(
@@ -1266,7 +1730,7 @@ class MainActivityRouteSessionTest {
         }
     }
 
-    private fun executionValueCount(planEntryId: String): Int {
+    private fun executionValues(planEntryId: String): List<PersistedExecutionValue> {
         val database =
             android.database.sqlite.SQLiteDatabase.openDatabase(
                 composeTestRule.activity.getDatabasePath("lifetracing.db").path,
@@ -1276,9 +1740,39 @@ class MainActivityRouteSessionTest {
         return database.use { db ->
             db
                 .rawQuery(
-                    "SELECT COUNT(*) FROM activity_execution_field_values values_ " +
+                    "SELECT values_.snapshot_field_id, values_.number_scaled, values_.category_option_id, " +
+                        "values_.text_value FROM activity_execution_field_values values_ " +
                         "JOIN activity_executions executions ON executions.id = values_.activity_execution_id " +
                         "WHERE executions.plan_entry_id = ?",
+                    arrayOf(planEntryId),
+                ).use { cursor ->
+                    buildList {
+                        while (cursor.moveToNext()) {
+                            add(
+                                PersistedExecutionValue(
+                                    cursor.getString(0),
+                                    cursor.getLong(1).takeUnless { cursor.isNull(1) },
+                                    cursor.getString(2).takeUnless { cursor.isNull(2) },
+                                    cursor.getString(3).takeUnless { cursor.isNull(3) },
+                                ),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    private fun planExecutionCount(planEntryId: String): Int {
+        val database =
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                composeTestRule.activity.getDatabasePath("lifetracing.db").path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+            )
+        return database.use { db ->
+            db
+                .rawQuery(
+                    "SELECT COUNT(*) FROM activity_executions WHERE plan_entry_id = ?",
                     arrayOf(planEntryId),
                 ).use { cursor ->
                     check(cursor.moveToFirst())
@@ -1305,5 +1799,12 @@ class MainActivityRouteSessionTest {
         val targetId: LibraryTemplateId.Activity,
         val authoring: TemplateAuthoringRepository,
         val library: LibraryRepository,
+    )
+
+    private data class PersistedExecutionValue(
+        val fieldId: String,
+        val numberScaled: Long?,
+        val categoryOptionId: String?,
+        val textValue: String?,
     )
 }

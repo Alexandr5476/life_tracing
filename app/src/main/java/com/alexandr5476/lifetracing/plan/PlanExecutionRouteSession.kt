@@ -91,8 +91,12 @@ internal class PlanExecutionRouteSessionOwner : ViewModel() {
         expectedIdentity: PlanActionIdentity,
         origin: PlanExecutionOrigin,
         createController: () -> PlanExecutionController,
-    ): PlanExecutionRouteSession {
-        session?.let { return it }
+    ): PlanExecutionRouteSession? {
+        session?.let {
+            return it.takeIf { retained ->
+                retained.expectedIdentity == expectedIdentity && retained.origin == origin
+            }
+        }
         return PlanExecutionRouteSession(
             expectedIdentity,
             origin,

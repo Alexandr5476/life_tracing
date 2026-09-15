@@ -149,13 +149,21 @@ class LifeTracingRuntimeGraph internal constructor(
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
+            val exceptionHandler =
+                kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                    Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
+                }
             val scope =
                 kotlinx.coroutines.CoroutineScope(
                     kotlinx.coroutines.SupervisorJob() +
                         kotlinx.coroutines.Dispatchers.IO +
-                        kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
-                            Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
-                        },
+                        exceptionHandler,
+                )
+            val uiScope =
+                kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.SupervisorJob() +
+                        kotlinx.coroutines.Dispatchers.Main.immediate +
+                        exceptionHandler,
                 )
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
@@ -180,7 +188,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 DailyControllerOwner {
                     val dailyReadRepository = DailyReadRepository.create(context)
                     DailyController(
-                        scope,
+                        uiScope,
                         { query ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 dailyReadRepository.getDaily(query)
@@ -206,19 +214,23 @@ class LifeTracingRuntimeGraph internal constructor(
                                 }
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         coordinator.semanticGeneration,
                         { coordinator.displayBaseline },
                         wallClock,
                         ZoneId::systemDefault,
                         { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
-                        CoroutineLocalDateBoundaryScheduler(scope),
+                        CoroutineLocalDateBoundaryScheduler(uiScope),
                         mutationGate = coordinator.mutationGate,
                     )
                 },
                 { onPinnedOrderCommitted ->
                     StartActivityController(
-                        scope,
+                        uiScope,
                         { limit ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.getRecent(limit)
@@ -260,10 +272,14 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executeLauncherCommand(command, activityCommandRepository, libraryRepository)
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         wallClock,
                         ZoneId::systemDefault,
-                        CoroutinePreflightScheduler(scope),
+                        CoroutinePreflightScheduler(uiScope),
                         initialLiveConflict = { target ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
@@ -275,7 +291,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 {
                     LibraryController(
-                        scope,
+                        uiScope,
                         {
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.getRoot()
@@ -315,7 +331,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     ActivityTemplateEditorController(
-                        scope,
+                        uiScope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -337,7 +353,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     SequenceTemplateEditorController(
-                        scope,
+                        uiScope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -431,7 +447,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { executionId ->
                     ExpandedLiveSequenceController(
-                        scope,
+                        uiScope,
                         executionId,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -443,7 +459,11 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executeExpandedSequenceCommand(command, repository)
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         coordinator.semanticGeneration,
                         { coordinator.displayBaseline },
                         { after ->
@@ -457,7 +477,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { expectedIdentity ->
                     PlanExecutionController(
-                        scope,
+                        uiScope,
                         expectedIdentity,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -474,16 +494,20 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executePlanCommand(command, repository)
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         wallClock,
                         ZoneId::systemDefault,
-                        CoroutinePreflightScheduler(scope),
+                        CoroutinePreflightScheduler(uiScope),
                         mutationGate = coordinator.mutationGate,
                     )
                 },
                 {
                     PlanController(
-                        scope,
+                        uiScope,
                         { query ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) { planReadRepository.getWeek(query) }
                         },

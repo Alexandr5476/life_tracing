@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.plan
 
+import com.alexandr5476.lifetracing.PlanExecutionRoot
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOption
@@ -22,12 +23,17 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
+import com.alexandr5476.lifetracing.matches
+import com.alexandr5476.lifetracing.routeIdentity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -92,10 +98,12 @@ class PlanExecutionRouteSessionTest {
             val owner = PlanExecutionRouteSessionOwner()
             var creations = 0
             val first =
-                owner.acquire(action.identity, PlanExecutionOrigin.PLAN) {
-                    creations++
-                    controller
-                }
+                requireNotNull(
+                    owner.acquire(action.identity, PlanExecutionOrigin.PLAN) {
+                        creations++
+                        controller
+                    },
+                )
             val repeated =
                 owner.acquire(action.identity, PlanExecutionOrigin.PLAN) {
                     creations++
@@ -117,6 +125,114 @@ class PlanExecutionRouteSessionTest {
             assertEquals(1, deliveries)
             assertEquals(PlanExecutionRouteExitDecision.DELIVER_COMMIT, controller.arbitrateRouteExit())
             owner.release(first)
+        }
+
+    @Test
+    @Suppress("LongMethod") // One retained attempt is checked against every conflicting acquisition boundary.
+    fun ownerRejectsDifferentIdentityGenerationAndOriginWithoutReplacingItsAttempt() =
+        runBlocking {
+            val action = focused(snapshot(emptyList()))
+            val newer = action.identity.copy(updatedAt = NOW.plusSeconds(1))
+            val other = action.identity.copy(planEntryId = PlanEntryId("other"))
+            val owner = PlanExecutionRouteSessionOwner()
+            var creations = 0
+            val retained =
+                requireNotNull(
+                    owner.acquire(action.identity, PlanExecutionOrigin.DAILY) {
+                        creations++
+                        controller(this, action)
+                    },
+                )
+
+            assertSame(
+                retained,
+                owner.acquire(action.identity, PlanExecutionOrigin.DAILY) {
+                    error("Exact duplicate must reuse")
+                },
+            )
+            assertNull(
+                owner.acquire(other, PlanExecutionOrigin.DAILY) {
+                    creations++
+                    controller(this, action)
+                },
+            )
+            assertNull(
+                owner.acquire(newer, PlanExecutionOrigin.DAILY) {
+                    creations++
+                    controller(this, action)
+                },
+            )
+            assertNull(
+                owner.acquire(action.identity, PlanExecutionOrigin.PLAN) {
+                    creations++
+                    controller(this, action)
+                },
+            )
+            assertEquals(1, creations)
+            assertSame(retained, owner.activeSession)
+            assertFalse(
+                PlanExecutionRoot(other.routeIdentity(), PlanExecutionOrigin.DAILY.name).matches(retained),
+            )
+            val unrelated =
+                PlanExecutionRouteSession(
+                    other,
+                    PlanExecutionOrigin.DAILY,
+                    controller(this, action.copy(identity = other)),
+                )
+            owner.release(unrelated)
+            assertSame(retained, owner.activeSession)
+            unrelated.controller.close()
+
+            owner.release(retained)
+            val replacement =
+                requireNotNull(
+                    owner.acquire(other, PlanExecutionOrigin.DAILY) {
+                        creations++
+                        controller(this, action.copy(identity = other))
+                    },
+                )
+            assertFalse(replacement === retained)
+            assertEquals(2, creations)
+            owner.release(replacement)
+        }
+
+    @Test
+    fun committingBackWaitsThenDeliversAndReleasesExactlyOnce() =
+        runBlocking {
+            val action = focused(snapshot(emptyList()))
+            val entered = CompletableDeferred<Unit>()
+            val releaseCommit = CompletableDeferred<Unit>()
+            val controller =
+                controller(this, action) {
+                    entered.complete(Unit)
+                    releaseCommit.await()
+                    PlanExecutionCommit.Activity(ActivityExecutionId("execution"), false)
+                }
+            val owner = PlanExecutionRouteSessionOwner()
+            val session =
+                requireNotNull(owner.acquire(action.identity, PlanExecutionOrigin.DAILY) { controller })
+            withTimeout(2_000) { controller.state.first { it.prepared is PlanExecutionLoad.Content } }
+            controller.launch()
+            withTimeout(2_000) { entered.await() }
+            var backs = 0
+            var deliveries = 0
+
+            session.exitPolicy.requestExit(controller, { backs++ }, { deliveries++ })
+            assertEquals(0, backs)
+            assertEquals(0, deliveries)
+            assertSame(session, owner.activeSession)
+
+            releaseCommit.complete(Unit)
+            val committed =
+                withTimeout(2_000) {
+                    controller.state.first { it.command is PlanExecutionCommandState.Committed }
+                }.command
+            session.exitPolicy.onCommand(committed) { deliveries++ }
+            session.exitPolicy.requestExit(controller, { backs++ }, { deliveries++ })
+            assertEquals(0, backs)
+            assertEquals(1, deliveries)
+            owner.release(session)
+            assertNull(owner.activeSession)
         }
 
     private fun controller(
