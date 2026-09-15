@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing
 
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -8,6 +9,7 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -15,8 +17,10 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import com.alexandr5476.lifetracing.daily.DailyAction
 import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
@@ -45,6 +49,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
@@ -928,7 +933,7 @@ class MainActivityRouteSessionTest {
             )
 
         composeTestRule.activityRule.scenario.recreate()
-        expandSequence()
+        expandSequence(started.execution.id)
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
         }
@@ -943,7 +948,7 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession == null
         }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_title)).assertIsDisplayed()
-        expandSequence()
+        expandSequence(started.execution.id)
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
         }
@@ -974,7 +979,9 @@ class MainActivityRouteSessionTest {
                 sequence.revision,
             )
         assertNotEquals(started.execution.id, second.execution.id)
-        composeTestRule.activityRule.scenario.recreate()
+        composeTestRule.runOnUiThread {
+            LifeTracingRuntimeGraph.from(composeTestRule.activity).dailyController.dispatch(DailyAction.Retry)
+        }
         composeTestRule.waitUntil(5_000) {
             val controller =
                 LifeTracingRuntimeGraph
@@ -991,7 +998,7 @@ class MainActivityRouteSessionTest {
                     ?.id
             activeExecutionId == second.execution.id
         }
-        expandSequence()
+        expandSequence(second.execution.id)
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession
                 ?.executionId == second.execution.id
@@ -1665,14 +1672,19 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithText("${fixture.query} sequence").assertDoesNotExist()
     }
 
-    private fun expandSequence() {
-        composeTestRule.waitForIdle()
-        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
+    private fun expandSequence(expectedExecutionId: SequenceExecutionId) {
+        val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction() and isEnabled()
+        val controller = LifeTracingRuntimeGraph.from(composeTestRule.activity).dailyController
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().size == 1
+            val load = controller.state.value.load as? DailyLoadState.Content
+            val active = load?.daily?.active as? DailyActive.Sequence
+            active?.runtime?.execution?.id == expectedExecutionId &&
+                !controller.state.value.commandInFlight &&
+                composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().size == 1
         }
-        composeTestRule.waitForIdle()
-        composeTestRule.onNode(expandSequence, useUnmergedTree = true).performClick()
+        composeTestRule
+            .onNode(expandSequence, useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
     }
 
     private fun openDailyPlan(
