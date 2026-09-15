@@ -71,7 +71,7 @@ class PlanRepository internal constructor(
     fun restoreCancelledPlan(
         expected: PlanActionIdentity,
         at: Instant,
-    ): PlanEntry = restoreCancelledPlan(expected.planEntryId, at, expected, supportedOnly = true)
+    ): PlanEntry = restoreCancelledPlan(expected.planEntryId, at, expected)
 
     fun reschedulePlanEntry(
         expected: PlanActionIdentity,
@@ -194,19 +194,15 @@ class PlanRepository internal constructor(
     internal fun restoreCancelledPlan(
         id: PlanEntryId,
         at: Instant,
-    ): PlanEntry = restoreCancelledPlan(id, at, null, supportedOnly = false)
+    ): PlanEntry = restoreCancelledPlan(id, at, null)
 
     private fun restoreCancelledPlan(
         id: PlanEntryId,
         at: Instant,
         expected: PlanActionIdentity?,
-        supportedOnly: Boolean,
     ): PlanEntry =
         transaction {
             val plan = requireExpectedPlan(id, expected)
-            if (supportedOnly) {
-                require(plan.target.precision != PlanningPrecision.MONTH) { "Month Plan actions are deferred" }
-            }
             require(!isEngaged(plan)) { "Plan has a linked live execution" }
             PlanEntryTransitions.restore(plan, at)
             check(
@@ -443,7 +439,10 @@ class PlanRepository internal constructor(
         expected: PlanActionIdentity?,
     ): PlanEntry {
         val plan = requireNotNull(loadValidPlan(id.value)) { "Unknown Plan: ${id.value}" }
-        require(expected == null || plan.actionIdentity() == expected) { "Plan action identity is stale" }
+        if (expected != null) {
+            require(plan.actionIdentity() == expected) { "Plan action identity is stale" }
+            require(plan.target.precision != PlanningPrecision.MONTH) { "Month Plan actions are deferred" }
+        }
         return plan
     }
 

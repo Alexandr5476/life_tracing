@@ -320,20 +320,81 @@ class PlanCommandRepositoryTest {
     }
 
     @Test
-    fun productionRestoreRejectsDurableMonthWithoutNarrowingLowLevelRoundTrip() {
+    fun productionCommandsRejectDurableMonthWithoutNarrowingLowLevelRoundTrip() {
         val month =
             plans.createActivityPlanFromTemplate(
                 ActivityTemplateId(ACTIVITY_TEMPLATE),
                 PlanTarget.Month(YearMonth.parse("2026-08")),
                 instant(1),
             )
-        val cancelled = plans.cancelPlan(month.id, instant(2))
-        assertEquals(PlanTarget.Month(YearMonth.parse("2026-08")), plans.getPlan(month.id)!!.target)
+        val persisted = requireNotNull(database.planEntryDao().getById(month.id.value))
+        val snapshot = requireNotNull(database.activitySnapshotDao().getById(month.activitySnapshotId!!.value))
+        val source = database.activityTemplateDao().getById(ACTIVITY_TEMPLATE)
+        val snapshotCount = count("activity_snapshots")
+
+        assertEquals("MONTH", persisted.precision)
+        assertEquals("2026-08", persisted.plannedMonth)
+        assertEquals(month, plans.getPlan(month.id))
+
+        fun assertUnchanged(expected: com.alexandr5476.lifetracing.domain.PlanEntry) {
+            assertEquals(expected, plans.getPlan(month.id))
+            assertEquals(snapshot, database.activitySnapshotDao().getById(month.activitySnapshotId!!.value))
+            assertEquals(source, database.activityTemplateDao().getById(ACTIVITY_TEMPLATE))
+            assertEquals(snapshotCount, count("activity_snapshots"))
+        }
+
+        val identity = month.actionIdentity()
+        assertThrows(IllegalArgumentException::class.java) { plans.cancelPlan(identity, instant(2)) }
+        assertUnchanged(month)
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.reschedulePlanEntry(identity, PlanSchedule.FloatingDay(LocalDate.parse("2026-08-21")), instant(3))
+        }
+        assertUnchanged(month)
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.reschedulePlanEntry(identity, PlanSchedule.Week(LocalDate.parse("2026-08-24")), instant(4))
+        }
+        assertUnchanged(month)
+        assertThrows(IllegalArgumentException::class.java) { plans.updatePlanFromTemplate(identity, instant(5)) }
+        assertUnchanged(month)
+
+        val cancelled = plans.cancelPlan(month.id, instant(6))
+        assertUnchanged(cancelled)
 
         assertThrows(IllegalArgumentException::class.java) {
-            plans.restoreCancelledPlan(cancelled.actionIdentity(), instant(3))
+            plans.restoreCancelledPlan(cancelled.actionIdentity(), instant(7))
         }
-        assertEquals(cancelled, plans.getPlan(month.id))
+        assertUnchanged(cancelled)
+    }
+
+    @Test
+    fun restorePassedDayPlanAppearsOverdueThroughItsOriginalCanonicalWeekRead() {
+        val original =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId(ACTIVITY_TEMPLATE),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+                instant(1),
+            )
+        val cancelled = plans.cancelPlan(reads.getFocusedAction(original.id).identity, instant(2))
+        val restored = plans.restoreCancelledPlan(reads.getFocusedAction(cancelled.id).identity, instant(3))
+
+        val canonical =
+            reads
+                .getWeek(
+                    WeekPlanQuery(
+                        LocalDate.parse("2026-08-17"),
+                        LocalDate.parse("2026-08-20"),
+                        Instant.parse("2026-09-01T00:00:00Z"),
+                    ),
+                ).selectedDayPlans
+                .single()
+
+        assertEquals(restored, canonical.plan)
+        assertEquals(original.id, canonical.plan.id)
+        assertEquals(original.target, canonical.plan.target)
+        assertEquals(PlanEntryStatus.PLANNED, canonical.plan.status)
+        assertTrue(canonical.overdue)
+        assertEquals(original.activitySnapshotId, canonical.plan.activitySnapshotId)
+        assertEquals(original.sourceRevision, canonical.plan.sourceRevision)
     }
 
     @Test
