@@ -1669,8 +1669,9 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitForIdle()
         val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().size == 1
         }
+        composeTestRule.waitForIdle()
         composeTestRule.onNode(expandSequence, useUnmergedTree = true).performClick()
     }
 
