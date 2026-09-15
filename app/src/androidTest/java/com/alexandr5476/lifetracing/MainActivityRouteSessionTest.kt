@@ -1671,7 +1671,7 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
         }
-        composeTestRule.onNode(expandSequence, useUnmergedTree = true).performScrollTo().performClick()
+        composeTestRule.onNode(expandSequence, useUnmergedTree = true).performClick()
     }
 
     private fun openDailyPlan(
