@@ -847,9 +847,9 @@ class MainActivityRouteSessionTest {
     private fun expandSequence() {
         val expandSequence = hasTestTag("daily-expand-sequence") and hasClickAction()
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodes(expandSequence).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule.onAllNodes(expandSequence, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
         }
-        composeTestRule.onNode(expandSequence).performClick()
+        composeTestRule.onNode(expandSequence, useUnmergedTree = true).performClick()
     }
 
     private fun daily() =

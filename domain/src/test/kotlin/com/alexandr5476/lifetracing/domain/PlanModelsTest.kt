@@ -8,11 +8,34 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.ZoneId
 
 class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
+
+    @Test
+    fun `production schedules resolve only supported day and Monday week targets`() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val local = LocalDateTime.parse("2026-08-20T15:30:00")
+
+        assertEquals(
+            PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+            PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")).toTarget(),
+        )
+        assertEquals(
+            PlanTarget.ExactDay(Instant.parse("2026-08-20T10:00:00Z"), zone),
+            PlanSchedule.ExactDay(local, zone).toTarget(),
+        )
+        assertEquals(
+            PlanTarget.Week(LocalDate.parse("2026-08-17")),
+            PlanSchedule.Week(LocalDate.parse("2026-08-17")).toTarget(),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanSchedule.Week(LocalDate.parse("2026-08-18"))
+        }
+    }
 
     @Test
     fun `validator accepts every target and retained revision after source purge`() {

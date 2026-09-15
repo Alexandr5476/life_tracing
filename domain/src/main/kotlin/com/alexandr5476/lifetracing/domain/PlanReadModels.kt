@@ -61,6 +61,18 @@ data class PlanActionIdentity(
     val updatedAt: Instant,
 )
 
+fun PlanEntry.actionIdentity() =
+    PlanActionIdentity(
+        id,
+        kind,
+        activitySnapshotId,
+        sequenceSnapshotId,
+        target,
+        status,
+        sourceRevision,
+        updatedAt,
+    )
+
 data class FocusedPlanAction(
     val identity: PlanActionIdentity,
     val sourceState: PlanSourceState,

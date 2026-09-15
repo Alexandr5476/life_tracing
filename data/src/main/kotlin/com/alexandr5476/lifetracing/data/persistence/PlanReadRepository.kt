@@ -16,7 +16,6 @@ import com.alexandr5476.lifetracing.domain.CancelledPlanPageQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailySequencePlanMetadata
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
-import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanActivityRowMetadata
 import com.alexandr5476.lifetracing.domain.PlanDayPresence
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -36,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalTime
@@ -176,16 +176,7 @@ class PlanReadRepository internal constructor(
                         }
                     }
                 FocusedPlanAction(
-                    PlanActionIdentity(
-                        plan.id,
-                        plan.kind,
-                        plan.activitySnapshotId,
-                        plan.sequenceSnapshotId,
-                        plan.target,
-                        plan.status,
-                        plan.sourceRevision,
-                        plan.updatedAt,
-                    ),
+                    plan.actionIdentity(),
                     sourceStates.getValue(plan.id),
                     engagement,
                     snapshot,

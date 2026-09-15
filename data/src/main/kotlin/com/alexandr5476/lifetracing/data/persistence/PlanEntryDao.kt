@@ -168,26 +168,34 @@ internal abstract class PlanEntryDao {
     abstract fun sequenceExecutionLinks(ids: List<String>): List<PlanSequenceExecutionLinkRow>
 
     @Query(
-        "UPDATE plan_entries SET status = 'CANCELLED', cancelled_at_ms = :atMs, fulfilled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED'",
+        "UPDATE plan_entries SET status = 'CANCELLED', cancelled_at_ms = :atMs, fulfilled_at_ms = NULL, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun cancel(
         id: String,
+        expectedUpdatedAtMs: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET status = 'PLANNED', cancelled_at_ms = NULL, fulfilled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'CANCELLED'",
+        "UPDATE plan_entries SET status = 'PLANNED', cancelled_at_ms = NULL, fulfilled_at_ms = NULL, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'CANCELLED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun restore(
         id: String,
+        expectedUpdatedAtMs: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET precision = :precision, planned_day = :plannedDay, planned_week_start = :plannedWeekStart, planned_month = :plannedMonth, scheduled_instant_ms = :scheduledInstantMs, creation_zone_id = :creationZoneId, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED'",
+        "UPDATE plan_entries SET precision = :precision, planned_day = :plannedDay, " +
+            "planned_week_start = :plannedWeekStart, planned_month = :plannedMonth, " +
+            "scheduled_instant_ms = :scheduledInstantMs, creation_zone_id = :creationZoneId, updated_at_ms = :atMs " +
+            "WHERE id = :id AND status = 'PLANNED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun reschedule(
         id: String,
+        expectedUpdatedAtMs: Long,
         precision: String,
         plannedDay: String?,
         plannedWeekStart: String?,
@@ -198,22 +206,28 @@ internal abstract class PlanEntryDao {
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET activity_snapshot_id = :snapshotId, source_revision = :sourceRevision, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND activity_snapshot_id = :expectedSnapshotId",
+        "UPDATE plan_entries SET activity_snapshot_id = :snapshotId, source_revision = :sourceRevision, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' " +
+            "AND activity_snapshot_id = :expectedSnapshotId AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun replaceActivitySnapshot(
         id: String,
         expectedSnapshotId: String,
+        expectedUpdatedAtMs: Long,
         snapshotId: String,
         sourceRevision: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET sequence_plan_snapshot_id = :snapshotId, source_revision = :sourceRevision, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND sequence_plan_snapshot_id = :expectedSnapshotId",
+        "UPDATE plan_entries SET sequence_plan_snapshot_id = :snapshotId, source_revision = :sourceRevision, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' " +
+            "AND sequence_plan_snapshot_id = :expectedSnapshotId AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun replaceSequenceSnapshot(
         id: String,
         expectedSnapshotId: String,
+        expectedUpdatedAtMs: Long,
         snapshotId: String,
         sourceRevision: Long,
         atMs: Long,

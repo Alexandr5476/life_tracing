@@ -454,6 +454,7 @@ class PlanReadRepositoryTest {
             1,
             database.planEntryDao().reschedule(
                 "target",
+                0,
                 "DAY",
                 "2026-08-21",
                 null,
@@ -470,7 +471,7 @@ class PlanReadRepositoryTest {
         val snapshotBefore = reads.getFocusedAction(PlanEntryId("snapshot")).identity
         assertEquals(
             1,
-            database.planEntryDao().replaceActivitySnapshot("snapshot", "identity-v1", "identity-v1-copy", 1, 1),
+            database.planEntryDao().replaceActivitySnapshot("snapshot", "identity-v1", 0, "identity-v1-copy", 1, 1),
         )
         val snapshotAfter = reads.getFocusedAction(PlanEntryId("snapshot")).identity
         assertNotEquals(snapshotBefore, snapshotAfter)
@@ -478,7 +479,7 @@ class PlanReadRepositoryTest {
         assertEquals(snapshotBefore.sourceRevision, snapshotAfter.sourceRevision)
 
         val statusBefore = reads.getFocusedAction(PlanEntryId("status")).identity
-        assertEquals(1, database.planEntryDao().cancel("status", 1))
+        assertEquals(1, database.planEntryDao().cancel("status", 0, 1))
         val statusAfter = reads.getFocusedAction(PlanEntryId("status")).identity
         assertNotEquals(statusBefore, statusAfter)
         assertEquals(PlanEntryStatus.CANCELLED, statusAfter.status)
@@ -486,7 +487,7 @@ class PlanReadRepositoryTest {
         val revisionBefore = reads.getFocusedAction(PlanEntryId("revision")).identity
         assertEquals(
             1,
-            database.planEntryDao().replaceActivitySnapshot("revision", "identity-v1", "identity-v2", 2, 1),
+            database.planEntryDao().replaceActivitySnapshot("revision", "identity-v1", 0, "identity-v2", 2, 1),
         )
         val revisionAfter = reads.getFocusedAction(PlanEntryId("revision")).identity
         assertNotEquals(revisionBefore, revisionAfter)
@@ -497,6 +498,7 @@ class PlanReadRepositoryTest {
             1,
             database.planEntryDao().reschedule(
                 "updated-at",
+                0,
                 "DAY",
                 "2026-08-20",
                 null,
