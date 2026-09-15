@@ -164,6 +164,54 @@ class PlanExecutionControllerTest {
         assertEquals(Duration.ofSeconds(2), preparePlanExecutionTarget(action).countdown)
     }
 
+    @Test
+    fun focusedPreparationRejectsAPlanChangedAfterTheClickedIdentityWasCaptured() =
+        runBlocking {
+            val clicked = activityAction(Duration.ZERO)
+            val readStarted = CompletableDeferred<Unit>()
+            val releaseRead = CompletableDeferred<Unit>()
+            val harness =
+                Harness(clicked).apply {
+                    beforeRead = {
+                        readStarted.complete(Unit)
+                        releaseRead.await()
+                    }
+                    readAction = clicked.copy(identity = clicked.identity.copy(updatedAt = NOW.plusSeconds(1)))
+                }
+            val controller = harness.controller(this)
+
+            withTimeout(2_000) { readStarted.await() }
+            releaseRead.complete(Unit)
+            withTimeout(2_000) { controller.state.first { it.command == PlanExecutionCommandState.Stale } }
+            controller.launch()
+
+            assertTrue(harness.commands.isEmpty())
+            assertTrue(controller.state.value.prepared !is PlanExecutionLoad.Content)
+        }
+
+    @Test
+    fun focusedPreparationPublishesTheExactClickedIdentityWhenItIsStillCurrent() =
+        runBlocking {
+            val clicked = activityAction(Duration.ZERO)
+            val controller = Harness(clicked).controller(this)
+
+            val prepared = controller.awaitPrepared().prepared as PlanExecutionLoad.Content
+
+            assertEquals(clicked.identity, prepared.value.action.identity)
+        }
+
+    @Test
+    fun focusedPreparationTreatsNewEngagementAsStaleEvenThoughStoredPlanIdentityIsUnchanged() =
+        runBlocking {
+            val clicked = activityAction(Duration.ZERO)
+            val harness = Harness(clicked).apply { readAction = clicked.copy(engaged = true) }
+            val controller = harness.controller(this)
+
+            withTimeout(2_000) { controller.state.first { it.command == PlanExecutionCommandState.Stale } }
+
+            assertTrue(harness.commands.isEmpty())
+        }
+
     private class Harness(
         val action: FocusedPlanAction,
     ) {
@@ -171,13 +219,18 @@ class PlanExecutionControllerTest {
         val commands = mutableListOf<PlanExecutionDurableCommand>()
         var failure: Exception? = null
         var coordinations = 0
+        var readAction = action
+        var beforeRead: suspend () -> Unit = {}
         var beforeExecute: suspend () -> Unit = {}
 
         fun controller(scope: CoroutineScope) =
             PlanExecutionController(
                 scope,
-                action.identity.planEntryId,
-                { action },
+                action.identity,
+                {
+                    beforeRead()
+                    readAction
+                },
                 { false },
                 { command ->
                     beforeExecute()

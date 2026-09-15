@@ -21,7 +21,7 @@ import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
-import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -108,7 +108,7 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> ExpandedLiveSequenceController = {
         error("Expanded live Sequence is unavailable")
     },
-    private val planExecutionControllerFactory: (PlanEntryId) -> PlanExecutionController = {
+    private val planExecutionControllerFactory: (PlanActionIdentity) -> PlanExecutionController = {
         error("Plan execution is unavailable")
     },
     private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
@@ -133,8 +133,8 @@ class LifeTracingRuntimeGraph internal constructor(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
     ): ExpandedLiveSequenceController = expandedLiveSequenceControllerFactory(executionId)
 
-    fun createPlanExecutionController(planEntryId: PlanEntryId): PlanExecutionController =
-        planExecutionControllerFactory(planEntryId)
+    fun createPlanExecutionController(expectedIdentity: PlanActionIdentity): PlanExecutionController =
+        planExecutionControllerFactory(expectedIdentity)
 
     fun createPlanController(): PlanController = planControllerFactory()
 
@@ -455,10 +455,10 @@ class LifeTracingRuntimeGraph internal constructor(
                         mutationGate = coordinator.mutationGate,
                     )
                 },
-                { planEntryId ->
+                { expectedIdentity ->
                     PlanExecutionController(
                         scope,
-                        planEntryId,
+                        expectedIdentity,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 planReadRepository.getFocusedAction(id)

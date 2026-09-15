@@ -25,10 +25,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
 import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -39,10 +41,11 @@ import java.time.format.DateTimeFormatter
 fun PlanRoute(
     controller: PlanController,
     onBack: () -> Unit,
+    onExecute: (PlanActionIdentity) -> Unit = {},
 ) {
     LaunchedEffect(controller) { controller.onRouteEntered() }
     val state by controller.state.collectAsState()
-    PlanScreen(state, controller::dispatch, onBack)
+    PlanScreen(state, controller::dispatch, onBack, onExecute)
 }
 
 @Composable
@@ -50,6 +53,7 @@ fun PlanScreen(
     state: PlanPresentationState,
     onAction: (PlanAction) -> Unit,
     onBack: () -> Unit,
+    onExecute: (PlanActionIdentity) -> Unit = {},
 ) {
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
@@ -75,7 +79,7 @@ fun PlanScreen(
                     Text(stringResource(R.string.plan_retry))
                 }
             }
-            is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction)
+            is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction, onExecute)
         }
         state.mutationFailure?.let { Text(it.label(), color = MaterialTheme.colorScheme.error) }
         if (state.recoveryFailure != null && state.week !is PlanLoad.Failure && !state.cancelledOpen) {
@@ -98,6 +102,7 @@ private fun WeekContent(
     read: com.alexandr5476.lifetracing.domain.WeekPlanRead,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
+    onExecute: (PlanActionIdentity) -> Unit,
 ) {
     Text(stringResource(R.string.plan_week_days), style = MaterialTheme.typography.titleMedium)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -118,10 +123,10 @@ private fun WeekContent(
         style = MaterialTheme.typography.titleMedium,
     )
     if (read.selectedDayPlans.isEmpty()) Text(stringResource(R.string.plan_empty_day))
-    read.selectedDayPlans.forEach { PlanRow(it, isMutating, onAction) }
+    read.selectedDayPlans.forEach { PlanRow(it, isMutating, onAction, onExecute) }
     Text(stringResource(R.string.plan_this_week), style = MaterialTheme.typography.titleMedium)
     if (read.weekPlans.isEmpty()) Text(stringResource(R.string.plan_empty_week))
-    read.weekPlans.forEach { PlanRow(it, isMutating, onAction) }
+    read.weekPlans.forEach { PlanRow(it, isMutating, onAction, onExecute) }
 }
 
 @Composable
@@ -129,6 +134,7 @@ private fun PlanRow(
     row: PlanReadRow,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
+    onExecute: (PlanActionIdentity) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -144,7 +150,10 @@ private fun PlanRow(
             Text(row.lifecycleLabel())
             Text(row.sourceLabel())
             if (row.plan.status == PlanEntryStatus.PLANNED && !row.engaged) {
-                Text(row.executionLabel())
+                LifeTracingPrimaryButton(
+                    enabled = !isMutating,
+                    onClick = { onExecute(row.plan.actionIdentity()) },
+                ) { Text(row.executionLabel()) }
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                     LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
                         onAction(PlanAction.Reschedule(row))

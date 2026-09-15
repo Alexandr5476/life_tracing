@@ -62,6 +62,20 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun planExecutionKeepsOneExactRouteAndRestoredRouteNormalizesToItsOrigin() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
+
+        backStack.openPlanExecution("plan-a")
+        backStack.openPlanExecution("plan-b")
+        assertEquals(listOf(DailyRoot, PlanRoot, PlanExecutionRoot("plan-a")), backStack)
+
+        backStack.removePlanExecution("plan-b")
+        assertEquals(listOf(DailyRoot, PlanRoot, PlanExecutionRoot("plan-a")), backStack)
+        backStack.normalizeRestoredPlanExecution()
+        assertEquals(listOf(DailyRoot, PlanRoot), backStack)
+    }
+
+    @Test
     fun libraryQuickStartKeepsTheRetainedLibraryEntryUnderTheLauncher() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
 

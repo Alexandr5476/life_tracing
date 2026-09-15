@@ -470,7 +470,7 @@ class PlanExecutionPersistenceTest {
         scheduler: PreflightScheduler,
     ) = PlanExecutionController(
         scope,
-        planId,
+        reads.getFocusedAction(planId).identity,
         reads::getFocusedAction,
         { live.getActiveSession() != null },
         { executePlanCommand(it, live) },

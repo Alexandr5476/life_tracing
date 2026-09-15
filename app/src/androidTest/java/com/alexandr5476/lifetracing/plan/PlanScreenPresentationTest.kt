@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
@@ -31,6 +32,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -117,6 +119,27 @@ class PlanScreenPresentationTest {
             .assertCountEquals(1)[0]
             .assertIsEnabled()
         compose.onAllNodesWithText(context.getString(R.string.plan_start_action)).assertCountEquals(5)
+    }
+
+    @Test
+    fun enabledExecutionButtonReturnsTheExactRenderedRowIdentity() {
+        val row = row("clicked", PlanTarget.FloatingDay(selected), noLive = true, overdue = true)
+        var clicked: com.alexandr5476.lifetracing.domain.PlanActionIdentity? = null
+        val read = WeekPlanRead(monday, selected, listOf(row), emptyList(), emptyList())
+        compose.setContent {
+            LifeTracingTheme {
+                PlanScreen(
+                    PlanPresentationState(monday, selected, PlanLoad.Content(read)),
+                    {},
+                    {},
+                    { clicked = it },
+                )
+            }
+        }
+
+        compose.onNodeWithText(context.getString(R.string.plan_complete_action)).assertIsEnabled().performClick()
+
+        assertEquals(row.plan.actionIdentity(), clicked)
     }
 
     @Test

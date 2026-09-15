@@ -46,12 +46,14 @@ import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyPlan
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
@@ -73,6 +75,7 @@ fun DailyRoute(
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
+    onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
     var entered by remember(controller) { mutableStateOf(false) }
     DisposableEffect(controller) {
@@ -88,6 +91,7 @@ fun DailyRoute(
         onLibrary = onLibrary,
         onPlan = onPlan,
         onExpandSequence = onExpandSequence,
+        onExecutePlan = onExecutePlan,
     )
 }
 
@@ -100,6 +104,7 @@ internal fun DailyScreen(
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
+    onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -117,9 +122,9 @@ internal fun DailyScreen(
                 DailyLoadState.Loading -> LoadingContent()
                 is DailyLoadState.Failure -> FailureContent(onAction)
                 is DailyLoadState.Empty ->
-                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence)
+                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence, onExecutePlan)
                 is DailyLoadState.Content ->
-                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence)
+                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence, onExecutePlan)
             }
         }
     }
@@ -231,6 +236,7 @@ private fun DailyContent(
     onAction: (DailyAction) -> Unit,
     displayElapsedRealtimeMs: Long?,
     onExpandSequence: (SequenceExecutionId) -> Unit,
+    onExecutePlan: (PlanActionIdentity) -> Unit,
 ) {
     val plans = daily.dayPlans + daily.weekPlans
     val active: @Composable () -> Unit = {
@@ -238,7 +244,7 @@ private fun DailyContent(
             daily.active?.let { ActiveSection(it, state, onAction, displayElapsedRealtimeMs, onExpandSequence) }
         }
     }
-    val planned: @Composable () -> Unit = { PlannedSection(plans, state.dateRelation) }
+    val planned: @Composable () -> Unit = { PlannedSection(plans, state.dateRelation, onExecutePlan) }
     val completed: @Composable () -> Unit = { CompletedSection(daily.completedHistory) }
     when (state.dateRelation) {
         DailyDateRelation.PAST -> {
@@ -487,12 +493,13 @@ private fun SequenceControls(
 private fun PlannedSection(
     plans: List<DailyPlan>,
     relation: DailyDateRelation,
+    onExecute: (PlanActionIdentity) -> Unit,
 ) {
     SectionTitle(R.string.daily_planned)
     if (plans.isEmpty()) {
         EmptySection(R.string.daily_no_plans)
     } else {
-        plans.forEach { PlannedRow(it, relation) }
+        plans.forEach { PlannedRow(it, relation, onExecute) }
     }
 }
 
@@ -500,6 +507,7 @@ private fun PlannedSection(
 private fun PlannedRow(
     plan: DailyPlan,
     relation: DailyDateRelation,
+    onExecute: (PlanActionIdentity) -> Unit,
 ) {
     DailyCard(
         container =
@@ -517,6 +525,25 @@ private fun PlannedRow(
             style = MaterialTheme.typography.bodyMedium,
         )
         planStatus(plan).forEach { Text(it, style = MaterialTheme.typography.labelLarge) }
+        if (plan.plan.status == PlanEntryStatus.PLANNED && !plan.engaged && plan.plan.target !is PlanTarget.Month) {
+            LifeTracingPrimaryButton(
+                onClick = { onExecute(plan.plan.actionIdentity()) },
+                modifier = Modifier.testTag("daily-plan-action-${plan.plan.id.value}"),
+            ) {
+                Text(
+                    stringResource(
+                        if ((plan.snapshot as? com.alexandr5476.lifetracing.domain.DailyPlanSnapshot.Activity)
+                                ?.value
+                                ?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING
+                        ) {
+                            R.string.plan_complete_action
+                        } else {
+                            R.string.plan_start_action
+                        },
+                    ),
+                )
+            }
+        }
     }
 }
 

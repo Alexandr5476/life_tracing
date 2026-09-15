@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
@@ -124,7 +125,7 @@ internal data class PlanExecutionDurableCommand(
 
 class PlanExecutionController internal constructor(
     private val scope: CoroutineScope,
-    private val planEntryId: PlanEntryId,
+    val expectedIdentity: PlanActionIdentity,
     private val readFocusedAction: suspend (PlanEntryId) -> FocusedPlanAction,
     private val hasLiveSession: suspend () -> Boolean,
     private val execute: suspend (PlanExecutionDurableCommand) -> PlanExecutionCommit,
@@ -187,7 +188,9 @@ class PlanExecutionController internal constructor(
             job =
                 scope.launch {
                     try {
-                        val target = preparePlanExecutionTarget(readFocusedAction(planEntryId))
+                        val action = readFocusedAction(expectedIdentity.planEntryId)
+                        if (action.identity != expectedIdentity || action.engaged) throw StalePlanActionException()
+                        val target = preparePlanExecutionTarget(action)
                         synchronized(lock) {
                             if (!closed && generation.get() == readGeneration) {
                                 mutableState.update { it.copy(prepared = PlanExecutionLoad.Content(target)) }
@@ -195,6 +198,12 @@ class PlanExecutionController internal constructor(
                         }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
+                    } catch (_: StalePlanActionException) {
+                        synchronized(lock) {
+                            if (!closed && generation.get() == readGeneration) {
+                                mutableState.update { it.copy(command = PlanExecutionCommandState.Stale) }
+                            }
+                        }
                     } catch (failure: Exception) {
                         synchronized(lock) {
                             if (!closed && generation.get() == readGeneration) {
@@ -372,7 +381,11 @@ class PlanExecutionController internal constructor(
 }
 
 internal fun preparePlanExecutionTarget(action: FocusedPlanAction): PreparedPlanExecution {
-    require(action.identity.status == PlanEntryStatus.PLANNED && !action.engaged) { "Plan is not startable" }
+    require(
+        action.identity.status == PlanEntryStatus.PLANNED &&
+            !action.engaged &&
+            action.identity.target !is PlanTarget.Month,
+    ) { "Plan is not startable" }
     return when (val snapshot = action.snapshot) {
         is FocusedPlanAction.Snapshot.Activity -> {
             require(action.identity.kind == PlanTrackableKind.ACTIVITY)
