@@ -78,6 +78,32 @@ class PlanExecutionControllerTest {
         }
 
     @Test
+    fun zeroLiveCommitsDirectlyAndFreshControllerCannotRecoverAbandonedPreflight() =
+        runBlocking {
+            val zero = Harness(activityAction(Duration.ZERO))
+            val zeroController = zero.controller(this)
+            zeroController.awaitPrepared()
+            zeroController.launch()
+            zeroController.awaitCommitted()
+            assertTrue(zero.scheduler.scheduled.isEmpty())
+            assertEquals(1, zero.coordinations)
+
+            val abandoned = Harness(activityAction(Duration.ofSeconds(3)))
+            val first = abandoned.controller(this)
+            first.awaitPrepared()
+            first.launch()
+            first.awaitPreflight()
+            first.close()
+            abandoned.scheduler.fireTwice()
+            assertTrue(abandoned.commands.isEmpty())
+
+            val fresh = abandoned.controller(this)
+            fresh.awaitPrepared()
+            assertEquals(PlanExecutionCommandState.Idle, fresh.state.value.command)
+            assertTrue(abandoned.commands.isEmpty())
+        }
+
+    @Test
     fun durableStaleAndFinalLiveConflictHaveTypedOutcomes() =
         runBlocking {
             val stale = Harness(activityAction(Duration.ZERO)).apply { failure = StalePlanActionException() }
