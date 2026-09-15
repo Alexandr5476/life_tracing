@@ -14,11 +14,13 @@ import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -34,6 +36,9 @@ import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
 import com.alexandr5476.lifetracing.live.ExpandedSequenceCommand
+import com.alexandr5476.lifetracing.plan.PlanExecutionCommit
+import com.alexandr5476.lifetracing.plan.PlanExecutionController
+import com.alexandr5476.lifetracing.plan.PlanExecutionDurableCommand
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -100,6 +105,9 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> ExpandedLiveSequenceController = {
         error("Expanded live Sequence is unavailable")
     },
+    private val planExecutionControllerFactory: (PlanEntryId) -> PlanExecutionController = {
+        error("Plan execution is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -120,6 +128,9 @@ class LifeTracingRuntimeGraph internal constructor(
     internal fun createExpandedLiveSequenceController(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
     ): ExpandedLiveSequenceController = expandedLiveSequenceControllerFactory(executionId)
+
+    fun createPlanExecutionController(planEntryId: PlanEntryId): PlanExecutionController =
+        planExecutionControllerFactory(planEntryId)
 
     companion object {
         @Volatile
@@ -145,6 +156,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val libraryRepository = LibraryRepository.create(context)
             val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)
+            val planReadRepository = PlanReadRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -436,6 +448,32 @@ class LifeTracingRuntimeGraph internal constructor(
                         mutationGate = coordinator.mutationGate,
                     )
                 },
+                { planEntryId ->
+                    PlanExecutionController(
+                        scope,
+                        planEntryId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                planReadRepository.getFocusedAction(id)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                repository.getActiveSession() != null
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executePlanCommand(command, repository)
+                            }
+                        },
+                        coordinator::onRuntimeStateChanged,
+                        wallClock,
+                        ZoneId::systemDefault,
+                        CoroutinePreflightScheduler(scope),
+                        mutationGate = coordinator.mutationGate,
+                    )
+                },
             )
         }
     }
@@ -454,6 +492,38 @@ private fun SequenceEditorActivityChoice.toCatalogItem() =
     )
 
 private const val ACTIVITY_PICKER_PAGE_SIZE = 50
+
+internal fun executePlanCommand(
+    command: PlanExecutionDurableCommand,
+    repository: LiveSessionRepository,
+): PlanExecutionCommit =
+    when (command.identity.kind) {
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY -> {
+            val execution =
+                if (command.noLive) {
+                    repository.completeNoLiveActivityFromPlan(
+                        command.identity,
+                        command.at,
+                        command.zoneId,
+                        valueOverrides = command.values,
+                    )
+                } else {
+                    repository.startActivityFromPlan(
+                        command.identity,
+                        command.at,
+                        command.at,
+                        command.zoneId,
+                        command.values,
+                    )
+                }
+            PlanExecutionCommit.Activity(execution.id, !command.noLive)
+        }
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.SEQUENCE -> {
+            require(!command.noLive && command.values.isEmpty()) { "Sequence start does not accept Activity values" }
+            val state = repository.startSequenceFromPlan(command.identity, command.at, command.at, command.zoneId)
+            PlanExecutionCommit.Sequence(state.execution.id)
+        }
+    }
 
 internal fun executeExpandedSequenceCommand(
     command: ExpandedSequenceCommand,

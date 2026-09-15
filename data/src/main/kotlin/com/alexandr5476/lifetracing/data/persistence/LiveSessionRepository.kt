@@ -38,10 +38,12 @@ import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.PlanningPrecision
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
@@ -59,10 +61,12 @@ import com.alexandr5476.lifetracing.domain.SequenceRuntimeState
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
+import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.StaleSequenceRouteException
 import com.alexandr5476.lifetracing.domain.StaleSequenceTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
 import java.time.ZoneId
@@ -207,16 +211,34 @@ class LiveSessionRepository internal constructor(
             execution
         }
 
-    fun startActivityFromPlan(
+    internal fun startActivityFromPlan(
         planEntryId: PlanEntryId,
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
         valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+    ): ActivityExecution = startActivityFromPlan(null, planEntryId, startedAt, createdAt, zoneId, valueOverrides)
+
+    fun startActivityFromPlan(
+        expected: PlanActionIdentity,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+    ): ActivityExecution =
+        startActivityFromPlan(expected, expected.planEntryId, startedAt, createdAt, zoneId, valueOverrides)
+
+    private fun startActivityFromPlan(
+        expected: PlanActionIdentity?,
+        planEntryId: PlanEntryId,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride>,
     ): ActivityExecution =
         transaction {
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY, expected)
             requireLiveSlot()
-            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
             val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
             require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "NO_LIVE_TRACKING Plan requires quick completion"
@@ -238,7 +260,9 @@ class LiveSessionRepository internal constructor(
                 ),
             )
             plan.sourceActivityTemplateId?.let {
-                database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli())
+                check(database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli()) == 1) {
+                    "Plan Activity source Recent update failed"
+                }
             }
             execution
         }
@@ -260,15 +284,34 @@ class LiveSessionRepository internal constructor(
             execution
         }
 
-    fun completeNoLiveActivityFromPlan(
+    internal fun completeNoLiveActivityFromPlan(
         planEntryId: PlanEntryId,
         completedAt: Instant,
         zoneId: ZoneId,
         createdAt: Instant = completedAt,
         valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
     ): ActivityExecution =
+        completeNoLiveActivityFromPlan(null, planEntryId, completedAt, zoneId, createdAt, valueOverrides)
+
+    fun completeNoLiveActivityFromPlan(
+        expected: PlanActionIdentity,
+        completedAt: Instant,
+        zoneId: ZoneId,
+        createdAt: Instant = completedAt,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+    ): ActivityExecution =
+        completeNoLiveActivityFromPlan(expected, expected.planEntryId, completedAt, zoneId, createdAt, valueOverrides)
+
+    private fun completeNoLiveActivityFromPlan(
+        expected: PlanActionIdentity?,
+        planEntryId: PlanEntryId,
+        completedAt: Instant,
+        zoneId: ZoneId,
+        createdAt: Instant,
+        valueOverrides: List<ActivityExecutionValueOverride>,
+    ): ActivityExecution =
         transaction {
-            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY)
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.ACTIVITY, expected)
             val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
             require(snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Quick Plan completion requires NO_LIVE_TRACKING"
@@ -284,7 +327,9 @@ class LiveSessionRepository internal constructor(
                 ) == 1,
             ) { "Plan changed before quick completion" }
             plan.sourceActivityTemplateId?.let {
-                database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli())
+                check(database.planEntryDao().touchActivitySource(it.value, createdAt.toEpochMilli()) == 1) {
+                    "Plan Activity source Recent update failed"
+                }
             }
             execution
         }
@@ -345,15 +390,30 @@ class LiveSessionRepository internal constructor(
             state
         }
 
+    internal fun startSequenceFromPlan(
+        planEntryId: PlanEntryId,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+    ): SequenceRuntimeState = startSequenceFromPlan(null, planEntryId, startedAt, createdAt, zoneId)
+
     fun startSequenceFromPlan(
+        expected: PlanActionIdentity,
+        startedAt: Instant,
+        createdAt: Instant,
+        zoneId: ZoneId,
+    ): SequenceRuntimeState = startSequenceFromPlan(expected, expected.planEntryId, startedAt, createdAt, zoneId)
+
+    private fun startSequenceFromPlan(
+        expected: PlanActionIdentity?,
         planEntryId: PlanEntryId,
         startedAt: Instant,
         createdAt: Instant,
         zoneId: ZoneId,
     ): SequenceRuntimeState =
         transaction {
+            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.SEQUENCE, expected)
             requireLiveSlot()
-            val plan = requireStartablePlan(planEntryId, PlanTrackableKind.SEQUENCE)
             val snapshot = loadSequenceSnapshot(requireNotNull(plan.sequenceSnapshotId))
             val activities = loadActivitySnapshots(snapshot)
             val generated = sequenceEngine.start(snapshot, activities, startedAt, createdAt, zoneId)
@@ -362,7 +422,9 @@ class LiveSessionRepository internal constructor(
             state.children.values.forEach { database.activityExecutionDao().insertAggregate(it.toEntityAggregate()) }
             database.activeSessionDao().insert(sequenceSession(state.execution))
             plan.sourceSequenceTemplateId?.let {
-                database.planEntryDao().touchSequenceSource(it.value, startedAt.toEpochMilli())
+                check(database.planEntryDao().touchSequenceSource(it.value, startedAt.toEpochMilli()) == 1) {
+                    "Plan Sequence source Recent update failed"
+                }
             }
             state
         }
@@ -1175,10 +1237,15 @@ class LiveSessionRepository internal constructor(
     private fun requireStartablePlan(
         id: PlanEntryId,
         kind: PlanTrackableKind,
+        expected: PlanActionIdentity? = null,
     ): PlanEntry {
         val plan =
             requireNotNull(database.planEntryDao().getById(id.value)) { "Unknown Plan: ${id.value}" }
                 .toDomain()
+        if (expected != null) {
+            if (plan.actionIdentity() != expected) throw StalePlanActionException()
+            require(plan.target.precision != PlanningPrecision.MONTH) { "Month Plan actions are deferred" }
+        }
         require(plan.kind == kind && plan.status == PlanEntryStatus.PLANNED) { "Plan is not startable for $kind" }
         val engaged =
             when (kind) {

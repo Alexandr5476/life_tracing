@@ -6,14 +6,18 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
@@ -25,6 +29,8 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StalePlanActionException
+import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -688,6 +694,259 @@ class PlanEntryDatabaseTest {
                 .build()
     }
 
+    @Test
+    fun exactPlanIdentityRejectsRescheduleCancelAndSnapshotReplacementWithoutRuntimeWrites() {
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+        var snapshot = 0
+        val plans =
+            planRepository(ZoneId.of("UTC")) {
+                ActivitySnapshotId("stale-update-${++snapshot}")
+            }
+        database.planEntryDao().insert(plan("rescheduled", activity = "stopwatch"))
+        val rescheduledAction = reads.getFocusedAction(PlanEntryId("rescheduled")).identity
+        val rescheduled =
+            plans.reschedulePlanEntry(
+                rescheduledAction,
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-21")),
+                instant(1),
+            )
+        assertThrows(StalePlanActionException::class.java) {
+            live.startActivityFromPlan(rescheduledAction, instant(2), instant(2), ZoneId.of("UTC"))
+        }
+
+        database.planEntryDao().insert(plan("cancelled", activity = "no-live"))
+        val cancelledAction = reads.getFocusedAction(PlanEntryId("cancelled")).identity
+        val cancelled = plans.cancelPlan(cancelledAction, instant(1))
+        assertThrows(StalePlanActionException::class.java) {
+            live.completeNoLiveActivityFromPlan(cancelledAction, instant(2), ZoneId.of("UTC"))
+        }
+
+        seedTemplates()
+        val sourcePlan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("activity-template"),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-22")),
+                instant(1),
+            )
+        val sourceAction = reads.getFocusedAction(sourcePlan.id).identity
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_templates SET name = 'Activity v2', revision = 2, updated_at_ms = 2000 " +
+                "WHERE id = 'activity-template'",
+        )
+        val replaced = plans.updatePlanFromTemplate(sourceAction, instant(3))
+        assertThrows(StalePlanActionException::class.java) {
+            live.startActivityFromPlan(sourceAction, instant(4), instant(4), ZoneId.of("UTC"))
+        }
+
+        assertEquals(rescheduled, plans.getPlan(rescheduled.id))
+        assertEquals(cancelled, plans.getPlan(cancelled.id))
+        assertEquals(replaced, plans.getPlan(replaced.id))
+        assertEquals(2L, replaced.sourceRevision)
+        assertEquals(0, count("activity_executions", "plan_entry_id IS NOT NULL"))
+        assertNull(database.activeSessionDao().get())
+    }
+
+    @Test
+    fun exactNoLiveCompletionCoexistsWithUnrelatedLiveSessionAndDuplicateIsStale() {
+        val unrelated =
+            live.startStandaloneTimedActivityFromSnapshot(
+                ActivitySnapshotId("stopwatch"),
+                instant(1),
+                instant(1),
+                ZoneId.of("UTC"),
+            )
+        val sessionBefore = live.getActiveSession()
+        database.planEntryDao().insert(plan("quick-exact", activity = "no-live"))
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+        val action = reads.getFocusedAction(PlanEntryId("quick-exact")).identity
+
+        val completed = live.completeNoLiveActivityFromPlan(action, instant(2), ZoneId.of("UTC"))
+
+        assertEquals(sessionBefore, live.getActiveSession())
+        assertEquals(unrelated, database.activityExecutionDao().getAggregate(unrelated.id.value)?.toDomain())
+        assertEquals(PlanEntryId("quick-exact"), completed.planEntryId)
+        assertNull(completed.startedAt)
+        assertNull(completed.activeDuration)
+        assertEquals(PlanEntryStatus.FULFILLED, reads.getFocusedAction(PlanEntryId("quick-exact")).identity.status)
+        assertThrows(StalePlanActionException::class.java) {
+            live.completeNoLiveActivityFromPlan(action, instant(3), ZoneId.of("UTC"))
+        }
+        assertEquals(1, count("activity_executions", "plan_entry_id = 'quick-exact'"))
+    }
+
+    @Test
+    fun exactSequenceStartLinksOnlyTheRootAndLeavesPlanPlannedEngaged() {
+        database.planEntryDao().insert(plan("sequence-exact", sequence = "sequence"))
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+        val action = reads.getFocusedAction(PlanEntryId("sequence-exact")).identity
+
+        val state = live.startSequenceFromPlan(action, instant(1), instant(1), ZoneId.of("UTC"))
+        val focused = reads.getFocusedAction(PlanEntryId("sequence-exact"))
+
+        assertEquals(PlanEntryId("sequence-exact"), state.execution.planEntryId)
+        assertTrue(state.children.values.all { it.planEntryId == null })
+        assertEquals(PlanEntryStatus.PLANNED, focused.identity.status)
+        assertTrue(focused.engaged)
+    }
+
+    @Test
+    fun exactTimedActivityStartUsesFrozenSnapshotAndAdvancesSourceRecentOnlyOnSuccess() {
+        seedTemplates()
+        val plans = planRepository(ZoneId.of("UTC"))
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("activity-template"),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+                instant(1),
+            )
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+        val prepared = reads.getFocusedAction(plan.id)
+
+        val execution = live.startActivityFromPlan(prepared.identity, instant(2), instant(2), ZoneId.of("UTC"))
+        val focused = reads.getFocusedAction(plan.id)
+
+        assertEquals(prepared.identity.activitySnapshotId, execution.snapshotId)
+        assertEquals(plan.id, execution.planEntryId)
+        assertEquals(PlanEntryStatus.PLANNED, focused.identity.status)
+        assertTrue(focused.engaged)
+        assertEquals(2_000L, longValue("activity_template_user_state", "last_used_at_ms"))
+    }
+
+    @Test
+    fun exactLiveStartsRejectFinalSlotConflictWithoutChangingUnrelatedRuntime() {
+        val unrelated =
+            live.startStandaloneTimedActivityFromSnapshot(
+                ActivitySnapshotId("stopwatch"),
+                instant(1),
+                instant(1),
+                ZoneId.of("UTC"),
+            )
+        val session = live.getActiveSession()
+        database.planEntryDao().insert(plan("blocked-activity", activity = "timer"))
+        database.planEntryDao().insert(plan("blocked-sequence", sequence = "sequence"))
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+
+        assertThrows(com.alexandr5476.lifetracing.domain.LiveSessionConflictException::class.java) {
+            live.startActivityFromPlan(
+                reads.getFocusedAction(PlanEntryId("blocked-activity")).identity,
+                instant(2),
+                instant(2),
+                ZoneId.of("UTC"),
+            )
+        }
+        assertThrows(com.alexandr5476.lifetracing.domain.LiveSessionConflictException::class.java) {
+            live.startSequenceFromPlan(
+                reads.getFocusedAction(PlanEntryId("blocked-sequence")).identity,
+                instant(2),
+                instant(2),
+                ZoneId.of("UTC"),
+            )
+        }
+
+        assertEquals(session, live.getActiveSession())
+        assertEquals(unrelated, database.activityExecutionDao().getAggregate(unrelated.id.value)?.toDomain())
+        assertEquals(0, count("activity_executions", "plan_entry_id IS NOT NULL"))
+        assertEquals(0, count("sequence_executions", "plan_entry_id IS NOT NULL"))
+    }
+
+    @Test
+    fun exactNoLiveValuesUseOnlyFrozenFieldAndOptionIdentities() {
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "no-live-values",
+                    "Values",
+                    null,
+                    "NO_LIVE_TRACKING",
+                    null,
+                    null,
+                    null,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("no-live-values"),
+                fields =
+                    listOf(
+                        snapshotField("zero", 0, "NUMBER", number = 0),
+                        snapshotField("absent", 1, "NUMBER"),
+                        snapshotField("explicit-missing", 2, "NUMBER", number = 5),
+                        snapshotField("category", 3, "CATEGORY", option = "category-option"),
+                        snapshotField("text", 4, "TEXT", text = "default text"),
+                    ),
+                options =
+                    listOf(
+                        ActivitySnapshotCategoryOptionEntity(
+                            "category-option",
+                            "category",
+                            null,
+                            0,
+                            "Frozen option",
+                            null,
+                        ),
+                    ),
+            ),
+        )
+        database.planEntryDao().insert(plan("values-plan", activity = "no-live-values"))
+        val reads = PlanReadRepository(database, CurrentZoneIdProvider { ZoneId.of("UTC") }, live)
+        val action = reads.getFocusedAction(PlanEntryId("values-plan")).identity
+
+        assertThrows(IllegalArgumentException::class.java) {
+            live.completeNoLiveActivityFromPlan(
+                action,
+                instant(1),
+                ZoneId.of("UTC"),
+                valueOverrides =
+                    listOf(
+                        ActivityExecutionValueOverride(ActivitySnapshotFieldId("wrong-field"), null),
+                    ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            live.completeNoLiveActivityFromPlan(
+                action,
+                instant(1),
+                ZoneId.of("UTC"),
+                valueOverrides =
+                    listOf(
+                        ActivityExecutionValueOverride(
+                            ActivitySnapshotFieldId("category"),
+                            CategoryExecutionValue(
+                                ActivitySnapshotFieldId("category"),
+                                ActivitySnapshotCategoryOptionId("wrong-option"),
+                            ),
+                        ),
+                    ),
+            )
+        }
+        assertEquals(0, count("activity_executions", "plan_entry_id = 'values-plan'"))
+
+        val execution =
+            live.completeNoLiveActivityFromPlan(
+                action,
+                instant(2),
+                ZoneId.of("UTC"),
+                valueOverrides =
+                    listOf(
+                        ActivityExecutionValueOverride(ActivitySnapshotFieldId("explicit-missing"), null),
+                    ),
+            )
+
+        assertEquals(
+            setOf(
+                NumberExecutionValue(ActivitySnapshotFieldId("zero"), 0),
+                CategoryExecutionValue(
+                    ActivitySnapshotFieldId("category"),
+                    ActivitySnapshotCategoryOptionId("category-option"),
+                ),
+                TextExecutionValue(ActivitySnapshotFieldId("text"), "default text"),
+            ),
+            execution.values.toSet(),
+        )
+        assertEquals(ActivitySnapshotId("no-live-values"), execution.snapshotId)
+        assertEquals(PlanEntryStatus.FULFILLED, reads.getFocusedAction(PlanEntryId("values-plan")).identity.status)
+    }
+
     private fun liveRepository(): LiveSessionRepository {
         var activity = 0
         var sequence = 0
@@ -703,23 +962,25 @@ class PlanEntryDatabaseTest {
         )
     }
 
-    private fun planRepository(zone: ZoneId) =
-        PlanRepository(
-            database,
-            { PlanEntryId("generated") },
-            ActivitySnapshotFactory(
-                { ActivitySnapshotId("generated-activity") },
-                { ActivitySnapshotFieldId("generated-field") },
-                { ActivitySnapshotCategoryOptionId("generated-option") },
-            ),
-            SequenceSnapshotFactory(
-                { SequenceSnapshotId("generated-sequence") },
-                { SequenceSnapshotFieldId("generated-sequence-field") },
-                { SequenceSnapshotCategoryOptionId("generated-sequence-option") },
-                { SequenceSnapshotNodeId("generated-node") },
-            ),
-            CurrentZoneIdProvider { zone },
-        )
+    private fun planRepository(
+        zone: ZoneId,
+        nextActivitySnapshotId: () -> ActivitySnapshotId = { ActivitySnapshotId("generated-activity") },
+    ) = PlanRepository(
+        database,
+        { PlanEntryId("generated") },
+        ActivitySnapshotFactory(
+            nextActivitySnapshotId,
+            { ActivitySnapshotFieldId("generated-field") },
+            { ActivitySnapshotCategoryOptionId("generated-option") },
+        ),
+        SequenceSnapshotFactory(
+            { SequenceSnapshotId("generated-sequence") },
+            { SequenceSnapshotFieldId("generated-sequence-field") },
+            { SequenceSnapshotCategoryOptionId("generated-sequence-option") },
+            { SequenceSnapshotNodeId("generated-node") },
+        ),
+        CurrentZoneIdProvider { zone },
+    )
 
     private fun seedTemplates() {
         database.activityTemplateDao().insertAggregate(
@@ -768,6 +1029,37 @@ class PlanEntryDatabaseTest {
         check(it.moveToFirst())
         it.getInt(0)
     }
+
+    private fun longValue(
+        table: String,
+        column: String,
+    ) = database.openHelper.readableDatabase.query("SELECT `$column` FROM `$table`").use {
+        check(it.moveToFirst())
+        it.getLong(0)
+    }
+
+    private fun snapshotField(
+        id: String,
+        position: Int,
+        type: String,
+        number: Long? = null,
+        option: String? = null,
+        text: String? = null,
+    ) = ActivitySnapshotFieldEntity(
+        id,
+        "no-live-values",
+        null,
+        position,
+        id,
+        null,
+        type,
+        null,
+        if (type == "NUMBER") 0 else null,
+        number,
+        option,
+        text,
+        false,
+    )
 
     private fun plan(
         id: String,

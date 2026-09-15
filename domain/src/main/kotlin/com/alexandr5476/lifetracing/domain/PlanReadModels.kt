@@ -61,6 +61,8 @@ data class PlanActionIdentity(
     val updatedAt: Instant,
 )
 
+class StalePlanActionException : IllegalStateException("Plan action is stale")
+
 fun PlanEntry.actionIdentity() =
     PlanActionIdentity(
         id,

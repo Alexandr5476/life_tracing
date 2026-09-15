@@ -322,7 +322,11 @@ internal abstract class PlanEntryDao {
         atMs: Long,
     ): Int
 
-    @Query("UPDATE sequence_template_user_state SET last_used_at_ms = :atMs WHERE sequence_template_id = :id")
+    @Query(
+        "UPDATE sequence_template_user_state SET last_used_at_ms = " +
+            "CASE WHEN last_used_at_ms IS NULL OR last_used_at_ms < :atMs THEN :atMs ELSE last_used_at_ms END " +
+            "WHERE sequence_template_id = :id",
+    )
     abstract fun touchSequenceSource(
         id: String,
         atMs: Long,
