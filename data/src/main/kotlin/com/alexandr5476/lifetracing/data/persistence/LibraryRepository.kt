@@ -33,7 +33,9 @@ import com.alexandr5476.lifetracing.domain.LibraryRoot
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
+import com.alexandr5476.lifetracing.domain.PlanActivityRowMetadata
 import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
+import com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceNode
@@ -138,6 +140,43 @@ class LibraryRepository internal constructor(
                     row.mainValueDefaultNumberScaled,
                 )
             }
+        }
+
+    /** One bounded Activity/Sequence page; rows never hydrate Template graphs. */
+    fun getReusablePlanCatalog(
+        query: String,
+        limit: Int,
+        after: ReusablePlanCatalogItem? = null,
+    ): List<ReusablePlanCatalogItem> =
+        transaction {
+            require(limit in 1..PLAN_CATALOG_MAX_PAGE_SIZE) { "Plan catalog page limit is out of range" }
+            database
+                .libraryDao()
+                .getReusablePlanCatalog(
+                    query.toLikePattern(),
+                    limit,
+                    after?.name,
+                    after?.id?.let { if (it is LibraryTemplateId.Activity) "ACTIVITY" else "SEQUENCE" },
+                    after?.id?.value,
+                ).map { row ->
+                    val id =
+                        if (row.kind == "ACTIVITY") {
+                            LibraryTemplateId.Activity(ActivityTemplateId(row.id))
+                        } else {
+                            LibraryTemplateId.Sequence(SequenceTemplateId(row.id))
+                        }
+                    ReusablePlanCatalogItem(
+                        id,
+                        row.name,
+                        row.shortComment,
+                        row.timeTrackingMode?.let {
+                            PlanActivityRowMetadata(
+                                TimeTrackingMode.valueOf(it),
+                                row.timerTargetMs?.let(Duration::ofMillis),
+                            )
+                        },
+                    )
+                }
         }
 
     fun search(
@@ -843,6 +882,8 @@ class LibraryRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        const val PLAN_CATALOG_MAX_PAGE_SIZE = 100
+
         fun create(context: Context): LibraryRepository {
             val database = LifeTracingDatabase.builder(context.applicationContext, DATABASE_NAME).build()
             val live =

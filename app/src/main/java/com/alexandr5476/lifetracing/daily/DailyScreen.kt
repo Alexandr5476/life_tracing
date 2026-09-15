@@ -71,6 +71,7 @@ fun DailyRoute(
     controller: DailyController,
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
+    onPlan: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
 ) {
     var entered by remember(controller) { mutableStateOf(false) }
@@ -85,6 +86,7 @@ fun DailyRoute(
         onAction = controller::dispatch,
         onStartActivity = onStartActivity,
         onLibrary = onLibrary,
+        onPlan = onPlan,
         onExpandSequence = onExpandSequence,
     )
 }
@@ -96,6 +98,7 @@ internal fun DailyScreen(
     displayElapsedRealtimeMs: Long? = null,
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
+    onPlan: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
@@ -108,7 +111,7 @@ internal fun DailyScreen(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary)
+            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary, onPlan)
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
@@ -129,6 +132,7 @@ private fun DateHeader(
     onAction: (DailyAction) -> Unit,
     onStartActivity: () -> Unit,
     onLibrary: () -> Unit,
+    onPlan: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -160,6 +164,9 @@ private fun DateHeader(
             }
             LifeTracingSecondaryButton(onClick = onLibrary) {
                 Text(stringResource(R.string.daily_library))
+            }
+            LifeTracingSecondaryButton(onClick = onPlan) {
+                Text(stringResource(R.string.daily_plan))
             }
         }
         TextButton(

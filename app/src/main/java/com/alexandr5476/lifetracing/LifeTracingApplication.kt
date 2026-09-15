@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
@@ -36,9 +37,11 @@ import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
 import com.alexandr5476.lifetracing.live.ExpandedSequenceCommand
+import com.alexandr5476.lifetracing.plan.PlanController
 import com.alexandr5476.lifetracing.plan.PlanExecutionCommit
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import com.alexandr5476.lifetracing.plan.PlanExecutionDurableCommand
+import com.alexandr5476.lifetracing.plan.PlanMutation
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -108,6 +111,7 @@ class LifeTracingRuntimeGraph internal constructor(
     private val planExecutionControllerFactory: (PlanEntryId) -> PlanExecutionController = {
         error("Plan execution is unavailable")
     },
+    private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -131,6 +135,8 @@ class LifeTracingRuntimeGraph internal constructor(
 
     fun createPlanExecutionController(planEntryId: PlanEntryId): PlanExecutionController =
         planExecutionControllerFactory(planEntryId)
+
+    fun createPlanController(): PlanController = planControllerFactory()
 
     companion object {
         @Volatile
@@ -157,6 +163,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)
             val planReadRepository = PlanReadRepository.create(context)
+            val planRepository = PlanRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -474,6 +481,35 @@ class LifeTracingRuntimeGraph internal constructor(
                         mutationGate = coordinator.mutationGate,
                     )
                 },
+                {
+                    PlanController(
+                        scope,
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) { planReadRepository.getWeek(query) }
+                        },
+                        {
+                            query,
+                            limit,
+                            after,
+                            ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { libraryRepository.getReusablePlanCatalog(query, limit, after) }
+                        },
+                        { query ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { planReadRepository.getCancelledPage(query) }
+                        },
+                        { command ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { executePlanMutation(command, planRepository) }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
+                    )
+                },
             )
         }
     }
@@ -492,6 +528,30 @@ private fun SequenceEditorActivityChoice.toCatalogItem() =
     )
 
 private const val ACTIVITY_PICKER_PAGE_SIZE = 50
+
+internal fun executePlanMutation(
+    command: PlanMutation,
+    repository: PlanRepository,
+) {
+    when (command) {
+        is PlanMutation.CreateActivity ->
+            repository.createActivityPlanFromTemplate(
+                command.id,
+                command.schedule,
+                command.at,
+            )
+        is PlanMutation.CreateSequence ->
+            repository.createSequencePlanFromTemplate(
+                command.id,
+                command.schedule,
+                command.at,
+            )
+        is PlanMutation.Reschedule -> repository.reschedulePlanEntry(command.identity, command.schedule, command.at)
+        is PlanMutation.Cancel -> repository.cancelPlan(command.identity, command.at)
+        is PlanMutation.Restore -> repository.restoreCancelledPlan(command.identity, command.at)
+        is PlanMutation.Update -> repository.updatePlanFromTemplate(command.identity, command.at)
+    }
+}
 
 internal fun executePlanCommand(
     command: PlanExecutionDurableCommand,

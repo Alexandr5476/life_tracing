@@ -36,6 +36,8 @@ import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRouteSessionOwner
+import com.alexandr5476.lifetracing.plan.PlanControllerOwner
+import com.alexandr5476.lifetracing.plan.PlanRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -59,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     internal val expandedLiveSequenceRouteSessions by lazy {
         ViewModelProvider(this)[ExpandedLiveSequenceRouteSessionOwner::class.java]
     }
+    internal val planControllerOwner by lazy { ViewModelProvider(this)[PlanControllerOwner::class.java] }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +74,7 @@ class MainActivity : AppCompatActivity() {
                 sequenceTemplateEditorRouteSessions = sequenceTemplateEditorRouteSessions,
                 libraryControllerOwner = libraryControllerOwner,
                 expandedLiveSequenceRouteSessions = expandedLiveSequenceRouteSessions,
+                planControllerOwner = planControllerOwner,
             )
         }
     }
@@ -87,6 +91,8 @@ data object StartActivityRoot : NavKey
 /** Navigation identity only: Library reads its canonical catalog on entry. */
 @Serializable
 data object LibraryRoot : NavKey
+
+@Serializable data object PlanRoot : NavKey
 
 @Serializable
 data object NewActivityTemplateEditor : NavKey
@@ -118,6 +124,7 @@ internal fun LifeTracingApp(
     sequenceTemplateEditorRouteSessions: SequenceTemplateEditorRouteSessionOwner? = null,
     libraryControllerOwner: LibraryControllerOwner? = null,
     expandedLiveSequenceRouteSessions: ExpandedLiveSequenceRouteSessionOwner? = null,
+    planControllerOwner: PlanControllerOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -141,6 +148,7 @@ internal fun LifeTracingApp(
                 sequenceTemplateEditorRouteSessions ?: remember { SequenceTemplateEditorRouteSessionOwner() }
             val expandedSequenceSessions =
                 expandedLiveSequenceRouteSessions ?: remember { ExpandedLiveSequenceRouteSessionOwner() }
+            val planOwner = planControllerOwner ?: remember { PlanControllerOwner() }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -166,6 +174,7 @@ internal fun LifeTracingApp(
                                     backStack.openStartActivity()
                                 },
                                 onLibrary = { backStack.openLibrary() },
+                                onPlan = { backStack.openPlan() },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
@@ -241,6 +250,9 @@ internal fun LifeTracingApp(
                                     backStack.openStartActivity()
                                 },
                             )
+                        }
+                        entry<PlanRoot> {
+                            PlanRoute(planOwner.get(runtimeGraph::createPlanController), backStack::removePlan)
                         }
                         entry<NewActivityTemplateEditor> {
                             val session = editorSessions.activeSession
@@ -366,6 +378,14 @@ internal fun MutableList<NavKey>.openLibrary() {
 
 internal fun MutableList<NavKey>.removeLibrary() {
     if (lastOrNull() is LibraryRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openPlan() {
+    if (lastOrNull() !is PlanRoot) add(PlanRoot)
+}
+
+internal fun MutableList<NavKey>.removePlan() {
+    if (lastOrNull() is PlanRoot) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openNewActivityTemplateEditor() {

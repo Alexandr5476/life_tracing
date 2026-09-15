@@ -50,6 +50,18 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun planUsesOneDailyOwnedDestinationAndBackOnlyPopsPlan() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openPlan()
+        backStack.openPlan()
+
+        assertEquals(listOf(DailyRoot, PlanRoot), backStack)
+        backStack.removePlan()
+        assertEquals(listOf(DailyRoot), backStack)
+    }
+
+    @Test
     fun libraryQuickStartKeepsTheRetainedLibraryEntryUnderTheLauncher() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
 
