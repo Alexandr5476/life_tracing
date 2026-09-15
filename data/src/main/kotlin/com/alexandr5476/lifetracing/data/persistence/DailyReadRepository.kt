@@ -82,11 +82,12 @@ class DailyReadRepository internal constructor(
             },
         )
 
-    private fun loadPlans(
+    internal fun loadPlans(
         selectedDate: LocalDate,
         now: java.time.Instant,
         zone: ZoneId,
         activeRuntime: ActiveRuntime?,
+        includeWeek: Boolean = true,
     ): List<DailyPlan> {
         val start = selectedDate.atStartOfDay(zone).toInstant()
         val end = selectedDate.plusDays(1).atStartOfDay(zone).toInstant()
@@ -94,7 +95,7 @@ class DailyReadRepository internal constructor(
         val rows =
             database.planEntryDao().getDailyFloatingDay(selectedDate.toString()) +
                 database.planEntryDao().getDailyExactDay(start.toEpochMilli(), end.toEpochMilli()) +
-                database.planEntryDao().getDailyWeek(weekStart.toString())
+                if (includeWeek) database.planEntryDao().getDailyWeek(weekStart.toString()) else emptyList()
         val plans = rows.map { it.toDomain().also(PlanEntryValidator::requireValid) }
         require(plans.map(PlanEntry::id).distinct().size == plans.size) { "Daily Plan selectors returned duplicates" }
 
@@ -183,7 +184,7 @@ class DailyReadRepository internal constructor(
             )
     }
 
-    private fun validatePlanSnapshotsAndFulfillment(
+    internal fun validatePlanSnapshotsAndFulfillment(
         plans: List<PlanEntry>,
         activitySnapshots: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
         sequenceSnapshots: Map<SequenceSnapshotId, DailySequencePlanMetadata>,
@@ -247,7 +248,7 @@ class DailyReadRepository internal constructor(
         }
     }
 
-    private fun DailySequencePlanMetadataEntity.toDailyPlanMetadata() =
+    internal fun DailySequencePlanMetadataEntity.toDailyPlanMetadata() =
         DailySequencePlanMetadata(
             SequenceSnapshotId(id),
             name,
@@ -256,7 +257,7 @@ class DailyReadRepository internal constructor(
             sourceRevision,
         )
 
-    private fun loadSourceStates(plans: List<PlanEntry>): Map<PlanEntryId, PlanSourceState> {
+    internal fun loadSourceStates(plans: List<PlanEntry>): Map<PlanEntryId, PlanSourceState> {
         val activitySources =
             plans
                 .mapNotNull { it.sourceActivityTemplateId?.value }
@@ -284,10 +285,26 @@ class DailyReadRepository internal constructor(
         }
     }
 
-    private fun loadEngagement(
+    internal fun loadEngagement(
         plans: List<PlanEntry>,
         activeRuntime: ActiveRuntime?,
     ): Map<PlanEntryId, Boolean> {
+        val links = loadLivePlanLinks(plans)
+        val activeIdentity = activeRuntime?.identityOrNull()
+        validateLivePlanLinks(plans, links) { link -> activeIdentity == link }
+        val engagedIds = links.mapTo(hashSetOf(), LivePlanLink::planId)
+        return plans.associate { it.id to (it.id.value in engagedIds) }
+    }
+
+    internal fun loadPlanEngagement(plans: List<PlanEntry>): Map<PlanEntryId, Boolean> {
+        val links = loadLivePlanLinks(plans)
+        val activeIdentity = liveSessionRepository.getActivePlanIdentityLocked()
+        validateLivePlanLinks(plans, links) { link -> activeIdentity == link }
+        val engagedIds = links.mapTo(hashSetOf(), LivePlanLink::planId)
+        return plans.associate { it.id to (it.id.value in engagedIds) }
+    }
+
+    private fun loadLivePlanLinks(plans: List<PlanEntry>): List<LivePlanLink> {
         val planIds = plans.map { it.id.value }
         val activityLinks =
             planIds
@@ -299,15 +316,34 @@ class DailyReadRepository internal constructor(
                 .flatMap(database.planEntryDao()::liveSequenceLinks)
         val links =
             activityLinks.map {
-                LivePlanLink(requireNotNull(it.planEntryId), PlanTrackableKind.ACTIVITY, it.id, it.snapshotId)
+                LivePlanLink(
+                    requireNotNull(it.planEntryId),
+                    PlanTrackableKind.ACTIVITY,
+                    it.id,
+                    it.snapshotId,
+                    it.status,
+                )
             } +
                 sequenceLinks.map {
-                    LivePlanLink(requireNotNull(it.planEntryId), PlanTrackableKind.SEQUENCE, it.id, it.snapshotId)
+                    LivePlanLink(
+                        requireNotNull(it.planEntryId),
+                        PlanTrackableKind.SEQUENCE,
+                        it.id,
+                        it.snapshotId,
+                        it.status,
+                    )
                 }
         require(links.map(LivePlanLink::planId).distinct().size == links.size) {
             "A Daily Plan has multiple linked live roots"
         }
-        val activeIdentity = activeRuntime?.identityOrNull()
+        return links
+    }
+
+    private fun validateLivePlanLinks(
+        plans: List<PlanEntry>,
+        links: List<LivePlanLink>,
+        isCanonicalActive: (LivePlanLink) -> Boolean,
+    ) {
         val plansById = plans.associateBy { it.id.value }
         links.forEach { link ->
             val plan = plansById.getValue(link.planId)
@@ -315,11 +351,9 @@ class DailyReadRepository internal constructor(
                 plan.status == PlanEntryStatus.PLANNED &&
                     plan.kind == link.kind &&
                     (plan.activitySnapshotId?.value ?: plan.sequenceSnapshotId?.value) == link.snapshotId &&
-                    activeIdentity == link,
+                    isCanonicalActive(link),
             ) { "Engaged Daily Plan is inconsistent with the canonical active session" }
         }
-        val engagedIds = links.mapTo(hashSetOf(), LivePlanLink::planId)
-        return plans.associate { it.id to (it.id.value in engagedIds) }
     }
 
     private fun ActiveRuntime.toDailyActive(): DailyActive =
@@ -353,6 +387,7 @@ class DailyReadRepository internal constructor(
                         PlanTrackableKind.ACTIVITY,
                         execution.id.value,
                         execution.snapshotId.value,
+                        execution.status.name,
                     )
                 }
             is ActiveSequenceRuntime ->
@@ -362,6 +397,7 @@ class DailyReadRepository internal constructor(
                         PlanTrackableKind.SEQUENCE,
                         execution.id.value,
                         execution.snapshotId.value,
+                        execution.status.name,
                     )
                 }
         }
@@ -378,11 +414,4 @@ class DailyReadRepository internal constructor(
         private const val DATABASE_NAME = "lifetracing.db"
         private const val SQLITE_BIND_CHUNK_SIZE = 900
     }
-
-    private data class LivePlanLink(
-        val planId: String,
-        val kind: PlanTrackableKind,
-        val executionId: String,
-        val snapshotId: String,
-    )
 }

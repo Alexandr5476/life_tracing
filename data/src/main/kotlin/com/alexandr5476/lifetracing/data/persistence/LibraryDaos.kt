@@ -33,6 +33,15 @@ internal data class ReusableActivityCatalogRow(
     @ColumnInfo(name = "main_value_default_number_scaled") val mainValueDefaultNumberScaled: Long?,
 )
 
+internal data class ReusablePlanCatalogRow(
+    val id: String,
+    val name: String,
+    @ColumnInfo(name = "short_comment") val shortComment: String?,
+    val kind: String,
+    @ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String?,
+    @ColumnInfo(name = "timer_target_ms") val timerTargetMs: Long?,
+)
+
 @Dao
 @Suppress("TooManyFunctions")
 internal interface FolderDao {
@@ -148,6 +157,26 @@ internal interface StatisticsSeriesDao {
 @Dao
 @Suppress("TooManyFunctions") // One bounded DAO owns lightweight catalog SQL and metadata-only writes.
 internal interface LibraryDao {
+    @Query(
+        "SELECT * FROM (" +
+            "SELECT id, name, short_comment, 'ACTIVITY' AS kind, time_tracking_mode, timer_target_ms " +
+            "FROM activity_templates WHERE deleted_at_ms IS NULL UNION ALL " +
+            "SELECT id, name, short_comment, 'SEQUENCE' AS kind, NULL AS time_tracking_mode, NULL AS timer_target_ms " +
+            "FROM sequence_templates WHERE deleted_at_ms IS NULL" +
+            ") WHERE (:query = '' OR name LIKE :query ESCAPE '\\') AND " +
+            "(:afterName IS NULL OR name COLLATE NOCASE > :afterName COLLATE NOCASE OR " +
+            "(name COLLATE NOCASE = :afterName COLLATE NOCASE AND (kind > :afterKind OR " +
+            "(kind = :afterKind AND id > :afterId)))) " +
+            "ORDER BY name COLLATE NOCASE, kind, id LIMIT :limit",
+    )
+    fun getReusablePlanCatalog(
+        query: String,
+        limit: Int,
+        afterName: String? = null,
+        afterKind: String? = null,
+        afterId: String? = null,
+    ): List<ReusablePlanCatalogRow>
+
     @Query(
         "SELECT templates.id, templates.name, templates.time_tracking_mode, templates.timer_target_ms, " +
             "fields.name AS main_value_name, fields.unit AS main_value_unit, " +

@@ -178,6 +178,56 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun reusablePlanCatalogUsesTypedDeterministicBoundedKeysetWithoutGraphHydration() {
+        val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
+        rebuildDatabaseWithQueryCallback(queries)
+        activity("a-lower", "alpha")
+        activity("a-upper", "ALPHA")
+        activity("same", "Same")
+        sequence("s-lower", "alpha")
+        sequence("same", "Same")
+        sequence("zeta", "Zeta")
+        activity("archived", "Archived", deleted = 1)
+        val repository = repository()
+        queries.clear()
+
+        val pages = mutableListOf<List<com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem>>()
+        var after: com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem? = null
+        do {
+            val page = repository.getReusablePlanCatalog("", 2, after)
+            pages += page
+            after = page.lastOrNull()
+        } while (page.size == 2)
+        val items = pages.flatten()
+
+        val expected =
+            listOf(
+                LibraryTemplateId.Activity(ActivityTemplateId("a-lower")),
+                LibraryTemplateId.Activity(ActivityTemplateId("a-upper")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("s-lower")),
+                LibraryTemplateId.Activity(ActivityTemplateId("same")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("same")),
+                LibraryTemplateId.Sequence(SequenceTemplateId("zeta")),
+            )
+        assertEquals(expected, items.map { it.id })
+        assertTrue(expected.all { expectedId -> items.count { it.id == expectedId } == 1 })
+        assertTrue(items.none { it.id.value == "archived" })
+        assertEquals(expected.take(3), repository.getReusablePlanCatalog("alp", 10).map { it.id })
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.getReusablePlanCatalog("", LibraryRepository.PLAN_CATALOG_MAX_PAGE_SIZE + 1)
+        }
+        val catalogQueries = queries.filter { "UNION ALL" in it.first }
+        assertEquals(pages.size + 1, catalogQueries.size)
+        assertTrue(
+            catalogQueries.all {
+                "activity_template_fields" !in it.first &&
+                    "activity_template_category_options" !in it.first &&
+                    "sequence_nodes" !in it.first
+            },
+        )
+    }
+
+    @Test
     fun activeSequenceKeepsItsFrozenGraphAfterTheSourceEditorCommits() {
         val authoring = TemplateAuthoringRepository(database, deterministicAuthoringIds("frozen"))
         val source =

@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanCalendarEntry
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -20,10 +21,12 @@ import com.alexandr5476.lifetracing.domain.PlanEntryTransitions
 import com.alexandr5476.lifetracing.domain.PlanEntryValidator
 import com.alexandr5476.lifetracing.domain.PlanListEntry
 import com.alexandr5476.lifetracing.domain.PlanOverdueCalculator
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanSourceStateResolver
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.PlanningPrecision
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
@@ -32,6 +35,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -48,6 +52,39 @@ class PlanRepository internal constructor(
     private val zoneIdProvider: CurrentZoneIdProvider,
 ) {
     fun createActivityPlanFromTemplate(
+        sourceTemplateId: ActivityTemplateId,
+        schedule: PlanSchedule,
+        createdAt: Instant,
+    ): PlanEntry = createActivityPlanFromTemplate(sourceTemplateId, schedule.toTarget(), createdAt)
+
+    fun createSequencePlanFromTemplate(
+        sourceTemplateId: SequenceTemplateId,
+        schedule: PlanSchedule,
+        createdAt: Instant,
+    ): PlanEntry = createSequencePlanFromTemplate(sourceTemplateId, schedule.toTarget(), createdAt)
+
+    fun cancelPlan(
+        expected: PlanActionIdentity,
+        at: Instant,
+    ): PlanEntry = cancelPlan(expected.planEntryId, at, expected)
+
+    fun restoreCancelledPlan(
+        expected: PlanActionIdentity,
+        at: Instant,
+    ): PlanEntry = restoreCancelledPlan(expected.planEntryId, at, expected)
+
+    fun reschedulePlanEntry(
+        expected: PlanActionIdentity,
+        schedule: PlanSchedule,
+        at: Instant,
+    ): PlanEntry = reschedulePlanEntry(expected.planEntryId, schedule.toTarget(), at, expected)
+
+    fun updatePlanFromTemplate(
+        expected: PlanActionIdentity,
+        updatedAt: Instant,
+    ): PlanEntry = updatePlanFromTemplate(expected.planEntryId, updatedAt, expected)
+
+    internal fun createActivityPlanFromTemplate(
         sourceTemplateId: ActivityTemplateId,
         target: PlanTarget,
         createdAt: Instant,
@@ -84,7 +121,7 @@ class PlanRepository internal constructor(
             plan
         }
 
-    fun createSequencePlanFromTemplate(
+    internal fun createSequencePlanFromTemplate(
         sourceTemplateId: SequenceTemplateId,
         target: PlanTarget,
         createdAt: Instant,
@@ -135,40 +172,65 @@ class PlanRepository internal constructor(
         now: Instant,
     ): Boolean = PlanOverdueCalculator.isOverdue(plan, now, zoneIdProvider.currentZoneId())
 
-    fun cancelPlan(
+    internal fun cancelPlan(
         id: PlanEntryId,
         at: Instant,
+    ): PlanEntry = cancelPlan(id, at, null)
+
+    private fun cancelPlan(
+        id: PlanEntryId,
+        at: Instant,
+        expected: PlanActionIdentity?,
     ): PlanEntry =
         transaction {
-            val plan = requireMutablePlan(id)
+            val plan = requireMutablePlan(id, expected)
             PlanEntryTransitions.cancel(plan, at)
-            check(database.planEntryDao().cancel(id.value, at.toEpochMilli()) == 1) { "Plan changed concurrently" }
+            check(
+                database.planEntryDao().cancel(id.value, plan.updatedAt.toEpochMilli(), at.toEpochMilli()) == 1,
+            ) { "Plan changed concurrently" }
             requireNotNull(loadValidPlan(id.value))
         }
 
-    fun restoreCancelledPlan(
+    internal fun restoreCancelledPlan(
         id: PlanEntryId,
         at: Instant,
+    ): PlanEntry = restoreCancelledPlan(id, at, null)
+
+    private fun restoreCancelledPlan(
+        id: PlanEntryId,
+        at: Instant,
+        expected: PlanActionIdentity?,
     ): PlanEntry =
         transaction {
-            val plan = requireNotNull(loadValidPlan(id.value)) { "Unknown Plan: ${id.value}" }
+            val plan = requireExpectedPlan(id, expected)
+            require(!isEngaged(plan)) { "Plan has a linked live execution" }
             PlanEntryTransitions.restore(plan, at)
-            check(database.planEntryDao().restore(id.value, at.toEpochMilli()) == 1) { "Plan changed concurrently" }
+            check(
+                database.planEntryDao().restore(id.value, plan.updatedAt.toEpochMilli(), at.toEpochMilli()) == 1,
+            ) { "Plan changed concurrently" }
             requireNotNull(loadValidPlan(id.value))
         }
 
-    fun reschedulePlanEntry(
+    internal fun reschedulePlanEntry(
         id: PlanEntryId,
         target: PlanTarget,
         at: Instant,
+    ): PlanEntry = reschedulePlanEntry(id, target, at, null)
+
+    private fun reschedulePlanEntry(
+        id: PlanEntryId,
+        target: PlanTarget,
+        at: Instant,
+        expected: PlanActionIdentity?,
     ): PlanEntry =
         transaction {
-            val plan = requireMutablePlan(id)
+            val plan = requireMutablePlan(id, expected)
             PlanEntryTransitions.reschedule(plan, target, at)
             val shape = target.persistenceShape()
             check(
                 database.planEntryDao().reschedule(
                     id.value,
+                    plan.updatedAt.toEpochMilli(),
                     target.precision.name,
                     shape.plannedDay,
                     shape.plannedWeekStart,
@@ -181,12 +243,18 @@ class PlanRepository internal constructor(
             requireNotNull(loadValidPlan(id.value))
         }
 
-    fun updatePlanFromTemplate(
+    internal fun updatePlanFromTemplate(
         id: PlanEntryId,
         updatedAt: Instant,
+    ): PlanEntry = updatePlanFromTemplate(id, updatedAt, null)
+
+    private fun updatePlanFromTemplate(
+        id: PlanEntryId,
+        updatedAt: Instant,
+        expected: PlanActionIdentity?,
     ): PlanEntry =
         transaction {
-            val plan = requireMutablePlan(id)
+            val plan = requireMutablePlan(id, expected)
             require(updatedAt >= plan.updatedAt) { "Plan update time is out of order" }
             when (plan.kind) {
                 PlanTrackableKind.ACTIVITY -> updateActivityPlan(plan, updatedAt)
@@ -235,47 +303,49 @@ class PlanRepository internal constructor(
         transaction {
             val activitySnapshotIds = plans.mapNotNull { it.activitySnapshotId?.value }.distinct()
             val sequenceSnapshotIds = plans.mapNotNull { it.sequenceSnapshotId?.value }.distinct()
-            val summaries =
-                (
-                    if (activitySnapshotIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().activitySummaries(activitySnapshotIds)
-                    }
-                ) + (
-                    if (sequenceSnapshotIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().sequenceSummaries(sequenceSnapshotIds)
-                    }
-                )
-            val summaryById = summaries.associateBy(PlanSnapshotSummaryRow::id)
+            val activitySummaries =
+                activitySnapshotIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::activitySummaries)
+                    .associateBy(PlanActivitySnapshotSummaryRow::id)
+            val sequenceSummaries =
+                sequenceSnapshotIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::sequenceSummaries)
+                    .associateBy(PlanSnapshotSummaryRow::id)
             val activitySourceIds = plans.mapNotNull { it.sourceActivityTemplateId?.value }.distinct()
             val sequenceSourceIds = plans.mapNotNull { it.sourceSequenceTemplateId?.value }.distinct()
-            val sources =
-                (
-                    if (activitySourceIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().activitySources(activitySourceIds)
-                    }
-                ) + (
-                    if (sequenceSourceIds.isEmpty()) {
-                        emptyList()
-                    } else {
-                        database.planEntryDao().sequenceSources(sequenceSourceIds)
-                    }
-                )
-            val sourceById = sources.associateBy(PlanSourceMetadataRow::id)
+            val activitySources =
+                activitySourceIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::activitySources)
+                    .associateBy(PlanSourceMetadataRow::id)
+            val sequenceSources =
+                sequenceSourceIds
+                    .chunked(SQLITE_BIND_CHUNK_SIZE)
+                    .flatMap(database.planEntryDao()::sequenceSources)
+                    .associateBy(PlanSourceMetadataRow::id)
             plans.map { plan ->
-                val snapshotId = plan.activitySnapshotId?.value ?: requireNotNull(plan.sequenceSnapshotId).value
-                val sourceId = plan.sourceActivityTemplateId?.value ?: plan.sourceSequenceTemplateId?.value
-                val summary = requireNotNull(summaryById[snapshotId]) { "Plan snapshot summary is missing" }
-                val source = sourceId?.let(sourceById::get)
+                val (name, shortComment) =
+                    when (plan.kind) {
+                        PlanTrackableKind.ACTIVITY ->
+                            requireNotNull(activitySummaries[requireNotNull(plan.activitySnapshotId).value]) {
+                                "Plan snapshot summary is missing"
+                            }.let { it.name to it.shortComment }
+                        PlanTrackableKind.SEQUENCE ->
+                            requireNotNull(sequenceSummaries[requireNotNull(plan.sequenceSnapshotId).value]) {
+                                "Plan snapshot summary is missing"
+                            }.let { it.name to it.shortComment }
+                    }
+                val source =
+                    when (plan.kind) {
+                        PlanTrackableKind.ACTIVITY -> plan.sourceActivityTemplateId?.value?.let(activitySources::get)
+                        PlanTrackableKind.SEQUENCE -> plan.sourceSequenceTemplateId?.value?.let(sequenceSources::get)
+                    }
                 PlanListEntry(
                     plan,
-                    summary.name,
-                    summary.shortComment,
+                    name,
+                    shortComment,
                     PlanSourceStateResolver.resolve(
                         plan.sourceRevision,
                         source?.revision,
@@ -315,6 +385,7 @@ class PlanRepository internal constructor(
             database.planEntryDao().replaceActivitySnapshot(
                 plan.id.value,
                 oldId.value,
+                plan.updatedAt.toEpochMilli(),
                 replacement.id.value,
                 template.revision,
                 at.toEpochMilli(),
@@ -340,6 +411,7 @@ class PlanRepository internal constructor(
             database.planEntryDao().replaceSequenceSnapshot(
                 plan.id.value,
                 oldId.value,
+                plan.updatedAt.toEpochMilli(),
                 replacement.id.value,
                 template.revision,
                 at.toEpochMilli(),
@@ -352,10 +424,25 @@ class PlanRepository internal constructor(
         }
     }
 
-    private fun requireMutablePlan(id: PlanEntryId): PlanEntry {
-        val plan = requireNotNull(loadValidPlan(id.value)) { "Unknown Plan: ${id.value}" }
+    private fun requireMutablePlan(
+        id: PlanEntryId,
+        expected: PlanActionIdentity?,
+    ): PlanEntry {
+        val plan = requireExpectedPlan(id, expected)
         require(plan.status == PlanEntryStatus.PLANNED) { "Plan is not planned" }
         require(!isEngaged(plan)) { "Plan has a linked live execution" }
+        return plan
+    }
+
+    private fun requireExpectedPlan(
+        id: PlanEntryId,
+        expected: PlanActionIdentity?,
+    ): PlanEntry {
+        val plan = requireNotNull(loadValidPlan(id.value)) { "Unknown Plan: ${id.value}" }
+        if (expected != null) {
+            require(plan.actionIdentity() == expected) { "Plan action identity is stale" }
+            require(plan.target.precision != PlanningPrecision.MONTH) { "Month Plan actions are deferred" }
+        }
         return plan
     }
 
@@ -446,9 +533,11 @@ class PlanRepository internal constructor(
     }
 
     private fun activityModesFor(ids: List<ActivitySnapshotId>): Map<ActivitySnapshotId, TimeTrackingMode> =
-        database
-            .activitySnapshotDao()
-            .getAggregates(ids.distinct().map(ActivitySnapshotId::value))
+        ids
+            .distinct()
+            .map(ActivitySnapshotId::value)
+            .chunked(SQLITE_BIND_CHUNK_SIZE)
+            .flatMap(database.activitySnapshotDao()::getAggregates)
             .associate {
                 val snapshot = it.toDomain()
                 snapshot.id to snapshot.timeTrackingMode
@@ -474,6 +563,8 @@ class PlanRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        private const val SQLITE_BIND_CHUNK_SIZE = 900
+
         fun create(
             context: Context,
             zoneIdProvider: CurrentZoneIdProvider = CurrentZoneIdProvider(ZoneId::systemDefault),

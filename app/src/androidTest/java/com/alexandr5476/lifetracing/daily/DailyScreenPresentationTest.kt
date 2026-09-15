@@ -27,6 +27,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -55,6 +56,7 @@ import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DailySequenceOccurrence
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -81,6 +83,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -201,7 +204,7 @@ class DailyScreenPresentationTest {
             .fetchSemanticsNode()
         composeTestRule.onNodeWithText(string(R.string.daily_source_changed)).fetchSemanticsNode()
         composeTestRule.onNodeWithText("No comment").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Start").assertDoesNotExist()
+        composeTestRule.onAllNodesWithText(string(R.string.plan_start_action)).assertCountEquals(3)
 
         harness.state.value =
             state(
@@ -234,6 +237,45 @@ class DailyScreenPresentationTest {
         composeTestRule.onNodeWithText(string(R.string.daily_plan_engaged)).assertDoesNotExist()
         composeTestRule.onNodeWithText(string(R.string.daily_plan_overdue)).assertDoesNotExist()
         composeTestRule.onNodeWithText("Start").assertDoesNotExist()
+    }
+
+    @Test
+    fun dayExactAndWeekRowsExposeFrozenModeActionsAndExactClickedIdentity() {
+        val day = plan("No-live day", overdue = true, mode = TimeTrackingMode.NO_LIVE_TRACKING)
+        val exact =
+            plan(
+                "Timed exact",
+                target = PlanTarget.ExactDay(at, ZoneOffset.UTC),
+                exactTime = LocalTime.of(10, 30),
+                sourceState = PlanSourceState.ARCHIVED,
+            )
+        val week = sequencePlan("Sequence week", LocalDate.parse("2026-08-17"))
+        val engaged = plan("Engaged", engaged = true)
+        val fulfilled = plan("Fulfilled", status = PlanEntryStatus.FULFILLED)
+        val clicked = mutableListOf<PlanActionIdentity>()
+        screen(
+            state(
+                DailyDateRelation.TODAY,
+                DailyRead(
+                    listOf(day, exact, engaged, fulfilled),
+                    listOf(week),
+                    emptyList(),
+                    DailyActive.Activity(activity("Unrelated live", TimeTrackingMode.STOPWATCH)),
+                ),
+            ),
+            planExecutions = clicked,
+        )
+
+        composeTestRule
+            .onNodeWithTag("daily-plan-action-${day.plan.id.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule
+            .onNodeWithTag("daily-plan-action-${week.plan.id.value}")
+            .performScrollTo()
+            .performClick()
+
+        assertEquals(listOf(day.plan.actionIdentity(), week.plan.actionIdentity()), clicked)
     }
 
     @Test
@@ -521,6 +563,7 @@ class DailyScreenPresentationTest {
         actions: MutableList<DailyAction> = mutableListOf(),
         tick: Long? = null,
         expanded: MutableList<SequenceExecutionId> = mutableListOf(),
+        planExecutions: MutableList<PlanActionIdentity> = mutableListOf(),
     ): ScreenHarness {
         val stateHolder = mutableStateOf(state)
         val tickHolder = mutableLongStateOf(tick ?: 0)
@@ -531,6 +574,7 @@ class DailyScreenPresentationTest {
                     actions::add,
                     tickHolder.value.takeIf { tick != null },
                     onExpandSequence = expanded::add,
+                    onExecutePlan = planExecutions::add,
                 )
             }
         }
@@ -627,8 +671,9 @@ class DailyScreenPresentationTest {
         sourceState: PlanSourceState = PlanSourceState.CURRENT,
         engaged: Boolean = false,
         overdue: Boolean = false,
+        mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
     ): DailyPlan {
-        val snapshot = snapshot(title)
+        val snapshot = snapshot(title, mode)
         val plan =
             PlanEntry(
                 PlanEntryId(title),
@@ -655,6 +700,48 @@ class DailyScreenPresentationTest {
             sourceState,
             engaged,
             overdue,
+        )
+    }
+
+    private fun sequencePlan(
+        title: String,
+        weekStart: LocalDate,
+    ): DailyPlan {
+        val snapshotId = SequenceSnapshotId(title)
+        val plan =
+            PlanEntry(
+                PlanEntryId(title),
+                PlanTrackableKind.SEQUENCE,
+                null,
+                null,
+                null,
+                null,
+                snapshotId,
+                PlanTarget.Week(weekStart),
+                PlanEntryStatus.PLANNED,
+                null,
+                null,
+                at,
+                at,
+                null,
+                null,
+            )
+        return DailyPlan(
+            plan,
+            LocalDate.parse("2026-08-19"),
+            null,
+            DailyPlanSnapshot.Sequence(
+                com.alexandr5476.lifetracing.domain.DailySequencePlanMetadata(
+                    snapshotId,
+                    title,
+                    null,
+                    null,
+                    null,
+                ),
+            ),
+            PlanSourceState.UNAVAILABLE,
+            false,
+            false,
         )
     }
 
@@ -934,9 +1021,11 @@ class DailyScreenPresentationTest {
         composeTestRule.onNodeWithText(localizedDate(selectedDate, locale)).assertIsDisplayed()
         composeTestRule
             .onNodeWithText(localizedString(locale, R.string.daily_week_of, localizedDate(weekStart, locale)))
+            .performScrollTo()
             .assertIsDisplayed()
         composeTestRule
             .onNodeWithText(localizedString(locale, R.string.daily_exact_time, localizedTime(exactTime, locale)))
+            .performScrollTo()
             .assertIsDisplayed()
         composeTestRule
             .onNodeWithText(
@@ -945,7 +1034,8 @@ class DailyScreenPresentationTest {
                     R.string.daily_completed_at,
                     localizedTime(noLive.completedAt, locale),
                 ),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
         composeTestRule
             .onNodeWithText(
                 localizedString(
@@ -954,7 +1044,8 @@ class DailyScreenPresentationTest {
                     localizedTime(requireNotNull(timed.startedAt), locale),
                     localizedTime(timed.completedAt, locale),
                 ),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
     }
 
     private fun localizedDate(

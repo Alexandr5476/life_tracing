@@ -14,11 +14,14 @@ import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -34,6 +37,11 @@ import com.alexandr5476.lifetracing.library.LibraryMutation
 import com.alexandr5476.lifetracing.library.LibraryOrganization
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceController
 import com.alexandr5476.lifetracing.live.ExpandedSequenceCommand
+import com.alexandr5476.lifetracing.plan.PlanController
+import com.alexandr5476.lifetracing.plan.PlanExecutionCommit
+import com.alexandr5476.lifetracing.plan.PlanExecutionController
+import com.alexandr5476.lifetracing.plan.PlanExecutionDurableCommand
+import com.alexandr5476.lifetracing.plan.PlanMutation
 import com.alexandr5476.lifetracing.runtime.AndroidMonotonicClock
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
@@ -100,6 +108,10 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> ExpandedLiveSequenceController = {
         error("Expanded live Sequence is unavailable")
     },
+    private val planExecutionControllerFactory: (PlanActionIdentity) -> PlanExecutionController = {
+        error("Plan execution is unavailable")
+    },
+    private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -121,6 +133,11 @@ class LifeTracingRuntimeGraph internal constructor(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
     ): ExpandedLiveSequenceController = expandedLiveSequenceControllerFactory(executionId)
 
+    fun createPlanExecutionController(expectedIdentity: PlanActionIdentity): PlanExecutionController =
+        planExecutionControllerFactory(expectedIdentity)
+
+    fun createPlanController(): PlanController = planControllerFactory()
+
     companion object {
         @Volatile
         private var instance: LifeTracingRuntimeGraph? = null
@@ -132,19 +149,29 @@ class LifeTracingRuntimeGraph internal constructor(
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
+            val exceptionHandler =
+                kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                    Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
+                }
             val scope =
                 kotlinx.coroutines.CoroutineScope(
                     kotlinx.coroutines.SupervisorJob() +
                         kotlinx.coroutines.Dispatchers.IO +
-                        kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
-                            Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
-                        },
+                        exceptionHandler,
+                )
+            val uiScope =
+                kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.SupervisorJob() +
+                        kotlinx.coroutines.Dispatchers.Main.immediate +
+                        exceptionHandler,
                 )
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
             val libraryRepository = LibraryRepository.create(context)
             val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)
+            val planReadRepository = PlanReadRepository.create(context)
+            val planRepository = PlanRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -161,7 +188,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 DailyControllerOwner {
                     val dailyReadRepository = DailyReadRepository.create(context)
                     DailyController(
-                        scope,
+                        uiScope,
                         { query ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 dailyReadRepository.getDaily(query)
@@ -187,19 +214,23 @@ class LifeTracingRuntimeGraph internal constructor(
                                 }
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         coordinator.semanticGeneration,
                         { coordinator.displayBaseline },
                         wallClock,
                         ZoneId::systemDefault,
                         { ActivityExecutionPauseId(UUID.randomUUID().toString()) },
-                        CoroutineLocalDateBoundaryScheduler(scope),
+                        CoroutineLocalDateBoundaryScheduler(uiScope),
                         mutationGate = coordinator.mutationGate,
                     )
                 },
                 { onPinnedOrderCommitted ->
                     StartActivityController(
-                        scope,
+                        uiScope,
                         { limit ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.getRecent(limit)
@@ -241,10 +272,14 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executeLauncherCommand(command, activityCommandRepository, libraryRepository)
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         wallClock,
                         ZoneId::systemDefault,
-                        CoroutinePreflightScheduler(scope),
+                        CoroutinePreflightScheduler(uiScope),
                         initialLiveConflict = { target ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.hasLiveLaunchConflict(target.id, target.revision)
@@ -256,7 +291,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 {
                     LibraryController(
-                        scope,
+                        uiScope,
                         {
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 libraryRepository.getRoot()
@@ -296,7 +331,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     ActivityTemplateEditorController(
-                        scope,
+                        uiScope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -318,7 +353,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { target ->
                     SequenceTemplateEditorController(
-                        scope,
+                        uiScope,
                         target,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -412,7 +447,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 },
                 { executionId ->
                     ExpandedLiveSequenceController(
-                        scope,
+                        uiScope,
                         executionId,
                         { id ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -424,7 +459,11 @@ class LifeTracingRuntimeGraph internal constructor(
                                 executeExpandedSequenceCommand(command, repository)
                             }
                         },
-                        coordinator::onRuntimeStateChanged,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
                         coordinator.semanticGeneration,
                         { coordinator.displayBaseline },
                         { after ->
@@ -434,6 +473,65 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         wallClock,
                         mutationGate = coordinator.mutationGate,
+                    )
+                },
+                { expectedIdentity ->
+                    PlanExecutionController(
+                        uiScope,
+                        expectedIdentity,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                planReadRepository.getFocusedAction(id)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                repository.getActiveSession() != null
+                            }
+                        },
+                        { command ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                executePlanCommand(command, repository)
+                            }
+                        },
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                coordinator.onRuntimeStateChanged()
+                            }
+                        },
+                        wallClock,
+                        ZoneId::systemDefault,
+                        CoroutinePreflightScheduler(uiScope),
+                        mutationGate = coordinator.mutationGate,
+                    )
+                },
+                {
+                    PlanController(
+                        uiScope,
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) { planReadRepository.getWeek(query) }
+                        },
+                        {
+                            query,
+                            limit,
+                            after,
+                            ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { libraryRepository.getReusablePlanCatalog(query, limit, after) }
+                        },
+                        { query ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { planReadRepository.getCancelledPage(query) }
+                        },
+                        { command ->
+                            withContext(
+                                kotlinx.coroutines.Dispatchers.IO,
+                            ) { executePlanMutation(command, planRepository) }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
                     )
                 },
             )
@@ -454,6 +552,62 @@ private fun SequenceEditorActivityChoice.toCatalogItem() =
     )
 
 private const val ACTIVITY_PICKER_PAGE_SIZE = 50
+
+internal fun executePlanMutation(
+    command: PlanMutation,
+    repository: PlanRepository,
+) {
+    when (command) {
+        is PlanMutation.CreateActivity ->
+            repository.createActivityPlanFromTemplate(
+                command.id,
+                command.schedule,
+                command.at,
+            )
+        is PlanMutation.CreateSequence ->
+            repository.createSequencePlanFromTemplate(
+                command.id,
+                command.schedule,
+                command.at,
+            )
+        is PlanMutation.Reschedule -> repository.reschedulePlanEntry(command.identity, command.schedule, command.at)
+        is PlanMutation.Cancel -> repository.cancelPlan(command.identity, command.at)
+        is PlanMutation.Restore -> repository.restoreCancelledPlan(command.identity, command.at)
+        is PlanMutation.Update -> repository.updatePlanFromTemplate(command.identity, command.at)
+    }
+}
+
+internal fun executePlanCommand(
+    command: PlanExecutionDurableCommand,
+    repository: LiveSessionRepository,
+): PlanExecutionCommit =
+    when (command.identity.kind) {
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY -> {
+            val execution =
+                if (command.noLive) {
+                    repository.completeNoLiveActivityFromPlan(
+                        command.identity,
+                        command.at,
+                        command.zoneId,
+                        valueOverrides = command.values,
+                    )
+                } else {
+                    repository.startActivityFromPlan(
+                        command.identity,
+                        command.at,
+                        command.at,
+                        command.zoneId,
+                        command.values,
+                    )
+                }
+            PlanExecutionCommit.Activity(execution.id, !command.noLive)
+        }
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.SEQUENCE -> {
+            require(!command.noLive && command.values.isEmpty()) { "Sequence start does not accept Activity values" }
+            val state = repository.startSequenceFromPlan(command.identity, command.at, command.at, command.zoneId)
+            PlanExecutionCommit.Sequence(state.execution.id)
+        }
+    }
 
 internal fun executeExpandedSequenceCommand(
     command: ExpandedSequenceCommand,
