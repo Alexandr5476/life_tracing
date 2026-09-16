@@ -204,14 +204,14 @@ private fun Field(
                 LifeTracingOutlinedTextField(
                     draft.numberText,
                     { onAction(ManualActivityEntryAction.EditNumber(field.id, it)) },
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
                 )
             CustomFieldType.TEXT ->
                 LifeTracingOutlinedTextField(
                     draft.text,
                     { onAction(ManualActivityEntryAction.EditText(field.id, it)) },
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
                 )
             CustomFieldType.CATEGORY ->
@@ -242,6 +242,7 @@ private fun Field(
                     },
                 )
             },
+            modifier = Modifier.testTag("manual-history-field-${field.id.value}-missing"),
         ) {
             Text(
                 stringResource(
@@ -279,9 +280,26 @@ private fun Command(
         is ManualEntryCommand.Failure -> {
             IssueText(command.issue)
             LifeTracingSecondaryButton(
-                onClick = { onAction(ManualActivityEntryAction.Save) },
-                enabled = command.issue != ManualEntryIssue.TEMPLATE_STALE,
-            ) { Text(stringResource(R.string.history_retry)) }
+                onClick = {
+                    onAction(
+                        if (command.issue == ManualEntryIssue.TEMPLATE_STALE) {
+                            ManualActivityEntryAction.ReviewStaleTemplate
+                        } else {
+                            ManualActivityEntryAction.Save
+                        },
+                    )
+                },
+            ) {
+                Text(
+                    stringResource(
+                        if (command.issue == ManualEntryIssue.TEMPLATE_STALE) {
+                            R.string.manual_history_review_current
+                        } else {
+                            R.string.history_retry
+                        },
+                    ),
+                )
+            }
         }
         is ManualEntryCommand.Overlap -> {
             Text(stringResource(R.string.manual_history_overlap), color = MaterialTheme.colorScheme.error)

@@ -22,12 +22,14 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import com.alexandr5476.lifetracing.daily.DailyAction
 import com.alexandr5476.lifetracing.daily.DailyLoadState
+import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
@@ -52,9 +54,11 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
@@ -68,6 +72,10 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
 import com.alexandr5476.lifetracing.editor.inputIsInvalid
 import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
+import com.alexandr5476.lifetracing.history.ManualActivityEntryAction
+import com.alexandr5476.lifetracing.history.ManualActivityEntryController
+import com.alexandr5476.lifetracing.history.ManualEntryCommand
+import com.alexandr5476.lifetracing.history.ManualEntryLoad
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
@@ -75,6 +83,10 @@ import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -86,11 +98,173 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun productionManualHistoryBackBeforeCommitCreatesNothing() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual cancelled $suffix"
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = Instant.now(),
+                )
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_back)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null
+        }
+
+        assertEquals(0, durableCount("activity_snapshots", template.id.value))
+        assertEquals(0, durableCount("activity_executions", template.id.value))
+        val today = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate()
+        assertTrue(
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(today.minusDays(1), today.plusDays(1)), 100),
+                ).none { it is CompletedActivityHistoryRoot && it.title == name },
+        )
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun overlapCancelThroughControllerAndRealRepositoryLeavesNoResidueThenProceedWritesOnce() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual overlap $suffix"
+        val zone = ZoneId.systemDefault()
+        val date = LocalDate.now(zone).minusDays(2)
+        val startLocal = date.atTime(10, 0)
+        val endLocal = date.atTime(11, 0)
+        val start = startLocal.toInstant(zone.rules.getValidOffsets(startLocal).single())
+        val end = endLocal.toInstant(zone.rules.getValidOffsets(endLocal).single())
+        val commandAt = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(
+                        name,
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("number"),
+                                    0,
+                                    "Number",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = 0,
+                                    defaultNumberScaled = 0,
+                                ),
+                            ),
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+        val repository = ActivityCommandRepository.create(composeTestRule.activity)
+        repository.addManualTimed(
+            com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                .Template(template.id),
+            start,
+            end,
+            commandAt,
+            zone,
+            expectedTemplateRevision = template.revision,
+        )
+        val planRepository = PlanRepository.create(composeTestRule.activity)
+        val plan =
+            planRepository.createActivityPlanFromTemplate(
+                template.id,
+                PlanSchedule.FloatingDay(date),
+                commandAt.plusMillis(1),
+            )
+        val library = LibraryRepository.create(composeTestRule.activity)
+        val statistics = StatisticsRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val before =
+            listOf(
+                tableCount("activity_snapshots"),
+                tableCount("activity_executions"),
+                tableCount("activity_execution_field_values"),
+            )
+        val recentBefore = library.getRecent(1_000)
+        val planBefore = planRepository.getPlan(plan.id)
+        val statisticsBefore =
+            statistics.activitySeries(requireNotNull(template.statisticsSeriesId), StatisticsPeriod.AllTime)
+        val activeBefore = live.getActiveRuntime()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val controller =
+            ManualActivityEntryController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                { emptyList() },
+                { id -> withContext(Dispatchers.IO) { authoring.getActivityTemplate(id) } },
+                { from, to -> withContext(Dispatchers.IO) { repository.overlapsCompletedHistory(from, to) } },
+                { proposal ->
+                    withContext(Dispatchers.IO) {
+                        repository.addManualTimed(
+                            proposal.source,
+                            requireNotNull(proposal.startedAt),
+                            proposal.completedAt,
+                            proposal.commandAt,
+                            proposal.zoneId,
+                            proposal.values,
+                            proposal.expectedTemplateRevision,
+                        )
+                    }
+                },
+                { error("No-live writer is not used") },
+                { commandAt.plusSeconds(1) },
+                { zone },
+            )
+        controller.dispatch(ManualActivityEntryAction.Select(template.id))
+        composeTestRule.waitUntil(5_000) { controller.state.value.selected is ManualEntryLoad.Content }
+        val formatter = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm")
+        controller.dispatch(ManualActivityEntryAction.EditStarted(formatter.format(startLocal)))
+        controller.dispatch(ManualActivityEntryAction.EditCompleted(formatter.format(endLocal)))
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Overlap }
+        controller.dispatch(ManualActivityEntryAction.CancelOverlap)
+
+        assertEquals(
+            before,
+            listOf(
+                tableCount("activity_snapshots"),
+                tableCount("activity_executions"),
+                tableCount("activity_execution_field_values"),
+            ),
+        )
+        assertEquals(recentBefore, library.getRecent(1_000))
+        assertEquals(planBefore, planRepository.getPlan(plan.id))
+        assertEquals(
+            statisticsBefore,
+            statistics.activitySeries(requireNotNull(template.statisticsSeriesId), StatisticsPeriod.AllTime),
+        )
+        assertEquals(activeBefore, live.getActiveRuntime())
+
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Overlap }
+        controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Committed }
+        assertEquals(before[1] + 1, tableCount("activity_executions"))
+        assertEquals(before[2] + 1, tableCount("activity_execution_field_values"))
+        controller.close()
+    }
 
     @Test
     fun productionManualHistoryDraftSurvivesRecreationAndCommitsExactlyOnceToCanonicalHistory() {
@@ -138,6 +312,119 @@ class MainActivityRouteSessionTest {
                 )
         val matching = roots.filterIsInstance<CompletedActivityHistoryRoot>().count { it.title == name }
         assertEquals(1, matching)
+    }
+
+    @Test
+    fun manualHistoryCommitHeldAcrossRecreationIgnoresDuplicateSaveProceedAndBack() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual in flight $suffix"
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(1),
+                )
+        val repository = ActivityCommandRepository.create(composeTestRule.activity)
+        val enteredWriter = CompletableDeferred<Unit>()
+        val releaseWriter = CompletableDeferred<Unit>()
+        val controller =
+            ManualActivityEntryController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                {
+                    listOf(
+                        ReusableActivityCatalogItem(
+                            template.id,
+                            template.name,
+                            template.timeTrackingMode,
+                            template.timerTarget,
+                            null,
+                            null,
+                            null,
+                            null,
+                        ),
+                    )
+                },
+                { id -> template.takeIf { it.id == id } },
+                { _, _ -> false },
+                { error("Timed writer is not used") },
+                { proposal ->
+                    withContext(Dispatchers.IO) {
+                        enteredWriter.complete(Unit)
+                        releaseWriter.await()
+                        repository.addManualNoLive(
+                            proposal.source,
+                            proposal.completedAt,
+                            proposal.commandAt,
+                            proposal.zoneId,
+                            proposal.values,
+                            proposal.expectedTemplateRevision,
+                        )
+                    }
+                },
+                { now },
+                { ZoneId.of("Europe/Berlin") },
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.manualActivityEntryRouteSessions.acquire { controller }
+        }
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        controller.dispatch(ManualActivityEntryAction.EditCompleted("2025-10-26 02:30"))
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.command is ManualEntryCommand.Invalid &&
+                controller.state.value.completedAmbiguity != null
+        }
+        controller.dispatch(ManualActivityEntryAction.SelectCompletedOffset(ZoneOffset.ofHours(1)))
+        val reviewedDraft = controller.state.value
+        val draftSession = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(draftSession, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        assertEquals(reviewedDraft.completedText, controller.state.value.completedText)
+        assertEquals(
+            reviewedDraft.completedAmbiguity?.selectedOffset,
+            controller.state.value.completedAmbiguity
+                ?.selectedOffset,
+        )
+        composeTestRule.onNodeWithTag("manual-history-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            enteredWriter.isCompleted && controller.state.value.command is ManualEntryCommand.Committing
+        }
+
+        controller.dispatch(ManualActivityEntryAction.Save)
+        controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        val retained = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(retained, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        assertTrue(controller.state.value.command is ManualEntryCommand.Committing)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+
+        releaseWriter.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null &&
+                composeTestRule
+                    .onAllNodesWithText(composeTestRule.activity.getString(R.string.history_title))
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+        }
+
+        val eventDate = LocalDate.of(2025, 10, 26)
+        val matching =
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(eventDate, eventDate), 100))
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .count { it.title == name }
+        assertEquals(1, matching)
+        assertEquals(1, durableCount("activity_executions", template.id.value))
     }
 
     @Test
@@ -1775,9 +2062,14 @@ class MainActivityRouteSessionTest {
 
     private fun recreateActivity() {
         val previous = composeTestRule.activity
+        val coordinator = LifeTracingRuntimeGraph.from(previous).coordinator
+        val semanticGeneration = coordinator.semanticGeneration.value
         composeTestRule.runOnUiThread(previous::recreate)
         composeTestRule.waitUntil(5_000) {
-            runCatching { composeTestRule.activity !== previous }.getOrDefault(false)
+            runCatching {
+                composeTestRule.activity !== previous &&
+                    coordinator.semanticGeneration.value > semanticGeneration
+            }.getOrDefault(false)
         }
         composeTestRule.waitForIdle()
     }
@@ -1832,6 +2124,22 @@ class MainActivityRouteSessionTest {
                         "WHERE s.source_template_id = ?"
                 }
             db.rawQuery(query, arrayOf(sourceTemplateId)).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
+        }
+    }
+
+    private fun tableCount(table: String): Int {
+        require(table in setOf("activity_snapshots", "activity_executions", "activity_execution_field_values"))
+        val database =
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                composeTestRule.activity.getDatabasePath("lifetracing.db").path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+            )
+        return database.use { db ->
+            db.rawQuery("SELECT COUNT(*) FROM $table", null).use { cursor ->
                 check(cursor.moveToFirst())
                 cursor.getInt(0)
             }

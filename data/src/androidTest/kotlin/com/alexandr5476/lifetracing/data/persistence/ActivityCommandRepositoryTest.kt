@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionTransitions
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -49,6 +50,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
+import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -244,6 +246,7 @@ class ActivityCommandRepositoryTest {
             )
 
         assertEquals(Duration.ofMinutes(14), timer.activeDuration)
+        assertEquals(Duration.ofMinutes(10), repository.getHistory(timer.id)?.snapshot?.timerTarget)
         assertNull(database.activeSessionDao().get())
         assertTrue(timer.values.any { it is NumberExecutionValue && it.scaledValue == 0L })
         assertFalse(timer.values.any { it is TextExecutionValue })
@@ -379,6 +382,7 @@ class ActivityCommandRepositoryTest {
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
                 Instant.parse("2026-08-19T00:00:00Z"),
             )
+        val templateBefore = requireNotNull(database.activityTemplateDao().getById("projected"))
         val repository = repository("manual-projection")
         val zone = ZoneId.of("Europe/Moscow")
         val start = Instant.parse("2026-08-20T20:50:00Z")
@@ -450,9 +454,155 @@ class ActivityCommandRepositoryTest {
                 .activitySeries(StatisticsSeriesId("projected-series"), StatisticsPeriod.AllTime)
                 .executionCount,
         )
+        assertEquals(
+            Duration.ofMinutes(40),
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("projected-series"), StatisticsPeriod.AllTime)
+                .durations.total,
+        )
         assertEquals(commandAt.toEpochMilli(), database.activityTemplateDao().getUserState("projected")?.lastUsedAtMs)
-        assertEquals(1L, database.activityTemplateDao().getById("projected")?.revision)
-        assertEquals(PlanEntryStatus.PLANNED, plans.getPlan(matchingPlan.id)?.status)
+        val templateAfter = requireNotNull(database.activityTemplateDao().getById("projected"))
+        assertEquals(templateBefore.revision, templateAfter.revision)
+        assertEquals(templateBefore.statisticsSeriesId, templateAfter.statisticsSeriesId)
+        assertEquals(matchingPlan, plans.getPlan(matchingPlan.id))
+    }
+
+    @Test
+    fun manualNoLiveReloadsThroughHistoryDailyAndStatisticsWithoutFabricatedDuration() {
+        template("projected-no-live", TimeTrackingMode.NO_LIVE_TRACKING, fields = true)
+        val repository = repository("manual-no-live-projection")
+        val zone = ZoneId.of("Europe/Moscow")
+        val completedAt = Instant.parse("2026-08-21T12:00:00Z")
+        val commandAt = Instant.parse("2026-08-22T00:00:00Z")
+        val execution =
+            repository.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("projected-no-live")),
+                completedAt,
+                commandAt,
+                zone,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("projected-no-live-number")),
+                        ActivityEntryValue.Number(0),
+                    ),
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("projected-no-live-category")),
+                        ActivityEntryValue.Category(
+                            ActivityEntryOptionReference.Template(CategoryOptionId("projected-no-live-option-b")),
+                        ),
+                    ),
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("projected-no-live-text")),
+                        ActivityEntryValue.Text(""),
+                    ),
+                ),
+                expectedTemplateRevision = 1,
+            )
+
+        assertNull(execution.startedAt)
+        assertNull(execution.activeDuration)
+        val history = HistoryReadRepository(database)
+        val detail = requireNotNull(history.getActivityDetail(execution.id))
+        assertNull(detail.root.activeDuration)
+        assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
+        assertEquals("B", (detail.fields[2].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals(ActivityHistoryActualValue.Text(""), detail.fields[1].actualValue)
+        assertEquals(
+            listOf(execution.id),
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(
+                        HistoryDateRange(execution.primaryLocalDate, execution.primaryLocalDate),
+                        10,
+                    ),
+                ).map { (it as com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot).executionId },
+        )
+        assertTrue(
+            DailyReadRepository(database, CurrentZoneIdProvider { zone })
+                .getDaily(DailyQuery(execution.primaryLocalDate, commandAt, 10))
+                .completedHistory
+                .any {
+                    it is com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot &&
+                        it.executionId == execution.id
+                },
+        )
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        val series = statistics.activitySeries(StatisticsSeriesId("projected-no-live-series"), StatisticsPeriod.AllTime)
+        assertEquals(1L, series.executionCount)
+        assertEquals(0L, series.durations.sampleCount)
+        assertEquals(Duration.ZERO, series.durations.total)
+        val number =
+            statistics.numberFieldStatistics(
+                StatisticsSeriesId("projected-no-live-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("projected-no-live-number")),
+                StatisticsPeriod.AllTime,
+            )
+        assertEquals(1L, number.recordedCount)
+        assertEquals(0L, number.values.totalScaled.longValueExact())
+        val category =
+            statistics.categoryFieldStatistics(
+                StatisticsSeriesId("projected-no-live-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("projected-no-live-category")),
+                StatisticsPeriod.AllTime,
+            )
+        val selectedCategory =
+            category.values.single {
+                it.id == StatisticsCategoryOptionId.ActivitySource(CategoryOptionId("projected-no-live-option-b"))
+            }
+        assertEquals("B", selectedCategory.displayLabel)
+        assertEquals(1L, selectedCategory.count)
+        assertEquals(
+            StatisticsCategoryOptionId.ActivitySource(CategoryOptionId("projected-no-live-option-b")),
+            selectedCategory.id,
+        )
+    }
+
+    @Test
+    fun manualHistoryLeavesNoActivityRunningSequenceAndPausedSequenceRuntimeExactlyUnchanged() {
+        template("matrix-manual", TimeTrackingMode.NO_LIVE_TRACKING)
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.seedSeries()
+        fixtures.activity("matrix-stopwatch", "STOPWATCH")
+        fixtures.sequence("matrix-sequence", listOf("matrix-stopwatch"))
+        val live = liveRepository("matrix")
+        val repository = repository("matrix-manual")
+
+        fun writeAndAssertUnchanged(commandAtSeconds: Long) {
+            val session = live.getActiveSession()
+            val runtime = live.getActiveRuntime()
+            repository.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("matrix-manual")),
+                instant(10),
+                instant(commandAtSeconds),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 1,
+            )
+            assertEquals(session, live.getActiveSession())
+            assertEquals(runtime, live.getActiveRuntime())
+        }
+
+        writeAndAssertUnchanged(20)
+
+        live.startStandaloneTimedActivityFromSnapshot(
+            ActivitySnapshotId("matrix-stopwatch"),
+            instant(100),
+            instant(100),
+            ZoneOffset.UTC,
+        )
+        writeAndAssertUnchanged(120)
+        live.completeActiveActivity(instant(200))
+
+        val sequence =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("matrix-sequence"),
+                instant(300),
+                instant(300),
+                ZoneOffset.UTC,
+            )
+        writeAndAssertUnchanged(320)
+
+        live.pauseActiveSequence(sequence.execution.id, instant(330))
+        writeAndAssertUnchanged(340)
     }
 
     @Test
@@ -1172,6 +1322,20 @@ class ActivityCommandRepositoryTest {
                 nextOptionId ?: { ActivitySnapshotCategoryOptionId(next("option")) },
             ),
             nextExecutionId ?: { ActivityExecutionId(next("manual-execution")) },
+        )
+    }
+
+    private fun liveRepository(prefix: String): LiveSessionRepository {
+        var id = 0
+
+        fun next(kind: String) = "$prefix-$kind-${id++}"
+        return LiveSessionRepository(
+            database,
+            { ActivityExecutionId(next("activity")) },
+            { ActivityExecutionPauseId(next("pause")) },
+            { SequenceExecutionId(next("sequence")) },
+            { SequenceOccurrenceId(next("occurrence")) },
+            { SequenceIntervalId(next("interval")) },
         )
     }
 

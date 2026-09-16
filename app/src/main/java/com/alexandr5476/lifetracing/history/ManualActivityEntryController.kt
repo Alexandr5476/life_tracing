@@ -40,6 +40,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import java.time.format.ResolverStyle
 
 enum class ManualEntryIssue {
     INVALID_DATE_TIME,
@@ -196,6 +197,8 @@ sealed interface ManualActivityEntryAction {
     data object ProceedOverlap : ManualActivityEntryAction
 
     data object CancelOverlap : ManualActivityEntryAction
+
+    data object ReviewStaleTemplate : ManualActivityEntryAction
 }
 
 /** One retained, non-durable History entry flow. Durable writes remain in ActivityCommandRepository. */
@@ -215,6 +218,7 @@ class ManualActivityEntryController internal constructor(
     private var mutation: Job? = null
     private var mutationInFlight = false
     private var catalogRequestCursor: ReusableActivityCatalogItem? = null
+    private var staleTemplateId: ActivityTemplateId? = null
     private var closed = false
 
     init {
@@ -245,6 +249,7 @@ class ManualActivityEntryController internal constructor(
                         command = ManualEntryCommand.Idle,
                     )
                 }
+            ManualActivityEntryAction.ReviewStaleTemplate -> staleTemplateId?.let(::select)
         }
     }
 
@@ -255,6 +260,7 @@ class ManualActivityEntryController internal constructor(
 
     private fun loadCatalog(cursor: ReusableActivityCatalogItem?) {
         if (mutableState.value.catalog is ManualEntryLoad.Loading) return
+        val retainedPage = (mutableState.value.catalog as? ManualEntryLoad.Content)?.value
         catalogRequestCursor = cursor
         mutableState.update { it.copy(catalog = ManualEntryLoad.Loading) }
         scope.launch {
@@ -262,9 +268,10 @@ class ManualActivityEntryController internal constructor(
                 val page = readCatalog(cursor)
                 require(page.size <= pageSize) { "Catalog page exceeded its declared bound" }
                 if (!closed) {
+                    val shown = retainedPage.takeIf { cursor != null && page.isEmpty() && !it.isNullOrEmpty() } ?: page
                     val next = page.lastOrNull().takeIf { page.size == pageSize && it != cursor }
                     mutableState.update {
-                        it.copy(catalog = ManualEntryLoad.Content(page), nextCatalogCursor = next)
+                        it.copy(catalog = ManualEntryLoad.Content(shown), nextCatalogCursor = next)
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -284,6 +291,7 @@ class ManualActivityEntryController internal constructor(
 
     private fun select(id: ActivityTemplateId) {
         if (mutationInFlight || mutableState.value.selected is ManualEntryLoad.Loading) return
+        staleTemplateId = null
         mutableState.update { it.copy(selected = ManualEntryLoad.Loading, command = ManualEntryCommand.Idle) }
         scope.launch {
             try {
@@ -440,6 +448,7 @@ class ManualActivityEntryController internal constructor(
                     if (!closed) invalid.present()
                 } catch (_: StaleLauncherTargetException) {
                     if (!closed) {
+                        staleTemplateId = template.id
                         mutableState.update {
                             it.copy(
                                 selected = ManualEntryLoad.Failure(ManualEntryIssue.TEMPLATE_STALE),
@@ -618,4 +627,5 @@ class ManualActivityEntryController internal constructor(
 }
 
 internal const val MANUAL_ACTIVITY_CATALOG_PAGE_SIZE = 50
-private val DATE_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
+private val DATE_TIME: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm").withResolverStyle(ResolverStyle.STRICT)

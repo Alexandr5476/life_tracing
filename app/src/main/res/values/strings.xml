@@ -480,6 +480,7 @@
     <string name="manual_history_invalid_category">Choose an available category.</string>
     <string name="manual_history_template_unavailable">The selected activity is no longer available.</string>
     <string name="manual_history_template_stale">The selected activity changed. Select it again to review the current configuration.</string>
+    <string name="manual_history_review_current">Review current activity</string>
     <string name="manual_history_catalog_failure">Unable to load activities.</string>
     <string name="manual_history_template_failure">Unable to load the selected activity.</string>
     <string name="manual_history_save_failure">Unable to save the completed activity.</string>

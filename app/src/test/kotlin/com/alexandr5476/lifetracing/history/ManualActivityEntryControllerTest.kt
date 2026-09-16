@@ -1,4 +1,4 @@
-@file:Suppress("MaxLineLength")
+@file:Suppress("LongParameterList", "MaxLineLength")
 
 package com.alexandr5476.lifetracing.history
 
@@ -146,6 +146,35 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun impossibleCalendarAndClockValuesAreRejectedWithoutSmartNormalization() =
+        runBlocking {
+            listOf(
+                "2026-02-30 10:00",
+                "2026-02-29 10:00",
+                "2026-01-01 24:00",
+                "2026-01-01 10:60",
+                "not-a-time",
+            ).forEach { invalid ->
+                val fixture = fixture(timedTemplate(TimeTrackingMode.NO_LIVE_TRACKING))
+                fixture.select()
+                fixture.controller.dispatch(ManualActivityEntryAction.EditCompleted(invalid))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+
+                assertEquals(ManualEntryIssue.INVALID_DATE_TIME, invalidIssue(fixture), invalid)
+                assertTrue(fixture.noLive.isEmpty(), invalid)
+                fixture.close()
+            }
+
+            val leapYear = fixture(timedTemplate(TimeTrackingMode.NO_LIVE_TRACKING))
+            leapYear.select()
+            leapYear.controller.dispatch(ManualActivityEntryAction.EditCompleted("2024-02-29 10:00"))
+            leapYear.controller.dispatch(ManualActivityEntryAction.Save)
+            leapYear.awaitCommitted()
+            assertEquals(Instant.parse("2024-02-29T10:00:00Z"), leapYear.noLive.single().completedAt)
+            leapYear.close()
+        }
+
+    @Test
     fun overlapExposesExactlyZoneRulesCandidatesAndEachChoiceProducesItsInstant() =
         runBlocking {
             val expectedOffsets = BERLIN.rules.getValidOffsets(java.time.LocalDateTime.parse("2026-10-25T02:30"))
@@ -254,6 +283,25 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun emptyPageAfterExactlyFullTerminalPageRetainsTheLastUsableBoundedPage() =
+        runBlocking {
+            val fixture = fixture(timedTemplate(), catalogItemCount = MANUAL_ACTIVITY_CATALOG_PAGE_SIZE * 2)
+            fixture.awaitCatalog()
+            fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+            fixture.awaitCatalogReads(2)
+            val terminal = (fixture.controller.state.value.catalog as ManualEntryLoad.Content).value
+            assertEquals(MANUAL_ACTIVITY_CATALOG_PAGE_SIZE, terminal.size)
+
+            fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+            fixture.awaitCatalogReads(3)
+
+            assertEquals(terminal, (fixture.controller.state.value.catalog as ManualEntryLoad.Content).value)
+            assertTrue(!fixture.controller.state.value.canLoadMore)
+            assertEquals(listOf<Int?>(null, 49, 99), fixture.catalogAfterIndexes)
+            fixture.close()
+        }
+
+    @Test
     fun overlapProceedResamplesCommandTimeAndZoneChangeRestartsChecking() =
         runBlocking {
             val fixture = fixture(timedTemplate(), zone = BERLIN, overlap = true)
@@ -336,6 +384,39 @@ class ManualActivityEntryControllerTest {
             fixture.close()
         }
 
+    @Test
+    fun staleSelectionCanRereadItsExactSourceAfterPagingAwayWithoutAutoCommit() =
+        runBlocking {
+            val fixture = fixture(timedTemplate(), catalogPages = true)
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+            fixture.awaitCatalogReads(2)
+            assertTrue(
+                (fixture.controller.state.value.catalog as ManualEntryLoad.Content).value.none { it.id == TEMPLATE_ID },
+            )
+
+            fixture.currentTemplate = timedTemplate().copy(name = "Changed", revision = 8)
+            fixture.writerFailure = StaleLauncherTargetException()
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitFailure()
+            fixture.writerFailure = null
+
+            fixture.controller.dispatch(ManualActivityEntryAction.ReviewStaleTemplate)
+            fixture.awaitSelectedRevision(8)
+
+            val selected = (fixture.controller.state.value.selected as ManualEntryLoad.Content).value
+            assertEquals("Changed", selected.name)
+            assertEquals(8, selected.revision)
+            assertEquals(ManualEntryCommand.Idle, fixture.controller.state.value.command)
+            assertTrue(fixture.timed.isEmpty())
+            assertEquals(listOf(TEMPLATE_ID, TEMPLATE_ID), fixture.templateReads)
+
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitted()
+            assertEquals(8, fixture.timed.single().expectedTemplateRevision)
+            fixture.close()
+        }
+
     private fun invalidIssue(fixture: Fixture) =
         (fixture.controller.state.value.command as ManualEntryCommand.Invalid).issue
 
@@ -345,8 +426,9 @@ class ManualActivityEntryControllerTest {
         overlap: Boolean = false,
         timedWriteGate: CompletableDeferred<Unit>? = null,
         catalogPages: Boolean = false,
+        catalogItemCount: Int? = null,
     ): Fixture {
-        val fixture = Fixture(template, timedWriteGate, zone, catalogPages)
+        val fixture = Fixture(template, timedWriteGate, zone, catalogPages, catalogItemCount)
         fixture.overlap = overlap
         fixture.controller =
             ManualActivityEntryController(
@@ -354,7 +436,7 @@ class ManualActivityEntryControllerTest {
                 fixture::readCatalog,
                 { id ->
                     fixture.templateReads += id
-                    template.takeIf { it.id == id }
+                    fixture.currentTemplate.takeIf { it.id == id }
                 },
                 { _, _ ->
                     fixture.overlapChecks++
@@ -381,10 +463,11 @@ class ManualActivityEntryControllerTest {
     }
 
     private class Fixture(
-        val template: ActivityTemplate,
+        var currentTemplate: ActivityTemplate,
         val timedWriteGate: CompletableDeferred<Unit>?,
         var zone: ZoneId,
         val catalogPages: Boolean,
+        val catalogItemCount: Int?,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         lateinit var controller: ManualActivityEntryController
@@ -407,10 +490,11 @@ class ManualActivityEntryControllerTest {
                     ?.removePrefix("catalog-")
                     ?.toIntOrNull()
             catalogAfterIndexes += afterIndex
-            if (!catalogPages) return listOf(catalogItem(TEMPLATE_ID, template))
+            if (!catalogPages && catalogItemCount == null) return listOf(catalogItem(TEMPLATE_ID, currentTemplate))
             val start = (afterIndex ?: -1) + 1
-            return (start until start + MANUAL_ACTIVITY_CATALOG_PAGE_SIZE).map { index ->
-                catalogItem(if (index == 0) TEMPLATE_ID else ActivityTemplateId("catalog-$index"), template)
+            val end = minOf(start + MANUAL_ACTIVITY_CATALOG_PAGE_SIZE, catalogItemCount ?: Int.MAX_VALUE)
+            return (start until end).map { index ->
+                catalogItem(if (index == 0) TEMPLATE_ID else ActivityTemplateId("catalog-$index"), currentTemplate)
                     .copy(name = "Catalog $index")
             }
         }
@@ -441,6 +525,13 @@ class ManualActivityEntryControllerTest {
 
         suspend fun awaitSelected() =
             withTimeout(2_000) { controller.state.first { it.selected is ManualEntryLoad.Content } }
+
+        suspend fun awaitSelectedRevision(revision: Long) =
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.selected as? ManualEntryLoad.Content)?.value?.revision == revision
+                }
+            }
 
         suspend fun awaitOverlap() =
             withTimeout(2_000) { controller.state.first { it.command is ManualEntryCommand.Overlap } }

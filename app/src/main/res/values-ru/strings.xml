@@ -480,6 +480,7 @@
     <string name="manual_history_invalid_category">Выберите доступную категорию.</string>
     <string name="manual_history_template_unavailable">Выбранное действие больше недоступно.</string>
     <string name="manual_history_template_stale">Выбранное действие изменилось. Выберите его снова и проверьте новую конфигурацию.</string>
+    <string name="manual_history_review_current">Проверить текущее действие</string>
     <string name="manual_history_catalog_failure">Не удалось загрузить действия.</string>
     <string name="manual_history_template_failure">Не удалось загрузить выбранное действие.</string>
     <string name="manual_history_save_failure">Не удалось сохранить завершённое действие.</string>
