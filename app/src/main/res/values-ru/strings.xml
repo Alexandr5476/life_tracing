@@ -449,4 +449,21 @@
     <string name="expanded_sequence_command_rejected">Это действие больше недоступно.</string>
     <string name="expanded_sequence_target_stale">Этот шаг изменился. Текущее выполнение не затронуто.</string>
     <string name="expanded_sequence_coordination_failed">Команда сохранена, но требуется восстановить координацию выполнения.</string>
+    <string name="manual_history_title">Добавить завершённое действие</string>
+    <string name="manual_history_choose_activity">Выберите действие</string>
+    <string name="manual_history_loading">Загрузка действий…</string>
+    <string name="manual_history_load_more">Загрузить ещё</string>
+    <string name="manual_history_template_loading">Загрузка действия…</string>
+    <string name="manual_history_started">Начало (ГГГГ-ММ-ДД ЧЧ:ММ)</string>
+    <string name="manual_history_completed">Завершение (ГГГГ-ММ-ДД ЧЧ:ММ)</string>
+    <string name="manual_history_datetime_hint">Местные дата и время</string>
+    <string name="manual_history_timer_target">Настроенная длительность таймера: %1$s</string>
+    <string name="manual_history_configured">Настроено: %1$s</string>
+    <string name="manual_history_actual">Фактическое значение</string>
+    <string name="manual_history_set_missing">Нет значения</string>
+    <string name="manual_history_save">Сохранить завершённое действие</string>
+    <string name="manual_history_saving">Сохранение…</string>
+    <string name="manual_history_overlap">Этот интервал пересекается с существующей историей.</string>
+    <string name="manual_history_cancel">Отмена</string>
+    <string name="manual_history_proceed">Всё равно сохранить</string>
 </resources>

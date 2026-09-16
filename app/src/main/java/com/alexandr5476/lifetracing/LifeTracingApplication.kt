@@ -1,4 +1,4 @@
-@file:Suppress("LongParameterList")
+@file:Suppress("LongParameterList", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing
 
@@ -30,6 +30,7 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.history.HistoryController
 import com.alexandr5476.lifetracing.history.HistoryDetailController
+import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -116,6 +117,9 @@ class LifeTracingRuntimeGraph internal constructor(
     },
     private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
     private val historyControllerFactory: () -> HistoryController = { error("History is unavailable") },
+    private val manualActivityEntryControllerFactory: () -> ManualActivityEntryController = {
+        error("Manual History entry is unavailable")
+    },
     private val activityHistoryDetailControllerFactory: (
         com.alexandr5476.lifetracing.domain.ActivityExecutionId,
     ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.ActivityHistoryDetail> = {
@@ -153,6 +157,8 @@ class LifeTracingRuntimeGraph internal constructor(
     fun createPlanController(): PlanController = planControllerFactory()
 
     fun createHistoryController(): HistoryController = historyControllerFactory()
+
+    fun createManualActivityEntryController(): ManualActivityEntryController = manualActivityEntryControllerFactory()
 
     fun createActivityHistoryDetailController(
         executionId: com.alexandr5476.lifetracing.domain.ActivityExecutionId,
@@ -568,6 +574,54 @@ class LifeTracingRuntimeGraph internal constructor(
                         { query ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 historyReadRepository.getCompletedRoots(query)
+                            }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
+                    )
+                },
+                {
+                    ManualActivityEntryController(
+                        uiScope,
+                        { after ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getReusableActivityCatalog(
+                                    com.alexandr5476.lifetracing.history.MANUAL_ACTIVITY_CATALOG_PAGE_SIZE,
+                                    after,
+                                )
+                            }
+                        },
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        { startedAt, completedAt ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(startedAt, completedAt)
+                            }
+                        },
+                        { proposal ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.addManualTimed(
+                                    proposal.source,
+                                    requireNotNull(proposal.startedAt),
+                                    proposal.completedAt,
+                                    proposal.commandAt,
+                                    proposal.zoneId,
+                                    proposal.values,
+                                )
+                            }
+                        },
+                        { proposal ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.addManualNoLive(
+                                    proposal.source,
+                                    proposal.completedAt,
+                                    proposal.commandAt,
+                                    proposal.zoneId,
+                                    proposal.values,
+                                )
                             }
                         },
                         java.time.Instant::now,

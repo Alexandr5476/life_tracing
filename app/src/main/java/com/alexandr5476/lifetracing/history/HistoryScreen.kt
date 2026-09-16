@@ -68,12 +68,13 @@ import java.time.format.FormatStyle
 fun HistoryRoute(
     controller: HistoryController,
     onBack: () -> Unit,
+    onAddCompletedActivity: () -> Unit,
     onOpenActivity: (CompletedActivityHistoryRoot) -> Unit,
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit,
 ) {
     LaunchedEffect(controller) { controller.onRouteEntered() }
     val state by controller.state.collectAsState()
-    HistoryScreen(state, controller::dispatch, onBack, onOpenActivity, onOpenSequence)
+    HistoryScreen(state, controller::dispatch, onBack, onAddCompletedActivity, onOpenActivity, onOpenSequence)
 }
 
 @Composable
@@ -101,6 +102,7 @@ internal fun HistoryScreen(
     state: HistoryPresentationState,
     onAction: (HistoryAction) -> Unit,
     onBack: () -> Unit = {},
+    onAddCompletedActivity: () -> Unit = {},
     onOpenActivity: (CompletedActivityHistoryRoot) -> Unit = {},
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit = {},
 ) {
@@ -113,6 +115,10 @@ internal fun HistoryScreen(
                 Text(stringResource(R.string.history_title), style = MaterialTheme.typography.headlineSmall)
                 TextButton(onClick = onBack) { Text(stringResource(R.string.history_back)) }
             }
+            LifeTracingPrimaryButton(
+                onClick = onAddCompletedActivity,
+                modifier = Modifier.testTag("history-add-completed-activity"),
+            ) { Text(stringResource(R.string.manual_history_title)) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 LifeTracingSecondaryButton(
                     onClick = { onAction(HistoryAction.Older) },

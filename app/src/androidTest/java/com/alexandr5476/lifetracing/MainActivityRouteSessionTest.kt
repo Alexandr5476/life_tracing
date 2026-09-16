@@ -112,7 +112,7 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithText(name).performScrollTo().performClick()
         composeTestRule.onNodeWithText(name).assertIsDisplayed()
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
 
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
@@ -156,7 +156,7 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.onNode(hasTestTag("plan-day-$selected")).performClick()
         composeTestRule.waitUntil(5_000) { controller.state.value.selectedDate == selected }
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(
             controller,
             composeTestRule.activity.planControllerOwner.get { error("Plan controller must survive recreation") },
@@ -358,7 +358,7 @@ class MainActivityRouteSessionTest {
             .performTextReplacement("Edited $suffix")
         composeTestRule.onNodeWithTag("plan-execution-submit").performScrollTo().assertIsEnabled()
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
         val recreatedDraft = requireNotNull(retained.quickDraft)
         assertEquals("7.5", recreatedDraft.numberTexts[missing.id])
@@ -524,7 +524,7 @@ class MainActivityRouteSessionTest {
                 ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
         }
         val retained = requireNotNull(composeTestRule.activity.planExecutionRouteSessions.activeSession)
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
 
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
@@ -967,7 +967,7 @@ class MainActivityRouteSessionTest {
                 sequence.revision,
             )
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         expandSequence(started.execution.id)
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -994,7 +994,7 @@ class MainActivityRouteSessionTest {
         assertNotSame(firstSession, retained)
         assertEquals(started.execution.id, retained.executionId)
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(retained, composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
         assertEquals(started.execution.id, retained.controller.executionId)
@@ -1046,7 +1046,7 @@ class MainActivityRouteSessionTest {
         )
 
         live.endSequenceEarly(second.execution.id, Instant.now())
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession ==
                 null
@@ -1072,7 +1072,7 @@ class MainActivityRouteSessionTest {
             first.controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "bad", 0, 0) {}
         }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(first, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
@@ -1148,7 +1148,7 @@ class MainActivityRouteSessionTest {
         val manipulationDraft =
             second.controller.state.value
                 .readyDraft()
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
         assertEquals(
@@ -1195,7 +1195,7 @@ class MainActivityRouteSessionTest {
             existing.controller.state.value.load is SequenceTemplateEditorLoad.Ready
         }
         composeTestRule.runOnUiThread { existing.controller.updateDraft { it.copy(shortComment = "retained") } }
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(existing, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
         assertEquals(
@@ -1224,7 +1224,7 @@ class MainActivityRouteSessionTest {
         val pending = LibraryTemplateId.Activity(ActivityTemplateId("pending"))
         composeTestRule.runOnUiThread { first.interaction.select(pending) }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(first, composeTestRule.activity.startActivityRouteSessions.activeSession)
@@ -1273,7 +1273,7 @@ class MainActivityRouteSessionTest {
             .onNode(hasText(composeTestRule.activity.getString(R.string.activity_editor_name)) and hasSetTextAction())
             .performTextInput(name)
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(session, composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession)
@@ -1329,7 +1329,7 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) { publicationStarted.isCompleted }
 
         try {
-            composeTestRule.activityRule.scenario.recreate()
+            recreateActivity()
 
             val recreated =
                 composeTestRule.activity.libraryControllerOwner.get {
@@ -1378,7 +1378,7 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.libraryControllerOwner.refreshIfInitialized()
         }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
 
         assertSame(
             controller,
@@ -1720,6 +1720,15 @@ class MainActivityRouteSessionTest {
         composeTestRule
             .onNode(expandSequence, useUnmergedTree = true)
             .performSemanticsAction(SemanticsActions.OnClick) { it() }
+    }
+
+    private fun recreateActivity() {
+        val previous = composeTestRule.activity
+        composeTestRule.runOnUiThread(previous::recreate)
+        composeTestRule.waitUntil(5_000) {
+            runCatching { composeTestRule.activity !== previous }.getOrDefault(false)
+        }
+        composeTestRule.waitForIdle()
     }
 
     private fun openDailyPlan(

@@ -449,4 +449,21 @@
     <string name="expanded_sequence_command_rejected">That action is no longer available.</string>
     <string name="expanded_sequence_target_stale">That step changed. The current sequence was not modified.</string>
     <string name="expanded_sequence_coordination_failed">The command was saved, but runtime coordination needs recovery.</string>
+    <string name="manual_history_title">Add completed activity</string>
+    <string name="manual_history_choose_activity">Choose an activity</string>
+    <string name="manual_history_loading">Loading activities…</string>
+    <string name="manual_history_load_more">Load more</string>
+    <string name="manual_history_template_loading">Loading activity…</string>
+    <string name="manual_history_started">Started (YYYY-MM-DD HH:MM)</string>
+    <string name="manual_history_completed">Completed (YYYY-MM-DD HH:MM)</string>
+    <string name="manual_history_datetime_hint">Local date and time</string>
+    <string name="manual_history_timer_target">Configured timer target: %1$s</string>
+    <string name="manual_history_configured">Configured: %1$s</string>
+    <string name="manual_history_actual">Actual value</string>
+    <string name="manual_history_set_missing">Set missing</string>
+    <string name="manual_history_save">Save completed activity</string>
+    <string name="manual_history_saving">Saving…</string>
+    <string name="manual_history_overlap">This interval overlaps existing history.</string>
+    <string name="manual_history_cancel">Cancel</string>
+    <string name="manual_history_proceed">Save anyway</string>
 </resources>
