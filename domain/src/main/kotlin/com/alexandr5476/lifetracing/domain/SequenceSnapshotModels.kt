@@ -93,6 +93,16 @@ data class SequenceConfigSnapshot(
     val nodes: List<SequenceSnapshotNode> = emptyList(),
 )
 
+fun SequenceConfigSnapshot.firstEffectiveStep(): SequenceSnapshotActivityStep? =
+    nodes
+        .sortedBy(SequenceSnapshotNode::position)
+        .firstNotNullOfOrNull { node ->
+            when (node) {
+                is SequenceSnapshotActivityStep -> node
+                is SequenceSnapshotRepeatBlock -> node.children.minByOrNull(SequenceSnapshotActivityStep::position)
+            }
+        }
+
 object SequenceConfigSnapshotValidator {
     fun requireValid(snapshot: SequenceConfigSnapshot) {
         if (snapshot.sourceTemplateId != null) {

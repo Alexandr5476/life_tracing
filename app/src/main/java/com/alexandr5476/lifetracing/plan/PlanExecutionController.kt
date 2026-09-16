@@ -19,11 +19,10 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
-import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
-import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.domain.firstEffectiveStep
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
@@ -396,13 +395,7 @@ internal fun preparePlanExecutionTarget(action: FocusedPlanAction): PreparedPlan
         is FocusedPlanAction.Snapshot.Sequence -> {
             require(action.identity.kind == PlanTrackableKind.SEQUENCE)
             require(action.identity.sequenceSnapshotId == snapshot.value.id)
-            val node = requireNotNull(snapshot.value.nodes.minByOrNull { it.position }) { "Sequence has no Steps" }
-            val step =
-                when (node) {
-                    is SequenceSnapshotActivityStep -> node
-                    is SequenceSnapshotRepeatBlock ->
-                        requireNotNull(node.children.minByOrNull { it.position }) { "Repeat has no Steps" }
-                }
+            val step = requireNotNull(snapshot.value.firstEffectiveStep()) { "Sequence has no Steps" }
             val activity = requireNotNull(snapshot.activitySnapshots[step.activitySnapshotId])
             val countdown =
                 EffectiveSequenceStepSettingsResolver

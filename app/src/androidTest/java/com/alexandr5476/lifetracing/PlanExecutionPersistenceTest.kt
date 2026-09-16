@@ -24,7 +24,9 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
@@ -359,7 +361,7 @@ class PlanExecutionPersistenceTest {
         }
 
     @Test
-    fun realSequenceControllerUsesFrozenFirstStepPrecedenceAndCommitsOnce() =
+    fun realSequenceControllerSkipsLeadingEmptyRepeatAndUsesFrozenFirstStepPrecedence() =
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()
             val live = LiveSessionRepository.create(context)
@@ -389,6 +391,7 @@ class PlanExecutionPersistenceTest {
                             sequenceCountdown = Duration.ofSeconds(7),
                             beforeEachCountdown = Duration.ofSeconds(3),
                             stepOverride = Duration.ofSeconds(2),
+                            leadingEmptyRepeat = true,
                         ),
                         createdAt = at.plusMillis(100),
                     )
@@ -410,7 +413,7 @@ class PlanExecutionPersistenceTest {
 
                 val state = requireNotNull(authoring.getSequenceTemplateAuthoringState(sequence.id))
                 val currentDraft = state.toAuthoringDraft()
-                val currentStep = currentDraft.nodes.single() as SequenceNodeDraft.Step
+                val currentStep = currentDraft.nodes.last() as SequenceNodeDraft.Step
                 authoring.saveSequenceTemplate(
                     sequence.id,
                     sequence.revision,
@@ -436,12 +439,19 @@ class PlanExecutionPersistenceTest {
                 controller.awaitCommitted()
 
                 val runtime = live.getActiveRuntime() as ActiveSequenceRuntime
-                val frozenStep = runtime.snapshot.nodes.single() as SequenceSnapshotActivityStep
+                val emptyRepeat = runtime.snapshot.nodes.first() as SequenceSnapshotRepeatBlock
+                val frozenStep = runtime.snapshot.nodes.last() as SequenceSnapshotActivityStep
+                val firstOccurrence = runtime.execution.occurrences.single()
                 assertEquals(plan.id, runtime.execution.planEntryId)
                 assertEquals(plan.sequenceSnapshotId, runtime.snapshot.id)
+                assertTrue(emptyRepeat.children.isEmpty())
                 assertEquals(Duration.ofSeconds(7), runtime.snapshot.settings.sequenceStartCountdown)
                 assertEquals(Duration.ofSeconds(3), runtime.snapshot.settings.beforeEachStepCountdown)
                 assertEquals(Duration.ofSeconds(2), frozenStep.overrides.startCountdown)
+                assertEquals(
+                    frozenStep.id,
+                    firstOccurrence.sourceSequenceSnapshotNodeId,
+                )
                 assertNull(requireNotNull(runtime.currentChild).planEntryId)
                 assertEquals(1L, countPlanSequenceExecutions(context, plan.id.value))
                 assertEquals(0L, countPlanActivityExecutions(context, plan.id.value))
@@ -572,6 +582,7 @@ class PlanExecutionPersistenceTest {
         sequenceCountdown: Duration,
         beforeEachCountdown: Duration = Duration.ZERO,
         stepOverride: Duration? = null,
+        leadingEmptyRepeat: Boolean = false,
     ) = SequenceTemplateDraft(
         name,
         null,
@@ -581,16 +592,25 @@ class PlanExecutionPersistenceTest {
                 beforeEachStepCountdown = beforeEachCountdown,
             ),
         nodes =
-            listOf(
-                SequenceNodeDraft.Step(
-                    ActivityStepDraft(
-                        DraftIdentity.New("step"),
-                        0,
-                        StepActivityDraft.FromTemplate(activityId),
-                        SequenceStepOverrides(startCountdown = stepOverride),
+            buildList {
+                if (leadingEmptyRepeat) {
+                    add(
+                        SequenceNodeDraft.Repeat(
+                            SequenceRepeatBlockDraft(DraftIdentity.New("empty-repeat"), 0, 1, emptyList()),
+                        ),
+                    )
+                }
+                add(
+                    SequenceNodeDraft.Step(
+                        ActivityStepDraft(
+                            DraftIdentity.New("step"),
+                            if (leadingEmptyRepeat) 1 else 0,
+                            StepActivityDraft.FromTemplate(activityId),
+                            SequenceStepOverrides(startCountdown = stepOverride),
+                        ),
                     ),
-                ),
-            ),
+                )
+            },
     )
 
     private fun clearLiveSession(

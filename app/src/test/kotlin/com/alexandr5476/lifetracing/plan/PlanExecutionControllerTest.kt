@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.SequenceConfigSnapshot
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.StalePlanActionException
@@ -161,6 +162,13 @@ class PlanExecutionControllerTest {
     @Test
     fun sequenceUsesFrozenFirstStepOverridePrecedence() {
         val action = sequenceAction(Duration.ofSeconds(7), Duration.ofSeconds(2))
+        assertEquals(Duration.ofSeconds(2), preparePlanExecutionTarget(action).countdown)
+    }
+
+    @Test
+    fun sequenceSkipsLeadingEmptyRepeatAndUsesLaterFrozenStepOverridePrecedence() {
+        val action = sequenceAction(Duration.ofSeconds(7), Duration.ofSeconds(2), leadingEmptyRepeat = true)
+
         assertEquals(Duration.ofSeconds(2), preparePlanExecutionTarget(action).countdown)
     }
 
@@ -316,6 +324,7 @@ class PlanExecutionControllerTest {
         fun sequenceAction(
             sequenceCountdown: Duration,
             stepCountdown: Duration,
+            leadingEmptyRepeat: Boolean = false,
         ): FocusedPlanAction {
             val activity = activityAction(Duration.ofSeconds(99)).snapshot as FocusedPlanAction.Snapshot.Activity
             val sequence =
@@ -339,14 +348,26 @@ class PlanExecutionControllerTest {
                         com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting.ACTIVE,
                     ),
                     nodes =
-                        listOf(
-                            SequenceSnapshotActivityStep(
-                                SequenceSnapshotNodeId("step"),
-                                0,
-                                activity.value.id,
-                                SequenceStepOverrides(startCountdown = stepCountdown),
-                            ),
-                        ),
+                        buildList {
+                            if (leadingEmptyRepeat) {
+                                add(
+                                    SequenceSnapshotRepeatBlock(
+                                        SequenceSnapshotNodeId("empty-repeat"),
+                                        0,
+                                        1,
+                                        emptyList(),
+                                    ),
+                                )
+                            }
+                            add(
+                                SequenceSnapshotActivityStep(
+                                    SequenceSnapshotNodeId("step"),
+                                    if (leadingEmptyRepeat) 1 else 0,
+                                    activity.value.id,
+                                    SequenceStepOverrides(startCountdown = stepCountdown),
+                                ),
+                            )
+                        },
                 )
             return FocusedPlanAction(
                 identity(PlanTrackableKind.SEQUENCE, sequence = sequence.id),
