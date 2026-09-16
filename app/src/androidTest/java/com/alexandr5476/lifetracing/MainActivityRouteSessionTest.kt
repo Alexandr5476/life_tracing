@@ -90,6 +90,41 @@ class MainActivityRouteSessionTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun productionHistoryDetailRetainsDurableIdentityAndReloadsAfterActivityRecreation() {
+        val suffix = System.nanoTime().toString()
+        val name = "Recreated history $suffix"
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now,
+                )
+        LibraryRepository
+            .create(composeTestRule.activity)
+            .completeNoLiveActivityFromTemplate(template.id, now, now, ZoneId.systemDefault())
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performScrollTo().performClick()
+        composeTestRule.onNodeWithText(name).assertIsDisplayed()
+
+        composeTestRule.activityRule.scenario.recreate()
+
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).assertIsDisplayed()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_title)).assertIsDisplayed()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).assertIsDisplayed()
+    }
+
+    @Test
     @Suppress("LongMethod") // One production route is exercised across recreation, exit, refresh, and all transients.
     fun productionPlanAffordanceUsesOneDestinationBackAndFreshTransientRouteState() {
         val planLabel = composeTestRule.activity.getString(R.string.daily_plan)

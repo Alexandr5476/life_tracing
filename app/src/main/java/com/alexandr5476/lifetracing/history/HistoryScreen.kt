@@ -43,12 +43,15 @@ import com.alexandr5476.lifetracing.domain.ActivityHistoryField
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
+import com.alexandr5476.lifetracing.domain.SequenceInterval
+import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -171,7 +174,7 @@ private fun HistoryRootRow(
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 Text(
-                    historyRootTiming(root.startedAt, root.completedAt, root.activeDuration),
+                    stringResource(R.string.history_active_duration, durationOrMissing(root.activeDuration)),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
@@ -183,17 +186,13 @@ private fun HistoryRootRow(
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 Text(
-                    historyRootTiming(root.startedAt, root.completedAt, root.activeDuration),
+                    stringResource(R.string.history_active_duration, durationText(root.activeDuration)),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                Text(stringResource(R.string.history_pause_duration, durationText(root.pauseDuration)))
+                Text(stringResource(R.string.history_wall_duration, durationText(root.wallDuration)))
                 Text(
-                    stringResource(
-                        if (root.status == SequenceExecutionStatus.ENDED_EARLY) {
-                            R.string.history_ended_early
-                        } else {
-                            R.string.history_completed
-                        },
-                    ),
+                    stringResource(sequenceStatusResource(root.status)),
                     style = MaterialTheme.typography.labelLarge,
                 )
             }
@@ -225,17 +224,17 @@ private fun <T> HistoryDetailSurface(
 }
 
 @Composable
-private fun ActivityDetail(detail: ActivityHistoryDetail) {
+internal fun ActivityDetail(detail: ActivityHistoryDetail) {
     Text(detail.root.title, style = MaterialTheme.typography.headlineSmall)
     detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
     Text(
         historyRootTimingInZone(
             detail.root.startedAt,
             detail.root.completedAt,
-            detail.root.activeDuration,
             detail.originalZoneId,
         ),
     )
+    Text(stringResource(R.string.history_active_duration, durationOrMissing(detail.root.activeDuration)))
     Text(
         historyTracking(detail.root.timeTrackingMode, detail.root.timerTarget),
         style = MaterialTheme.typography.labelLarge,
@@ -246,35 +245,31 @@ private fun ActivityDetail(detail: ActivityHistoryDetail) {
 }
 
 @Composable
-private fun SequenceDetail(detail: SequenceHistoryDetail) {
+internal fun SequenceDetail(detail: SequenceHistoryDetail) {
     Text(detail.root.title, style = MaterialTheme.typography.headlineSmall)
     detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
     Text(
         historyRootTimingInZone(
             detail.root.startedAt,
             detail.root.completedAt,
-            detail.root.activeDuration,
             detail.originalZoneId,
         ),
     )
     Text(
-        stringResource(
-            if (detail.root.status ==
-                SequenceExecutionStatus.ENDED_EARLY
-            ) {
-                R.string.history_ended_early
-            } else {
-                R.string.history_completed
-            },
-        ),
+        stringResource(sequenceStatusResource(detail.root.status)),
         style = MaterialTheme.typography.labelLarge,
     )
+    Text(stringResource(R.string.history_active_duration, durationText(detail.root.activeDuration)))
+    Text(stringResource(R.string.history_pause_duration, durationText(detail.root.pauseDuration)))
+    Text(stringResource(R.string.history_wall_duration, durationText(detail.root.wallDuration)))
     if (detail.fields.isNotEmpty()) {
         Text(stringResource(R.string.history_sequence_fields), style = MaterialTheme.typography.titleMedium)
         detail.fields.forEach { HistoryField(it) }
     }
     Text(stringResource(R.string.history_occurrences), style = MaterialTheme.typography.titleMedium)
     detail.occurrences.forEach { occurrence -> Occurrence(detail.originalZoneId, occurrence) }
+    Text(stringResource(R.string.history_intervals), style = MaterialTheme.typography.titleMedium)
+    detail.intervals.forEach { interval -> HistoryInterval(detail.originalZoneId, interval) }
 }
 
 @Composable
@@ -282,33 +277,55 @@ private fun Occurrence(
     zoneId: ZoneId,
     occurrence: SequenceHistoryOccurrence,
 ) {
-    HistoryCard {
+    HistoryCard(modifier = Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
         Text(
             stringResource(R.string.history_occurrence, occurrence.runtimePosition + 1, occurrence.activity.title),
             style = MaterialTheme.typography.titleMedium,
         )
         occurrence.activity.shortComment?.let { Text(it) }
-        when {
-            occurrence.isRuntimeAdded -> Text(stringResource(R.string.history_runtime_added))
-            occurrence.repeatIteration != null ->
-                Text(stringResource(R.string.history_repeat_iteration, requireNotNull(occurrence.repeatIteration)))
-            occurrence.sourceSequenceSnapshotNodeId != null -> Text(stringResource(R.string.history_source_step))
-        }
+        Text(stringResource(occurrenceStatusResource(occurrence.status)), style = MaterialTheme.typography.labelLarge)
+        if (occurrence.sourceSequenceSnapshotNodeId != null) Text(stringResource(R.string.history_source_step))
+        occurrence.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
+        if (occurrence.isRuntimeAdded) Text(stringResource(R.string.history_runtime_added))
         occurrence.enteredAt?.let { Text(stringResource(R.string.history_entered, historyInstant(it, zoneId))) }
         occurrence.completedAt?.let {
             Text(
                 stringResource(R.string.history_occurrence_completed, historyInstant(it, zoneId)),
             )
         }
+        Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
         occurrence.activity.mainValue?.let { HistoryField(it) }
-        if (occurrence.isDeletedFromHistory) {
+        if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION && occurrence.child == null) {
             Text(stringResource(R.string.history_deleted_child), style = MaterialTheme.typography.labelLarge)
         } else {
             occurrence.child?.let { child ->
-                child.activeDuration?.let { Text(stringResource(R.string.history_actual_duration, durationText(it))) }
+                child.startedAt?.let {
+                    Text(stringResource(R.string.history_child_started, historyInstant(it, zoneId)))
+                }
+                child.completedAt?.let {
+                    Text(stringResource(R.string.history_child_completed, historyInstant(it, zoneId)))
+                }
+                Text(stringResource(R.string.history_actual_duration, durationOrMissing(child.activeDuration)))
                 child.fields.forEach { HistoryField(it) }
             }
         }
+    }
+}
+
+@Composable
+private fun HistoryInterval(
+    zoneId: ZoneId,
+    interval: SequenceInterval,
+) {
+    HistoryCard(modifier = Modifier.testTag("history-interval-${interval.id.value}")) {
+        Text(stringResource(intervalKindResource(interval.kind)), style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.history_interval_started, historyInstant(interval.startedAt, zoneId)))
+        Text(
+            stringResource(
+                R.string.history_interval_ended,
+                interval.endedAt?.let { historyInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value),
+            ),
+        )
     }
 }
 
@@ -355,6 +372,7 @@ private fun HistoryFieldContent(
     Text(stringResource(R.string.history_configured_value, configuredText), style = MaterialTheme.typography.bodySmall)
 }
 
+@Composable
 private fun historyConfigured(
     value: Any,
     labels: Map<*, String>,
@@ -364,16 +382,19 @@ private fun historyConfigured(
     when (value) {
         ActivityHistoryConfiguredValue.Missing,
         SequenceHistoryConfiguredValue.Missing,
-        -> "—"
+        -> stringResource(R.string.history_missing_value)
         is ActivityHistoryConfiguredValue.Number -> numberText(value.scaledValue, precision, unit)
         is SequenceHistoryConfiguredValue.Number -> numberText(value.scaledValue, precision, unit)
-        is ActivityHistoryConfiguredValue.Category -> labels[value.optionId] ?: "—"
-        is SequenceHistoryConfiguredValue.Category -> labels[value.optionId] ?: "—"
+        is ActivityHistoryConfiguredValue.Category ->
+            labels[value.optionId] ?: stringResource(R.string.history_missing_value)
+        is SequenceHistoryConfiguredValue.Category ->
+            labels[value.optionId] ?: stringResource(R.string.history_missing_value)
         is ActivityHistoryConfiguredValue.Text -> value.value
         is SequenceHistoryConfiguredValue.Text -> value.value
-        else -> "—"
+        else -> stringResource(R.string.history_missing_value)
     }
 
+@Composable
 private fun historyActual(
     value: Any,
     precision: Int?,
@@ -382,14 +403,14 @@ private fun historyActual(
     when (value) {
         ActivityHistoryActualValue.Missing,
         SequenceHistoryActualValue.Missing,
-        -> "—"
+        -> stringResource(R.string.history_missing_value)
         is ActivityHistoryActualValue.Number -> numberText(value.scaledValue, precision, unit)
         is SequenceHistoryActualValue.Number -> numberText(value.scaledValue, precision, unit)
         is ActivityHistoryActualValue.Category -> value.label
         is SequenceHistoryActualValue.Category -> value.label
         is ActivityHistoryActualValue.Text -> value.value
         is SequenceHistoryActualValue.Text -> value.value
-        else -> "—"
+        else -> stringResource(R.string.history_missing_value)
     }
 
 @Composable
@@ -447,22 +468,13 @@ private fun historyDate(date: LocalDate): String {
 }
 
 @Composable
-private fun historyRootTiming(
-    start: Instant?,
-    end: Instant,
-    duration: Duration?,
-): String = historyRootTimingInZone(start, end, duration, ZoneId.systemDefault())
-
-@Composable
 private fun historyRootTimingInZone(
     start: Instant?,
     end: Instant,
-    duration: Duration?,
     zoneId: ZoneId,
 ): String {
     val endText = historyInstant(end, zoneId)
-    val time = start?.let { "${historyInstant(it, zoneId)} – $endText" } ?: endText
-    return duration?.let { "$time · ${durationText(it)}" } ?: time
+    return start?.let { "${historyInstant(it, zoneId)} – $endText" } ?: endText
 }
 
 @Composable
@@ -486,8 +498,39 @@ private fun historyTracking(
 ): String =
     when (mode) {
         TimeTrackingMode.NO_LIVE_TRACKING -> stringResource(R.string.history_no_live)
-        TimeTrackingMode.TIMER -> stringResource(R.string.history_timer_target, target?.let(::durationText) ?: "—")
+        TimeTrackingMode.TIMER -> stringResource(R.string.history_timer_target, durationOrMissing(target))
         TimeTrackingMode.STOPWATCH -> stringResource(R.string.history_stopwatch)
+    }
+
+@Composable
+private fun durationOrMissing(value: Duration?): String =
+    value?.let(::durationText) ?: stringResource(R.string.history_missing_value)
+
+private fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
+    when (status) {
+        SequenceExecutionStatus.COMPLETED -> R.string.history_completed
+        SequenceExecutionStatus.ENDED_EARLY -> R.string.history_ended_early
+        SequenceExecutionStatus.RUNNING,
+        SequenceExecutionStatus.PAUSED,
+        -> error("Only terminal Sequence status is representable in History")
+    }
+
+private fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
+    when (status) {
+        RuntimeOccurrenceStatus.NOT_STARTED -> R.string.history_occurrence_not_started
+        RuntimeOccurrenceStatus.CURRENT -> R.string.history_occurrence_current
+        RuntimeOccurrenceStatus.COMPLETED -> R.string.history_occurrence_performed
+        RuntimeOccurrenceStatus.SKIPPED -> R.string.history_occurrence_skipped
+        RuntimeOccurrenceStatus.DELETED_EXECUTION -> R.string.history_occurrence_deleted_execution
+    }
+
+private fun intervalKindResource(kind: SequenceIntervalKind): Int =
+    when (kind) {
+        SequenceIntervalKind.ACTIVE_STEP -> R.string.history_interval_active_step
+        SequenceIntervalKind.STEP_PAUSE -> R.string.history_interval_step_pause
+        SequenceIntervalKind.EXPLICIT_PAUSE -> R.string.history_interval_explicit_pause
+        SequenceIntervalKind.IMPLICIT_IDLE -> R.string.history_interval_implicit_idle
+        SequenceIntervalKind.TRANSITION_COUNTDOWN -> R.string.history_interval_transition_countdown
     }
 
 private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))

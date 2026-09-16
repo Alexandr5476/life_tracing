@@ -80,9 +80,8 @@ class HistoryController internal constructor(
     @Volatile
     private var closed = false
 
-    init {
-        load(mutableState.value.window)
-    }
+    @Volatile
+    private var routeActive = false
 
     fun dispatch(action: HistoryAction) {
         when (action) {
@@ -96,15 +95,19 @@ class HistoryController internal constructor(
     }
 
     fun onRouteEntered() {
-        if (!closed) load(mutableState.value.window)
+        if (closed || routeActive) return
+        routeActive = true
+        load(mutableState.value.window)
     }
 
     fun onRouteExited() {
+        routeActive = false
         generation.incrementAndGet()
     }
 
     fun close() {
         closed = true
+        routeActive = false
         generation.incrementAndGet()
     }
 

@@ -77,9 +77,15 @@ class MainActivityNavigationTest {
         val backStack = dailyInitialBackStack.toMutableList()
 
         backStack.openHistory()
+        backStack.openHistory()
         backStack.openActivityHistoryDetail("activity")
+        backStack.openActivityHistoryDetail("other")
+        backStack.removeActivityHistoryDetail("stale")
+        assertEquals(listOf(DailyRoot, HistoryRoot, ActivityHistoryDetailRoot("activity")), backStack)
         backStack.removeActivityHistoryDetail("activity")
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
         backStack.openSequenceHistoryDetail("sequence")
+        backStack.openSequenceHistoryDetail("other")
         backStack.removeSequenceHistoryDetail("other")
 
         assertEquals(listOf(DailyRoot, HistoryRoot, SequenceHistoryDetailRoot("sequence")), backStack)
