@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.daily.DailyController
 import com.alexandr5476.lifetracing.daily.DailyRuntimeCommand
 import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
@@ -27,6 +28,8 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
+import com.alexandr5476.lifetracing.history.HistoryController
+import com.alexandr5476.lifetracing.history.HistoryDetailController
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -112,6 +115,17 @@ class LifeTracingRuntimeGraph internal constructor(
         error("Plan execution is unavailable")
     },
     private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
+    private val historyControllerFactory: () -> HistoryController = { error("History is unavailable") },
+    private val activityHistoryDetailControllerFactory: (
+        com.alexandr5476.lifetracing.domain.ActivityExecutionId,
+    ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.ActivityHistoryDetail> = {
+        error("Activity History is unavailable")
+    },
+    private val sequenceHistoryDetailControllerFactory: (
+        com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> = {
+        error("Sequence History is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -137,6 +151,18 @@ class LifeTracingRuntimeGraph internal constructor(
         planExecutionControllerFactory(expectedIdentity)
 
     fun createPlanController(): PlanController = planControllerFactory()
+
+    fun createHistoryController(): HistoryController = historyControllerFactory()
+
+    fun createActivityHistoryDetailController(
+        executionId: com.alexandr5476.lifetracing.domain.ActivityExecutionId,
+    ): HistoryDetailController<com.alexandr5476.lifetracing.domain.ActivityHistoryDetail> =
+        activityHistoryDetailControllerFactory(executionId)
+
+    fun createSequenceHistoryDetailController(
+        executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ): HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> =
+        sequenceHistoryDetailControllerFactory(executionId)
 
     companion object {
         @Volatile
@@ -172,6 +198,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val activityCommandRepository = ActivityCommandRepository.create(context)
             val planReadRepository = PlanReadRepository.create(context)
             val planRepository = PlanRepository.create(context)
+            val historyReadRepository = HistoryReadRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -534,6 +561,32 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         coordinator.semanticGeneration,
                     )
+                },
+                {
+                    HistoryController(
+                        uiScope,
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getCompletedRoots(query)
+                            }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
+                    )
+                },
+                { executionId ->
+                    HistoryDetailController(uiScope) {
+                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            historyReadRepository.getActivityDetail(executionId)
+                        }
+                    }
+                },
+                { executionId ->
+                    HistoryDetailController(uiScope) {
+                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            historyReadRepository.getSequenceDetail(executionId)
+                        }
+                    }
                 },
             )
         }

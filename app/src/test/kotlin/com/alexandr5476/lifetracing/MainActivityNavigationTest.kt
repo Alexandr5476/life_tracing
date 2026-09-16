@@ -73,6 +73,22 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun historyAndDurableDetailRoutesUseTheExistingDailyBackStack() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openHistory()
+        backStack.openActivityHistoryDetail("activity")
+        backStack.removeActivityHistoryDetail("activity")
+        backStack.openSequenceHistoryDetail("sequence")
+        backStack.removeSequenceHistoryDetail("other")
+
+        assertEquals(listOf(DailyRoot, HistoryRoot, SequenceHistoryDetailRoot("sequence")), backStack)
+        backStack.removeSequenceHistoryDetail("sequence")
+        backStack.removeHistory()
+        assertEquals(listOf(DailyRoot), backStack)
+    }
+
+    @Test
     fun planExecutionKeepsOneExactRouteAndRestoredRouteNormalizesToItsOrigin() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
         val first = planIdentity("plan-a")

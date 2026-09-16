@@ -1,4 +1,4 @@
-@file:Suppress("LongParameterList", "TooManyFunctions")
+@file:Suppress("LongParameterList", "MaxLineLength", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing
 
@@ -32,6 +32,10 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
+import com.alexandr5476.lifetracing.history.ActivityHistoryDetailRoute
+import com.alexandr5476.lifetracing.history.HistoryControllerOwner
+import com.alexandr5476.lifetracing.history.HistoryRoute
+import com.alexandr5476.lifetracing.history.SequenceHistoryDetailRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
@@ -72,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     internal val planExecutionRouteSessions by lazy {
         ViewModelProvider(this)[PlanExecutionRouteSessionOwner::class.java]
     }
+    internal val historyControllerOwner by lazy { ViewModelProvider(this)[HistoryControllerOwner::class.java] }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,6 +91,7 @@ class MainActivity : AppCompatActivity() {
                 expandedLiveSequenceRouteSessions = expandedLiveSequenceRouteSessions,
                 planControllerOwner = planControllerOwner,
                 planExecutionRouteSessions = planExecutionRouteSessions,
+                historyControllerOwner = historyControllerOwner,
             )
         }
     }
@@ -105,6 +111,16 @@ data object LibraryRoot : NavKey
 
 @Serializable
 data object PlanRoot : NavKey
+
+@Serializable data object HistoryRoot : NavKey
+
+@Serializable data class ActivityHistoryDetailRoot(
+    val executionId: String,
+) : NavKey
+
+@Serializable data class SequenceHistoryDetailRoot(
+    val executionId: String,
+) : NavKey
 
 @Serializable
 data class PlanExecutionRoot(
@@ -144,6 +160,7 @@ internal fun LifeTracingApp(
     expandedLiveSequenceRouteSessions: ExpandedLiveSequenceRouteSessionOwner? = null,
     planControllerOwner: PlanControllerOwner? = null,
     planExecutionRouteSessions: PlanExecutionRouteSessionOwner? = null,
+    historyControllerOwner: HistoryControllerOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -170,6 +187,7 @@ internal fun LifeTracingApp(
             val planOwner = planControllerOwner ?: remember { PlanControllerOwner() }
             val planExecutionSessions =
                 planExecutionRouteSessions ?: remember { PlanExecutionRouteSessionOwner() }
+            val historyOwner = historyControllerOwner ?: remember { HistoryControllerOwner() }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -259,6 +277,10 @@ internal fun LifeTracingApp(
                             planOwner.get(runtimeGraph::createPlanController).onRouteExited()
                             backStack.removePlan()
                         }
+                        backStack.lastOrNull() is HistoryRoot -> {
+                            historyOwner.onRouteExited()
+                            backStack.removeHistory()
+                        }
                         else -> backStack.removeLastOrNull()
                     }
                 },
@@ -275,6 +297,7 @@ internal fun LifeTracingApp(
                                 },
                                 onLibrary = { backStack.openLibrary() },
                                 onPlan = { backStack.openPlan() },
+                                onHistory = { backStack.openHistory() },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
@@ -371,6 +394,48 @@ internal fun LifeTracingApp(
                                             runtimeGraph.createPlanExecutionController(identity)
                                         }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
                                 },
+                            )
+                        }
+                        entry<HistoryRoot> {
+                            val historyController = historyOwner.get(runtimeGraph::createHistoryController)
+                            HistoryRoute(
+                                historyController,
+                                onBack = {
+                                    historyOwner.onRouteExited()
+                                    backStack.removeHistory()
+                                },
+                                onOpenActivity = { root ->
+                                    backStack.openActivityHistoryDetail(root.executionId.value)
+                                },
+                                onOpenSequence = { root ->
+                                    backStack.openSequenceHistoryDetail(root.executionId.value)
+                                },
+                            )
+                        }
+                        entry<ActivityHistoryDetailRoot> { route ->
+                            val controller =
+                                remember(route.executionId) {
+                                    runtimeGraph.createActivityHistoryDetailController(
+                                        com.alexandr5476.lifetracing.domain
+                                            .ActivityExecutionId(route.executionId),
+                                    )
+                                }
+                            ActivityHistoryDetailRoute(
+                                controller,
+                                onBack = { backStack.removeActivityHistoryDetail(route.executionId) },
+                            )
+                        }
+                        entry<SequenceHistoryDetailRoot> { route ->
+                            val controller =
+                                remember(route.executionId) {
+                                    runtimeGraph.createSequenceHistoryDetailController(
+                                        com.alexandr5476.lifetracing.domain
+                                            .SequenceExecutionId(route.executionId),
+                                    )
+                                }
+                            SequenceHistoryDetailRoute(
+                                controller,
+                                onBack = { backStack.removeSequenceHistoryDetail(route.executionId) },
                             )
                         }
                         entry<PlanExecutionRoot> { route ->
@@ -523,6 +588,30 @@ internal fun MutableList<NavKey>.openPlan() {
 
 internal fun MutableList<NavKey>.removePlan() {
     if (lastOrNull() is PlanRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openHistory() {
+    if (lastOrNull() !is HistoryRoot) add(HistoryRoot)
+}
+
+internal fun MutableList<NavKey>.removeHistory() {
+    if (lastOrNull() is HistoryRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openActivityHistoryDetail(executionId: String) {
+    if (lastOrNull() !is ActivityHistoryDetailRoot) add(ActivityHistoryDetailRoot(executionId))
+}
+
+internal fun MutableList<NavKey>.removeActivityHistoryDetail(expectedExecutionId: String) {
+    if ((lastOrNull() as? ActivityHistoryDetailRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openSequenceHistoryDetail(executionId: String) {
+    if (lastOrNull() !is SequenceHistoryDetailRoot) add(SequenceHistoryDetailRoot(executionId))
+}
+
+internal fun MutableList<NavKey>.removeSequenceHistoryDetail(expectedExecutionId: String) {
+    if ((lastOrNull() as? SequenceHistoryDetailRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openPlanExecution(
