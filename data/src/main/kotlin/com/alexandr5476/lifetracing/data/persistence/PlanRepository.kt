@@ -27,6 +27,7 @@ import com.alexandr5476.lifetracing.domain.PlanSourceStateResolver
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.PlanningPrecision
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
@@ -134,6 +135,9 @@ class PlanRepository internal constructor(
                     "Unknown SequenceTemplate: ${sourceTemplateId.value}"
                 }.toDomain()
             require(template.deletedAt == null) { "Archived SequenceTemplate cannot create a new Plan" }
+            require(RuntimeOccurrenceCardinalityPolicy.templateMaterializedCount(template.nodes) > 0) {
+                "Sequence Plan requires an effective Activity Step"
+            }
             val modes = activityModesFor(template.nodes.flatMap { it.activitySnapshotIds() })
             val snapshot = sequenceSnapshotFactory.fromTemplate(template, modes, createdAt)
             database.sequenceSnapshotDao().insertAggregate(snapshot.toEntityAggregate())
@@ -403,6 +407,9 @@ class PlanRepository internal constructor(
             requireNotNull(database.sequenceTemplateDao().getAggregate(sourceId.value)) { "Plan source is unavailable" }
                 .toDomain()
         require(template.deletedAt == null) { "Archived Plan source cannot update a snapshot" }
+        require(RuntimeOccurrenceCardinalityPolicy.templateMaterializedCount(template.nodes) > 0) {
+            "Sequence Plan requires an effective Activity Step"
+        }
         val oldId = requireNotNull(plan.sequenceSnapshotId)
         val modes = activityModesFor(template.nodes.flatMap { it.activitySnapshotIds() })
         val replacement = sequenceSnapshotFactory.fromTemplate(template, modes, at)
@@ -465,14 +472,11 @@ class PlanRepository internal constructor(
                     ) {
                         "Plan ActivitySnapshot is missing"
                     }.toDomain()
-                plan.sourceActivityTemplateId?.let { source ->
-                    snapshot.sourceTemplateId?.let {
-                        require(it == source) { "Plan and ActivitySnapshot source mismatch" }
-                    }
-                    require(snapshot.sourceRevision == plan.sourceRevision) {
-                        "Plan and ActivitySnapshot revision mismatch"
-                    }
-                }
+                plan.requireSnapshotProvenance(
+                    snapshot.sourceTemplateId?.value,
+                    snapshot.sourceRevision,
+                    "ActivitySnapshot",
+                )
                 plan.fulfilledActivityExecutionId?.let { executionId ->
                     val execution =
                         requireNotNull(database.activityExecutionDao().getAggregate(executionId.value)) {
@@ -503,14 +507,11 @@ class PlanRepository internal constructor(
                     ) {
                         "Plan SequenceSnapshot is missing"
                     }.toDomain()
-                plan.sourceSequenceTemplateId?.let { source ->
-                    snapshot.sourceTemplateId?.let {
-                        require(it == source) { "Plan and SequenceSnapshot source mismatch" }
-                    }
-                    require(snapshot.sourceRevision == plan.sourceRevision) {
-                        "Plan and SequenceSnapshot revision mismatch"
-                    }
-                }
+                plan.requireSnapshotProvenance(
+                    snapshot.sourceTemplateId?.value,
+                    snapshot.sourceRevision,
+                    "SequenceSnapshot",
+                )
                 plan.fulfilledSequenceExecutionId?.let { executionId ->
                     val execution =
                         requireNotNull(database.sequenceExecutionDao().getAggregate(executionId.value)) {

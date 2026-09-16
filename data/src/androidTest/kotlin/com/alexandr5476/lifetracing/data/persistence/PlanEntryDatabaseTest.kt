@@ -1306,6 +1306,23 @@ class PlanEntryDatabaseTest {
                 userState = ActivityTemplateUserStateEntity("activity-template", null, null),
             ),
         )
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "sequence-template-step-snapshot",
+                    "Sequence step",
+                    null,
+                    "STOPWATCH",
+                    null,
+                    "activity-template",
+                    1,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("sequence-template-step-snapshot"),
+            ),
+        )
         database.sequenceTemplateDao().insertAggregate(
             SequenceTemplateAggregateEntity(
                 SequenceTemplateEntity(
@@ -1322,6 +1339,18 @@ class PlanEntryDatabaseTest {
                 ),
                 SequenceTemplateSettingsEntity("sequence-template"),
                 SequenceTemplateUserStateEntity("sequence-template", null, null),
+                nodes =
+                    listOf(
+                        SequenceNodeEntity(
+                            "sequence-template-step",
+                            "sequence-template",
+                            "STEP",
+                            null,
+                            0,
+                            "sequence-template-step-snapshot",
+                            null,
+                        ),
+                    ),
             ),
         )
     }

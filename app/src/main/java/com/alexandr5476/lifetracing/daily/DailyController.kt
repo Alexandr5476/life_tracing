@@ -5,6 +5,9 @@ import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DailyRead
+import com.alexandr5476.lifetracing.domain.PlanEntry
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.WallClock
@@ -136,6 +139,7 @@ internal fun interface LocalDateBoundaryScheduler {
     fun arm(
         now: Instant,
         zoneId: ZoneId,
+        exactBoundary: Instant?,
         onBoundary: () -> Unit,
     )
 
@@ -151,11 +155,12 @@ internal class CoroutineLocalDateBoundaryScheduler(
     override fun arm(
         now: Instant,
         zoneId: ZoneId,
+        exactBoundary: Instant?,
         onBoundary: () -> Unit,
     ) {
         job?.cancel()
-        val nextMidnight = nextLocalDateBoundary(now, zoneId)
-        val delayMillis = Duration.between(now, nextMidnight).toMillis().coerceAtLeast(1L)
+        val boundary = minOf(nextLocalDateBoundary(now, zoneId), exactBoundary ?: Instant.MAX)
+        val delayMillis = Duration.between(now, boundary).toMillis().coerceAtLeast(1L)
         job =
             scope.launch {
                 delay(delayMillis)
@@ -180,6 +185,22 @@ internal fun nextLocalDateBoundary(
         .plusDays(1)
         .atStartOfDay(zoneId)
         .toInstant()
+
+internal fun nextPlanTemporalBoundary(
+    plans: Iterable<PlanEntry>,
+    now: Instant,
+    zoneId: ZoneId,
+): Instant =
+    plans
+        .mapNotNull { plan ->
+            (plan.target as? PlanTarget.ExactDay)
+                ?.takeIf { plan.status == PlanEntryStatus.PLANNED }
+                ?.scheduledAt
+                ?.plusMillis(1)
+                ?.takeIf { it > now }
+        }.minOrNull()
+        ?.let { minOf(it, nextLocalDateBoundary(now, zoneId)) }
+        ?: nextLocalDateBoundary(now, zoneId)
 
 @Suppress("LongParameterList", "TooManyFunctions") // One state holder owns the complete Daily application boundary.
 class DailyController internal constructor(
@@ -321,6 +342,7 @@ class DailyController internal constructor(
                 runtimeDisplayBaseline = baseline,
             )
         }
+        armDateBoundary(daily = daily)
     }
 
     @Suppress("TooGenericExceptionCaught") // The boundary must distinguish both failure phases without crashing UI.
@@ -447,8 +469,20 @@ class DailyController internal constructor(
         refresh()
     }
 
-    private fun armDateBoundary(now: Instant = wallClock.now()) {
-        if (visible) dateBoundaryScheduler.arm(now, zoneId(), ::onLocalDateBoundary)
+    private fun armDateBoundary(
+        now: Instant = wallClock.now(),
+        daily: DailyRead? = null,
+    ) {
+        if (visible) {
+            val zone = zoneId()
+            val plans = daily?.let { it.dayPlans.map { plan -> plan.plan } + it.weekPlans.map { plan -> plan.plan } }
+            dateBoundaryScheduler.arm(
+                now,
+                zone,
+                plans?.let { nextPlanTemporalBoundary(it, now, zone) },
+                ::onLocalDateBoundary,
+            )
+        }
     }
 
     private fun today(): LocalDate = wallClock.now().atZone(zoneId()).toLocalDate()

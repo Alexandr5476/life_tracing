@@ -8,12 +8,16 @@ import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.toAuthoringDraft
 import com.alexandr5476.lifetracing.executePlanMutation
@@ -80,7 +84,20 @@ class PlanControllerPersistenceTest {
                 clock = clock.plusSeconds(1)
                 val sequence =
                     authoring.createSequenceTemplate(
-                        SequenceTemplateDraft("S4C2 sequence $suffix", "frozen sequence"),
+                        SequenceTemplateDraft(
+                            "S4C2 sequence $suffix",
+                            "frozen sequence",
+                            nodes =
+                                listOf(
+                                    SequenceNodeDraft.Step(
+                                        ActivityStepDraft(
+                                            DraftIdentity.New("sequence-step"),
+                                            0,
+                                            StepActivityDraft.FromTemplate(timer.id),
+                                        ),
+                                    ),
+                                ),
+                        ),
                         createdAt = clock,
                     )
                 controller.selectCatalog(LibraryTemplateId.Sequence(sequence.id), sequence.name)

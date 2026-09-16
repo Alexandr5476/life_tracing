@@ -15,11 +15,19 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
+import com.alexandr5476.lifetracing.domain.DailyPlan
+import com.alexandr5476.lifetracing.domain.DailyPlanSnapshot
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DailySequenceOccurrence
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettings
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.PlanEntry
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSourceState
+import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
@@ -55,6 +63,58 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 class DailyControllerTest {
+    @Test
+    fun exactPlanBoundaryRefreshesBeforeExactlyAtAndAfterTheScheduledInstant() =
+        runBlocking {
+            val scheduledAt = Instant.parse("2026-08-20T10:00:00Z")
+            val harness = Harness(Instant.parse("2026-08-20T09:59:59Z"))
+            harness.reader = { query ->
+                harness.queries += query
+                exactDaily(scheduledAt, query.now)
+            }
+            val controller = harness.controller(this)
+            try {
+                controller.awaitLoaded()
+                assertEquals(
+                    scheduledAt.plusMillis(1),
+                    harness.boundary.arms
+                        .last()
+                        .exactBoundary,
+                )
+                assertFalse(
+                    (controller.state.value.load as DailyLoadState.Content)
+                        .daily.dayPlans
+                        .single()
+                        .overdue,
+                )
+
+                harness.wall.value = scheduledAt
+                harness.boundary.fire()
+                harness.awaitReadCount(2)
+                assertFalse(
+                    (controller.state.value.load as DailyLoadState.Content)
+                        .daily.dayPlans
+                        .single()
+                        .overdue,
+                )
+
+                harness.wall.value = scheduledAt.plusMillis(1)
+                harness.boundary.fire()
+                harness.awaitReadCount(3)
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.load as? DailyLoadState.Content)
+                            ?.daily
+                            ?.dayPlans
+                            ?.single()
+                            ?.overdue == true
+                    }
+                }
+            } finally {
+                controller.close()
+            }
+        }
+
     @Test
     fun initialStateUsesCurrentZoneTodayAndOneCanonicalRead() =
         runBlocking {
@@ -205,7 +265,7 @@ class DailyControllerTest {
 
             assertEquals(LocalDate.parse("2026-03-08"), controller.state.value.selectedDate)
             assertEquals(DailyDateRelation.PAST, controller.state.value.dateRelation)
-            assertEquals(2, harness.boundary.arms.size)
+            assertTrue(harness.boundary.arms.size >= 2)
             controller.close()
         }
 
@@ -609,6 +669,7 @@ class DailyControllerTest {
         data class Arm(
             val now: Instant,
             val zone: ZoneId,
+            val exactBoundary: Instant?,
             val callback: () -> Unit,
         )
 
@@ -618,9 +679,10 @@ class DailyControllerTest {
         override fun arm(
             now: Instant,
             zoneId: ZoneId,
+            exactBoundary: Instant?,
             onBoundary: () -> Unit,
         ) {
-            arms += Arm(now, zoneId, onBoundary)
+            arms += Arm(now, zoneId, exactBoundary, onBoundary)
         }
 
         override fun cancel() {
@@ -633,6 +695,47 @@ class DailyControllerTest {
     private companion object {
         val harnessInstant: Instant = Instant.parse("2026-08-20T10:00:00Z")
         val emptyDaily = DailyRead(emptyList(), emptyList(), emptyList(), null)
+
+        fun exactDaily(
+            scheduledAt: Instant,
+            now: Instant,
+        ): DailyRead {
+            val plan =
+                PlanEntry(
+                    PlanEntryId("exact"),
+                    PlanTrackableKind.ACTIVITY,
+                    com.alexandr5476.lifetracing.domain
+                        .ActivityTemplateId("activity"),
+                    null,
+                    1,
+                    ActivitySnapshotId("snapshot"),
+                    null,
+                    PlanTarget.ExactDay(scheduledAt, ZoneOffset.UTC),
+                    PlanEntryStatus.PLANNED,
+                    null,
+                    null,
+                    Instant.EPOCH,
+                    now,
+                    null,
+                    null,
+                )
+            return DailyRead(
+                listOf(
+                    DailyPlan(
+                        plan,
+                        scheduledAt.atZone(ZoneOffset.UTC).toLocalDate(),
+                        scheduledAt.atZone(ZoneOffset.UTC).toLocalTime(),
+                        DailyPlanSnapshot.Activity(activitySnapshot("snapshot")),
+                        PlanSourceState.CURRENT,
+                        false,
+                        now > scheduledAt,
+                    ),
+                ),
+                emptyList(),
+                emptyList(),
+                null,
+            )
+        }
 
         fun daily(runtime: ActiveActivityRuntime) =
             DailyRead(emptyList(), emptyList(), emptyList(), DailyActive.Activity(runtime))

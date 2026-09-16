@@ -195,16 +195,11 @@ class DailyReadRepository internal constructor(
             when (plan.kind) {
                 PlanTrackableKind.ACTIVITY -> {
                     val snapshot = activitySnapshots.getValue(requireNotNull(plan.activitySnapshotId))
-                    plan.sourceActivityTemplateId?.let { source ->
-                        snapshot.sourceTemplateId?.let {
-                            require(
-                                it == source,
-                            ) { "Plan and Activity snapshot source mismatch" }
-                        }
-                        require(
-                            snapshot.sourceRevision == plan.sourceRevision,
-                        ) { "Plan and Activity snapshot revision mismatch" }
-                    }
+                    plan.requireSnapshotProvenance(
+                        snapshot.sourceTemplateId?.value,
+                        snapshot.sourceRevision,
+                        "Activity snapshot",
+                    )
                     plan.fulfilledActivityExecutionId?.let { id ->
                         val link = requireNotNull(activityLinks[id.value]) { "Fulfilled Activity execution is missing" }
                         val executionSnapshot = activitySnapshots.getValue(ActivitySnapshotId(link.snapshotId))
@@ -224,16 +219,11 @@ class DailyReadRepository internal constructor(
                 }
                 PlanTrackableKind.SEQUENCE -> {
                     val snapshot = sequenceSnapshots.getValue(requireNotNull(plan.sequenceSnapshotId))
-                    plan.sourceSequenceTemplateId?.let { source ->
-                        snapshot.sourceTemplateId?.let {
-                            require(
-                                it == source,
-                            ) { "Plan and Sequence snapshot source mismatch" }
-                        }
-                        require(
-                            snapshot.sourceRevision == plan.sourceRevision,
-                        ) { "Plan and Sequence snapshot revision mismatch" }
-                    }
+                    plan.requireSnapshotProvenance(
+                        snapshot.sourceTemplateId?.value,
+                        snapshot.sourceRevision,
+                        "Sequence snapshot",
+                    )
                     plan.fulfilledSequenceExecutionId?.let { id ->
                         val link = requireNotNull(sequenceLinks[id.value]) { "Fulfilled Sequence execution is missing" }
                         require(

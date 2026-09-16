@@ -1256,17 +1256,19 @@ class LiveSessionRepository internal constructor(
         when (kind) {
             PlanTrackableKind.ACTIVITY -> {
                 val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
-                plan.sourceActivityTemplateId?.let { source ->
-                    snapshot.sourceTemplateId?.let { require(it == source) { "Plan Activity source mismatch" } }
-                    require(snapshot.sourceRevision == plan.sourceRevision) { "Plan Activity revision mismatch" }
-                }
+                plan.requireSnapshotProvenance(
+                    snapshot.sourceTemplateId?.value,
+                    snapshot.sourceRevision,
+                    "Activity snapshot",
+                )
             }
             PlanTrackableKind.SEQUENCE -> {
                 val snapshot = loadSequenceSnapshot(requireNotNull(plan.sequenceSnapshotId))
-                plan.sourceSequenceTemplateId?.let { source ->
-                    snapshot.sourceTemplateId?.let { require(it == source) { "Plan Sequence source mismatch" } }
-                    require(snapshot.sourceRevision == plan.sourceRevision) { "Plan Sequence revision mismatch" }
-                }
+                plan.requireSnapshotProvenance(
+                    snapshot.sourceTemplateId?.value,
+                    snapshot.sourceRevision,
+                    "Sequence snapshot",
+                )
             }
         }
         return plan

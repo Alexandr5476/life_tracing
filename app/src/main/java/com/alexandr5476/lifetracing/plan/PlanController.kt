@@ -10,6 +10,9 @@
 package com.alexandr5476.lifetracing.plan
 
 import androidx.lifecycle.ViewModel
+import com.alexandr5476.lifetracing.daily.CoroutineLocalDateBoundaryScheduler
+import com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler
+import com.alexandr5476.lifetracing.daily.nextPlanTemporalBoundary
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.CancelledPlanPageQuery
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
@@ -27,6 +30,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -195,6 +199,8 @@ class PlanController internal constructor(
     private val commitMutation: suspend (PlanMutation) -> Unit,
     private val now: () -> Instant = Instant::now,
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
+    private val semanticGeneration: StateFlow<Long> = MutableStateFlow(0L),
+    private val boundaryScheduler: LocalDateBoundaryScheduler = CoroutineLocalDateBoundaryScheduler(scope),
 ) {
     private val readGeneration = AtomicLong()
     private val catalogGeneration = AtomicLong()
@@ -207,7 +213,24 @@ class PlanController internal constructor(
 
     @Volatile private var closed = false
 
+    @Volatile private var visible = true
+
     @Volatile private var recovery: MutationRecovery? = null
+
+    private val initialSemanticGeneration = semanticGeneration.value
+    private val invalidationJob =
+        scope.launch {
+            var handled = initialSemanticGeneration
+            semanticGeneration.collect { generation ->
+                if (generation != handled) {
+                    handled = generation
+                    if (visible) {
+                        armBoundary()
+                        loadWeek()
+                    }
+                }
+            }
+        }
 
     init {
         loadWeek()
@@ -296,14 +319,24 @@ class PlanController internal constructor(
 
     fun close() {
         closed = true
+        visible = false
+        invalidationJob.cancel()
+        boundaryScheduler.cancel()
         readGeneration.incrementAndGet()
         catalogGeneration.incrementAndGet()
         cancelledGeneration.incrementAndGet()
     }
 
-    fun onRouteEntered() = loadWeek(clearFailure = true)
+    fun onRouteEntered() {
+        visible = true
+        armBoundary()
+        loadWeek(clearFailure = true)
+    }
 
     fun onRouteExited() {
+        visible = false
+        readGeneration.incrementAndGet()
+        boundaryScheduler.cancel()
         catalogGeneration.incrementAndGet()
         cancelledGeneration.incrementAndGet()
         mutableState.update {
@@ -373,6 +406,7 @@ class PlanController internal constructor(
             try {
                 val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, now()))
                 if (publishIfOwned(readGeneration, generation) { it.copy(week = PlanLoad.Content(read)) }) {
+                    armBoundary(read)
                     canonicalPublished(CanonicalSurface.WEEK, generation)
                 }
             } catch (cancelled: CancellationException) {
@@ -617,17 +651,40 @@ class PlanController internal constructor(
         transform: (PlanPresentationState) -> PlanPresentationState?,
     ): Boolean {
         var published = false
-        var eligible = !closed && generation == owner.get()
+        var eligible = !closed && visible && generation == owner.get()
         while (eligible && !published) {
             val current = mutableState.value
             val replacement = transform(current)
-            eligible = replacement != null && !closed && generation == owner.get()
+            eligible = replacement != null && !closed && visible && generation == owner.get()
             if (eligible) published = mutableState.compareAndSet(current, requireNotNull(replacement))
         }
         return published
     }
 
     private fun LocalDate.monday() = with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+
+    private fun onTemporalBoundary() {
+        if (visible) loadWeek()
+    }
+
+    private fun armBoundary(read: WeekPlanRead? = null) {
+        if (visible) {
+            val current = now()
+            val zone = zoneId()
+            boundaryScheduler.arm(
+                current,
+                zone,
+                read?.let {
+                    nextPlanTemporalBoundary(
+                        it.selectedDayPlans.map(PlanReadRow::plan) + it.weekPlans.map(PlanReadRow::plan),
+                        current,
+                        zone,
+                    )
+                },
+                ::onTemporalBoundary,
+            )
+        }
+    }
 
     private fun PlanReadRow.isMutable() = plan.status == PlanEntryStatus.PLANNED && !engaged
 

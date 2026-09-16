@@ -1,3 +1,5 @@
+@file:Suppress("LargeClass")
+
 package com.alexandr5476.lifetracing.plan
 
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -17,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -30,6 +33,151 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 
 class PlanControllerTest {
+    @Test
+    fun visiblePlanRefreshesAfterRuntimeSemanticInvalidationAndReprojectsExactDay() =
+        runBlocking {
+            val semanticGeneration = MutableStateFlow(0L)
+            var completed = false
+            var zone = ZoneOffset.UTC
+            val exact = Instant.parse("2026-09-15T23:30:00Z")
+            val controller =
+                PlanController(
+                    this,
+                    { query ->
+                        val row = exactRow(exact, completed, exact.atZone(zone).toLocalDate())
+                        week(query, row)
+                    },
+                    { _, _, _ -> emptyList() },
+                    { CancelledPlanPage(emptyList(), false) },
+                    {},
+                    { Instant.parse("2026-09-15T10:00:00Z") },
+                    { zone },
+                    semanticGeneration,
+                    FakeBoundary(),
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                completed = true
+                zone = ZoneOffset.ofHours(2)
+                semanticGeneration.value++
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.week as? PlanLoad.Content)
+                            ?.value
+                            ?.selectedDayPlans
+                            ?.singleOrNull()
+                            ?.let { row ->
+                                row.plan.status == PlanEntryStatus.FULFILLED &&
+                                    row.effectiveLocalDate == LocalDate.parse("2026-09-16")
+                            } == true
+                    }
+                }
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun exactPlanBoundaryRefreshesBeforeExactlyAtAndAfterTheScheduledInstant() =
+        runBlocking {
+            val clock = arrayOf(Instant.parse("2026-09-15T09:59:59Z"))
+            val scheduledAt = Instant.parse("2026-09-15T10:00:00Z")
+            val boundary = FakeBoundary()
+            val controller =
+                PlanController(
+                    this,
+                    { query -> week(query, exactRow(scheduledAt, now = query.now)) },
+                    { _, _, _ -> emptyList() },
+                    { CancelledPlanPage(emptyList(), false) },
+                    {},
+                    { clock[0] },
+                    { ZoneOffset.UTC },
+                    MutableStateFlow(0L),
+                    boundary,
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                assertEquals(scheduledAt.plusMillis(1), boundary.arms.last().exactBoundary)
+                assertFalse(
+                    (controller.state.value.week as PlanLoad.Content)
+                        .value.selectedDayPlans
+                        .single()
+                        .overdue,
+                )
+
+                clock[0] = scheduledAt
+                boundary.fire()
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.week as? PlanLoad.Content)
+                            ?.value
+                            ?.selectedDayPlans
+                            ?.single()
+                            ?.overdue == false
+                    }
+                }
+
+                clock[0] = scheduledAt.plusMillis(1)
+                boundary.fire()
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.week as? PlanLoad.Content)
+                            ?.value
+                            ?.selectedDayPlans
+                            ?.single()
+                            ?.overdue == true
+                    }
+                }
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun midnightBoundaryRefreshesVisibleFloatingAndWeekOverdueState() =
+        runBlocking {
+            val clock = arrayOf(Instant.parse("2026-09-14T23:59:59Z"))
+            val boundary = FakeBoundary()
+            val floatingDate = LocalDate.parse("2026-09-14")
+            val weekStart = LocalDate.parse("2026-09-08")
+            val controller =
+                PlanController(
+                    this,
+                    { query ->
+                        val overdue = query.now >= Instant.parse("2026-09-15T00:00:00Z")
+                        WeekPlanRead(
+                            query.weekStart,
+                            query.selectedDate,
+                            listOf(rowForTarget(PlanTarget.FloatingDay(floatingDate), overdue)),
+                            listOf(rowForTarget(PlanTarget.Week(weekStart), overdue)),
+                            (0L..6L).map { PlanDayPresence(query.weekStart.plusDays(it), 0) },
+                        )
+                    },
+                    { _, _, _ -> emptyList() },
+                    { CancelledPlanPage(emptyList(), false) },
+                    {},
+                    { clock[0] },
+                    { ZoneOffset.UTC },
+                    MutableStateFlow(0L),
+                    boundary,
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                assertNull(boundary.arms.last().exactBoundary)
+                clock[0] = Instant.parse("2026-09-15T00:00:00Z")
+                boundary.fire()
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.week as? PlanLoad.Content)?.value?.let { read ->
+                            read.selectedDayPlans.single().overdue && read.weekPlans.single().overdue
+                        } == true
+                    }
+                }
+            } finally {
+                controller.close()
+            }
+        }
+
     @Test
     fun staleWeekReadDoesNotReplaceNewlySelectedDateAndDuplicateSubmitCommitsOnce() =
         runBlocking {
@@ -532,6 +680,94 @@ class PlanControllerTest {
             false,
             null,
         )
+    }
+
+    private fun exactRow(
+        scheduledAt: Instant,
+        completed: Boolean = false,
+        effectiveDate: LocalDate = scheduledAt.atZone(ZoneOffset.UTC).toLocalDate(),
+        now: Instant = Instant.EPOCH,
+    ): PlanReadRow {
+        val status = if (completed) PlanEntryStatus.FULFILLED else PlanEntryStatus.PLANNED
+        return PlanReadRow(
+            PlanEntry(
+                PlanEntryId("exact"),
+                PlanTrackableKind.ACTIVITY,
+                ActivityTemplateId("activity"),
+                null,
+                1,
+                ActivitySnapshotId("snapshot"),
+                null,
+                PlanTarget.ExactDay(scheduledAt, ZoneOffset.UTC),
+                status,
+                null,
+                null,
+                Instant.EPOCH,
+                now,
+                null,
+                now.takeIf { status == PlanEntryStatus.FULFILLED },
+            ),
+            effectiveDate,
+            scheduledAt.atZone(ZoneOffset.UTC).toLocalTime(),
+            "Activity",
+            null,
+            PlanSourceState.CURRENT,
+            false,
+            !completed && now > scheduledAt,
+            null,
+        )
+    }
+
+    private fun rowForTarget(
+        target: PlanTarget,
+        overdue: Boolean,
+    ): PlanReadRow =
+        PlanReadRow(
+            PlanEntry(
+                PlanEntryId(target.toString()),
+                PlanTrackableKind.ACTIVITY,
+                ActivityTemplateId("activity"),
+                null,
+                1,
+                ActivitySnapshotId("snapshot"),
+                null,
+                target,
+                PlanEntryStatus.PLANNED,
+                null,
+                null,
+                Instant.EPOCH,
+                Instant.EPOCH,
+                null,
+                null,
+            ),
+            (target as? PlanTarget.FloatingDay)?.date,
+            null,
+            "Activity",
+            null,
+            PlanSourceState.CURRENT,
+            false,
+            overdue,
+            null,
+        )
+
+    private class FakeBoundary : com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler {
+        data class Arm(
+            val exactBoundary: Instant?,
+            val callback: () -> Unit,
+        )
+
+        val arms = mutableListOf<Arm>()
+
+        override fun arm(
+            now: Instant,
+            zoneId: java.time.ZoneId,
+            exactBoundary: Instant?,
+            onBoundary: () -> Unit,
+        ) {
+            arms += Arm(exactBoundary, onBoundary)
+        }
+
+        fun fire() = arms.last().callback()
     }
 
     private companion object {

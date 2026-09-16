@@ -240,11 +240,7 @@ class PlanReadRepository internal constructor(
                     PlanTrackableKind.ACTIVITY -> requireNotNull(activitySummary).sourceRevision
                     PlanTrackableKind.SEQUENCE -> requireNotNull(sequenceSummary).sourceRevision
                 }
-            val sourceId = plan.sourceActivityTemplateId?.value ?: plan.sourceSequenceTemplateId?.value
-            if (sourceId != null) {
-                summarySourceTemplateId?.let { require(it == sourceId) { "Plan and snapshot source mismatch" } }
-                require(summarySourceRevision == plan.sourceRevision) { "Plan and snapshot revision mismatch" }
-            }
+            plan.requireSnapshotProvenance(summarySourceTemplateId, summarySourceRevision, "snapshot")
             val source =
                 when (plan.kind) {
                     PlanTrackableKind.ACTIVITY -> plan.sourceActivityTemplateId?.value?.let(activitySources::get)
@@ -371,16 +367,11 @@ class PlanReadRepository internal constructor(
         when (plan.kind) {
             PlanTrackableKind.ACTIVITY -> {
                 val summary = requireNotNull(activitySummary)
-                plan.sourceActivityTemplateId?.let { source ->
-                    summary.sourceTemplateId?.let {
-                        require(
-                            it == source.value,
-                        ) { "Plan and Activity snapshot source mismatch" }
-                    }
-                    require(
-                        summary.sourceRevision == plan.sourceRevision,
-                    ) { "Plan and Activity snapshot revision mismatch" }
-                }
+                plan.requireSnapshotProvenance(
+                    summary.sourceTemplateId,
+                    summary.sourceRevision,
+                    "Activity snapshot",
+                )
                 plan.fulfilledActivityExecutionId?.let { id ->
                     val link = requireNotNull(activityLinks[id.value]) { "Fulfilled Activity execution is missing" }
                     require(
@@ -399,16 +390,11 @@ class PlanReadRepository internal constructor(
             }
             PlanTrackableKind.SEQUENCE -> {
                 val summary = requireNotNull(sequenceSummary)
-                plan.sourceSequenceTemplateId?.let { source ->
-                    summary.sourceTemplateId?.let {
-                        require(
-                            it == source.value,
-                        ) { "Plan and Sequence snapshot source mismatch" }
-                    }
-                    require(
-                        summary.sourceRevision == plan.sourceRevision,
-                    ) { "Plan and Sequence snapshot revision mismatch" }
-                }
+                plan.requireSnapshotProvenance(
+                    summary.sourceTemplateId,
+                    summary.sourceRevision,
+                    "Sequence snapshot",
+                )
                 plan.fulfilledSequenceExecutionId?.let { id ->
                     val link = requireNotNull(sequenceLinks[id.value]) { "Fulfilled Sequence execution is missing" }
                     require(
@@ -473,10 +459,11 @@ class PlanReadRepository internal constructor(
         plan: PlanEntry,
         snapshot: SequenceConfigSnapshot,
     ) {
-        plan.sourceSequenceTemplateId?.let { source ->
-            snapshot.sourceTemplateId?.let { require(it == source) { "Plan and Sequence snapshot source mismatch" } }
-            require(snapshot.sourceRevision == plan.sourceRevision) { "Plan and Sequence snapshot revision mismatch" }
-        }
+        plan.requireSnapshotProvenance(
+            snapshot.sourceTemplateId?.value,
+            snapshot.sourceRevision,
+            "Sequence snapshot",
+        )
     }
 
     companion object {

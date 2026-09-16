@@ -52,6 +52,7 @@ class PlanCommandRepositoryTest {
     private var planId = 0
     private var activitySnapshotId = 0
     private var sequenceSnapshotId = 0
+    private var sequenceNodeId = 0
 
     @Before
     fun setUp() {
@@ -168,6 +169,111 @@ class PlanCommandRepositoryTest {
         }
         assertEquals(afterFirst, count("activity_snapshots"))
         assertEquals(1, count("plan_entries", "id = 'collision'"))
+    }
+
+    @Test
+    fun emptySequenceSourcesRejectCreateAndUpdateWithoutSnapshotsPlansOrRecentMutation() {
+        val beforePlans = count("plan_entries")
+        val beforeSnapshots = count("sequence_snapshots")
+        val beforeRecent = database.sequenceTemplateDao().getUserState(SEQUENCE_TEMPLATE)!!.lastUsedAtMs
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM sequence_nodes WHERE sequence_template_id = '$SEQUENCE_TEMPLATE'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+                instant(1),
+            )
+        }
+        assertEquals(beforePlans, count("plan_entries"))
+        assertEquals(beforeSnapshots, count("sequence_snapshots"))
+        assertEquals(beforeRecent, database.sequenceTemplateDao().getUserState(SEQUENCE_TEMPLATE)!!.lastUsedAtMs)
+
+        insertSequenceNode("empty-repeat", "REPEAT", null, 2)
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+                instant(1),
+            )
+        }
+        assertEquals(beforePlans, count("plan_entries"))
+        assertEquals(beforeSnapshots, count("sequence_snapshots"))
+        database.openHelper.writableDatabase.execSQL("DELETE FROM sequence_nodes WHERE id = 'empty-repeat'")
+        insertSequenceNode("sequence-step", "STEP", "sequence-step-snapshot", null)
+        val existing =
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+                instant(2),
+            )
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM sequence_nodes WHERE sequence_template_id = '$SEQUENCE_TEMPLATE'",
+        )
+        insertSequenceNode("repeat", "REPEAT", null, 2)
+        insertSequenceNode("repeat-step", "STEP", "sequence-step-snapshot", null, "repeat")
+        plans.createSequencePlanFromTemplate(
+            SequenceTemplateId(SEQUENCE_TEMPLATE),
+            PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")),
+            instant(2),
+        )
+        val originalSnapshot = existing.sequenceSnapshotId
+        val originalIdentity = reads.getFocusedAction(existing.id).identity
+        val beforeUpdateSnapshots = count("sequence_snapshots")
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM sequence_nodes WHERE sequence_template_id = '$SEQUENCE_TEMPLATE'",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            plans.updatePlanFromTemplate(originalIdentity, instant(3))
+        }
+        assertEquals(originalSnapshot, plans.getPlan(existing.id)!!.sequenceSnapshotId)
+        assertEquals(beforeUpdateSnapshots, count("sequence_snapshots"))
+        assertNull(database.sequenceTemplateDao().getUserState(SEQUENCE_TEMPLATE)!!.lastUsedAtMs)
+    }
+
+    @Test
+    fun canonicalPlanReadersRejectOneSidedAndWrongRevisionSnapshotProvenanceButAllowBothMissing() {
+        val activity = createActivityPlan()
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_snapshots SET source_template_id = NULL, source_revision = NULL " +
+                "WHERE id = '${activity.activitySnapshotId!!.value}'",
+        )
+        assertThrows(IllegalArgumentException::class.java) { reads.getFocusedAction(activity.id) }
+        assertThrows(IllegalArgumentException::class.java) { plans.getPlan(activity.id) }
+
+        val sequence =
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.Week(LocalDate.parse("2026-08-17")),
+                instant(1),
+            )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET source_sequence_template_id = NULL, source_revision = NULL " +
+                "WHERE id = '${sequence.id.value}'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            reads.getWeek(WeekPlanQuery(LocalDate.parse("2026-08-17"), LocalDate.parse("2026-08-20"), instant(2)))
+        }
+        assertThrows(IllegalArgumentException::class.java) { plans.getPlan(sequence.id) }
+
+        val revisionMismatch = createActivityPlan()
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_snapshots SET source_revision = 2 " +
+                "WHERE id = '${revisionMismatch.activitySnapshotId!!.value}'",
+        )
+        assertThrows(IllegalArgumentException::class.java) { reads.getFocusedAction(revisionMismatch.id) }
+
+        val purged =
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.Week(LocalDate.parse("2026-08-17")),
+                instant(3),
+            )
+        database.openHelper.writableDatabase.execSQL("DELETE FROM sequence_templates WHERE id = '$SEQUENCE_TEMPLATE'")
+        assertEquals(PlanSourceState.UNAVAILABLE, reads.getFocusedAction(purged.id).sourceState)
     }
 
     @Test
@@ -599,7 +705,7 @@ class PlanCommandRepositoryTest {
             nextSequenceSnapshotId,
             { SequenceSnapshotFieldId("sequence-field-$sequenceSnapshotId") },
             { SequenceSnapshotCategoryOptionId("sequence-option-$sequenceSnapshotId") },
-            { SequenceSnapshotNodeId("sequence-node-$sequenceSnapshotId") },
+            { SequenceSnapshotNodeId("sequence-node-${++sequenceNodeId}") },
         ),
         CurrentZoneIdProvider { zone },
     )
@@ -624,6 +730,23 @@ class PlanCommandRepositoryTest {
                 userState = ActivityTemplateUserStateEntity(ACTIVITY_TEMPLATE, null, null),
             ),
         )
+        database.activitySnapshotDao().insertAggregate(
+            ActivitySnapshotAggregateEntity(
+                ActivitySnapshotEntity(
+                    "sequence-step-snapshot",
+                    "Sequence step",
+                    null,
+                    "STOPWATCH",
+                    null,
+                    ACTIVITY_TEMPLATE,
+                    1,
+                    "activity-series",
+                    false,
+                    0,
+                ),
+                ActivitySnapshotSettingsEntity("sequence-step-snapshot"),
+            ),
+        )
         database.sequenceTemplateDao().insertAggregate(
             SequenceTemplateAggregateEntity(
                 SequenceTemplateEntity(
@@ -640,6 +763,18 @@ class PlanCommandRepositoryTest {
                 ),
                 SequenceTemplateSettingsEntity(SEQUENCE_TEMPLATE),
                 SequenceTemplateUserStateEntity(SEQUENCE_TEMPLATE, null, null),
+                nodes =
+                    listOf(
+                        SequenceNodeEntity(
+                            "sequence-step",
+                            SEQUENCE_TEMPLATE,
+                            "STEP",
+                            null,
+                            0,
+                            "sequence-step-snapshot",
+                            null,
+                        ),
+                    ),
             ),
         )
     }
@@ -651,6 +786,27 @@ class PlanCommandRepositoryTest {
         check(it.moveToFirst())
         it.getInt(0)
     }
+
+    private fun insertSequenceNode(
+        id: String,
+        type: String,
+        snapshotId: String?,
+        repeatCount: Int?,
+        parentId: String? = null,
+    ) {
+        database.openHelper.writableDatabase.execSQL(
+            """
+            INSERT INTO sequence_nodes (
+                id, sequence_template_id, node_type, parent_repeat_node_id,
+                position, activity_snapshot_id, repeat_count
+            ) VALUES ('$id', '$SEQUENCE_TEMPLATE', '$type', ${parentId.sql()}, 0, ${snapshotId.sql()}, ${repeatCount.sql()})
+            """.trimIndent(),
+        )
+    }
+
+    private fun String?.sql(): String = this?.let { "'$it'" } ?: "NULL"
+
+    private fun Int?.sql(): String = this?.toString() ?: "NULL"
 
     private fun instant(seconds: Long) = Instant.ofEpochSecond(seconds)
 
