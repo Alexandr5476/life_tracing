@@ -12,14 +12,23 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
+import com.alexandr5476.lifetracing.domain.DailyPlan
+import com.alexandr5476.lifetracing.domain.DailyPlanSnapshot
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DailyRead
 import com.alexandr5476.lifetracing.domain.DailySequenceOccurrence
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettings
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.PlanEntry
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSourceState
+import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
@@ -55,6 +64,135 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 class DailyControllerTest {
+    @Test
+    fun exactPlanBoundaryRefreshesBeforeExactlyAtAndAfterTheScheduledInstant() =
+        runBlocking {
+            val scheduledAt = Instant.parse("2026-08-20T10:00:00Z")
+            val harness = Harness(Instant.parse("2026-08-20T09:59:59Z"))
+            harness.reader = { query ->
+                harness.queries += query
+                exactDaily(scheduledAt, query.now)
+            }
+            val controller = harness.controller(this)
+            try {
+                controller.awaitLoaded()
+                assertEquals(
+                    scheduledAt.plusMillis(1),
+                    harness.boundary.arms
+                        .last()
+                        .exactBoundary,
+                )
+                assertFalse(
+                    (controller.state.value.load as DailyLoadState.Content)
+                        .daily.dayPlans
+                        .single()
+                        .overdue,
+                )
+
+                harness.wall.value = scheduledAt
+                harness.boundary.fire()
+                harness.awaitReadCount(2)
+                assertFalse(
+                    (controller.state.value.load as DailyLoadState.Content)
+                        .daily.dayPlans
+                        .single()
+                        .overdue,
+                )
+
+                harness.wall.value = scheduledAt.plusMillis(1)
+                harness.boundary.fire()
+                harness.awaitReadCount(3)
+                withTimeout(2_000) {
+                    controller.state.first {
+                        (it.load as? DailyLoadState.Content)
+                            ?.daily
+                            ?.dayPlans
+                            ?.single()
+                            ?.overdue == true
+                    }
+                }
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun delayedExactReadCrossingBoundaryImmediatelyRereadsFromPublishedTimestamp() =
+        runBlocking {
+            val scheduledAt = Instant.parse("2026-08-20T10:00:00Z")
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val harness = Harness(Instant.parse("2026-08-20T09:59:59Z"), boundary = ImmediatePastBoundary())
+            var reads = 0
+            harness.reader = { query ->
+                harness.queries += query
+                if (++reads == 1) {
+                    entered.complete(Unit)
+                    release.await()
+                }
+                exactDaily(scheduledAt, query.now)
+            }
+            val controller = harness.controller(this)
+            try {
+                withTimeout(2_000) { entered.await() }
+                harness.wall.value = scheduledAt.plusMillis(1)
+                release.complete(Unit)
+
+                withTimeout(2_000) {
+                    controller.state.first {
+                        reads == 2 &&
+                            (it.load as? DailyLoadState.Content)
+                                ?.daily
+                                ?.dayPlans
+                                ?.single()
+                                ?.overdue == true
+                    }
+                }
+                assertTrue(harness.boundary.arms.any { it.exactBoundary == scheduledAt.plusMillis(1) })
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun delayedReadCrossingLocalMidnightImmediatelyRereadsFloatingOverdueState() =
+        runBlocking {
+            val midnight = Instant.parse("2026-08-21T00:00:00Z")
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val harness = Harness(midnight.minusMillis(1), boundary = ImmediatePastBoundary())
+            var reads = 0
+            harness.reader = { query ->
+                harness.queries += query
+                if (++reads == 1) {
+                    entered.complete(Unit)
+                    release.await()
+                }
+                floatingDaily(LocalDate.parse("2026-08-20"), query.now >= midnight)
+            }
+            val controller = harness.controller(this)
+            try {
+                withTimeout(2_000) { entered.await() }
+                harness.wall.value = midnight
+                release.complete(Unit)
+
+                withTimeout(2_000) {
+                    controller.state.first {
+                        reads == 2 &&
+                            (it.load as? DailyLoadState.Content)
+                                ?.daily
+                                ?.dayPlans
+                                ?.single()
+                                ?.overdue == true
+                    }
+                }
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
     @Test
     fun initialStateUsesCurrentZoneTodayAndOneCanonicalRead() =
         runBlocking {
@@ -205,7 +343,7 @@ class DailyControllerTest {
 
             assertEquals(LocalDate.parse("2026-03-08"), controller.state.value.selectedDate)
             assertEquals(DailyDateRelation.PAST, controller.state.value.dateRelation)
-            assertEquals(2, harness.boundary.arms.size)
+            assertTrue(harness.boundary.arms.size >= 2)
             controller.close()
         }
 
@@ -515,10 +653,10 @@ class DailyControllerTest {
     private class Harness(
         initialInstant: Instant = harnessInstant,
         val zone: ZoneId = ZoneOffset.UTC,
+        val boundary: FakeBoundary = FakeBoundary(),
     ) {
         val wall = MutableWallClock(initialInstant)
         val semantic = MutableStateFlow(0L)
-        val boundary = FakeBoundary()
         val queries = mutableListOf<DailyQuery>()
         val commands = mutableListOf<DailyRuntimeCommand>()
         val events = mutableListOf<String>()
@@ -605,10 +743,11 @@ class DailyControllerTest {
         override fun now(): Instant = value
     }
 
-    private class FakeBoundary : LocalDateBoundaryScheduler {
+    private open class FakeBoundary : LocalDateBoundaryScheduler {
         data class Arm(
             val now: Instant,
             val zone: ZoneId,
+            val exactBoundary: Instant?,
             val callback: () -> Unit,
         )
 
@@ -618,9 +757,10 @@ class DailyControllerTest {
         override fun arm(
             now: Instant,
             zoneId: ZoneId,
+            exactBoundary: Instant?,
             onBoundary: () -> Unit,
         ) {
-            arms += Arm(now, zoneId, onBoundary)
+            arms += Arm(now, zoneId, exactBoundary, onBoundary)
         }
 
         override fun cancel() {
@@ -630,9 +770,102 @@ class DailyControllerTest {
         fun fire() = arms.last().callback()
     }
 
+    private class ImmediatePastBoundary : FakeBoundary() {
+        override fun arm(
+            now: Instant,
+            zoneId: ZoneId,
+            exactBoundary: Instant?,
+            onBoundary: () -> Unit,
+        ) {
+            super.arm(now, zoneId, exactBoundary, onBoundary)
+            if (exactBoundary != null && exactBoundary <= now) onBoundary()
+        }
+    }
+
     private companion object {
         val harnessInstant: Instant = Instant.parse("2026-08-20T10:00:00Z")
         val emptyDaily = DailyRead(emptyList(), emptyList(), emptyList(), null)
+
+        fun exactDaily(
+            scheduledAt: Instant,
+            now: Instant,
+        ): DailyRead {
+            val plan =
+                PlanEntry(
+                    PlanEntryId("exact"),
+                    PlanTrackableKind.ACTIVITY,
+                    com.alexandr5476.lifetracing.domain
+                        .ActivityTemplateId("activity"),
+                    null,
+                    1,
+                    ActivitySnapshotId("snapshot"),
+                    null,
+                    PlanTarget.ExactDay(scheduledAt, ZoneOffset.UTC),
+                    PlanEntryStatus.PLANNED,
+                    null,
+                    null,
+                    Instant.EPOCH,
+                    now,
+                    null,
+                    null,
+                )
+            return DailyRead(
+                listOf(
+                    DailyPlan(
+                        plan,
+                        scheduledAt.atZone(ZoneOffset.UTC).toLocalDate(),
+                        scheduledAt.atZone(ZoneOffset.UTC).toLocalTime(),
+                        DailyPlanSnapshot.Activity(activitySnapshot("snapshot")),
+                        PlanSourceState.CURRENT,
+                        false,
+                        now > scheduledAt,
+                    ),
+                ),
+                emptyList(),
+                emptyList(),
+                null,
+            )
+        }
+
+        fun floatingDaily(
+            date: LocalDate,
+            overdue: Boolean,
+        ): DailyRead {
+            val plan =
+                PlanEntry(
+                    PlanEntryId("floating"),
+                    PlanTrackableKind.ACTIVITY,
+                    ActivityTemplateId("activity"),
+                    null,
+                    1,
+                    ActivitySnapshotId("snapshot"),
+                    null,
+                    PlanTarget.FloatingDay(date),
+                    PlanEntryStatus.PLANNED,
+                    null,
+                    null,
+                    Instant.EPOCH,
+                    Instant.EPOCH,
+                    null,
+                    null,
+                )
+            return DailyRead(
+                listOf(
+                    DailyPlan(
+                        plan,
+                        date,
+                        null,
+                        DailyPlanSnapshot.Activity(activitySnapshot("snapshot")),
+                        PlanSourceState.CURRENT,
+                        false,
+                        overdue,
+                    ),
+                ),
+                emptyList(),
+                emptyList(),
+                null,
+            )
+        }
 
         fun daily(runtime: ActiveActivityRuntime) =
             DailyRead(emptyList(), emptyList(), emptyList(), DailyActive.Activity(runtime))

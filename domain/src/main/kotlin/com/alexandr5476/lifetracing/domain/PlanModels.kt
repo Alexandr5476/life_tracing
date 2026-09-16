@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.domain
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.YearMonth
 import java.time.ZoneId
@@ -55,6 +56,33 @@ sealed interface PlanTarget {
         val month: YearMonth,
     ) : PlanTarget {
         override val precision = PlanningPrecision.MONTH
+    }
+}
+
+sealed interface PlanSchedule {
+    fun toTarget(): PlanTarget
+
+    data class FloatingDay(
+        val date: LocalDate,
+    ) : PlanSchedule {
+        override fun toTarget() = PlanTarget.FloatingDay(date)
+    }
+
+    data class ExactDay(
+        val localDateTime: LocalDateTime,
+        val currentZoneId: ZoneId,
+    ) : PlanSchedule {
+        override fun toTarget() = PlanTarget.ExactDay(localDateTime.atZone(currentZoneId).toInstant(), currentZoneId)
+    }
+
+    data class Week(
+        val weekStart: LocalDate,
+    ) : PlanSchedule {
+        init {
+            require(weekStart.dayOfWeek == DayOfWeek.MONDAY) { "Plan week must start on Monday" }
+        }
+
+        override fun toTarget() = PlanTarget.Week(weekStart)
     }
 }
 

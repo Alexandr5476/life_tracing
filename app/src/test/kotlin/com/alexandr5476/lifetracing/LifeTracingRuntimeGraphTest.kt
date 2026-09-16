@@ -98,7 +98,7 @@ class LifeTracingRuntimeGraphTest {
             assertSame(first, repeated)
             assertEquals(1, controllerCreations)
             assertEquals(1, reads)
-            assertEquals(1, boundary.arms)
+            assertEquals(2, boundary.arms)
             val firstLauncher = graph.createStartActivityController()
             val secondLauncher = graph.createStartActivityController()
             assertNotSame(firstLauncher, secondLauncher)
@@ -168,6 +168,7 @@ class LifeTracingRuntimeGraphTest {
         override fun arm(
             now: Instant,
             zoneId: java.time.ZoneId,
+            exactBoundary: Instant?,
             onBoundary: () -> Unit,
         ) {
             arms++

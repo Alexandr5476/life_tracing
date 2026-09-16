@@ -8,11 +8,34 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.ZoneId
 
 class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
+
+    @Test
+    fun `production schedules resolve only supported day and Monday week targets`() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val local = LocalDateTime.parse("2026-08-20T15:30:00")
+
+        assertEquals(
+            PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+            PlanSchedule.FloatingDay(LocalDate.parse("2026-08-20")).toTarget(),
+        )
+        assertEquals(
+            PlanTarget.ExactDay(Instant.parse("2026-08-20T10:00:00Z"), zone),
+            PlanSchedule.ExactDay(local, zone).toTarget(),
+        )
+        assertEquals(
+            PlanTarget.Week(LocalDate.parse("2026-08-17")),
+            PlanSchedule.Week(LocalDate.parse("2026-08-17")).toTarget(),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanSchedule.Week(LocalDate.parse("2026-08-18"))
+        }
+    }
 
     @Test
     fun `validator accepts every target and retained revision after source purge`() {
@@ -126,6 +149,38 @@ class PlanModelsTest {
         assertEquals(PlanSourceState.CHANGED, PlanSourceStateResolver.resolve(2, 3, false))
         assertEquals(PlanSourceState.ARCHIVED, PlanSourceStateResolver.resolve(2, 2, true))
         assertEquals(PlanSourceState.UNAVAILABLE, PlanSourceStateResolver.resolve(2, null, false))
+    }
+
+    @Test
+    fun `focused action identity changes for every stale relevant fact`() {
+        val base =
+            PlanActionIdentity(
+                PlanEntryId("plan"),
+                PlanTrackableKind.ACTIVITY,
+                ActivitySnapshotId("snapshot"),
+                null,
+                PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+                PlanEntryStatus.PLANNED,
+                2,
+                createdAt,
+            )
+        val identities =
+            listOf(
+                base,
+                base.copy(planEntryId = PlanEntryId("other-plan")),
+                base.copy(
+                    kind = PlanTrackableKind.SEQUENCE,
+                    activitySnapshotId = null,
+                    sequenceSnapshotId = SequenceSnapshotId("snapshot"),
+                ),
+                base.copy(activitySnapshotId = ActivitySnapshotId("other-snapshot")),
+                base.copy(target = PlanTarget.Week(LocalDate.parse("2026-08-17"))),
+                base.copy(status = PlanEntryStatus.FULFILLED),
+                base.copy(sourceRevision = 3),
+                base.copy(updatedAt = createdAt.plusMillis(1)),
+            )
+
+        assertEquals(identities.size, identities.toSet().size)
     }
 
     private fun activityPlan(

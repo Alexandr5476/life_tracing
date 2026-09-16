@@ -132,29 +132,24 @@ internal abstract class SequenceSnapshotDao {
     )
     protected abstract fun stepActivitySnapshotIds(snapshotId: String): List<String>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM sequence_nodes WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
-    protected abstract fun hasMutableStepReference(snapshotId: String): Boolean
-
-    @Query("SELECT EXISTS(SELECT 1 FROM sequence_snapshot_nodes WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
-    protected abstract fun hasFrozenStepReference(snapshotId: String): Boolean
-
-    @Query("SELECT EXISTS(SELECT 1 FROM activity_executions WHERE snapshot_id = :snapshotId LIMIT 1)")
-    protected abstract fun hasExecutionReference(snapshotId: String): Boolean
-
-    @Query("SELECT EXISTS(SELECT 1 FROM sequence_occurrences WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
-    protected abstract fun hasOccurrenceReference(snapshotId: String): Boolean
-
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE snapshot_id = :snapshotId LIMIT 1)")
     abstract fun hasSequenceExecutionReference(snapshotId: String): Boolean
 
     @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE sequence_plan_snapshot_id = :snapshotId LIMIT 1)")
     abstract fun hasPlanReference(snapshotId: String): Boolean
 
-    @Query("SELECT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = :snapshotId LIMIT 1)")
-    protected abstract fun hasActivityPlanReference(snapshotId: String): Boolean
+    @Query(
+        "SELECT snapshots.id FROM activity_snapshots AS snapshots WHERE snapshots.id IN (:ids) " +
+            "AND NOT EXISTS(SELECT 1 FROM sequence_nodes WHERE activity_snapshot_id = snapshots.id) " +
+            "AND NOT EXISTS(SELECT 1 FROM sequence_snapshot_nodes WHERE activity_snapshot_id = snapshots.id) " +
+            "AND NOT EXISTS(SELECT 1 FROM activity_executions WHERE snapshot_id = snapshots.id) " +
+            "AND NOT EXISTS(SELECT 1 FROM sequence_occurrences WHERE activity_snapshot_id = snapshots.id) " +
+            "AND NOT EXISTS(SELECT 1 FROM plan_entries WHERE activity_snapshot_id = snapshots.id)",
+    )
+    protected abstract fun unreferencedActivitySnapshotIds(ids: List<String>): List<String>
 
-    @Query("DELETE FROM activity_snapshots WHERE id = :snapshotId")
-    protected abstract fun deleteActivitySnapshotUnchecked(snapshotId: String): Int
+    @Query("DELETE FROM activity_snapshots WHERE id IN (:ids)")
+    protected abstract fun deleteActivitySnapshotsUnchecked(ids: List<String>): Int
 
     @Transaction
     open fun insertAggregate(aggregate: SequenceSnapshotAggregateEntity) {
@@ -236,13 +231,11 @@ internal abstract class SequenceSnapshotDao {
         require(!hasPlanReference(snapshotId)) { "Sequence snapshot is retained by a Plan" }
         val children = stepActivitySnapshotIds(snapshotId)
         if (deleteSnapshotUnchecked(snapshotId) == 0) return
-        children.forEach { child ->
-            if (hasMutableStepReference(child)) return@forEach
-            if (hasFrozenStepReference(child)) return@forEach
-            if (hasExecutionReference(child)) return@forEach
-            if (hasOccurrenceReference(child)) return@forEach
-            if (hasActivityPlanReference(child)) return@forEach
-            check(deleteActivitySnapshotUnchecked(child) == 1)
+        children.chunked(SQLITE_SAFE_BIND_COUNT).forEach { chunk ->
+            val unreferenced = unreferencedActivitySnapshotIds(chunk)
+            if (unreferenced.isNotEmpty()) {
+                check(deleteActivitySnapshotsUnchecked(unreferenced) == unreferenced.size)
+            }
         }
     }
 

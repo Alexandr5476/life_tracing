@@ -24,6 +24,8 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
+import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
@@ -36,6 +38,13 @@ import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRouteSessionOwner
+import com.alexandr5476.lifetracing.plan.PlanControllerOwner
+import com.alexandr5476.lifetracing.plan.PlanExecutionCommit
+import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
+import com.alexandr5476.lifetracing.plan.PlanExecutionRoute
+import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSession
+import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
+import com.alexandr5476.lifetracing.plan.PlanRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -59,6 +68,10 @@ class MainActivity : AppCompatActivity() {
     internal val expandedLiveSequenceRouteSessions by lazy {
         ViewModelProvider(this)[ExpandedLiveSequenceRouteSessionOwner::class.java]
     }
+    internal val planControllerOwner by lazy { ViewModelProvider(this)[PlanControllerOwner::class.java] }
+    internal val planExecutionRouteSessions by lazy {
+        ViewModelProvider(this)[PlanExecutionRouteSessionOwner::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +84,8 @@ class MainActivity : AppCompatActivity() {
                 sequenceTemplateEditorRouteSessions = sequenceTemplateEditorRouteSessions,
                 libraryControllerOwner = libraryControllerOwner,
                 expandedLiveSequenceRouteSessions = expandedLiveSequenceRouteSessions,
+                planControllerOwner = planControllerOwner,
+                planExecutionRouteSessions = planExecutionRouteSessions,
             )
         }
     }
@@ -87,6 +102,15 @@ data object StartActivityRoot : NavKey
 /** Navigation identity only: Library reads its canonical catalog on entry. */
 @Serializable
 data object LibraryRoot : NavKey
+
+@Serializable
+data object PlanRoot : NavKey
+
+@Serializable
+data class PlanExecutionRoot(
+    val identity: List<String?>,
+    val origin: String,
+) : NavKey
 
 @Serializable
 data object NewActivityTemplateEditor : NavKey
@@ -109,7 +133,7 @@ data class ExistingActivityTemplateEditor(
 internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 
 @Composable
-@Suppress("FunctionNaming", "LongMethod")
+@Suppress("CyclomaticComplexMethod", "FunctionNaming", "LongMethod")
 internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
@@ -118,6 +142,8 @@ internal fun LifeTracingApp(
     sequenceTemplateEditorRouteSessions: SequenceTemplateEditorRouteSessionOwner? = null,
     libraryControllerOwner: LibraryControllerOwner? = null,
     expandedLiveSequenceRouteSessions: ExpandedLiveSequenceRouteSessionOwner? = null,
+    planControllerOwner: PlanControllerOwner? = null,
+    planExecutionRouteSessions: PlanExecutionRouteSessionOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -141,6 +167,9 @@ internal fun LifeTracingApp(
                 sequenceTemplateEditorRouteSessions ?: remember { SequenceTemplateEditorRouteSessionOwner() }
             val expandedSequenceSessions =
                 expandedLiveSequenceRouteSessions ?: remember { ExpandedLiveSequenceRouteSessionOwner() }
+            val planOwner = planControllerOwner ?: remember { PlanControllerOwner() }
+            val planExecutionSessions =
+                planExecutionRouteSessions ?: remember { PlanExecutionRouteSessionOwner() }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -148,11 +177,90 @@ internal fun LifeTracingApp(
                 )
                 backStack.removeExpandedLiveSequence(expectedExecutionId)
             }
+            val closePlanExecution: (PlanExecutionRouteSession) -> Unit = { session ->
+                planExecutionSessions.release(session)
+                backStack.removePlanExecution(session.expectedIdentity, session.origin)
+            }
+            val reloadPlanExecutionOrigin: (PlanExecutionRouteSession) -> Unit = { session ->
+                when (session.origin) {
+                    PlanExecutionOrigin.DAILY ->
+                        controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                    PlanExecutionOrigin.PLAN ->
+                        planOwner.get(runtimeGraph::createPlanController).dispatch(
+                            com.alexandr5476.lifetracing.plan.PlanAction.Refresh,
+                        )
+                }
+                closePlanExecution(session)
+            }
+            val completePlanExecution: (PlanExecutionRouteSession, PlanExecutionCommit) -> Unit = { session, result ->
+                when (session.origin) {
+                    PlanExecutionOrigin.DAILY -> {
+                        controller.dispatch(
+                            if (result.isLive) {
+                                com.alexandr5476.lifetracing.daily.DailyAction.Today
+                            } else {
+                                com.alexandr5476.lifetracing.daily.DailyAction.Retry
+                            },
+                        )
+                        closePlanExecution(session)
+                    }
+                    PlanExecutionOrigin.PLAN -> {
+                        planOwner.get(runtimeGraph::createPlanController).dispatch(
+                            com.alexandr5476.lifetracing.plan.PlanAction.Refresh,
+                        )
+                        closePlanExecution(session)
+                        if (result.isLive) {
+                            planOwner.get(runtimeGraph::createPlanController).onRouteExited()
+                            backStack.removePlan()
+                            controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
+                        }
+                    }
+                }
+            }
+            val normalizeMismatchedPlanExecution: (PlanExecutionRouteSession) -> Unit = { session ->
+                session.exitPolicy.requestExit(
+                    session.controller,
+                    {
+                        planExecutionSessions.release(session)
+                        backStack.normalizeRestoredPlanExecution()
+                    },
+                    {
+                        backStack.normalizeRestoredPlanExecution()
+                        completePlanExecution(session, it)
+                    },
+                )
+            }
             NavDisplay(
                 backStack = backStack,
                 onBack = {
                     val expanded = backStack.lastOrNull() as? ExpandedLiveSequenceRoot
-                    if (expanded == null) backStack.removeLastOrNull() else closeExpanded(expanded.executionId)
+                    val planExecution = backStack.lastOrNull() as? PlanExecutionRoot
+                    when {
+                        expanded != null -> closeExpanded(expanded.executionId)
+                        planExecution != null -> {
+                            val session = planExecutionSessions.activeSession
+                            if (session == null) {
+                                backStack.normalizeRestoredPlanExecution()
+                            } else if (!planExecution.matches(session)) {
+                                normalizeMismatchedPlanExecution(session)
+                            } else if (session.controller.state.value.command ==
+                                com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Stale
+                            ) {
+                                reloadPlanExecutionOrigin(session)
+                            } else {
+                                session.exitPolicy.requestExit(
+                                    session.controller,
+                                    { closePlanExecution(session) },
+                                    { completePlanExecution(session, it) },
+                                )
+                            }
+                        }
+                        backStack.lastOrNull() is PlanRoot -> {
+                            planOwner.get(runtimeGraph::createPlanController).onRouteExited()
+                            backStack.removePlan()
+                        }
+                        else -> backStack.removeLastOrNull()
+                    }
                 },
                 entryProvider =
                     entryProvider {
@@ -166,11 +274,18 @@ internal fun LifeTracingApp(
                                     backStack.openStartActivity()
                                 },
                                 onLibrary = { backStack.openLibrary() },
+                                onPlan = { backStack.openPlan() },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
                                     }
                                     backStack.openExpandedLiveSequence(executionId.value)
+                                },
+                                onExecutePlan = { identity ->
+                                    planExecutionSessions
+                                        .acquire(identity, PlanExecutionOrigin.DAILY) {
+                                            runtimeGraph.createPlanExecutionController(identity)
+                                        }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
                                 },
                             )
                         }
@@ -241,6 +356,40 @@ internal fun LifeTracingApp(
                                     backStack.openStartActivity()
                                 },
                             )
+                        }
+                        entry<PlanRoot> {
+                            val planController = planOwner.get(runtimeGraph::createPlanController)
+                            PlanRoute(
+                                planController,
+                                onBack = {
+                                    planController.onRouteExited()
+                                    backStack.removePlan()
+                                },
+                                onExecute = { identity ->
+                                    planExecutionSessions
+                                        .acquire(identity, PlanExecutionOrigin.PLAN) {
+                                            runtimeGraph.createPlanExecutionController(identity)
+                                        }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
+                                },
+                            )
+                        }
+                        entry<PlanExecutionRoot> { route ->
+                            val session = planExecutionSessions.activeSession
+                            if (session == null) {
+                                LaunchedEffect(Unit) { backStack.normalizeRestoredPlanExecution() }
+                            } else if (!route.matches(session)) {
+                                val command by session.controller.state.collectAsState()
+                                LaunchedEffect(command) {
+                                    normalizeMismatchedPlanExecution(session)
+                                }
+                            } else {
+                                PlanExecutionRoute(
+                                    session,
+                                    onBack = { closePlanExecution(session) },
+                                    onReloadOrigin = { reloadPlanExecutionOrigin(session) },
+                                    onCommitted = { completePlanExecution(session, it) },
+                                )
+                            }
                         }
                         entry<NewActivityTemplateEditor> {
                             val session = editorSessions.activeSession
@@ -367,6 +516,62 @@ internal fun MutableList<NavKey>.openLibrary() {
 internal fun MutableList<NavKey>.removeLibrary() {
     if (lastOrNull() is LibraryRoot) removeAt(lastIndex)
 }
+
+internal fun MutableList<NavKey>.openPlan() {
+    if (lastOrNull() !is PlanRoot) add(PlanRoot)
+}
+
+internal fun MutableList<NavKey>.removePlan() {
+    if (lastOrNull() is PlanRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openPlanExecution(
+    identity: PlanActionIdentity,
+    origin: PlanExecutionOrigin,
+) {
+    if (lastOrNull() !is PlanExecutionRoot) {
+        add(PlanExecutionRoot(identity.routeIdentity(), origin.name))
+    }
+}
+
+internal fun MutableList<NavKey>.removePlanExecution(
+    expectedIdentity: PlanActionIdentity,
+    expectedOrigin: PlanExecutionOrigin,
+) {
+    if ((lastOrNull() as? PlanExecutionRoot)?.matches(expectedIdentity, expectedOrigin) == true) {
+        removeAt(lastIndex)
+    }
+}
+
+/** Serialized identity cannot recreate the transient controller, countdown, or editor. */
+internal fun MutableList<NavKey>.normalizeRestoredPlanExecution() {
+    if (lastOrNull() is PlanExecutionRoot) removeAt(lastIndex)
+}
+
+internal fun PlanExecutionRoot.matches(session: PlanExecutionRouteSession): Boolean =
+    matches(session.expectedIdentity, session.origin)
+
+internal fun PlanExecutionRoot.matches(
+    expectedIdentity: PlanActionIdentity,
+    expectedOrigin: PlanExecutionOrigin,
+): Boolean = identity == expectedIdentity.routeIdentity() && origin == expectedOrigin.name
+
+internal fun PlanActionIdentity.routeIdentity(): List<String?> =
+    listOf(
+        planEntryId.value,
+        kind.name,
+        activitySnapshotId?.value,
+        sequenceSnapshotId?.value,
+    ) + target.routeIdentity() +
+        listOf(status.name, sourceRevision?.toString(), updatedAt.toString())
+
+private fun PlanTarget.routeIdentity(): List<String?> =
+    when (this) {
+        is PlanTarget.FloatingDay -> listOf("day", date.toString())
+        is PlanTarget.ExactDay -> listOf("exact", scheduledAt.toString(), creationZoneId?.id)
+        is PlanTarget.Week -> listOf("week", weekStart.toString())
+        is PlanTarget.Month -> listOf("month", month.toString())
+    }
 
 internal fun MutableList<NavKey>.openNewActivityTemplateEditor() {
     if (lastOrNull() !is NewActivityTemplateEditor) add(NewActivityTemplateEditor)

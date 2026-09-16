@@ -116,6 +116,14 @@ data class ReusableActivityCatalogItem(
     val mainValueDefaultNumberScaled: Long?,
 )
 
+/** Lightweight, bounded creation source for the Plan picker. */
+data class ReusablePlanCatalogItem(
+    val id: LibraryTemplateId,
+    val name: String,
+    val shortComment: String?,
+    val activityMetadata: PlanActivityRowMetadata?,
+)
+
 sealed interface LibraryLaunchTarget {
     val id: LibraryTemplateId
     val name: String

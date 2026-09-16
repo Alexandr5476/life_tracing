@@ -11,6 +11,18 @@ internal data class PlanSnapshotSummaryRow(
     val id: String,
     val name: String,
     @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
+    @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
+)
+
+internal data class PlanActivitySnapshotSummaryRow(
+    val id: String,
+    val name: String,
+    @androidx.room.ColumnInfo(name = "short_comment") val shortComment: String?,
+    @androidx.room.ColumnInfo(name = "source_template_id") val sourceTemplateId: String?,
+    @androidx.room.ColumnInfo(name = "source_revision") val sourceRevision: Long?,
+    @androidx.room.ColumnInfo(name = "time_tracking_mode") val timeTrackingMode: String,
+    @androidx.room.ColumnInfo(name = "timer_target_ms") val timerTargetMs: Long?,
 )
 
 internal data class PlanSourceMetadataRow(
@@ -76,6 +88,26 @@ internal abstract class PlanEntryDao {
     ): List<PlanEntryEntity>
 
     @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms IS NULL AND planned_day BETWEEN :startDate AND :endDate " +
+            "ORDER BY planned_day, created_at_ms, id",
+    )
+    abstract fun getSupportedFloatingDays(
+        startDate: String,
+        endDate: String,
+    ): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'DAY' " +
+            "AND scheduled_instant_ms >= :startMs AND scheduled_instant_ms < :endMs " +
+            "ORDER BY scheduled_instant_ms, created_at_ms, id",
+    )
+    abstract fun getSupportedExactDays(
+        startMs: Long,
+        endMs: Long,
+    ): List<PlanEntryEntity>
+
+    @Query(
         "SELECT * FROM plan_entries WHERE status IN ('PLANNED', 'FULFILLED') AND precision = 'WEEK' " +
             "AND planned_week_start = :weekStart ORDER BY created_at_ms, id",
     )
@@ -93,6 +125,15 @@ internal abstract class PlanEntryDao {
 
     @Query("SELECT * FROM plan_entries WHERE status = 'CANCELLED' ORDER BY cancelled_at_ms DESC, id")
     abstract fun getCancelled(): List<PlanEntryEntity>
+
+    @Query(
+        "SELECT * FROM plan_entries WHERE status = 'CANCELLED' AND precision IN ('DAY', 'WEEK') " +
+            "ORDER BY cancelled_at_ms DESC, id LIMIT :limit OFFSET :offset",
+    )
+    abstract fun getCancelledSupportedPage(
+        limit: Int,
+        offset: Int,
+    ): List<PlanEntryEntity>
 
     @Query(
         "SELECT EXISTS(SELECT 1 FROM activity_executions WHERE plan_entry_id = :id AND context_type = 'STANDALONE' AND status IN ('RUNNING', 'PAUSED') LIMIT 1)",
@@ -127,26 +168,34 @@ internal abstract class PlanEntryDao {
     abstract fun sequenceExecutionLinks(ids: List<String>): List<PlanSequenceExecutionLinkRow>
 
     @Query(
-        "UPDATE plan_entries SET status = 'CANCELLED', cancelled_at_ms = :atMs, fulfilled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED'",
+        "UPDATE plan_entries SET status = 'CANCELLED', cancelled_at_ms = :atMs, fulfilled_at_ms = NULL, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun cancel(
         id: String,
+        expectedUpdatedAtMs: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET status = 'PLANNED', cancelled_at_ms = NULL, fulfilled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'CANCELLED'",
+        "UPDATE plan_entries SET status = 'PLANNED', cancelled_at_ms = NULL, fulfilled_at_ms = NULL, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'CANCELLED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun restore(
         id: String,
+        expectedUpdatedAtMs: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET precision = :precision, planned_day = :plannedDay, planned_week_start = :plannedWeekStart, planned_month = :plannedMonth, scheduled_instant_ms = :scheduledInstantMs, creation_zone_id = :creationZoneId, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED'",
+        "UPDATE plan_entries SET precision = :precision, planned_day = :plannedDay, " +
+            "planned_week_start = :plannedWeekStart, planned_month = :plannedMonth, " +
+            "scheduled_instant_ms = :scheduledInstantMs, creation_zone_id = :creationZoneId, updated_at_ms = :atMs " +
+            "WHERE id = :id AND status = 'PLANNED' AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun reschedule(
         id: String,
+        expectedUpdatedAtMs: Long,
         precision: String,
         plannedDay: String?,
         plannedWeekStart: String?,
@@ -157,22 +206,28 @@ internal abstract class PlanEntryDao {
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET activity_snapshot_id = :snapshotId, source_revision = :sourceRevision, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND activity_snapshot_id = :expectedSnapshotId",
+        "UPDATE plan_entries SET activity_snapshot_id = :snapshotId, source_revision = :sourceRevision, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' " +
+            "AND activity_snapshot_id = :expectedSnapshotId AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun replaceActivitySnapshot(
         id: String,
         expectedSnapshotId: String,
+        expectedUpdatedAtMs: Long,
         snapshotId: String,
         sourceRevision: Long,
         atMs: Long,
     ): Int
 
     @Query(
-        "UPDATE plan_entries SET sequence_plan_snapshot_id = :snapshotId, source_revision = :sourceRevision, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND sequence_plan_snapshot_id = :expectedSnapshotId",
+        "UPDATE plan_entries SET sequence_plan_snapshot_id = :snapshotId, source_revision = :sourceRevision, " +
+            "updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' " +
+            "AND sequence_plan_snapshot_id = :expectedSnapshotId AND updated_at_ms = :expectedUpdatedAtMs",
     )
     abstract fun replaceSequenceSnapshot(
         id: String,
         expectedSnapshotId: String,
+        expectedUpdatedAtMs: Long,
         snapshotId: String,
         sourceRevision: Long,
         atMs: Long,
@@ -235,10 +290,20 @@ internal abstract class PlanEntryDao {
     @Query("SELECT EXISTS(SELECT 1 FROM sequence_executions WHERE snapshot_id = :id LIMIT 1)")
     abstract fun hasSequenceExecutionReference(id: String): Boolean
 
-    @Query("SELECT id, name, short_comment FROM activity_snapshots WHERE id IN (:ids)")
-    abstract fun activitySummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
+    @Query(
+        "SELECT snapshots.id, snapshots.name, snapshots.short_comment, snapshots.source_template_id, " +
+            "snapshots.source_revision, snapshots.time_tracking_mode, snapshots.timer_target_ms " +
+            "FROM activity_snapshots AS snapshots INNER JOIN activity_snapshot_settings AS settings " +
+            "ON settings.snapshot_id = snapshots.id WHERE snapshots.id IN (:ids)",
+    )
+    abstract fun activitySummaries(ids: List<String>): List<PlanActivitySnapshotSummaryRow>
 
-    @Query("SELECT id, name, short_comment FROM sequence_snapshots WHERE id IN (:ids)")
+    @Query(
+        "SELECT snapshots.id, snapshots.name, snapshots.short_comment, snapshots.source_template_id, " +
+            "snapshots.source_revision FROM sequence_snapshots AS snapshots " +
+            "INNER JOIN sequence_snapshot_settings AS settings ON settings.sequence_snapshot_id = snapshots.id " +
+            "WHERE snapshots.id IN (:ids)",
+    )
     abstract fun sequenceSummaries(ids: List<String>): List<PlanSnapshotSummaryRow>
 
     @Query("SELECT id, revision, deleted_at_ms FROM activity_templates WHERE id IN (:ids)")
@@ -257,7 +322,11 @@ internal abstract class PlanEntryDao {
         atMs: Long,
     ): Int
 
-    @Query("UPDATE sequence_template_user_state SET last_used_at_ms = :atMs WHERE sequence_template_id = :id")
+    @Query(
+        "UPDATE sequence_template_user_state SET last_used_at_ms = " +
+            "CASE WHEN last_used_at_ms IS NULL OR last_used_at_ms < :atMs THEN :atMs ELSE last_used_at_ms END " +
+            "WHERE sequence_template_id = :id",
+    )
     abstract fun touchSequenceSource(
         id: String,
         atMs: Long,
