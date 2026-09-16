@@ -179,6 +179,109 @@ class PlanControllerTest {
         }
 
     @Test
+    fun delayedExactReadCrossingBoundaryImmediatelyRereadsFromPublishedTimestamp() =
+        runBlocking {
+            val scheduledAt = Instant.parse("2026-09-15T10:00:00Z")
+            val clock = arrayOf(Instant.parse("2026-09-15T09:59:59Z"))
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val boundary = ImmediatePastBoundary()
+            var reads = 0
+            val controller =
+                PlanController(
+                    this,
+                    { query ->
+                        if (++reads == 1) {
+                            entered.complete(Unit)
+                            release.await()
+                        }
+                        week(query, exactRow(scheduledAt, now = query.now))
+                    },
+                    { _, _, _ -> emptyList() },
+                    { CancelledPlanPage(emptyList(), false) },
+                    {},
+                    { clock[0] },
+                    { ZoneOffset.UTC },
+                    MutableStateFlow(0L),
+                    boundary,
+                )
+            try {
+                withTimeout(2_000) { entered.await() }
+                clock[0] = scheduledAt.plusMillis(1)
+                release.complete(Unit)
+
+                withTimeout(2_000) {
+                    controller.state.first {
+                        reads == 2 &&
+                            (it.week as? PlanLoad.Content)
+                                ?.value
+                                ?.selectedDayPlans
+                                ?.single()
+                                ?.overdue == true
+                    }
+                }
+                assertTrue(boundary.arms.any { it.exactBoundary == scheduledAt.plusMillis(1) })
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun delayedReadCrossingLocalMidnightImmediatelyRereadsFloatingOverdueState() =
+        runBlocking {
+            val midnight = Instant.parse("2026-09-15T00:00:00Z")
+            val clock = arrayOf(midnight.minusMillis(1))
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val boundary = ImmediatePastBoundary()
+            var reads = 0
+            val controller =
+                PlanController(
+                    this,
+                    { query ->
+                        if (++reads == 1) {
+                            entered.complete(Unit)
+                            release.await()
+                        }
+                        week(
+                            query,
+                            rowForTarget(
+                                PlanTarget.FloatingDay(LocalDate.parse("2026-09-14")),
+                                query.now >= midnight,
+                            ),
+                        )
+                    },
+                    { _, _, _ -> emptyList() },
+                    { CancelledPlanPage(emptyList(), false) },
+                    {},
+                    { clock[0] },
+                    { ZoneOffset.UTC },
+                    MutableStateFlow(0L),
+                    boundary,
+                )
+            try {
+                withTimeout(2_000) { entered.await() }
+                clock[0] = midnight
+                release.complete(Unit)
+
+                withTimeout(2_000) {
+                    controller.state.first {
+                        reads == 2 &&
+                            (it.week as? PlanLoad.Content)
+                                ?.value
+                                ?.selectedDayPlans
+                                ?.single()
+                                ?.overdue == true
+                    }
+                }
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
     fun staleWeekReadDoesNotReplaceNewlySelectedDateAndDuplicateSubmitCommitsOnce() =
         runBlocking {
             val firstReadEntered = CompletableDeferred<Unit>()
@@ -481,6 +584,129 @@ class PlanControllerTest {
         }
 
     @Test
+    fun cancelRecoveryResumesBothCanonicalReadsAfterRouteExit() =
+        runBlocking {
+            val staleWeekEntered = CompletableDeferred<Unit>()
+            val staleCancelledEntered = CompletableDeferred<Unit>()
+            val releaseStaleReads = CompletableDeferred<Unit>()
+            val staleWeekFinished = CompletableDeferred<Unit>()
+            val staleCancelledFinished = CompletableDeferred<Unit>()
+            val planned = row("plan", 1)
+            val cancelled = row("plan", 2, PlanEntryStatus.CANCELLED)
+            var durableCancelled = false
+            var weekReads = 0
+            var cancelledReads = 0
+            val controller =
+                controller(
+                    readWeek = { query ->
+                        if (++weekReads == 2) {
+                            staleWeekEntered.complete(Unit)
+                            releaseStaleReads.await()
+                            staleWeekFinished.complete(Unit)
+                        }
+                        week(query, planned.takeUnless { durableCancelled })
+                    },
+                    readCancelled = {
+                        if (++cancelledReads == 1) {
+                            staleCancelledEntered.complete(Unit)
+                            releaseStaleReads.await()
+                            staleCancelledFinished.complete(Unit)
+                        }
+                        CancelledPlanPage(listOfNotNull(cancelled.takeIf { durableCancelled }), false)
+                    },
+                    commit = { durableCancelled = true },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.Cancel(planned))
+                withTimeout(2_000) { staleWeekEntered.await() }
+                withTimeout(2_000) { staleCancelledEntered.await() }
+
+                controller.onRouteExited()
+                releaseStaleReads.complete(Unit)
+                withTimeout(2_000) { staleWeekFinished.await() }
+                withTimeout(2_000) { staleCancelledFinished.await() }
+                assertTrue(durableCancelled)
+                assertTrue(controller.state.value.isMutating)
+                assertTrue(
+                    controller.state.value
+                        .cancelledItems
+                        .isEmpty(),
+                )
+
+                controller.onRouteEntered()
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+
+                assertEquals(3, weekReads)
+                assertEquals(2, cancelledReads)
+                assertFalse(controller.state.value.cancelledOpen)
+                assertEquals(listOf(cancelled), controller.state.value.cancelledItems)
+            } finally {
+                releaseStaleReads.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun restoreRecoveryStartedWhileRouteIsHiddenResumesOnReentry() =
+        runBlocking {
+            val commitEntered = CompletableDeferred<Unit>()
+            val releaseCommit = CompletableDeferred<Unit>()
+            val cancelled = row("plan", 1, PlanEntryStatus.CANCELLED)
+            val restored = row("plan", 2)
+            var durableRestored = false
+            var weekReads = 0
+            var cancelledReads = 0
+            val controller =
+                controller(
+                    readWeek = { query ->
+                        weekReads++
+                        week(query, restored.takeIf { durableRestored })
+                    },
+                    readCancelled = {
+                        cancelledReads++
+                        CancelledPlanPage(listOfNotNull(cancelled.takeUnless { durableRestored }), false)
+                    },
+                    commit = {
+                        commitEntered.complete(Unit)
+                        releaseCommit.await()
+                        durableRestored = true
+                    },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.OpenCancelled)
+                withTimeout(2_000) { controller.state.first { it.cancelledItems == listOf(cancelled) } }
+                controller.dispatch(PlanAction.Restore(cancelled))
+                withTimeout(2_000) { commitEntered.await() }
+
+                controller.onRouteExited()
+                releaseCommit.complete(Unit)
+                withTimeout(2_000) { while (!durableRestored) kotlinx.coroutines.yield() }
+                assertTrue(controller.state.value.isMutating)
+
+                controller.onRouteEntered()
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+
+                assertEquals(2, weekReads)
+                assertEquals(2, cancelledReads)
+                assertFalse(controller.state.value.cancelledOpen)
+                assertEquals(
+                    listOf(restored),
+                    (controller.state.value.week as PlanLoad.Content).value.selectedDayPlans,
+                )
+                assertTrue(
+                    controller.state.value
+                        .cancelledItems
+                        .isEmpty(),
+                )
+            } finally {
+                releaseCommit.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
     @Suppress("LongMethod") // One pair of delayed reads proves both generation-owned surfaces.
     fun delayedCatalogQueryAndDismissedCancelledReadCannotPublishIntoNewOwnership() =
         runBlocking {
@@ -750,7 +976,7 @@ class PlanControllerTest {
             null,
         )
 
-    private class FakeBoundary : com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler {
+    private open class FakeBoundary : com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler {
         data class Arm(
             val exactBoundary: Instant?,
             val callback: () -> Unit,
@@ -768,6 +994,18 @@ class PlanControllerTest {
         }
 
         fun fire() = arms.last().callback()
+    }
+
+    private class ImmediatePastBoundary : FakeBoundary() {
+        override fun arm(
+            now: Instant,
+            zoneId: java.time.ZoneId,
+            exactBoundary: Instant?,
+            onBoundary: () -> Unit,
+        ) {
+            super.arm(now, zoneId, exactBoundary, onBoundary)
+            if (exactBoundary != null && exactBoundary <= now) onBoundary()
+        }
     }
 
     private companion object {

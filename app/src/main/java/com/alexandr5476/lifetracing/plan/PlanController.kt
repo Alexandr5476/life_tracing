@@ -330,7 +330,7 @@ class PlanController internal constructor(
     fun onRouteEntered() {
         visible = true
         armBoundary()
-        loadWeek(clearFailure = true)
+        if (recovery == null) loadWeek(clearFailure = true) else retryRecovery()
     }
 
     fun onRouteExited() {
@@ -350,7 +350,6 @@ class PlanController internal constructor(
                 mutationFailure = null,
             )
         }
-        if (recovery?.needsCancelled == true) loadCancelled(false)
     }
 
     private fun changeWeek(delta: Long) {
@@ -404,9 +403,10 @@ class PlanController internal constructor(
         }
         scope.launch {
             try {
-                val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, now()))
+                val readAt = now()
+                val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, readAt))
                 if (publishIfOwned(readGeneration, generation) { it.copy(week = PlanLoad.Content(read)) }) {
-                    armBoundary(read)
+                    armBoundary(read, readAt)
                     canonicalPublished(CanonicalSurface.WEEK, generation)
                 }
             } catch (cancelled: CancellationException) {
@@ -667,7 +667,10 @@ class PlanController internal constructor(
         if (visible) loadWeek()
     }
 
-    private fun armBoundary(read: WeekPlanRead? = null) {
+    private fun armBoundary(
+        read: WeekPlanRead? = null,
+        projectionAt: Instant = now(),
+    ) {
         if (visible) {
             val current = now()
             val zone = zoneId()
@@ -677,7 +680,7 @@ class PlanController internal constructor(
                 read?.let {
                     nextPlanTemporalBoundary(
                         it.selectedDayPlans.map(PlanReadRow::plan) + it.weekPlans.map(PlanReadRow::plan),
-                        current,
+                        projectionAt,
                         zone,
                     )
                 },

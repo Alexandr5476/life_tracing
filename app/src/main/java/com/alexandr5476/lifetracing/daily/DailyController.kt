@@ -188,7 +188,7 @@ internal fun nextLocalDateBoundary(
 
 internal fun nextPlanTemporalBoundary(
     plans: Iterable<PlanEntry>,
-    now: Instant,
+    projectionAt: Instant,
     zoneId: ZoneId,
 ): Instant =
     plans
@@ -197,10 +197,10 @@ internal fun nextPlanTemporalBoundary(
                 ?.takeIf { plan.status == PlanEntryStatus.PLANNED }
                 ?.scheduledAt
                 ?.plusMillis(1)
-                ?.takeIf { it > now }
+                ?.takeIf { it > projectionAt }
         }.minOrNull()
-        ?.let { minOf(it, nextLocalDateBoundary(now, zoneId)) }
-        ?: nextLocalDateBoundary(now, zoneId)
+        ?.let { minOf(it, nextLocalDateBoundary(projectionAt, zoneId)) }
+        ?: nextLocalDateBoundary(projectionAt, zoneId)
 
 @Suppress("LongParameterList", "TooManyFunctions") // One state holder owns the complete Daily application boundary.
 class DailyController internal constructor(
@@ -307,7 +307,7 @@ class DailyController internal constructor(
         scope.launch {
             try {
                 val daily = readDaily(DailyQuery(selectedDate, now, completedHistoryLimit))
-                if (loadGeneration.get() == generation) publish(daily, selectedDate, today)
+                if (loadGeneration.get() == generation) publish(daily, selectedDate, today, now)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -324,6 +324,7 @@ class DailyController internal constructor(
         daily: DailyRead,
         selectedDate: LocalDate,
         today: LocalDate,
+        readAt: Instant,
     ) {
         val empty =
             daily.dayPlans.isEmpty() &&
@@ -342,7 +343,7 @@ class DailyController internal constructor(
                 runtimeDisplayBaseline = baseline,
             )
         }
-        armDateBoundary(daily = daily)
+        armDateBoundary(daily = daily, projectionAt = readAt)
     }
 
     @Suppress("TooGenericExceptionCaught") // The boundary must distinguish both failure phases without crashing UI.
@@ -472,6 +473,7 @@ class DailyController internal constructor(
     private fun armDateBoundary(
         now: Instant = wallClock.now(),
         daily: DailyRead? = null,
+        projectionAt: Instant = now,
     ) {
         if (visible) {
             val zone = zoneId()
@@ -479,7 +481,7 @@ class DailyController internal constructor(
             dateBoundaryScheduler.arm(
                 now,
                 zone,
-                plans?.let { nextPlanTemporalBoundary(it, now, zone) },
+                plans?.let { nextPlanTemporalBoundary(it, projectionAt, zone) },
                 ::onLocalDateBoundary,
             )
         }
