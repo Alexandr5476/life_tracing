@@ -103,6 +103,8 @@ class HistoryReadRepository internal constructor(
             ActivityExecutionValidator.requireValid(execution, snapshot)
             ActivityHistoryDetail(
                 root = execution.toHistoryRoot(snapshot),
+                updatedAt = execution.updatedAt,
+                originalZoneId = execution.originalZoneId,
                 settings = snapshot.settings,
                 fields = snapshot.toHistoryFields(execution.values),
             )
@@ -161,13 +163,12 @@ class HistoryReadRepository internal constructor(
                     }
                 }
             SequenceHistoricalTimingGraphValidator.requireValid(execution, snapshot, historyChildren)
-            val displayMetadata = loadActivityDisplayMetadata(activitySnapshots.values)
-            val sequenceDisplayMetadata = loadSequenceDisplayMetadata(snapshot)
             SequenceHistoryDetail(
                 root = execution.toHistoryRoot(snapshot),
                 updatedAt = execution.updatedAt,
+                originalZoneId = execution.originalZoneId,
                 settings = snapshot.settings,
-                fields = snapshot.toHistoryFields(execution.values, sequenceDisplayMetadata),
+                fields = snapshot.toHistoryFields(execution.values),
                 occurrences =
                     execution.occurrences
                         .filterNot { it.isDeletedFromHistory }
@@ -194,11 +195,11 @@ class HistoryReadRepository internal constructor(
                                     activity.timeTrackingMode,
                                     activity.timerTarget,
                                     activity.settings,
-                                    activity.toHistoryMainValue(displayMetadata),
+                                    activity.toHistoryMainValue(),
                                 ),
                                 children[occurrence.id]
                                     ?.takeIf { it.deletedAt == null }
-                                    ?.toHistoryChild(activity, displayMetadata),
+                                    ?.toHistoryChild(activity),
                             )
                         },
                 intervals = execution.intervals,
@@ -207,11 +208,6 @@ class HistoryReadRepository internal constructor(
 
     private fun ActivityConfigSnapshot.toHistoryFields(
         values: List<com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue>,
-    ): List<ActivityHistoryField> = toHistoryFields(values, loadActivityDisplayMetadata(listOf(this)))
-
-    private fun ActivityConfigSnapshot.toHistoryFields(
-        values: List<com.alexandr5476.lifetracing.domain.ActivityExecutionFieldValue>,
-        displayMetadata: ActivityDisplayMetadata,
         fields: List<com.alexandr5476.lifetracing.domain.ActivitySnapshotField> = this.fields,
     ): List<ActivityHistoryField> {
         val valuesByField = values.associateBy { it.snapshotFieldId }
@@ -220,16 +216,13 @@ class HistoryReadRepository internal constructor(
                 field.categoryOptions.map { option ->
                     ActivityHistoryCategoryOption(
                         option.id,
-                        option.localLabelOverride ?: displayMetadata.optionLabels[option.sourceOptionId?.value]
-                            ?: option.labelAtCreation,
+                        option.localLabelOverride ?: option.labelAtCreation,
                     )
                 }
             val optionLabels = options.associateBy(ActivityHistoryCategoryOption::id)
             ActivityHistoryField(
                 id = field.id,
-                name =
-                    field.localNameOverride ?: displayMetadata.fieldNames[field.sourceFieldId?.value]
-                        ?: field.nameAtCreation,
+                name = field.localNameOverride ?: field.nameAtCreation,
                 type = field.type,
                 unit = field.unit,
                 displayPrecision = field.displayPrecision,
@@ -241,54 +234,23 @@ class HistoryReadRepository internal constructor(
         }
     }
 
-    private fun loadActivityDisplayMetadata(snapshots: Collection<ActivityConfigSnapshot>): ActivityDisplayMetadata {
-        val sourceFieldIds =
-            snapshots
-                .flatMap(ActivityConfigSnapshot::fields)
-                .filter { it.localNameOverride == null }
-                .mapNotNull { it.sourceFieldId?.value }
-                .distinct()
-        val sourceOptionIds =
-            snapshots
-                .flatMap(ActivityConfigSnapshot::fields)
-                .flatMap { field -> field.categoryOptions }
-                .filter { it.localLabelOverride == null }
-                .mapNotNull { it.sourceOptionId?.value }
-                .distinct()
-        return ActivityDisplayMetadata(
-            sourceFieldIds
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap(database.activityTemplateDao()::getAvailableFieldDisplayMetadata)
-                .associate { it.id to it.name },
-            sourceOptionIds
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap(database.activityTemplateDao()::getAvailableOptionDisplayMetadata)
-                .associate { it.id to it.label },
+    private fun ActivityExecution.toHistoryChild(snapshot: ActivityConfigSnapshot) =
+        SequenceHistoryChildActivity(
+            id,
+            status,
+            startedAt,
+            completedAt,
+            activeDuration,
+            snapshot.toHistoryFields(values),
         )
-    }
 
-    private fun ActivityExecution.toHistoryChild(
-        snapshot: ActivityConfigSnapshot,
-        displayMetadata: ActivityDisplayMetadata,
-    ) = SequenceHistoryChildActivity(
-        id,
-        status,
-        startedAt,
-        completedAt,
-        activeDuration,
-        snapshot.toHistoryFields(values, displayMetadata),
-    )
-
-    private fun ActivityConfigSnapshot.toHistoryMainValue(
-        displayMetadata: ActivityDisplayMetadata,
-    ): ActivityHistoryField? =
+    private fun ActivityConfigSnapshot.toHistoryMainValue(): ActivityHistoryField? =
         fields.singleOrNull { it.isMainValue }?.let { field ->
-            toHistoryFields(emptyList(), displayMetadata, listOf(field)).single()
+            toHistoryFields(emptyList(), listOf(field)).single()
         }
 
     private fun SequenceConfigSnapshot.toHistoryFields(
         values: List<com.alexandr5476.lifetracing.domain.SequenceExecutionFieldValue>,
-        displayMetadata: SequenceDisplayMetadata,
     ): List<SequenceHistoryField> {
         val valuesByField = values.associateBy { it.snapshotFieldId }
         return fields.map { field ->
@@ -296,15 +258,13 @@ class HistoryReadRepository internal constructor(
                 field.categoryOptions.map { option ->
                     SequenceHistoryCategoryOption(
                         option.id,
-                        option.localLabelOverride ?: displayMetadata.optionLabels[option.sourceOptionId?.value]
-                            ?: option.labelAtCreation,
+                        option.localLabelOverride ?: option.labelAtCreation,
                     )
                 }
             val optionLabels = options.associateBy(SequenceHistoryCategoryOption::id)
             SequenceHistoryField(
                 field.id,
-                field.localNameOverride ?: displayMetadata.fieldNames[field.sourceFieldId?.value]
-                    ?: field.nameAtCreation,
+                field.localNameOverride ?: field.nameAtCreation,
                 field.type,
                 field.unit,
                 field.displayPrecision,
@@ -314,30 +274,6 @@ class HistoryReadRepository internal constructor(
                 options,
             )
         }
-    }
-
-    private fun loadSequenceDisplayMetadata(snapshot: SequenceConfigSnapshot): SequenceDisplayMetadata {
-        val sourceFieldIds =
-            snapshot.fields
-                .filter { it.localNameOverride == null }
-                .mapNotNull { it.sourceFieldId?.value }
-                .distinct()
-        val sourceOptionIds =
-            snapshot.fields
-                .flatMap { it.categoryOptions }
-                .filter { it.localLabelOverride == null }
-                .mapNotNull { it.sourceOptionId?.value }
-                .distinct()
-        return SequenceDisplayMetadata(
-            sourceFieldIds
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap(database.sequenceTemplateDao()::getAvailableFieldDisplayMetadata)
-                .associate { it.id to it.name },
-            sourceOptionIds
-                .chunked(SQLITE_BIND_CHUNK_SIZE)
-                .flatMap(database.sequenceTemplateDao()::getAvailableOptionDisplayMetadata)
-                .associate { it.id to it.label },
-        )
     }
 
     private fun com.alexandr5476.lifetracing.domain.SequenceSnapshotField.configuredValue() =
@@ -499,16 +435,6 @@ class HistoryReadRepository internal constructor(
         }
 
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
-
-    private data class ActivityDisplayMetadata(
-        val fieldNames: Map<String, String>,
-        val optionLabels: Map<String, String>,
-    )
-
-    private data class SequenceDisplayMetadata(
-        val fieldNames: Map<String, String>,
-        val optionLabels: Map<String, String>,
-    )
 
     companion object {
         const val MAXIMUM_RESULT_LIMIT = 500

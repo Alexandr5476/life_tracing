@@ -27,6 +27,8 @@ import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
@@ -130,7 +132,7 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun activityDetailUsesEffectiveLabelsButKeepsSnapshotConfigurationAndNoLiveMissingDuration() {
+    fun activityDetailUsesFrozenLabelsAndKeepsSnapshotConfigurationAndNoLiveMissingDuration() {
         database.statisticsSeriesDao().insert(StatisticsSeriesEntity("series", "ACTIVITY", "Source", 0, null))
         database.activityTemplateDao().insertAggregate(
             ActivityTemplateAggregateEntity(
@@ -307,11 +309,13 @@ class HistoryReadRepositoryTest {
 
         assertEquals("Frozen Activity", detail.root.title)
         assertNull(detail.root.activeDuration)
-        assertEquals("Current number", detail.fields[0].name)
+        assertEquals(detailExecution.updatedAt, detail.updatedAt)
+        assertEquals(ZoneOffset.UTC, detail.originalZoneId)
+        assertEquals("Creation number", detail.fields[0].name)
         assertTrue(detail.fields[0].isMainValue)
         assertFalse(detail.fields[1].isMainValue)
         assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
-        assertEquals("Current option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals("Creation option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
         assertEquals(ActivityHistoryActualValue.Text("configured"), detail.fields[2].actualValue)
         assertEquals("Local text", detail.fields[2].name)
         val localOption = detail.fields[1].categoryOptions.single { it.id.value == "local-option" }
@@ -321,7 +325,9 @@ class HistoryReadRepositoryTest {
                 it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete")
             },
         )
-        database.activityTemplateDao().archive("template", 3)
+        database.activityTemplateDao().archiveOption("option-source")
+        database.activityTemplateDao().archiveField("number-source", 3)
+        database.activityTemplateDao().archive("template", 4)
 
         val archived = requireNotNull(repository.getActivityDetail(ActivityExecutionId("detail")))
         assertEquals("Creation number", archived.fields[0].name)
@@ -348,12 +354,12 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun unavailableSourceOptionFallsBackWithoutChangingFrozenActivityFacts() {
+    fun sourceOptionArchiveDoesNotChangeFrozenActivityLabels() {
         val execution = insertSourceDisplayFixture()
         database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
 
         val current = requireNotNull(repository.getActivityDetail(execution.id))
-        assertEquals("Current option", categoryActual(current).label)
+        assertEquals("Creation option", categoryActual(current).label)
 
         database.activityTemplateDao().archiveOption("display-option-source")
         val unavailable = requireNotNull(repository.getActivityDetail(execution.id))
@@ -372,7 +378,7 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun unavailableSourceFieldsFallBackWithTheirCategoryOptions() {
+    fun sourceFieldArchiveDoesNotChangeFrozenActivityLabels() {
         val execution = insertSourceDisplayFixture()
         database.activityTemplateDao().updateFieldDisplayName("display-number-source", "Current number", 2)
         database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
@@ -380,7 +386,7 @@ class HistoryReadRepositoryTest {
         database.activityTemplateDao().archiveField("display-number-source", 3)
         val numberUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
         assertEquals("Creation number", numberUnavailable.fields[0].name)
-        assertEquals("Current option", categoryActual(numberUnavailable).label)
+        assertEquals("Creation option", categoryActual(numberUnavailable).label)
 
         database.activityTemplateDao().archiveField("display-category-source", 4)
         val categoryUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
@@ -394,6 +400,75 @@ class HistoryReadRepositoryTest {
                 .categoryOptions
                 .single { it.id.value == "display-local-option" }
                 .label,
+        )
+    }
+
+    @Test
+    fun sequenceDetailUsesFrozenLabelsForSequenceAndChildActivityHistory() {
+        val sequence = insertSequenceDisplayFixture()
+        database.sequenceTemplateDao().updateFieldDisplayName("sequence-number-source", "Current sequence number", 12)
+        database.sequenceTemplateDao().updateOptionDisplayLabel("sequence-option-source", "Current sequence option")
+        database.activityTemplateDao().updateFieldDisplayName("display-number-source", "Current child number", 12)
+        database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current child option")
+        observedSql.clear()
+
+        val detail = requireNotNull(repository.getSequenceDetail(sequence.id))
+
+        assertEquals(sequence.updatedAt, detail.updatedAt)
+        assertEquals(ZoneOffset.ofHours(3), detail.originalZoneId)
+        assertEquals("Creation sequence number", detail.fields[0].name)
+        assertEquals(
+            SequenceHistoryConfiguredValue.Number(7),
+            detail.fields[0].configuredValue,
+        )
+        assertEquals(
+            SequenceHistoryActualValue.Number(0),
+            detail.fields[0].actualValue,
+        )
+        assertEquals(
+            "Creation sequence option",
+            (detail.fields[1].actualValue as SequenceHistoryActualValue.Category).label,
+        )
+        val localSequenceOption = detail.fields[1].categoryOptions.single { it.id.value == "sequence-local-option" }
+        assertEquals(
+            "Local sequence option",
+            localSequenceOption.label,
+        )
+        assertEquals("Local sequence text", detail.fields[2].name)
+        assertEquals(
+            "Creation number",
+            requireNotNull(
+                detail.occurrences
+                    .single()
+                    .activity.mainValue,
+            ).name,
+        )
+        assertEquals(
+            "Creation number",
+            detail.occurrences
+                .single()
+                .child
+                ?.fields
+                ?.first()
+                ?.name,
+        )
+        assertEquals(
+            "Creation option",
+            (
+                detail.occurrences
+                    .single()
+                    .child!!
+                    .fields[1]
+                    .actualValue as ActivityHistoryActualValue.Category
+            ).label,
+        )
+        assertFalse(
+            synchronized(observedSql) { observedSql.map(String::lowercase) }.any {
+                "activity_template_fields" in it ||
+                    "activity_template_category_options" in it ||
+                    "sequence_template_fields" in it ||
+                    "sequence_template_category_options" in it
+            },
         )
     }
 
@@ -443,14 +518,13 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun detailUsesOneBatchedSourceDisplayLookupPerMetadataKindAndDoesNotWrite() {
+    fun detailUsesOnlyItsExecutionAndSnapshotGraphAndDoesNotWrite() {
         val execution = insertSourceDisplayFixture()
         observedSql.clear()
         repository.getActivityDetail(execution.id)
         val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
 
-        assertEquals(1, queries.count { "from activity_template_fields" in it })
-        assertEquals(1, queries.count { "from activity_template_category_options" in it })
+        assertFalse(queries.any { "activity_template_fields" in it || "activity_template_category_options" in it })
         assertFalse(queries.any { it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete") })
     }
 
@@ -727,7 +801,7 @@ class HistoryReadRepositoryTest {
                         7,
                         null,
                         null,
-                        false,
+                        true,
                     ),
                     ActivitySnapshotFieldEntity(
                         "display-category-snapshot",
@@ -787,6 +861,267 @@ class HistoryReadRepositoryTest {
         database.activityExecutionDao().upsertValue(
             ActivityExecutionFieldValueEntity(
                 execution.id.value,
+                "display-category-snapshot",
+                null,
+                "display-option-snapshot",
+                null,
+            ),
+        )
+        return execution
+    }
+
+    private fun insertSequenceDisplayFixture(): SequenceExecution {
+        insertSourceDisplayFixture()
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("sequence-display-series", "SEQUENCE", "Sequence", 0, null),
+        )
+        database.sequenceTemplateDao().insertAggregate(
+            SequenceTemplateAggregateEntity(
+                SequenceTemplateEntity(
+                    "sequence-display-template",
+                    "Sequence",
+                    null,
+                    "sequence-display-series",
+                    1,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                SequenceTemplateSettingsEntity("sequence-display-template"),
+                SequenceTemplateUserStateEntity("sequence-display-template", null, null),
+                listOf(
+                    SequenceTemplateFieldEntity(
+                        "sequence-number-source",
+                        "sequence-display-template",
+                        0,
+                        "Creation sequence number",
+                        "NUMBER",
+                        null,
+                        0,
+                        7,
+                        null,
+                        null,
+                        true,
+                        0,
+                        0,
+                        null,
+                    ),
+                    SequenceTemplateFieldEntity(
+                        "sequence-category-source",
+                        "sequence-display-template",
+                        1,
+                        "Creation sequence category",
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "sequence-option-source",
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                    SequenceTemplateFieldEntity(
+                        "sequence-text-source",
+                        "sequence-display-template",
+                        2,
+                        "Creation sequence text",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                ),
+                listOf(
+                    SequenceTemplateCategoryOptionEntity(
+                        "sequence-option-source",
+                        "sequence-category-source",
+                        0,
+                        "Creation sequence option",
+                    ),
+                ),
+            ),
+        )
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(
+                    "sequence-display-snapshot",
+                    "Frozen Sequence",
+                    null,
+                    "sequence-display-template",
+                    1,
+                    "sequence-display-series",
+                    0,
+                ),
+                SequenceSnapshotSettingsEntity(
+                    "sequence-display-snapshot",
+                    false,
+                    0,
+                    0,
+                    true,
+                    true,
+                    false,
+                    false,
+                    false,
+                    "ACTIVE",
+                ),
+                listOf(
+                    SequenceSnapshotFieldEntity(
+                        "sequence-number-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-number-source",
+                        0,
+                        "Creation sequence number",
+                        null,
+                        "NUMBER",
+                        null,
+                        0,
+                        7,
+                        null,
+                        null,
+                        true,
+                    ),
+                    SequenceSnapshotFieldEntity(
+                        "sequence-category-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-category-source",
+                        1,
+                        "Creation sequence category",
+                        null,
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "sequence-option-snapshot",
+                        null,
+                        false,
+                    ),
+                    SequenceSnapshotFieldEntity(
+                        "sequence-text-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-text-source",
+                        2,
+                        "Creation sequence text",
+                        "Local sequence text",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                    ),
+                ),
+                listOf(
+                    SequenceSnapshotCategoryOptionEntity(
+                        "sequence-option-snapshot",
+                        "sequence-category-snapshot",
+                        "sequence-option-source",
+                        0,
+                        "Creation sequence option",
+                        null,
+                    ),
+                    SequenceSnapshotCategoryOptionEntity(
+                        "sequence-local-option",
+                        "sequence-category-snapshot",
+                        null,
+                        1,
+                        "Creation local sequence option",
+                        "Local sequence option",
+                    ),
+                ),
+                listOf(
+                    SequenceSnapshotNodeEntity(
+                        "sequence-display-node",
+                        "sequence-display-snapshot",
+                        "STEP",
+                        null,
+                        0,
+                        "display-snapshot",
+                        null,
+                    ),
+                ),
+            ),
+        )
+        val startedAt = at(800)
+        val endedAt = at(810)
+        val occurrenceId = SequenceOccurrenceId("sequence-display-occurrence")
+        val execution =
+            SequenceExecution(
+                SequenceExecutionId("sequence-display-execution"),
+                SequenceSnapshotId("sequence-display-snapshot"),
+                com.alexandr5476.lifetracing.domain
+                    .StatisticsSeriesId("sequence-display-series"),
+                SequenceExecutionStatus.COMPLETED,
+                startedAt,
+                endedAt,
+                Duration.ofMillis(10),
+                Duration.ZERO,
+                Duration.ofMillis(10),
+                ZoneOffset.ofHours(3),
+                180,
+                startedAt.atZone(ZoneOffset.ofHours(3)).toLocalDate(),
+                null,
+                startedAt,
+                endedAt.plusMillis(1),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.RuntimeOccurrence(
+                        occurrenceId,
+                        SequenceSnapshotNodeId("sequence-display-node"),
+                        ActivitySnapshotId("display-snapshot"),
+                        0,
+                        null,
+                        null,
+                        com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus.COMPLETED,
+                        startedAt,
+                        endedAt,
+                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.MANUAL_FINISH,
+                        false,
+                        false,
+                    ),
+                ),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.SequenceInterval(
+                        SequenceIntervalId("sequence-display-interval"),
+                        com.alexandr5476.lifetracing.domain.SequenceIntervalKind.ACTIVE_STEP,
+                        startedAt,
+                        endedAt,
+                        occurrenceId,
+                    ),
+                ),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.NumberSequenceExecutionValue(
+                        SequenceSnapshotFieldId("sequence-number-snapshot"),
+                        0,
+                    ),
+                    com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue(
+                        SequenceSnapshotFieldId("sequence-category-snapshot"),
+                        SequenceSnapshotCategoryOptionId("sequence-option-snapshot"),
+                    ),
+                ),
+            )
+        database.sequenceExecutionDao().insertAggregate(execution.toEntityAggregate())
+        val childExecution =
+            ActivityExecutionFactory { ActivityExecutionId("sequence-display-child") }
+                .completeSequenceChildNoLive(
+                    requireNotNull(database.activitySnapshotDao().getAggregate("display-snapshot")).toDomain(),
+                    execution.id,
+                    occurrenceId,
+                    endedAt,
+                    ZoneOffset.UTC,
+                )
+        database.activityExecutionDao().insertAggregate(childExecution.toEntityAggregate())
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity(
+                childExecution.id.value,
                 "display-category-snapshot",
                 null,
                 "display-option-snapshot",

@@ -399,10 +399,10 @@ class SequenceHistoryReadRepositoryTest {
         observedSql.clear()
         val current = sourceLinkedChild(ended.execution.id, occurrence.id)
         val queries = observedSqlSnapshot()
-        assertEquals("Current number", current.fields[0].name)
-        assertEquals("Current option", (current.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
-        assertEquals(1, queries.count { "from activity_template_fields" in it.lowercase() })
-        assertEquals(1, queries.count { "from activity_template_category_options" in it.lowercase() })
+        assertEquals("Creation number", current.fields[0].name)
+        assertEquals("Creation option", (current.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals(0, queries.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(0, queries.count { "from activity_template_category_options" in it.lowercase() })
         assertFalse(queries.any { it.lowercase().startsWith("insert") || it.lowercase().startsWith("update") })
 
         database.activityTemplateDao().archiveOption("source-option")
@@ -459,14 +459,14 @@ class SequenceHistoryReadRepositoryTest {
         observedSql.clear()
         val current = requireNotNull(repository.getSequenceDetail(SequenceExecutionId("sequence-execution")))
         val queries = observedSqlSnapshot().map(String::lowercase)
-        assertEquals("Current number", current.fields[0].name)
+        assertEquals("Number", current.fields[0].name)
         assertEquals("Local category", current.fields[1].name)
         assertEquals(
-            "Current option",
+            "Option",
             (current.fields[1].actualValue as SequenceHistoryActualValue.Category).label,
         )
-        assertEquals(1, queries.count { "from sequence_template_fields" in it })
-        assertEquals(1, queries.count { "from sequence_template_category_options" in it })
+        assertEquals(0, queries.count { "from sequence_template_fields" in it })
+        assertEquals(0, queries.count { "from sequence_template_category_options" in it })
 
         database.openHelper.writableDatabase.execSQL(
             "UPDATE sequence_template_category_options SET is_archived = 1 WHERE id = 'sequence-source-option'",
@@ -515,7 +515,7 @@ class SequenceHistoryReadRepositoryTest {
         val queries = observedSqlSnapshot()
         assertEquals("Local number", available.fields[0].name)
         assertEquals("Local option", (available.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
-        assertEquals(1, queries.count { "from activity_template_fields" in it.lowercase() })
+        assertEquals(0, queries.count { "from activity_template_fields" in it.lowercase() })
         assertEquals(0, queries.count { "from activity_template_category_options" in it.lowercase() })
         assertFalse(
             queries.any {

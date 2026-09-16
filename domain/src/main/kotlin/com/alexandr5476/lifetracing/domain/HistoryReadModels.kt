@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.domain
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 
 data class HistoryDateRange(
     val startDate: LocalDate,
@@ -58,6 +59,8 @@ data class CompletedSequenceHistoryRoot(
 
 data class ActivityHistoryDetail(
     val root: CompletedActivityHistoryRoot,
+    val updatedAt: Instant,
+    val originalZoneId: ZoneId,
     val settings: ActivityTemplateSettings,
     val fields: List<ActivityHistoryField>,
 )
