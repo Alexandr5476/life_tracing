@@ -2,7 +2,9 @@
     "CyclomaticComplexMethod",
     "LongParameterList",
     "MaxLineLength",
+    "LoopWithTooManyJumpStatements",
     "ReturnCount",
+    "ThrowsCount",
     "TooGenericExceptionCaught",
     "TooManyFunctions",
 )
@@ -17,9 +19,11 @@ import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
@@ -33,7 +37,24 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+
+enum class ManualEntryIssue {
+    INVALID_DATE_TIME,
+    NONEXISTENT_LOCAL_TIME,
+    AMBIGUOUS_LOCAL_TIME,
+    FUTURE_COMPLETION,
+    REVERSED_INTERVAL,
+    INVALID_NUMBER,
+    INVALID_CATEGORY,
+    TEMPLATE_UNAVAILABLE,
+    TEMPLATE_STALE,
+    CATALOG_READ_FAILURE,
+    TEMPLATE_READ_FAILURE,
+    SAVE_FAILURE,
+}
 
 sealed interface ManualEntryLoad<out T> {
     data object Idle : ManualEntryLoad<Nothing>
@@ -45,7 +66,7 @@ sealed interface ManualEntryLoad<out T> {
     ) : ManualEntryLoad<T>
 
     data class Failure(
-        val message: String,
+        val issue: ManualEntryIssue,
     ) : ManualEntryLoad<Nothing>
 }
 
@@ -53,7 +74,7 @@ sealed interface ManualEntryCommand {
     data object Idle : ManualEntryCommand
 
     data class Invalid(
-        val message: String,
+        val issue: ManualEntryIssue,
     ) : ManualEntryCommand
 
     data class Overlap(
@@ -63,7 +84,7 @@ sealed interface ManualEntryCommand {
     data object Committing : ManualEntryCommand
 
     data class Failure(
-        val message: String,
+        val issue: ManualEntryIssue,
     ) : ManualEntryCommand
 
     data class Committed(
@@ -73,11 +94,28 @@ sealed interface ManualEntryCommand {
 
 data class ManualEntryProposal(
     val source: ActivityEntrySource.Template,
+    val expectedTemplateRevision: Long,
     val startedAt: Instant?,
     val completedAt: Instant,
     val commandAt: Instant,
     val zoneId: ZoneId,
     val values: List<ActivityEntryValueOverride>,
+    internal val draftVersion: Long = 0,
+) {
+    internal val intervalKey = ManualEntryIntervalKey(startedAt, completedAt, zoneId)
+}
+
+internal data class ManualEntryIntervalKey(
+    val startedAt: Instant?,
+    val completedAt: Instant,
+    val zoneId: ZoneId,
+)
+
+data class ManualTimeAmbiguity(
+    val localDateTime: LocalDateTime,
+    val zoneId: ZoneId,
+    val offsets: List<ZoneOffset>,
+    val selectedOffset: ZoneOffset? = null,
 )
 
 data class ManualEntryFieldDraft(
@@ -90,13 +128,20 @@ data class ManualEntryFieldDraft(
 
 data class ManualActivityEntryState(
     val catalog: ManualEntryLoad<List<ReusableActivityCatalogItem>> = ManualEntryLoad.Idle,
-    val canLoadMore: Boolean = false,
+    val nextCatalogCursor: ReusableActivityCatalogItem? = null,
     val selected: ManualEntryLoad<ActivityTemplate> = ManualEntryLoad.Idle,
     val startedText: String = "",
     val completedText: String = "",
+    val startedAmbiguity: ManualTimeAmbiguity? = null,
+    val completedAmbiguity: ManualTimeAmbiguity? = null,
+    val startedIssue: ManualEntryIssue? = null,
+    val completedIssue: ManualEntryIssue? = null,
     val values: Map<ActivityTemplateFieldId, ManualEntryFieldDraft> = emptyMap(),
     val command: ManualEntryCommand = ManualEntryCommand.Idle,
-)
+    internal val draftVersion: Long = 0,
+) {
+    val canLoadMore: Boolean get() = nextCatalogCursor != null
+}
 
 sealed interface ManualActivityEntryAction {
     data object RetryCatalog : ManualActivityEntryAction
@@ -104,7 +149,7 @@ sealed interface ManualActivityEntryAction {
     data object LoadMore : ManualActivityEntryAction
 
     data class Select(
-        val id: com.alexandr5476.lifetracing.domain.ActivityTemplateId,
+        val id: ActivityTemplateId,
     ) : ManualActivityEntryAction
 
     data class EditStarted(
@@ -113,6 +158,14 @@ sealed interface ManualActivityEntryAction {
 
     data class EditCompleted(
         val text: String,
+    ) : ManualActivityEntryAction
+
+    data class SelectStartedOffset(
+        val offset: ZoneOffset,
+    ) : ManualActivityEntryAction
+
+    data class SelectCompletedOffset(
+        val offset: ZoneOffset,
     ) : ManualActivityEntryAction
 
     data class EditNumber(
@@ -134,6 +187,10 @@ sealed interface ManualActivityEntryAction {
         val id: ActivityTemplateFieldId,
     ) : ManualActivityEntryAction
 
+    data class SetPresent(
+        val id: ActivityTemplateFieldId,
+    ) : ManualActivityEntryAction
+
     data object Save : ManualActivityEntryAction
 
     data object ProceedOverlap : ManualActivityEntryAction
@@ -145,7 +202,7 @@ sealed interface ManualActivityEntryAction {
 class ManualActivityEntryController internal constructor(
     private val scope: CoroutineScope,
     private val readCatalog: suspend (ReusableActivityCatalogItem?) -> List<ReusableActivityCatalogItem>,
-    private val readTemplate: suspend (com.alexandr5476.lifetracing.domain.ActivityTemplateId) -> ActivityTemplate?,
+    private val readTemplate: suspend (ActivityTemplateId) -> ActivityTemplate?,
     private val overlaps: suspend (Instant, Instant) -> Boolean,
     private val writeTimed: suspend (ManualEntryProposal) -> ActivityExecution,
     private val writeNoLive: suspend (ManualEntryProposal) -> ActivityExecution,
@@ -157,27 +214,31 @@ class ManualActivityEntryController internal constructor(
     val state: StateFlow<ManualActivityEntryState> = mutableState
     private var mutation: Job? = null
     private var mutationInFlight = false
+    private var catalogRequestCursor: ReusableActivityCatalogItem? = null
     private var closed = false
 
     init {
-        loadCatalog()
+        loadCatalog(null)
     }
 
     fun dispatch(action: ManualActivityEntryAction) {
         if (closed) return
         when (action) {
-            ManualActivityEntryAction.RetryCatalog -> loadCatalog(reset = true)
-            ManualActivityEntryAction.LoadMore -> loadCatalog()
+            ManualActivityEntryAction.RetryCatalog -> loadCatalog(catalogRequestCursor)
+            ManualActivityEntryAction.LoadMore -> mutableState.value.nextCatalogCursor?.let(::loadCatalog)
             is ManualActivityEntryAction.Select -> select(action.id)
             is ManualActivityEntryAction.EditStarted -> editTime(started = action.text)
             is ManualActivityEntryAction.EditCompleted -> editTime(completed = action.text)
+            is ManualActivityEntryAction.SelectStartedOffset -> selectOffset(started = action.offset)
+            is ManualActivityEntryAction.SelectCompletedOffset -> selectOffset(completed = action.offset)
             is ManualActivityEntryAction.EditNumber -> editNumber(action.id, action.text)
             is ManualActivityEntryAction.EditText -> editText(action.id, action.text)
             is ManualActivityEntryAction.SelectCategory -> editCategory(action.id, action.optionId)
-            is ManualActivityEntryAction.SetMissing -> markMissing(action.id)
+            is ManualActivityEntryAction.SetMissing -> setMissing(action.id, true)
+            is ManualActivityEntryAction.SetPresent -> setMissing(action.id, false)
             ManualActivityEntryAction.Save -> save()
             ManualActivityEntryAction.ProceedOverlap ->
-                (mutableState.value.command as? ManualEntryCommand.Overlap)?.let { commit(it.proposal) }
+                (mutableState.value.command as? ManualEntryCommand.Overlap)?.let { save(it.proposal.intervalKey) }
             ManualActivityEntryAction.CancelOverlap ->
                 mutableState.update {
                     it.copy(
@@ -192,30 +253,28 @@ class ManualActivityEntryController internal constructor(
         mutation?.cancel()
     }
 
-    private fun loadCatalog(reset: Boolean = false) {
-        val current = (mutableState.value.catalog as? ManualEntryLoad.Content)?.value.orEmpty()
-        if (!reset && (current.isNotEmpty() && !mutableState.value.canLoadMore)) return
+    private fun loadCatalog(cursor: ReusableActivityCatalogItem?) {
         if (mutableState.value.catalog is ManualEntryLoad.Loading) return
-        val retained = if (reset) emptyList() else current
+        catalogRequestCursor = cursor
         mutableState.update { it.copy(catalog = ManualEntryLoad.Loading) }
         scope.launch {
             try {
-                val page = readCatalog(retained.lastOrNull())
+                val page = readCatalog(cursor)
+                require(page.size <= pageSize) { "Catalog page exceeded its declared bound" }
                 if (!closed) {
+                    val next = page.lastOrNull().takeIf { page.size == pageSize && it != cursor }
                     mutableState.update {
-                        it.copy(catalog = ManualEntryLoad.Content(retained + page), canLoadMore = page.size == pageSize)
+                        it.copy(catalog = ManualEntryLoad.Content(page), nextCatalogCursor = next)
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: Exception) {
+            } catch (_: Exception) {
                 if (!closed) {
                     mutableState.update {
                         it.copy(
-                            catalog =
-                                ManualEntryLoad.Failure(
-                                    failure.message ?: "Unable to load activities",
-                                ),
+                            catalog = ManualEntryLoad.Failure(ManualEntryIssue.CATALOG_READ_FAILURE),
+                            nextCatalogCursor = null,
                         )
                     }
                 }
@@ -223,25 +282,28 @@ class ManualActivityEntryController internal constructor(
         }
     }
 
-    private fun select(id: com.alexandr5476.lifetracing.domain.ActivityTemplateId) {
+    private fun select(id: ActivityTemplateId) {
         if (mutationInFlight || mutableState.value.selected is ManualEntryLoad.Loading) return
         mutableState.update { it.copy(selected = ManualEntryLoad.Loading, command = ManualEntryCommand.Idle) }
         scope.launch {
             try {
-                val template = requireNotNull(readTemplate(id)) { "Selected activity is unavailable" }
-                require(template.deletedAt == null) { "Selected activity is unavailable" }
-                if (!closed) mutableState.value = template.initialState()
+                val template = readTemplate(id)
+                if (!closed) {
+                    mutableState.value =
+                        if (template == null || template.deletedAt != null) {
+                            mutableState.value.copy(
+                                selected = ManualEntryLoad.Failure(ManualEntryIssue.TEMPLATE_UNAVAILABLE),
+                            )
+                        } else {
+                            template.initialState()
+                        }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: Exception) {
+            } catch (_: Exception) {
                 if (!closed) {
                     mutableState.update {
-                        it.copy(
-                            selected =
-                                ManualEntryLoad.Failure(
-                                    failure.message ?: "Unable to load activity",
-                                ),
-                        )
+                        it.copy(selected = ManualEntryLoad.Failure(ManualEntryIssue.TEMPLATE_READ_FAILURE))
                     }
                 }
             }
@@ -251,15 +313,11 @@ class ManualActivityEntryController internal constructor(
     private fun ActivityTemplate.initialState(): ManualActivityEntryState {
         val timestamp =
             DATE_TIME.format(
-                now()
-                    .atZone(zoneId())
-                    .toLocalDateTime()
-                    .withSecond(0)
-                    .withNano(0),
+                LocalDateTime.ofInstant(now(), zoneId()).withSecond(0).withNano(0),
             )
         return ManualActivityEntryState(
             catalog = mutableState.value.catalog,
-            canLoadMore = mutableState.value.canLoadMore,
+            nextCatalogCursor = mutableState.value.nextCatalogCursor,
             selected = ManualEntryLoad.Content(this),
             startedText = timestamp,
             completedText = timestamp,
@@ -289,192 +347,274 @@ class ManualActivityEntryController internal constructor(
         it.copy(
             startedText = started ?: it.startedText,
             completedText = completed ?: it.completedText,
+            startedAmbiguity = if (started != null) null else it.startedAmbiguity,
+            completedAmbiguity = if (completed != null) null else it.completedAmbiguity,
+            startedIssue = if (started != null) null else it.startedIssue,
+            completedIssue = if (completed != null) null else it.completedIssue,
             command = it.command.dropOverlap(),
+            draftVersion = it.draftVersion + 1,
         )
+    }
+
+    private fun selectOffset(
+        started: ZoneOffset? = null,
+        completed: ZoneOffset? = null,
+    ) = mutableState.update { state ->
+        val startChoice = started?.let { state.startedAmbiguity?.select(it) } ?: state.startedAmbiguity
+        val completionChoice = completed?.let { state.completedAmbiguity?.select(it) } ?: state.completedAmbiguity
+        state.copy(
+            startedAmbiguity = startChoice,
+            completedAmbiguity = completionChoice,
+            startedIssue = if (started != null) null else state.startedIssue,
+            completedIssue = if (completed != null) null else state.completedIssue,
+            command = state.command.dropOverlap(),
+            draftVersion = state.draftVersion + 1,
+        )
+    }
+
+    private fun ManualTimeAmbiguity.select(offset: ZoneOffset): ManualTimeAmbiguity {
+        require(offset in offsets) { "Offset is not valid for this local time" }
+        return copy(selectedOffset = offset)
     }
 
     private fun editNumber(
         id: ActivityTemplateFieldId,
         text: String,
-    ) = editValue(id) {
-        it.copy(numberText = text, missing = false)
-    }
+    ) = editValue(id) { it.copy(numberText = text, missing = false) }
 
     private fun editText(
         id: ActivityTemplateFieldId,
         text: String,
-    ) = editValue(id) {
-        it.copy(text = text, missing = false)
-    }
+    ) = editValue(id) { it.copy(text = text, missing = false) }
 
     private fun editCategory(
         id: ActivityTemplateFieldId,
         option: CategoryOptionId,
-    ) = editValue(id) {
-        it.copy(selectedOptionId = option, missing = false)
-    }
+    ) = editValue(id) { it.copy(selectedOptionId = option, missing = false) }
 
-    private fun markMissing(id: ActivityTemplateFieldId) =
-        editValue(id) {
-            it.copy(missing = true, numberText = "", selectedOptionId = null, text = "")
-        }
+    private fun setMissing(
+        id: ActivityTemplateFieldId,
+        missing: Boolean,
+    ) = editValue(id) { it.copy(missing = missing) }
 
     private fun editValue(
         id: ActivityTemplateFieldId,
         transform: (ManualEntryFieldDraft) -> ManualEntryFieldDraft,
     ) = mutableState.update { state ->
-        state.copy(
-            values =
-                state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values,
-            command = state.command.dropOverlap(),
-        )
+        state.copy(values = state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values)
     }
 
-    private fun save() {
+    private fun save(approvedInterval: ManualEntryIntervalKey? = null) {
         if (mutationInFlight) return
         val template = (mutableState.value.selected as? ManualEntryLoad.Content)?.value ?: return
-        val sampledNow = now()
-        val sampledZone = zoneId()
-        val proposal =
-            runCatching { proposal(template, sampledNow, sampledZone) }.getOrElse {
-                mutableState.update { state ->
-                    state.copy(
-                        command =
-                            ManualEntryCommand.Invalid(
-                                it.message ?: "Enter valid date and time",
-                            ),
-                    )
-                }
-                return
-            }
-        if (proposal.startedAt == null) {
-            commit(proposal)
-        } else {
-            mutationInFlight = true
-            mutation =
-                scope.launch {
-                    try {
-                        if (overlaps(proposal.startedAt, proposal.completedAt)) {
-                            mutableState.update { it.copy(command = ManualEntryCommand.Overlap(proposal)) }
-                            mutationInFlight = false
-                        } else {
-                            commit(proposal, alreadyInFlight = true)
-                        }
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        failed(failure)
-                    } finally {
-                        if (mutableState.value.command !is ManualEntryCommand.Committing) mutationInFlight = false
-                    }
-                }
-        }
-    }
-
-    private fun commit(
-        proposal: ManualEntryProposal,
-        alreadyInFlight: Boolean = false,
-    ) {
-        if (mutationInFlight && !alreadyInFlight) return
         mutationInFlight = true
-        mutableState.update { it.copy(command = ManualEntryCommand.Committing) }
         mutation =
             scope.launch {
                 try {
-                    val result = if (proposal.startedAt == null) writeNoLive(proposal) else writeTimed(proposal)
-                    if (!closed) mutableState.update { it.copy(command = ManualEntryCommand.Committed(result)) }
+                    var approval = approvedInterval
+                    while (!closed) {
+                        val checked = buildProposal(template)
+                        if (checked.startedAt != null && approval != checked.intervalKey) {
+                            if (overlaps(checked.startedAt, checked.completedAt)) {
+                                if (!checked.isCurrent()) {
+                                    approval = null
+                                    continue
+                                }
+                                mutableState.update { it.copy(command = ManualEntryCommand.Overlap(checked)) }
+                                return@launch
+                            }
+                        }
+                        val fresh = buildProposal(template)
+                        if (fresh.intervalKey != checked.intervalKey || !fresh.isCurrent()) {
+                            approval = null
+                            continue
+                        }
+                        mutableState.update { it.copy(command = ManualEntryCommand.Committing) }
+                        val result = if (fresh.startedAt == null) writeNoLive(fresh) else writeTimed(fresh)
+                        if (!closed) mutableState.update { it.copy(command = ManualEntryCommand.Committed(result)) }
+                        return@launch
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (failure: Exception) {
-                    failed(failure)
+                } catch (invalid: ManualEntryIssueException) {
+                    if (!closed) invalid.present()
+                } catch (_: StaleLauncherTargetException) {
+                    if (!closed) {
+                        mutableState.update {
+                            it.copy(
+                                selected = ManualEntryLoad.Failure(ManualEntryIssue.TEMPLATE_STALE),
+                                values = emptyMap(),
+                                command = ManualEntryCommand.Failure(ManualEntryIssue.TEMPLATE_STALE),
+                            )
+                        }
+                    }
+                } catch (_: Exception) {
+                    if (!closed) {
+                        mutableState.update {
+                            it.copy(command = ManualEntryCommand.Failure(ManualEntryIssue.SAVE_FAILURE))
+                        }
+                    }
                 } finally {
                     mutationInFlight = false
                 }
             }
     }
 
-    private fun failed(failure: Exception) {
-        if (!closed) {
-            mutableState.update {
-                it.copy(
-                    command =
-                        ManualEntryCommand.Failure(
-                            failure.message ?: "Unable to save activity",
-                        ),
-                )
-            }
+    private fun ManualEntryProposal.isCurrent(): Boolean =
+        mutableState.value.draftVersion == draftVersion && zoneId() == zoneId
+
+    private fun ManualEntryIssueException.present() {
+        mutableState.update { state ->
+            state.copy(
+                startedAmbiguity =
+                    if (point ==
+                        TimePoint.STARTED
+                    ) {
+                        ambiguity
+                    } else if (clearAmbiguity &&
+                        point == TimePoint.STARTED
+                    ) {
+                        null
+                    } else {
+                        state.startedAmbiguity
+                    },
+                completedAmbiguity =
+                    if (point ==
+                        TimePoint.COMPLETED
+                    ) {
+                        ambiguity
+                    } else if (clearAmbiguity &&
+                        point == TimePoint.COMPLETED
+                    ) {
+                        null
+                    } else {
+                        state.completedAmbiguity
+                    },
+                startedIssue = if (point == TimePoint.STARTED) issue else state.startedIssue,
+                completedIssue = if (point == TimePoint.COMPLETED) issue else state.completedIssue,
+                command = ManualEntryCommand.Invalid(issue),
+            )
         }
     }
 
-    private fun proposal(
-        template: ActivityTemplate,
-        commandAt: Instant,
-        zone: ZoneId,
-    ): ManualEntryProposal {
-        val completed = parseTime(mutableState.value.completedText, zone)
+    private fun buildProposal(template: ActivityTemplate): ManualEntryProposal {
+        val commandAt = now()
+        val zone = zoneId()
+        val state = mutableState.value
+        val completed = resolveTime(state.completedText, zone, state.completedAmbiguity, TimePoint.COMPLETED)
         val started =
-            if (template.timeTrackingMode ==
-                TimeTrackingMode.NO_LIVE_TRACKING
-            ) {
+            if (template.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 null
             } else {
-                parseTime(mutableState.value.startedText, zone)
+                resolveTime(state.startedText, zone, state.startedAmbiguity, TimePoint.STARTED)
             }
-        require(completed <= commandAt) { "Completion cannot be in the future" }
-        require(started == null || started <= completed) { "Start must be before completion" }
+        mutableState.update {
+            it.copy(
+                startedAmbiguity = started?.ambiguity,
+                completedAmbiguity = completed.ambiguity,
+                startedIssue = null,
+                completedIssue = null,
+            )
+        }
+        if (completed.instant > commandAt) throw ManualEntryIssueException(ManualEntryIssue.FUTURE_COMPLETION)
+        if (started != null && started.instant > completed.instant) {
+            throw ManualEntryIssueException(ManualEntryIssue.REVERSED_INTERVAL)
+        }
         val active = template.fields.filter { it.deletedAt == null }
         val overrides =
             active.map { field ->
-                val draft = requireNotNull(mutableState.value.values[field.id])
+                val draft = state.values[field.id] ?: throw ManualEntryIssueException(ManualEntryIssue.SAVE_FAILURE)
                 val value =
                     when {
                         draft.missing -> ActivityEntryValue.Missing
                         field.type == CustomFieldType.NUMBER ->
                             ActivityEntryValue.Number(
-                                requireNotNull(
-                                    parseLauncherNumber(draft.numberText, field.displayPrecision),
-                                ) {
-                                    "Enter a valid number"
-                                },
+                                parseLauncherNumber(draft.numberText, field.displayPrecision)
+                                    ?: throw ManualEntryIssueException(ManualEntryIssue.INVALID_NUMBER),
                             )
-                        field.type == CustomFieldType.CATEGORY ->
-                            ActivityEntryValue
-                                .Category(
-                                    ActivityEntryOptionReference.Template(
-                                        requireNotNull(
-                                            draft.selectedOptionId,
-                                        ) {
-                                            "Choose a category"
-                                        }.also { optionId ->
-                                            require(
-                                                field.categoryOptions.any {
-                                                    it.id == optionId && !it.isArchived
-                                                },
-                                            ) { "Choose an active category" }
-                                        },
-                                    ),
-                                )
+                        field.type == CustomFieldType.CATEGORY -> {
+                            val option =
+                                draft.selectedOptionId?.takeIf { selected ->
+                                    field.categoryOptions.any { it.id == selected && !it.isArchived }
+                                } ?: throw ManualEntryIssueException(ManualEntryIssue.INVALID_CATEGORY)
+                            ActivityEntryValue.Category(ActivityEntryOptionReference.Template(option))
+                        }
                         else -> ActivityEntryValue.Text(draft.text)
                     }
                 ActivityEntryValueOverride(ActivityEntryFieldReference.Template(field.id), value)
             }
         return ManualEntryProposal(
             ActivityEntrySource.Template(template.id),
-            started,
-            completed,
+            template.revision,
+            started?.instant,
+            completed.instant,
             commandAt,
             zone,
             overrides,
+            state.draftVersion,
         )
     }
 
-    private fun parseTime(
+    private fun resolveTime(
         text: String,
         zone: ZoneId,
-    ): Instant = LocalDateTime.parse(text.trim().replace(' ', 'T'), DATE_TIME).atZone(zone).toInstant()
+        previous: ManualTimeAmbiguity?,
+        point: TimePoint,
+    ): ResolvedTime {
+        val local =
+            try {
+                LocalDateTime.parse(text.trim().replace(' ', 'T'), DATE_TIME)
+            } catch (_: DateTimeParseException) {
+                throw ManualEntryIssueException(
+                    ManualEntryIssue.INVALID_DATE_TIME,
+                    point = point,
+                    clearAmbiguity = true,
+                )
+            }
+        val offsets = zone.rules.getValidOffsets(local)
+        return when (offsets.size) {
+            0 -> throw ManualEntryIssueException(
+                ManualEntryIssue.NONEXISTENT_LOCAL_TIME,
+                point = point,
+                clearAmbiguity = true,
+            )
+            1 -> ResolvedTime(local.toInstant(offsets.single()), null)
+            2 -> {
+                val selected =
+                    previous
+                        ?.takeIf { it.localDateTime == local && it.zoneId == zone && it.offsets == offsets }
+                        ?.selectedOffset
+                        ?.takeIf(offsets::contains)
+                val ambiguity = ManualTimeAmbiguity(local, zone, offsets, selected)
+                if (selected == null) {
+                    throw ManualEntryIssueException(
+                        ManualEntryIssue.AMBIGUOUS_LOCAL_TIME,
+                        point,
+                        ambiguity,
+                    )
+                }
+                ResolvedTime(local.toInstant(selected), ambiguity)
+            }
+            else -> error("ZoneRules returned ${offsets.size} valid offsets")
+        }
+    }
 
     private fun ManualEntryCommand.dropOverlap(): ManualEntryCommand =
-        if (this is ManualEntryCommand.Overlap) ManualEntryCommand.Idle else this
+        if (this is ManualEntryCommand.Overlap || this is ManualEntryCommand.Invalid) ManualEntryCommand.Idle else this
+
+    private data class ResolvedTime(
+        val instant: Instant,
+        val ambiguity: ManualTimeAmbiguity?,
+    )
+
+    private enum class TimePoint { STARTED, COMPLETED }
+
+    private class ManualEntryIssueException(
+        val issue: ManualEntryIssue,
+        val point: TimePoint? = null,
+        val ambiguity: ManualTimeAmbiguity? = null,
+        val clearAmbiguity: Boolean = false,
+    ) : IllegalArgumentException()
 }
 
 internal const val MANUAL_ACTIVITY_CATALOG_PAGE_SIZE = 50

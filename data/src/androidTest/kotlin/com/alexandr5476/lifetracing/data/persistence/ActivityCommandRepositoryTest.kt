@@ -29,10 +29,13 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerDecisionRequiredException
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -45,6 +48,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -270,6 +274,185 @@ class ActivityCommandRepositoryTest {
         assertNull(noLive.activeDuration)
         assertEquals(active.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(1_000_000L, database.activityTemplateDao().getUserState("no-live")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun manualTimedExpectedRevisionIsAtomicAndMatchedRevisionIsFrozen() {
+        template("reviewed", TimeTrackingMode.STOPWATCH, fields = true)
+        template("unrelated-live", TimeTrackingMode.STOPWATCH)
+        val repository = repository("manual-revision")
+        val unrelated =
+            repository.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("unrelated-live")),
+                instant(1_000),
+                instant(1_000),
+                ZoneOffset.UTC,
+            )
+        val current = requireNotNull(database.activityTemplateDao().getById("reviewed"))
+        database.activityTemplateDao().updateTemplate(
+            current.copy(name = "changed", revision = 2, updatedAtMs = 2_000),
+        )
+        val snapshots = count("activity_snapshots")
+        val executions = count("activity_executions")
+        val values = count("activity_execution_field_values")
+        val statistics =
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("reviewed-series"), StatisticsPeriod.AllTime)
+
+        assertThrows(StaleLauncherTargetException::class.java) {
+            repository.addManualTimed(
+                ActivityEntrySource.Template(ActivityTemplateId("reviewed")),
+                instant(100),
+                instant(200),
+                instant(3_000),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 1,
+            )
+        }
+
+        assertEquals(snapshots, count("activity_snapshots"))
+        assertEquals(executions, count("activity_executions"))
+        assertEquals(values, count("activity_execution_field_values"))
+        assertNull(database.activityTemplateDao().getUserState("reviewed")?.lastUsedAtMs)
+        assertEquals(2L, database.activityTemplateDao().getById("reviewed")?.revision)
+        assertEquals(
+            statistics,
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("reviewed-series"), StatisticsPeriod.AllTime),
+        )
+        assertEquals(unrelated.id, database.activeSessionDao().get()?.activityExecutionId)
+
+        val matched =
+            repository.addManualTimed(
+                ActivityEntrySource.Template(ActivityTemplateId("reviewed")),
+                instant(100),
+                instant(200),
+                instant(3_001),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = 2,
+            )
+        assertEquals(2L, repository.getHistory(matched.id)?.snapshot?.sourceRevision)
+        assertEquals(unrelated.id, database.activeSessionDao().get()?.activityExecutionId)
+    }
+
+    @Test
+    fun manualNoLiveMissingArchivedAndStaleSourcesLeaveNoResidue() {
+        template("reviewed-no-live", TimeTrackingMode.NO_LIVE_TRACKING, fields = true)
+        template("archived-manual", TimeTrackingMode.NO_LIVE_TRACKING)
+        val repository = repository("manual-no-live-revision")
+        val reviewed = requireNotNull(database.activityTemplateDao().getById("reviewed-no-live"))
+        database.activityTemplateDao().updateTemplate(
+            reviewed.copy(name = "changed", revision = 2, updatedAtMs = 2_000),
+        )
+        database.activityTemplateDao().archive("archived-manual", 2_000)
+        val snapshots = count("activity_snapshots")
+        val executions = count("activity_executions")
+        val values = count("activity_execution_field_values")
+
+        listOf("reviewed-no-live", "archived-manual", "missing-manual").forEach { id ->
+            assertThrows(StaleLauncherTargetException::class.java) {
+                repository.addManualNoLive(
+                    ActivityEntrySource.Template(ActivityTemplateId(id)),
+                    instant(200),
+                    instant(3_000),
+                    ZoneOffset.UTC,
+                    expectedTemplateRevision = 1,
+                )
+            }
+        }
+
+        assertEquals(snapshots, count("activity_snapshots"))
+        assertEquals(executions, count("activity_executions"))
+        assertEquals(values, count("activity_execution_field_values"))
+        assertNull(database.activityTemplateDao().getUserState("reviewed-no-live")?.lastUsedAtMs)
+        assertNull(database.activityTemplateDao().getUserState("archived-manual")?.lastUsedAtMs)
+        assertNull(database.activeSessionDao().get())
+    }
+
+    @Test
+    fun manualTemplateCreationReloadsThroughCanonicalHistoryDailyStatisticsRecentAndPlanIsolation() {
+        template("projected", TimeTrackingMode.STOPWATCH, fields = true)
+        val plans = planRepository()
+        val matchingPlan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("projected"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
+                Instant.parse("2026-08-19T00:00:00Z"),
+            )
+        val repository = repository("manual-projection")
+        val zone = ZoneId.of("Europe/Moscow")
+        val start = Instant.parse("2026-08-20T20:50:00Z")
+        val end = Instant.parse("2026-08-20T21:30:00Z")
+        val commandAt = Instant.parse("2026-08-22T00:00:00Z")
+
+        val execution =
+            repository.addManualTimed(
+                ActivityEntrySource.Template(ActivityTemplateId("projected")),
+                start,
+                end,
+                commandAt,
+                zone,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("projected-number")),
+                        ActivityEntryValue.Number(0),
+                    ),
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.Template(ActivityTemplateFieldId("projected-category")),
+                        ActivityEntryValue.Category(
+                            ActivityEntryOptionReference.Template(CategoryOptionId("projected-option-b")),
+                        ),
+                    ),
+                ),
+                expectedTemplateRevision = 1,
+            )
+
+        assertEquals(ActivityExecutionStatus.COMPLETED, execution.status)
+        assertEquals(
+            com.alexandr5476.lifetracing.domain.ActivityCompletionReason.MANUAL_HISTORY_ENTRY,
+            execution.completionReason,
+        )
+        assertEquals(zone, execution.originalZoneId)
+        assertEquals(LocalDate.of(2026, 8, 20), execution.primaryLocalDate)
+        assertNull(execution.planEntryId)
+        val history = HistoryReadRepository(database)
+        val detail = requireNotNull(history.getActivityDetail(execution.id))
+        assertEquals(Duration.ofMinutes(40), detail.root.activeDuration)
+        val frozen = requireNotNull(repository.getHistory(execution.id)).snapshot
+        assertEquals(1, frozen.fields.count { it.sourceFieldId == ActivityTemplateFieldId("projected-number") })
+        assertTrue(
+            frozen.fields
+                .flatMap { it.categoryOptions }
+                .any { it.sourceOptionId == CategoryOptionId("projected-option-b") },
+        )
+        assertEquals(
+            listOf(execution.id),
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(
+                        HistoryDateRange(execution.primaryLocalDate, execution.primaryLocalDate),
+                        10,
+                    ),
+                ).map { (it as com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot).executionId },
+        )
+        val daily =
+            DailyReadRepository(database, CurrentZoneIdProvider { zone })
+                .getDaily(DailyQuery(execution.primaryLocalDate, commandAt, 10))
+        assertTrue(
+            daily.completedHistory.any {
+                it is com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot &&
+                    it.executionId == execution.id
+            },
+        )
+        assertEquals(
+            1,
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("projected-series"), StatisticsPeriod.AllTime)
+                .executionCount,
+        )
+        assertEquals(commandAt.toEpochMilli(), database.activityTemplateDao().getUserState("projected")?.lastUsedAtMs)
+        assertEquals(1L, database.activityTemplateDao().getById("projected")?.revision)
+        assertEquals(PlanEntryStatus.PLANNED, plans.getPlan(matchingPlan.id)?.status)
     }
 
     @Test

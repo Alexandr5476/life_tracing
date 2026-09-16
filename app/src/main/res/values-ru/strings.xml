@@ -461,9 +461,26 @@
     <string name="manual_history_configured">Настроено: %1$s</string>
     <string name="manual_history_actual">Фактическое значение</string>
     <string name="manual_history_set_missing">Нет значения</string>
+    <string name="manual_history_restore_value">Восстановить значение</string>
+    <string name="manual_history_missing_value">Нет значения</string>
     <string name="manual_history_save">Сохранить завершённое действие</string>
     <string name="manual_history_saving">Сохранение…</string>
     <string name="manual_history_overlap">Этот интервал пересекается с существующей историей.</string>
     <string name="manual_history_cancel">Отмена</string>
     <string name="manual_history_proceed">Всё равно сохранить</string>
+    <string name="manual_history_invalid_datetime">Введите корректные дату и время.</string>
+    <string name="manual_history_nonexistent_time">Такого местного времени не существует из-за перевода часов вперёд.</string>
+    <string name="manual_history_ambiguous_time">Это местное время наступает дважды. Выберите нужный вариант.</string>
+    <string name="manual_history_ambiguous_choose">Выберите вариант:</string>
+    <string name="manual_history_first_occurrence">Первый вариант (%1$s)</string>
+    <string name="manual_history_second_occurrence">Второй вариант (%1$s)</string>
+    <string name="manual_history_future_completion">Время завершения не может быть в будущем.</string>
+    <string name="manual_history_reversed_interval">Начало не может быть позже завершения.</string>
+    <string name="manual_history_invalid_number">Введите корректное число.</string>
+    <string name="manual_history_invalid_category">Выберите доступную категорию.</string>
+    <string name="manual_history_template_unavailable">Выбранное действие больше недоступно.</string>
+    <string name="manual_history_template_stale">Выбранное действие изменилось. Выберите его снова и проверьте новую конфигурацию.</string>
+    <string name="manual_history_catalog_failure">Не удалось загрузить действия.</string>
+    <string name="manual_history_template_failure">Не удалось загрузить выбранное действие.</string>
+    <string name="manual_history_save_failure">Не удалось сохранить завершённое действие.</string>
 </resources>

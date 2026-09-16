@@ -461,9 +461,26 @@
     <string name="manual_history_configured">Configured: %1$s</string>
     <string name="manual_history_actual">Actual value</string>
     <string name="manual_history_set_missing">Set missing</string>
+    <string name="manual_history_restore_value">Restore value</string>
+    <string name="manual_history_missing_value">Missing</string>
     <string name="manual_history_save">Save completed activity</string>
     <string name="manual_history_saving">Saving…</string>
     <string name="manual_history_overlap">This interval overlaps existing history.</string>
     <string name="manual_history_cancel">Cancel</string>
     <string name="manual_history_proceed">Save anyway</string>
+    <string name="manual_history_invalid_datetime">Enter a valid date and time.</string>
+    <string name="manual_history_nonexistent_time">This local time does not exist because the clock moves forward.</string>
+    <string name="manual_history_ambiguous_time">This local time occurs twice. Choose which occurrence you mean.</string>
+    <string name="manual_history_ambiguous_choose">Choose the occurrence:</string>
+    <string name="manual_history_first_occurrence">First occurrence (%1$s)</string>
+    <string name="manual_history_second_occurrence">Second occurrence (%1$s)</string>
+    <string name="manual_history_future_completion">Completion cannot be in the future.</string>
+    <string name="manual_history_reversed_interval">Start must not be after completion.</string>
+    <string name="manual_history_invalid_number">Enter a valid number.</string>
+    <string name="manual_history_invalid_category">Choose an available category.</string>
+    <string name="manual_history_template_unavailable">The selected activity is no longer available.</string>
+    <string name="manual_history_template_stale">The selected activity changed. Select it again to review the current configuration.</string>
+    <string name="manual_history_catalog_failure">Unable to load activities.</string>
+    <string name="manual_history_template_failure">Unable to load the selected activity.</string>
+    <string name="manual_history_save_failure">Unable to save the completed activity.</string>
 </resources>

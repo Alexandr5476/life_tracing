@@ -23,6 +23,7 @@ import androidx.compose.ui.test.performTextReplacement
 import com.alexandr5476.lifetracing.daily.DailyAction
 import com.alexandr5476.lifetracing.daily.DailyLoadState
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
@@ -38,12 +39,14 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.FolderId
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -88,6 +91,54 @@ import java.time.ZoneId
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun productionManualHistoryDraftSurvivesRecreationAndCommitsExactlyOnceToCanonicalHistory() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual recreated $suffix"
+        TemplateAuthoringRepository
+            .create(composeTestRule.activity)
+            .createActivityTemplate(
+                ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = Instant.now(),
+            )
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.selected is com.alexandr5476.lifetracing.history.ManualEntryLoad.Content
+        }
+        val session = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+
+        recreateActivity()
+        assertSame(session, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        composeTestRule.onNodeWithTag("manual-history-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty() &&
+                composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null
+        }
+
+        val zone = ZoneId.systemDefault()
+        val today = Instant.now().atZone(zone).toLocalDate()
+        val roots =
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(today.minusDays(1), today.plusDays(1)), 100),
+                )
+        val matching = roots.filterIsInstance<CompletedActivityHistoryRoot>().count { it.title == name }
+        assertEquals(1, matching)
+    }
 
     @Test
     fun productionHistoryDetailRetainsDurableIdentityAndReloadsAfterActivityRecreation() {

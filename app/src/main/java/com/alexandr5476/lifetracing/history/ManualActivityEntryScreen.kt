@@ -1,7 +1,8 @@
-@file:Suppress("FunctionNaming", "LongMethod", "MaxLineLength")
+@file:Suppress("FunctionNaming", "LongMethod", "MaxLineLength", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing.history
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,12 +26,15 @@ import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateField
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
+import java.time.Duration
+import java.time.ZoneOffset
 
 @Composable
 fun ManualActivityEntryRoute(
@@ -62,17 +66,17 @@ internal fun ManualActivityEntryScreen(
             when (val selected = state.selected) {
                 ManualEntryLoad.Idle -> Unit
                 ManualEntryLoad.Loading -> Text(stringResource(R.string.manual_history_template_loading))
-                is ManualEntryLoad.Failure -> Text(selected.message, color = MaterialTheme.colorScheme.error)
+                is ManualEntryLoad.Failure -> IssueText(selected.issue)
                 is ManualEntryLoad.Content -> EntryForm(selected.value, state, onAction)
             }
-            Command(state.command, onAction)
+            Command(state.command, state.startedIssue, state.completedIssue, onAction)
         }
     }
 }
 
 @Composable
 private fun Catalog(
-    catalog: ManualEntryLoad<List<com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem>>,
+    catalog: ManualEntryLoad<List<ReusableActivityCatalogItem>>,
     canLoadMore: Boolean,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
@@ -80,7 +84,7 @@ private fun Catalog(
     when (catalog) {
         ManualEntryLoad.Idle, ManualEntryLoad.Loading -> Text(stringResource(R.string.manual_history_loading))
         is ManualEntryLoad.Failure -> {
-            Text(catalog.message, color = MaterialTheme.colorScheme.error)
+            IssueText(catalog.issue)
             LifeTracingSecondaryButton(onClick = {
                 onAction(ManualActivityEntryAction.RetryCatalog)
             }) { Text(stringResource(R.string.history_retry)) }
@@ -109,17 +113,20 @@ private fun EntryForm(
 ) {
     Text(template.name, style = MaterialTheme.typography.titleLarge)
     if (template.timeTrackingMode == TimeTrackingMode.TIMER) {
-        Text(stringResource(R.string.manual_history_timer_target, template.timerTarget.toString()))
+        Text(stringResource(R.string.manual_history_timer_target, requireNotNull(template.timerTarget).durationText()))
     }
     if (template.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
-        TimeInput(
-            R.string.manual_history_started,
-            state.startedText,
-        ) { onAction(ManualActivityEntryAction.EditStarted(it)) }
+        TimeInput(R.string.manual_history_started, state.startedText) {
+            onAction(ManualActivityEntryAction.EditStarted(it))
+        }
+        state.startedIssue?.let { IssueText(it) }
+        state.startedAmbiguity?.let { AmbiguityChoices(it, true, onAction) }
     }
     TimeInput(R.string.manual_history_completed, state.completedText) {
         onAction(ManualActivityEntryAction.EditCompleted(it))
     }
+    state.completedIssue?.let { IssueText(it) }
+    state.completedAmbiguity?.let { AmbiguityChoices(it, false, onAction) }
     template.fields.filter { it.deletedAt == null }.forEach { field ->
         Field(field, state.values.getValue(field.id), onAction)
     }
@@ -144,6 +151,42 @@ private fun TimeInput(
 )
 
 @Composable
+private fun AmbiguityChoices(
+    ambiguity: ManualTimeAmbiguity,
+    started: Boolean,
+    onAction: (ManualActivityEntryAction) -> Unit,
+) {
+    Text(stringResource(R.string.manual_history_ambiguous_choose), color = MaterialTheme.colorScheme.error)
+    ambiguity.offsets.forEachIndexed { index, offset ->
+        LifeTracingSecondaryButton(
+            onClick = {
+                onAction(
+                    if (started) {
+                        ManualActivityEntryAction.SelectStartedOffset(offset)
+                    } else {
+                        ManualActivityEntryAction.SelectCompletedOffset(offset)
+                    },
+                )
+            },
+            modifier = Modifier.testTag("manual-history-${if (started) "started" else "completed"}-offset-$index"),
+        ) {
+            Text(
+                stringResource(
+                    if (index ==
+                        0
+                    ) {
+                        R.string.manual_history_first_occurrence
+                    } else {
+                        R.string.manual_history_second_occurrence
+                    },
+                    offset.utcLabel(),
+                ),
+            )
+        }
+    }
+}
+
+@Composable
 private fun Field(
     field: ActivityTemplateField,
     draft: ManualEntryFieldDraft,
@@ -155,6 +198,7 @@ private fun Field(
             stringResource(R.string.manual_history_configured, configured(field)),
             style = MaterialTheme.typography.bodySmall,
         )
+        if (draft.missing) Text(stringResource(R.string.manual_history_missing_value))
         when (field.type) {
             CustomFieldType.NUMBER ->
                 LifeTracingOutlinedTextField(
@@ -162,7 +206,6 @@ private fun Field(
                     { onAction(ManualActivityEntryAction.EditNumber(field.id, it)) },
                     Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
-                    enabled = !draft.missing,
                 )
             CustomFieldType.TEXT ->
                 LifeTracingOutlinedTextField(
@@ -170,7 +213,6 @@ private fun Field(
                     { onAction(ManualActivityEntryAction.EditText(field.id, it)) },
                     Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
-                    enabled = !draft.missing,
                 )
             CustomFieldType.CATEGORY ->
                 field.categoryOptions.filterNot { it.isArchived }.forEach { option ->
@@ -190,39 +232,56 @@ private fun Field(
                     }
                 }
         }
-        LifeTracingSecondaryButton(onClick = { onAction(ManualActivityEntryAction.SetMissing(field.id)) }) {
-            Text(stringResource(R.string.manual_history_set_missing))
+        LifeTracingSecondaryButton(
+            onClick = {
+                onAction(
+                    if (draft.missing) {
+                        ManualActivityEntryAction.SetPresent(field.id)
+                    } else {
+                        ManualActivityEntryAction.SetMissing(field.id)
+                    },
+                )
+            },
+        ) {
+            Text(
+                stringResource(
+                    if (draft.missing) R.string.manual_history_restore_value else R.string.manual_history_set_missing,
+                ),
+            )
         }
     }
 }
 
+@Composable
 private fun configured(field: ActivityTemplateField): String =
     when (field.type) {
         CustomFieldType.NUMBER ->
-            formatLauncherNumber(
-                field.defaultNumberScaled,
-                field.displayPrecision,
-            ).ifBlank { "—" }
+            formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision)
+                .ifBlank { stringResource(R.string.manual_history_missing_value) }
         CustomFieldType.CATEGORY ->
             field.categoryOptions.firstOrNull { it.id == field.defaultCategoryOptionId }?.label
-                ?: "—"
-        CustomFieldType.TEXT -> field.defaultText ?: "—"
+                ?: stringResource(R.string.manual_history_missing_value)
+        CustomFieldType.TEXT -> field.defaultText ?: stringResource(R.string.manual_history_missing_value)
     }
 
 @Composable
 private fun Command(
     command: ManualEntryCommand,
+    startedIssue: ManualEntryIssue?,
+    completedIssue: ManualEntryIssue?,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
     when (command) {
         ManualEntryCommand.Idle -> Unit
-        is ManualEntryCommand.Invalid -> Text(command.message, color = MaterialTheme.colorScheme.error)
+        is ManualEntryCommand.Invalid ->
+            if (command.issue != startedIssue && command.issue != completedIssue) IssueText(command.issue)
         ManualEntryCommand.Committing -> Text(stringResource(R.string.manual_history_saving))
         is ManualEntryCommand.Failure -> {
-            Text(command.message, color = MaterialTheme.colorScheme.error)
-            LifeTracingSecondaryButton(onClick = {
-                onAction(ManualActivityEntryAction.Save)
-            }) { Text(stringResource(R.string.history_retry)) }
+            IssueText(command.issue)
+            LifeTracingSecondaryButton(
+                onClick = { onAction(ManualActivityEntryAction.Save) },
+                enabled = command.issue != ManualEntryIssue.TEMPLATE_STALE,
+            ) { Text(stringResource(R.string.history_retry)) }
         }
         is ManualEntryCommand.Overlap -> {
             Text(stringResource(R.string.manual_history_overlap), color = MaterialTheme.colorScheme.error)
@@ -238,3 +297,27 @@ private fun Command(
         is ManualEntryCommand.Committed -> Unit
     }
 }
+
+@Composable
+private fun IssueText(issue: ManualEntryIssue) {
+    val resource =
+        when (issue) {
+            ManualEntryIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
+            ManualEntryIssue.NONEXISTENT_LOCAL_TIME -> R.string.manual_history_nonexistent_time
+            ManualEntryIssue.AMBIGUOUS_LOCAL_TIME -> R.string.manual_history_ambiguous_time
+            ManualEntryIssue.FUTURE_COMPLETION -> R.string.manual_history_future_completion
+            ManualEntryIssue.REVERSED_INTERVAL -> R.string.manual_history_reversed_interval
+            ManualEntryIssue.INVALID_NUMBER -> R.string.manual_history_invalid_number
+            ManualEntryIssue.INVALID_CATEGORY -> R.string.manual_history_invalid_category
+            ManualEntryIssue.TEMPLATE_UNAVAILABLE -> R.string.manual_history_template_unavailable
+            ManualEntryIssue.TEMPLATE_STALE -> R.string.manual_history_template_stale
+            ManualEntryIssue.CATALOG_READ_FAILURE -> R.string.manual_history_catalog_failure
+            ManualEntryIssue.TEMPLATE_READ_FAILURE -> R.string.manual_history_template_failure
+            ManualEntryIssue.SAVE_FAILURE -> R.string.manual_history_save_failure
+        }
+    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
+}
+
+private fun Duration.durationText(): String = DateUtils.formatElapsedTime(seconds.coerceAtLeast(0))
+
+private fun ZoneOffset.utcLabel(): String = "UTC${if (this == ZoneOffset.UTC) "+00:00" else id}"

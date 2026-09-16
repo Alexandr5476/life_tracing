@@ -610,6 +610,7 @@ class LifeTracingRuntimeGraph internal constructor(
                                     proposal.commandAt,
                                     proposal.zoneId,
                                     proposal.values,
+                                    proposal.expectedTemplateRevision,
                                 )
                             }
                         },
@@ -621,6 +622,7 @@ class LifeTracingRuntimeGraph internal constructor(
                                     proposal.commandAt,
                                     proposal.zoneId,
                                     proposal.values,
+                                    proposal.expectedTemplateRevision,
                                 )
                             }
                         },

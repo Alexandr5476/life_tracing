@@ -95,6 +95,25 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun manualHistoryRouteBackRestoreAndSuccessfulDeliveryAreExactlyOnce() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, HistoryRoot)
+        var reloads = 0
+
+        backStack.openManualActivityEntry()
+        backStack.openManualActivityEntry()
+        assertEquals(listOf(DailyRoot, HistoryRoot, ManualActivityEntryRoot), backStack)
+        backStack.completeManualActivityEntry { reloads++ }
+        backStack.completeManualActivityEntry { reloads++ }
+        assertEquals(1, reloads)
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+
+        backStack.openManualActivityEntry()
+        backStack.normalizeRestoredManualActivityEntry()
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+        assertEquals(1, reloads)
+    }
+
+    @Test
     fun planExecutionKeepsOneExactRouteAndRestoredRouteNormalizesToItsOrigin() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
         val first = planIdentity("plan-a")
