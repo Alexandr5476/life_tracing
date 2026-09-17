@@ -484,4 +484,18 @@
     <string name="manual_history_catalog_failure">Unable to load activities.</string>
     <string name="manual_history_template_failure">Unable to load the selected activity.</string>
     <string name="manual_history_save_failure">Unable to save the completed activity.</string>
+    <string name="history_correct">Correct</string>
+    <string name="history_delete">Delete</string>
+    <string name="history_short_comment">Short comment</string>
+    <string name="history_event_zone">Historical time zone: %1$s</string>
+    <string name="history_save_correction">Save correction</string>
+    <string name="history_saving">Saving…</string>
+    <string name="history_delete_title">Delete historical activity?</string>
+    <string name="history_delete_message">%1$s will be removed from History, Daily, and Statistics.</string>
+    <string name="history_deleting">Deleting…</string>
+    <string name="history_changed_review">History changed; review the current values before saving again.</string>
+    <string name="history_correction_failure">The historical correction could not be saved.</string>
+    <string name="history_delete_failure">The historical activity could not be deleted.</string>
+    <string name="history_correction_started">Start (YYYY-MM-DD HH:MM[:SS[.SSS]])</string>
+    <string name="history_correction_completed">Completion (YYYY-MM-DD HH:MM[:SS[.SSS]])</string>
 </resources>

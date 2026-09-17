@@ -33,6 +33,7 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.history.ActivityHistoryDetailRoute
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationRouteSessionOwner
 import com.alexandr5476.lifetracing.history.HistoryControllerOwner
 import com.alexandr5476.lifetracing.history.HistoryRoute
 import com.alexandr5476.lifetracing.history.ManualActivityEntryRoute
@@ -83,6 +84,9 @@ class MainActivity : AppCompatActivity() {
     internal val manualActivityEntryRouteSessions by lazy {
         ViewModelProvider(this)[ManualActivityEntryRouteSessionOwner::class.java]
     }
+    internal val activityHistoryMutationRouteSessions by lazy {
+        ViewModelProvider(this)[ActivityHistoryMutationRouteSessionOwner::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,6 +103,7 @@ class MainActivity : AppCompatActivity() {
                 planExecutionRouteSessions = planExecutionRouteSessions,
                 historyControllerOwner = historyControllerOwner,
                 manualActivityEntryRouteSessions = manualActivityEntryRouteSessions,
+                activityHistoryMutationRouteSessions = activityHistoryMutationRouteSessions,
             )
         }
     }
@@ -171,6 +176,7 @@ internal fun LifeTracingApp(
     planExecutionRouteSessions: PlanExecutionRouteSessionOwner? = null,
     historyControllerOwner: HistoryControllerOwner? = null,
     manualActivityEntryRouteSessions: ManualActivityEntryRouteSessionOwner? = null,
+    activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -200,6 +206,8 @@ internal fun LifeTracingApp(
             val historyOwner = historyControllerOwner ?: remember { HistoryControllerOwner() }
             val manualEntrySessions =
                 manualActivityEntryRouteSessions ?: remember { ManualActivityEntryRouteSessionOwner() }
+            val activityHistorySessions =
+                activityHistoryMutationRouteSessions ?: remember { ActivityHistoryMutationRouteSessionOwner() }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -317,6 +325,15 @@ internal fun LifeTracingApp(
                         backStack.lastOrNull() is HistoryRoot -> {
                             historyOwner.onRouteExited()
                             backStack.removeHistory()
+                        }
+                        backStack.lastOrNull() is ActivityHistoryDetailRoot -> {
+                            val session = activityHistorySessions.activeSession
+                            if (session?.controller?.handleBack() != true) {
+                                session?.let(activityHistorySessions::release)
+                                backStack.removeActivityHistoryDetail(
+                                    (backStack.last() as ActivityHistoryDetailRoot).executionId,
+                                )
+                            }
                         }
                         else -> backStack.removeLastOrNull()
                     }
@@ -454,16 +471,31 @@ internal fun LifeTracingApp(
                             )
                         }
                         entry<ActivityHistoryDetailRoot> { route ->
-                            val controller =
-                                remember(route.executionId) {
+                            val executionId =
+                                com.alexandr5476.lifetracing.domain
+                                    .ActivityExecutionId(route.executionId)
+                            val session =
+                                activityHistorySessions.acquire(executionId) {
                                     runtimeGraph.createActivityHistoryDetailController(
-                                        com.alexandr5476.lifetracing.domain
-                                            .ActivityExecutionId(route.executionId),
+                                        executionId,
                                     )
                                 }
                             ActivityHistoryDetailRoute(
-                                controller,
-                                onBack = { backStack.removeActivityHistoryDetail(route.executionId) },
+                                session,
+                                onBack = {
+                                    activityHistorySessions.release(session)
+                                    backStack.removeActivityHistoryDetail(route.executionId)
+                                },
+                                onRefresh = {
+                                    historyOwner
+                                        .get(runtimeGraph::createHistoryController)
+                                        .dispatch(com.alexandr5476.lifetracing.history.HistoryAction.Retry)
+                                    controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                                },
+                                onDeleted = {
+                                    activityHistorySessions.release(session)
+                                    backStack.removeActivityHistoryDetail(route.executionId)
+                                },
                             )
                         }
                         entry<ManualActivityEntryRoot> {

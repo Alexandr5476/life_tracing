@@ -28,6 +28,7 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
 import com.alexandr5476.lifetracing.history.HistoryController
 import com.alexandr5476.lifetracing.history.HistoryDetailController
 import com.alexandr5476.lifetracing.history.ManualActivityEntryController
@@ -122,7 +123,7 @@ class LifeTracingRuntimeGraph internal constructor(
     },
     private val activityHistoryDetailControllerFactory: (
         com.alexandr5476.lifetracing.domain.ActivityExecutionId,
-    ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.ActivityHistoryDetail> = {
+    ) -> ActivityHistoryMutationController = {
         error("Activity History is unavailable")
     },
     private val sequenceHistoryDetailControllerFactory: (
@@ -162,8 +163,7 @@ class LifeTracingRuntimeGraph internal constructor(
 
     fun createActivityHistoryDetailController(
         executionId: com.alexandr5476.lifetracing.domain.ActivityExecutionId,
-    ): HistoryDetailController<com.alexandr5476.lifetracing.domain.ActivityHistoryDetail> =
-        activityHistoryDetailControllerFactory(executionId)
+    ): ActivityHistoryMutationController = activityHistoryDetailControllerFactory(executionId)
 
     fun createSequenceHistoryDetailController(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
@@ -631,11 +631,26 @@ class LifeTracingRuntimeGraph internal constructor(
                     )
                 },
                 { executionId ->
-                    HistoryDetailController(uiScope) {
-                        withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            historyReadRepository.getActivityDetail(executionId)
-                        }
-                    }
+                    ActivityHistoryMutationController(
+                        uiScope,
+                        executionId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getActivityDetail(id)
+                            }
+                        },
+                        { id, correction, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.correctHistory(id, correction, at)
+                            }
+                        },
+                        { id, expectedUpdatedAt, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.softDeleteHistory(id, expectedUpdatedAt, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                    )
                 },
                 { executionId ->
                     HistoryDetailController(uiScope) {

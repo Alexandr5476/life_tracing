@@ -10,6 +10,7 @@
 package com.alexandr5476.lifetracing.history
 
 import android.text.format.DateUtils
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import com.alexandr5476.lifetracing.domain.ActivityHistoryField
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
@@ -53,6 +55,7 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
@@ -61,6 +64,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -78,13 +82,26 @@ fun HistoryRoute(
 }
 
 @Composable
-fun ActivityHistoryDetailRoute(
-    controller: HistoryDetailController<ActivityHistoryDetail>,
+internal fun ActivityHistoryDetailRoute(
+    session: ActivityHistoryMutationRouteSession,
     onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onDeleted: () -> Unit,
 ) {
-    DisposableEffect(controller) { onDispose(controller::close) }
-    val load by controller.state.collectAsState()
-    HistoryDetailSurface(onBack, load, controller::reload) { ActivityDetail(it) }
+    val controller = session.controller
+    val state by controller.state.collectAsState()
+    BackHandler(enabled = state.draft != null || state.deleteConfirmation || state.isMutating) {
+        controller.handleBack()
+    }
+    LaunchedEffect(state.refreshGeneration, state.deleted) {
+        session.deliverRefresh(state.refreshGeneration, onRefresh)
+        if (state.deleted) session.deliverDelete(onDeleted)
+    }
+    ActivityHistoryMutationSurface(
+        state,
+        controller::dispatch,
+        onBack = { if (!controller.handleBack()) onBack() },
+    )
 }
 
 @Composable
@@ -248,6 +265,242 @@ internal fun ActivityDetail(detail: ActivityHistoryDetail) {
     Text(stringResource(R.string.history_fields), style = MaterialTheme.typography.titleMedium)
     if (detail.fields.isEmpty()) Text(stringResource(R.string.history_no_fields))
     detail.fields.forEach { HistoryField(it) }
+}
+
+@Composable
+private fun ActivityHistoryMutationSurface(
+    state: ActivityHistoryMutationState,
+    onAction: (ActivityHistoryMutationAction) -> Unit,
+    onBack: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+        ) {
+            TextButton(onClick = onBack, enabled = !state.isMutating) { Text(stringResource(R.string.history_back)) }
+            when (val load = state.load) {
+                HistoryDetailLoad.Loading -> HistoryCard { Text(stringResource(R.string.history_detail_loading)) }
+                HistoryDetailLoad.Unavailable -> HistoryCard { Text(stringResource(R.string.history_unavailable)) }
+                is HistoryDetailLoad.Failure -> FailureCard { onAction(ActivityHistoryMutationAction.Retry) }
+                is HistoryDetailLoad.Content -> {
+                    when {
+                        state.draft != null -> CorrectionEditor(load.value, state, onAction)
+                        state.deleteConfirmation -> DeleteConfirmation(load.value, state.isMutating, onAction)
+                        else -> {
+                            state.issue?.let { MutationIssue(it) }
+                            ActivityDetail(load.value)
+                            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                                if (load.value.root.planEntryId == null) {
+                                    LifeTracingSecondaryButton(
+                                        onClick = { onAction(ActivityHistoryMutationAction.BeginCorrection) },
+                                        modifier = Modifier.testTag("history-correct"),
+                                    ) { Text(stringResource(R.string.history_correct)) }
+                                }
+                                LifeTracingSecondaryButton(
+                                    onClick = { onAction(ActivityHistoryMutationAction.RequestDelete) },
+                                    modifier = Modifier.testTag("history-delete"),
+                                ) { Text(stringResource(R.string.history_delete)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CorrectionEditor(
+    detail: ActivityHistoryDetail,
+    state: ActivityHistoryMutationState,
+    onAction: (ActivityHistoryMutationAction) -> Unit,
+) {
+    val draft = requireNotNull(state.draft)
+    Text(detail.root.title, style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.history_event_zone, draft.eventZoneId.id))
+    draft.startedText?.let { started ->
+        LifeTracingOutlinedTextField(
+            started,
+            { onAction(ActivityHistoryMutationAction.EditStarted(it)) },
+            Modifier.fillMaxWidth().testTag("history-correction-started"),
+            label = { Text(stringResource(R.string.history_correction_started)) },
+            enabled = !state.isMutating,
+        )
+        OffsetChoices(draft.startedOffsets, draft.startedOffset) {
+            onAction(ActivityHistoryMutationAction.SelectStartedOffset(it))
+        }
+    }
+    LifeTracingOutlinedTextField(
+        draft.completedText,
+        { onAction(ActivityHistoryMutationAction.EditCompleted(it)) },
+        Modifier.fillMaxWidth().testTag("history-correction-completed"),
+        label = { Text(stringResource(R.string.history_correction_completed)) },
+        enabled = !state.isMutating,
+    )
+    OffsetChoices(draft.completedOffsets, draft.completedOffset) {
+        onAction(ActivityHistoryMutationAction.SelectCompletedOffset(it))
+    }
+    LifeTracingOutlinedTextField(
+        draft.shortComment,
+        { onAction(ActivityHistoryMutationAction.EditComment(it)) },
+        Modifier.fillMaxWidth().testTag("history-correction-comment"),
+        label = { Text(stringResource(R.string.history_short_comment)) },
+        enabled = !state.isMutating,
+    )
+    detail.fields.forEach { field ->
+        CorrectionField(field, draft.values.getValue(field.id), state.isMutating, onAction)
+    }
+    state.issue?.let { MutationIssue(it) }
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.Cancel) },
+            enabled = !state.isMutating,
+        ) { Text(stringResource(R.string.manual_history_cancel)) }
+        LifeTracingPrimaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.Save) },
+            enabled = !state.isMutating,
+            modifier = Modifier.testTag("history-correction-save"),
+        ) {
+            Text(stringResource(if (state.isMutating) R.string.history_saving else R.string.history_save_correction))
+        }
+    }
+}
+
+@Composable
+private fun CorrectionField(
+    field: ActivityHistoryField,
+    draft: ActivityHistoryFieldDraft,
+    isMutating: Boolean,
+    onAction: (ActivityHistoryMutationAction) -> Unit,
+) {
+    HistoryCard {
+        Text(field.name, style = MaterialTheme.typography.titleSmall)
+        Text(
+            stringResource(
+                R.string.history_configured_value,
+                historyConfigured(
+                    field.configuredValue,
+                    field.categoryOptions.associate { it.id to it.label },
+                    field.displayPrecision,
+                    field.unit,
+                ),
+            ),
+        )
+        if (draft.missing) Text(stringResource(R.string.history_missing_value))
+        when (field.type) {
+            CustomFieldType.NUMBER ->
+                LifeTracingOutlinedTextField(
+                    draft.numberText,
+                    { onAction(ActivityHistoryMutationAction.EditNumber(field.id, it)) },
+                    Modifier.fillMaxWidth().testTag("history-correction-field-${field.id.value}"),
+                    label = { Text(stringResource(R.string.manual_history_actual)) },
+                    enabled = !isMutating,
+                )
+            CustomFieldType.TEXT ->
+                LifeTracingOutlinedTextField(
+                    draft.text,
+                    { onAction(ActivityHistoryMutationAction.EditText(field.id, it)) },
+                    Modifier.fillMaxWidth().testTag("history-correction-field-${field.id.value}"),
+                    label = { Text(stringResource(R.string.manual_history_actual)) },
+                    enabled = !isMutating,
+                )
+            CustomFieldType.CATEGORY ->
+                field.categoryOptions.forEach { option ->
+                    TextButton(
+                        onClick = { onAction(ActivityHistoryMutationAction.SelectCategory(field.id, option.id)) },
+                        enabled = !isMutating,
+                        modifier = Modifier.testTag("history-correction-option-${option.id.value}"),
+                    ) {
+                        Text(
+                            if (!draft.missing &&
+                                draft.selectedOptionId == option.id
+                            ) {
+                                "✓ ${option.label}"
+                            } else {
+                                option.label
+                            },
+                        )
+                    }
+                }
+        }
+        LifeTracingSecondaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.SetMissing(field.id, !draft.missing)) },
+            enabled = !isMutating,
+        ) {
+            Text(
+                stringResource(
+                    if (draft.missing) R.string.manual_history_restore_value else R.string.manual_history_set_missing,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun OffsetChoices(
+    offsets: List<ZoneOffset>,
+    selected: ZoneOffset?,
+    onSelect: (ZoneOffset) -> Unit,
+) {
+    if (offsets.size != 2) return
+    Text(stringResource(R.string.manual_history_ambiguous_time), color = MaterialTheme.colorScheme.error)
+    offsets.forEachIndexed { index, offset ->
+        TextButton(onClick = { onSelect(offset) }) {
+            Text(
+                (if (selected == offset) "✓ " else "") +
+                    stringResource(
+                        if (index ==
+                            0
+                        ) {
+                            R.string.manual_history_first_occurrence
+                        } else {
+                            R.string.manual_history_second_occurrence
+                        },
+                        "UTC${if (offset == ZoneOffset.UTC) "+00:00" else offset.id}",
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeleteConfirmation(
+    detail: ActivityHistoryDetail,
+    isMutating: Boolean,
+    onAction: (ActivityHistoryMutationAction) -> Unit,
+) {
+    Text(stringResource(R.string.history_delete_title), style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.history_delete_message, detail.root.title))
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.Cancel) },
+            enabled = !isMutating,
+        ) { Text(stringResource(R.string.manual_history_cancel)) }
+        LifeTracingPrimaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.ConfirmDelete) },
+            enabled = !isMutating,
+            modifier = Modifier.testTag("history-delete-confirm"),
+        ) { Text(stringResource(if (isMutating) R.string.history_deleting else R.string.history_delete)) }
+    }
+}
+
+@Composable
+private fun MutationIssue(issue: ActivityHistoryMutationIssue) {
+    val resource =
+        when (issue) {
+            ActivityHistoryMutationIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
+            ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME -> R.string.manual_history_nonexistent_time
+            ActivityHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME -> R.string.manual_history_ambiguous_time
+            ActivityHistoryMutationIssue.FUTURE_COMPLETION -> R.string.manual_history_future_completion
+            ActivityHistoryMutationIssue.REVERSED_INTERVAL -> R.string.manual_history_reversed_interval
+            ActivityHistoryMutationIssue.INVALID_NUMBER -> R.string.manual_history_invalid_number
+            ActivityHistoryMutationIssue.INVALID_CATEGORY -> R.string.manual_history_invalid_category
+            ActivityHistoryMutationIssue.STALE -> R.string.history_changed_review
+            ActivityHistoryMutationIssue.SAVE_FAILURE -> R.string.history_correction_failure
+            ActivityHistoryMutationIssue.DELETE_FAILURE -> R.string.history_delete_failure
+        }
+    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
 }
 
 @Composable

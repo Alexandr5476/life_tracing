@@ -484,4 +484,18 @@
     <string name="manual_history_catalog_failure">Не удалось загрузить действия.</string>
     <string name="manual_history_template_failure">Не удалось загрузить выбранное действие.</string>
     <string name="manual_history_save_failure">Не удалось сохранить завершённое действие.</string>
+    <string name="history_correct">Исправить</string>
+    <string name="history_delete">Удалить</string>
+    <string name="history_short_comment">Короткий комментарий</string>
+    <string name="history_event_zone">Исторический часовой пояс: %1$s</string>
+    <string name="history_save_correction">Сохранить исправление</string>
+    <string name="history_saving">Сохранение…</string>
+    <string name="history_delete_title">Удалить действие из истории?</string>
+    <string name="history_delete_message">%1$s будет удалено из Истории, Дня и Статистики.</string>
+    <string name="history_deleting">Удаление…</string>
+    <string name="history_changed_review">История изменилась; проверьте текущие значения перед повторным сохранением.</string>
+    <string name="history_correction_failure">Не удалось сохранить исправление истории.</string>
+    <string name="history_delete_failure">Не удалось удалить действие из истории.</string>
+    <string name="history_correction_started">Начало (ГГГГ-ММ-ДД ЧЧ:ММ[:СС[.ССС]])</string>
+    <string name="history_correction_completed">Завершение (ГГГГ-ММ-ДД ЧЧ:ММ[:СС[.ССС]])</string>
 </resources>

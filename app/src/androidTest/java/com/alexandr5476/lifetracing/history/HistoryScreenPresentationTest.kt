@@ -15,6 +15,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
@@ -32,6 +33,7 @@ import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
@@ -48,6 +50,9 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -123,6 +128,25 @@ class HistoryScreenPresentationTest {
             .assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_no_live)).assertIsDisplayed()
         composeTestRule.onAllNodes(hasClickAction()).assertCountEquals(0)
+    }
+
+    @Test
+    fun productionActivityDetailShowsCorrectionOnlyForNonPlanAndDeleteForBoth() {
+        setMutationDetail(activityDetail())
+        composeTestRule.onNodeWithTag("history-correct").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("history-delete").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("history-correct").performClick()
+        composeTestRule.onNodeWithTag("history-correction-started").assertIsDisplayed()
+    }
+
+    @Test
+    fun productionPlanLinkedActivityDetailShowsDeleteWithoutCorrection() {
+        val standalone = activityDetail()
+        setMutationDetail(
+            standalone.copy(root = standalone.root.copy(planEntryId = PlanEntryId("fulfilled-plan"))),
+        )
+        composeTestRule.onNodeWithTag("history-correct").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("history-delete").assertIsDisplayed()
     }
 
     @Test
@@ -245,6 +269,28 @@ class HistoryScreenPresentationTest {
             LifeTracingTheme {
                 Column(Modifier.verticalScroll(rememberScrollState())) { content() }
             }
+        }
+    }
+
+    private fun setMutationDetail(detail: ActivityHistoryDetail) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            ActivityHistoryMutationController(
+                scope,
+                detail.root.executionId,
+                { detail },
+                { _, _, _ -> },
+                { _, _, _ -> },
+                { END.plusSeconds(1) },
+            )
+        val session = ActivityHistoryMutationRouteSession(detail.root.executionId, controller)
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                ActivityHistoryDetailRoute(session, {}, {}, {})
+            }
+        }
+        composeTestRule.waitUntil(2_000) {
+            controller.state.value.load is HistoryDetailLoad.Content
         }
     }
 

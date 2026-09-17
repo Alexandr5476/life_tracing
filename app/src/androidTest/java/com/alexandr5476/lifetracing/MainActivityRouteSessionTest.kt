@@ -72,6 +72,10 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
 import com.alexandr5476.lifetracing.editor.inputIsInvalid
 import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationAction
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationIssue
+import com.alexandr5476.lifetracing.history.HistoryDetailLoad
 import com.alexandr5476.lifetracing.history.ManualActivityEntryAction
 import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
@@ -106,6 +110,79 @@ import java.time.format.DateTimeFormatter
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement() {
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Stale history ${System.nanoTime()}",
+                        "original",
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = now.minusSeconds(600),
+                )
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val execution =
+            commands.addManualTimed(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(template.id),
+                now.minusSeconds(300),
+                now.minusSeconds(240),
+                now.minusSeconds(180),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = template.revision,
+            )
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val controller =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                execution.id,
+                { id -> withContext(Dispatchers.IO) { history.getActivityDetail(id) } },
+                { id, correction, at ->
+                    withContext(Dispatchers.IO) { commands.correctHistory(id, correction, at) }
+                },
+                { _, _, _ -> error("delete is unused") },
+                { now },
+            )
+        composeTestRule.waitUntil(5_000) { controller.state.value.load is HistoryDetailLoad.Content }
+        controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+        controller.dispatch(ActivityHistoryMutationAction.EditComment("stale draft"))
+
+        val original = requireNotNull(commands.getHistory(execution.id))
+        val external =
+            commands.correctHistory(
+                execution.id,
+                com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection(
+                    execution.updatedAt,
+                    com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection.Timed(
+                        requireNotNull(execution.startedAt),
+                        requireNotNull(execution.completedAt),
+                    ),
+                    ZoneOffset.UTC,
+                    execution.values,
+                    "external",
+                ),
+                now.minusSeconds(60),
+            )
+        val snapshotsAfterExternal = tableCount("activity_snapshots")
+        controller.dispatch(ActivityHistoryMutationAction.Save)
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.issue == ActivityHistoryMutationIssue.STALE &&
+                (controller.state.value.load as? HistoryDetailLoad.Content)?.value?.updatedAt ==
+                external.execution.updatedAt
+        }
+
+        assertNull(controller.state.value.draft)
+        assertEquals(snapshotsAfterExternal, tableCount("activity_snapshots"))
+        assertEquals("external", requireNotNull(history.getActivityDetail(execution.id)).root.shortComment)
+        assertNotEquals(original.snapshot.id, external.snapshot.id)
+        controller.close()
+    }
 
     @Test
     fun productionManualHistoryBackBeforeCommitCreatesNothing() {
