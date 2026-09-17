@@ -64,6 +64,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicInteger
 
 class HistoryScreenPresentationTest {
     @get:Rule
@@ -147,6 +148,27 @@ class HistoryScreenPresentationTest {
         )
         composeTestRule.onNodeWithTag("history-correct").assertDoesNotExist()
         composeTestRule.onNodeWithTag("history-delete").assertIsDisplayed()
+    }
+
+    @Test
+    fun deleteFailureStaysInConfirmationAndCanRetryOrCancel() {
+        val attempts = AtomicInteger()
+        val controller =
+            setMutationDetail(activityDetail()) { _, _, _ ->
+                attempts.incrementAndGet()
+                error("delete failed")
+            }
+        composeTestRule.onNodeWithTag("history-delete").performClick()
+        composeTestRule.onNodeWithTag("history-delete-confirm").performClick()
+        composeTestRule.waitUntil(2_000) {
+            controller.state.value.issue == ActivityHistoryMutationIssue.DELETE_FAILURE
+        }
+        composeTestRule.onNodeWithText(text(R.string.history_delete_failure)).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("history-delete-confirm").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(2_000) { attempts.get() == 2 }
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performClick()
+        composeTestRule.onNodeWithTag("history-delete-confirm").assertDoesNotExist()
+        assertEquals(2, attempts.get())
     }
 
     @Test
@@ -272,7 +294,10 @@ class HistoryScreenPresentationTest {
         }
     }
 
-    private fun setMutationDetail(detail: ActivityHistoryDetail) {
+    private fun setMutationDetail(
+        detail: ActivityHistoryDetail,
+        delete: suspend (ActivityExecutionId, Instant, Instant) -> Unit = { _, _, _ -> },
+    ): ActivityHistoryMutationController {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val controller =
             ActivityHistoryMutationController(
@@ -280,7 +305,7 @@ class HistoryScreenPresentationTest {
                 detail.root.executionId,
                 { detail },
                 { _, _, _ -> },
-                { _, _, _ -> },
+                delete,
                 { END.plusSeconds(1) },
             )
         val session = ActivityHistoryMutationRouteSession(detail.root.executionId, controller)
@@ -292,6 +317,7 @@ class HistoryScreenPresentationTest {
         composeTestRule.waitUntil(2_000) {
             controller.state.value.load is HistoryDetailLoad.Content
         }
+        return controller
     }
 
     private fun text(

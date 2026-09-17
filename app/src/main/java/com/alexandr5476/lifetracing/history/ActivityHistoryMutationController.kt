@@ -36,7 +36,24 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
 import java.time.format.DateTimeParseException
+import java.time.format.ResolverStyle
+import java.time.temporal.ChronoField
+
+private val CORRECTION_DATE_TIME_FORMATTER =
+    DateTimeFormatterBuilder()
+        .appendPattern("uuuu-MM-dd'T'HH:mm")
+        .optionalStart()
+        .appendPattern(":ss")
+        .optionalStart()
+        .appendFraction(ChronoField.NANO_OF_SECOND, 1, MAX_MILLISECOND_DIGITS, true)
+        .optionalEnd()
+        .optionalEnd()
+        .toFormatter()
+        .withResolverStyle(ResolverStyle.STRICT)
+
+private const val MAX_MILLISECOND_DIGITS = 3
 
 enum class ActivityHistoryMutationIssue {
     INVALID_DATE_TIME,
@@ -477,7 +494,7 @@ class ActivityHistoryMutationController internal constructor(
     ): Instant? {
         val local =
             try {
-                LocalDateTime.parse(text.trim().replace(' ', 'T'), DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                LocalDateTime.parse(text.trim().replace(' ', 'T'), CORRECTION_DATE_TIME_FORMATTER)
             } catch (_: DateTimeParseException) {
                 return invalid(ActivityHistoryMutationIssue.INVALID_DATE_TIME)
             }

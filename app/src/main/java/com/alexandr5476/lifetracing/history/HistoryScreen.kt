@@ -286,7 +286,8 @@ private fun ActivityHistoryMutationSurface(
                 is HistoryDetailLoad.Content -> {
                     when {
                         state.draft != null -> CorrectionEditor(load.value, state, onAction)
-                        state.deleteConfirmation -> DeleteConfirmation(load.value, state.isMutating, onAction)
+                        state.deleteConfirmation ->
+                            DeleteConfirmation(load.value, state.isMutating, state.issue, onAction)
                         else -> {
                             state.issue?.let { MutationIssue(it) }
                             ActivityDetail(load.value)
@@ -468,10 +469,12 @@ private fun OffsetChoices(
 private fun DeleteConfirmation(
     detail: ActivityHistoryDetail,
     isMutating: Boolean,
+    issue: ActivityHistoryMutationIssue?,
     onAction: (ActivityHistoryMutationAction) -> Unit,
 ) {
     Text(stringResource(R.string.history_delete_title), style = MaterialTheme.typography.headlineSmall)
     Text(stringResource(R.string.history_delete_message, detail.root.title))
+    issue?.let { MutationIssue(it) }
     Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
         LifeTracingSecondaryButton(
             onClick = { onAction(ActivityHistoryMutationAction.Cancel) },

@@ -106,6 +106,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivityRouteSessionTest {
     @get:Rule
@@ -537,6 +538,139 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_title)).assertIsDisplayed()
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).assertIsDisplayed()
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun historyMutationWritesAndRouteEffectsRemainExactlyOnceAcrossRecreation() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val correctionTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Correct retained $suffix", "before", TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now.minusSeconds(10),
+            )
+        val deleteTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Delete retained $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now.minusSeconds(9),
+            )
+        val correctionExecution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(correctionTemplate.id),
+                now.minusSeconds(5),
+                now.minusSeconds(4),
+                ZoneId.systemDefault(),
+            )
+        val deleteExecution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(deleteTemplate.id),
+                now.minusSeconds(3),
+                now.minusSeconds(2),
+                ZoneId.systemDefault(),
+            )
+
+        val correctionEntered = CompletableDeferred<Unit>()
+        val correctionRelease = CompletableDeferred<Unit>()
+        val correctionWrites = AtomicInteger()
+        val correctionController =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                correctionExecution.id,
+                { withContext(Dispatchers.IO) { history.getActivityDetail(it) } },
+                { id, correction, at ->
+                    withContext(Dispatchers.IO) {
+                        correctionWrites.incrementAndGet()
+                        correctionEntered.complete(Unit)
+                        correctionRelease.await()
+                        commands.correctHistory(id, correction, at)
+                    }
+                },
+                { _, _, _ -> error("delete unused") },
+                Instant::now,
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.acquire(correctionExecution.id) {
+                correctionController
+            }
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.onNodeWithText(correctionTemplate.name).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("history-correct").performClick()
+        composeTestRule.onNodeWithTag("history-correction-comment").performTextReplacement("after")
+        val correctionSession =
+            requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(correctionSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        composeTestRule.onNodeWithTag("history-correction-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { correctionEntered.isCompleted }
+        correctionController.dispatch(ActivityHistoryMutationAction.Save)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        recreateActivity()
+        assertSame(correctionSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        correctionRelease.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            correctionController.state.value.refreshGeneration == 1L &&
+                !correctionController.state.value.isMutating &&
+                history.getActivityDetail(correctionExecution.id)?.root?.shortComment == "after"
+        }
+        assertEquals(1, correctionWrites.get())
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_back)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(deleteTemplate.name).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val deleteEntered = CompletableDeferred<Unit>()
+        val deleteRelease = CompletableDeferred<Unit>()
+        val deleteWrites = AtomicInteger()
+        val deleteController =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                deleteExecution.id,
+                { withContext(Dispatchers.IO) { history.getActivityDetail(it) } },
+                { _, _, _ -> error("correction unused") },
+                { id, expected, at ->
+                    withContext(Dispatchers.IO) {
+                        deleteWrites.incrementAndGet()
+                        deleteEntered.complete(Unit)
+                        deleteRelease.await()
+                        commands.softDeleteHistory(id, expected, at)
+                    }
+                },
+                Instant::now,
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.acquire(
+                deleteExecution.id,
+            ) { deleteController }
+        }
+        composeTestRule.onNodeWithText(deleteTemplate.name).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("history-delete").performClick()
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.manual_history_cancel),
+            ).performClick()
+        assertEquals(0, deleteWrites.get())
+        composeTestRule.onNodeWithTag("history-delete").performClick()
+        composeTestRule.onNodeWithTag("history-delete-confirm").performClick()
+        composeTestRule.waitUntil(5_000) { deleteEntered.isCompleted }
+        deleteController.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        val deleteSession = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(deleteSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        deleteRelease.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession == null
+        }
+        assertEquals(1, deleteWrites.get())
+        assertEquals(1L, deleteController.state.value.refreshGeneration)
+        assertTrue(requireNotNull(commands.getHistory(deleteExecution.id)).execution.deletedAt != null)
     }
 
     @Test

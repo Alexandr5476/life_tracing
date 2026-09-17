@@ -142,6 +142,96 @@ class ActivityHistoryMutationControllerTest {
         }
 
     @Test
+    fun correctionAcceptsOnlyMillisecondRepresentableWallClockPrecision() =
+        runBlocking {
+            val accepted =
+                listOf(
+                    "2026-01-15 10:15" to Instant.parse("2026-01-15T09:15:00Z"),
+                    "2026-01-15 10:15:30" to Instant.parse("2026-01-15T09:15:30Z"),
+                    "2026-01-15 10:15:30.1" to Instant.parse("2026-01-15T09:15:30.100Z"),
+                    "2026-01-15 10:15:30.12" to Instant.parse("2026-01-15T09:15:30.120Z"),
+                    "2026-01-15 10:15:30.123" to Instant.parse("2026-01-15T09:15:30.123Z"),
+                )
+            accepted.forEach { (text, expected) ->
+                val fixture = fixture(detail())
+                fixture.awaitLoaded()
+                fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+                fixture.controller.dispatch(ActivityHistoryMutationAction.EditStarted(text))
+                fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+                fixture.awaitRefresh()
+                assertEquals(
+                    expected,
+                    (fixture.corrections.single().time as ActivityHistoryTimeCorrection.Timed).startedAt,
+                )
+                fixture.close()
+            }
+
+            listOf("2026-01-15 10:15:30.1234", "2026-01-15 10:15.1", "2026-02-30 10:15").forEach { text ->
+                val fixture = fixture(detail())
+                fixture.awaitLoaded()
+                fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+                fixture.controller.dispatch(ActivityHistoryMutationAction.EditStarted(text))
+                fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+                assertEquals(ActivityHistoryMutationIssue.INVALID_DATE_TIME, fixture.controller.state.value.issue)
+                assertEquals(0, fixture.correctAttempts)
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun persistedMillisecondTimestampInitializesAndParsesWithoutLoss() =
+        runBlocking {
+            val persisted = Instant.parse("2026-01-15T09:00:00.123Z")
+            val fixture = fixture(detail(startedAt = persisted))
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            assertEquals(
+                "2026-01-15T10:00:00.123",
+                fixture.controller.state.value.draft
+                    ?.startedText,
+            )
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+            fixture.awaitRefresh()
+            assertEquals(
+                persisted,
+                (fixture.corrections.single().time as ActivityHistoryTimeCorrection.Timed).startedAt,
+            )
+            fixture.close()
+        }
+
+    @Test
+    fun deleteFailureKeepsConfirmationForRetryOrCancel() =
+        runBlocking {
+            var fail = true
+            val fixture = fixture(detail(), delete = { _, _, _ -> if (fail) error("writer failed") })
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.RequestDelete)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+            withTimeout(2_000) {
+                fixture.controller.state.first { it.issue == ActivityHistoryMutationIssue.DELETE_FAILURE }
+            }
+            assertTrue(fixture.controller.state.value.deleteConfirmation)
+            fail = false
+            fixture.controller.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+            withTimeout(2_000) { fixture.controller.state.first { it.deleted } }
+            assertEquals(2, fixture.deleteAttempts)
+            fixture.close()
+
+            val cancelled = fixture(detail(), delete = { _, _, _ -> error("writer failed") })
+            cancelled.awaitLoaded()
+            cancelled.controller.dispatch(ActivityHistoryMutationAction.RequestDelete)
+            cancelled.controller.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+            withTimeout(2_000) {
+                cancelled.controller.state.first { it.issue == ActivityHistoryMutationIssue.DELETE_FAILURE }
+            }
+            cancelled.controller.dispatch(ActivityHistoryMutationAction.Cancel)
+            assertFalse(cancelled.controller.state.value.deleteConfirmation)
+            assertEquals(1, cancelled.deleteAttempts)
+            cancelled.close()
+        }
+
+    @Test
     fun staleCorrectionDropsDraftReloadsCanonicalAndNeverReplays() =
         runBlocking {
             val canonical = detail()

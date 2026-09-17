@@ -659,14 +659,14 @@ internal abstract class ActivityExecutionDao {
         require(current.execution.contextType == "STANDALONE") {
             "Sequence child history requires coordinated Sequence correction"
         }
-        require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
-            "Only non-deleted completed history can be corrected"
-        }
         if (
             current.execution.updatedAtMs != expectedUpdatedAtMs ||
             current.execution.snapshotId != expectedSnapshotId
         ) {
             throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+        require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
+            "Only non-deleted completed history can be corrected"
         }
         require(after.execution.updatedAtMs > current.execution.updatedAtMs) {
             "Historical correction time must advance"
@@ -847,12 +847,10 @@ internal abstract class ActivityExecutionDao {
         require(current.contextType == "STANDALONE") {
             "Sequence child history requires coordinated Sequence deletion"
         }
-        require(current.status == "COMPLETED" && current.deletedAtMs == null) {
-            "Only non-deleted completed history can be deleted"
-        }
-        if (current.updatedAtMs != expectedUpdatedAtMs) {
+        if (current.updatedAtMs != expectedUpdatedAtMs || current.deletedAtMs != null) {
             throw ConcurrentModificationException("Activity history changed concurrently")
         }
+        require(current.status == "COMPLETED") { "Only completed history can be deleted" }
         require(deletedAtMs > current.updatedAtMs) { "Historical deletion time must advance" }
         if (softDeleteCompletedStandaloneUnchecked(id, expectedUpdatedAtMs, deletedAtMs) != 1) {
             throw ConcurrentModificationException("Activity history changed concurrently")

@@ -30,6 +30,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
@@ -72,17 +73,21 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.Collections
 import java.util.ConcurrentModificationException
+import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
 class ActivityCommandRepositoryTest {
     private lateinit var database: LifeTracingDatabase
+    private val observedSql = Collections.synchronizedList(mutableListOf<String>())
 
     @Before
     fun setUp() {
         database =
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .setQueryCallback({ sql, _ -> observedSql += sql }, Executor { it.run() })
                 .allowMainThreadQueries()
                 .build()
     }
@@ -871,9 +876,41 @@ class ActivityCommandRepositoryTest {
             repository.softDeleteHistory(execution.id, execution.updatedAt, instant(500))
         }
         assertEquals(corrected, repository.getHistory(execution.id))
+        val planBeforeDelete = requireNotNull(plans.getPlan(explicit.id))
+        val planRowBeforeDelete = requireNotNull(database.planEntryDao().getById(explicit.id.value))
+        val userStateBeforeDelete = database.activityTemplateDao().getUserState("planned")
+        val snapshotBeforeDelete = corrected.execution.snapshotId
+        val valuesBeforeDelete = database.activityExecutionDao().getValues(execution.id.value)
+        observedSql.clear()
         val deleted = repository.softDeleteHistory(execution.id, corrected.execution.updatedAt, instant(500))
+        val deleteSql = synchronized(observedSql) { observedSql.map(String::lowercase) }
+        assertFalse(deleteSql.any { it.startsWith("update plan_entries") })
         assertEquals(instant(500), deleted.deletedAt)
-        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(explicit.id)?.status)
+        assertEquals(execution.id, deleted.id)
+        assertEquals(snapshotBeforeDelete, deleted.snapshotId)
+        assertEquals(valuesBeforeDelete, database.activityExecutionDao().getValues(execution.id.value))
+        assertEquals(explicit.id, deleted.planEntryId)
+        assertEquals(planBeforeDelete, plans.getPlan(explicit.id))
+        assertEquals(planRowBeforeDelete, database.planEntryDao().getById(explicit.id.value))
+        assertEquals(userStateBeforeDelete, database.activityTemplateDao().getUserState("planned"))
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.softDeleteHistory(execution.id, deleted.updatedAt, instant(501))
+        }
+        assertTrue(
+            HistoryReadRepository(database)
+                .getCompletedRoots(
+                    CompletedHistoryQuery(
+                        HistoryDateRange(deleted.primaryLocalDate, deleted.primaryLocalDate),
+                        10,
+                    ),
+                ).none { it is CompletedActivityHistoryRoot && it.executionId == execution.id },
+        )
+        assertTrue(
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(deleted.primaryLocalDate, instant(501), 10))
+                .completedHistory
+                .none { it is CompletedActivityHistoryRoot && it.executionId == execution.id },
+        )
         assertEquals(
             1,
             StatisticsRepository(database) { StatisticsSeriesId("unused") }
@@ -1048,6 +1085,7 @@ class ActivityCommandRepositoryTest {
                 ZoneOffset.UTC,
             )
         val item = requireNotNull(repository.getHistory(original.id))
+        val templateBefore = requireNotNull(database.activityTemplateDao().getAggregate("correction")).toDomain()
         val number = item.snapshot.fields.single { it.sourceFieldId == ActivityTemplateFieldId("correction-number") }
         val category =
             item.snapshot.fields.single {
@@ -1068,22 +1106,79 @@ class ActivityCommandRepositoryTest {
                 ActivityHistoryCorrection(
                     original.updatedAt,
                     ActivityHistoryTimeCorrection.Timed(
-                        Instant.parse("2026-08-21T03:50:00Z"),
+                        Instant.parse("2026-08-21T04:10:00Z"),
                         Instant.parse("2026-08-21T04:30:00Z"),
                     ),
                     ZoneId.of("America/New_York"),
                     correctedValues,
-                    "original",
+                    "corrected comment",
                 ),
                 Instant.parse("2026-08-22T00:00:00Z"),
             )
-        assertEquals(item.snapshot.id, corrected.snapshot.id)
-        assertEquals(Duration.ofMinutes(40), corrected.execution.activeDuration)
-        assertEquals(LocalDate.of(2026, 8, 20), corrected.execution.primaryLocalDate)
+        assertNotEquals(item.snapshot.id, corrected.snapshot.id)
+        assertEquals(Duration.ofMinutes(20), corrected.execution.activeDuration)
+        assertEquals(LocalDate.of(2026, 8, 21), corrected.execution.primaryLocalDate)
         assertEquals(-240, corrected.execution.originalUtcOffsetMinutes)
-        assertEquals(correctedValues.sortedBy { it.snapshotFieldId.value }, corrected.execution.values)
+        assertTrue(ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(item.snapshot, corrected.snapshot))
+        assertTrue(corrected.execution.values.any { it is NumberExecutionValue && it.scaledValue == 0L })
+        val correctedCategory =
+            corrected.execution.values.single { it is CategoryExecutionValue }
+                as CategoryExecutionValue
+        assertEquals(
+            CategoryOptionId("correction-option-b"),
+            corrected.snapshot.fields
+                .flatMap { it.categoryOptions }
+                .single { it.id == correctedCategory.optionId }
+                .sourceOptionId,
+        )
         assertEquals(2, database.activityExecutionDao().getValues(original.id.value).size)
         assertFalse(corrected.execution.values.any { it is TextExecutionValue })
+        val history = HistoryReadRepository(database)
+        val correctedDetail = requireNotNull(history.getActivityDetail(original.id))
+        assertEquals(original.id, correctedDetail.root.executionId)
+        assertEquals("corrected comment", correctedDetail.root.shortComment)
+        assertEquals(ActivityHistoryActualValue.Number(0), correctedDetail.fields[0].actualValue)
+        assertTrue(
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(LocalDate.of(2026, 8, 20), LocalDate.of(2026, 8, 20)), 10),
+                ).none { it is CompletedActivityHistoryRoot && it.executionId == original.id },
+        )
+        assertTrue(
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(LocalDate.of(2026, 8, 21), LocalDate.of(2026, 8, 21)), 10),
+                ).any { it is CompletedActivityHistoryRoot && it.executionId == original.id },
+        )
+        val daily = DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+        assertTrue(
+            daily
+                .getDaily(DailyQuery(LocalDate.of(2026, 8, 20), instant(400), 10))
+                .completedHistory
+                .none { it is CompletedActivityHistoryRoot && it.executionId == original.id },
+        )
+        assertTrue(
+            daily
+                .getDaily(DailyQuery(LocalDate.of(2026, 8, 21), instant(400), 10))
+                .completedHistory
+                .any { it is CompletedActivityHistoryRoot && it.executionId == original.id },
+        )
+        assertEquals(
+            Duration.ofMinutes(20),
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("correction-series"), StatisticsPeriod.AllTime)
+                .durations.total,
+        )
+        assertEquals(
+            1L,
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("correction-series"), StatisticsPeriod.AllTime)
+                .executionCount,
+        )
+        assertEquals(
+            templateBefore,
+            requireNotNull(database.activityTemplateDao().getAggregate("correction")).toDomain(),
+        )
         assertEquals(
             0L,
             StatisticsRepository(database) { StatisticsSeriesId("unused") }
@@ -1159,6 +1254,86 @@ class ActivityCommandRepositoryTest {
         assertEquals(LocalDate.of(2026, 8, 21), noLiveCorrected.execution.primaryLocalDate)
         assertTrue(noLiveCorrected.execution.values.any { it is NumberExecutionValue && it.scaledValue == 0L })
         assertFalse(noLiveCorrected.execution.values.any { it is TextExecutionValue })
+        assertNull(requireNotNull(history.getActivityDetail(noLive.id)).root.activeDuration)
+        assertTrue(
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(
+                        HistoryDateRange(LocalDate.of(2026, 8, 20), LocalDate.of(2026, 8, 20)),
+                        10,
+                    ),
+                ).none { it is CompletedActivityHistoryRoot && it.executionId == noLive.id },
+        )
+        assertTrue(
+            daily
+                .getDaily(DailyQuery(LocalDate.of(2026, 8, 21), instant(400), 10))
+                .completedHistory
+                .any { it is CompletedActivityHistoryRoot && it.executionId == noLive.id },
+        )
+        val noLiveSeries =
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("correction-no-live-series"), StatisticsPeriod.AllTime)
+        assertEquals(1L, noLiveSeries.executionCount)
+        assertEquals(0L, noLiveSeries.durations.sampleCount)
+
+        val live =
+            repository.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("correction")),
+                Instant.parse("2026-08-23T10:00:00Z"),
+                Instant.parse("2026-08-23T10:00:01Z"),
+                ZoneOffset.UTC,
+            )
+        val activeBeforeDelete = database.activeSessionDao().get()
+        val liveBeforeDelete = database.activityExecutionDao().getAggregate(live.id.value)
+        val correctedBeforeDelete = requireNotNull(repository.getHistory(original.id))
+        val valuesBeforeDelete = database.activityExecutionDao().getValues(original.id.value)
+        val deleted =
+            repository.softDeleteHistory(
+                original.id,
+                corrected.execution.updatedAt,
+                Instant.parse("2026-08-24T00:00:00Z"),
+            )
+        val durableDeleted = requireNotNull(repository.getHistory(original.id))
+        assertEquals(original.id, durableDeleted.execution.id)
+        assertEquals(correctedBeforeDelete.snapshot.id, durableDeleted.snapshot.id)
+        assertEquals(valuesBeforeDelete, database.activityExecutionDao().getValues(original.id.value))
+        assertEquals(Instant.parse("2026-08-24T00:00:00Z"), deleted.deletedAt)
+        assertEquals(activeBeforeDelete, database.activeSessionDao().get())
+        assertEquals(liveBeforeDelete, database.activityExecutionDao().getAggregate(live.id.value))
+        assertThrows(IllegalArgumentException::class.java) { history.getActivityDetail(original.id) }
+        assertTrue(
+            daily
+                .getDaily(DailyQuery(LocalDate.of(2026, 8, 21), instant(500), 10))
+                .completedHistory
+                .none { it is CompletedActivityHistoryRoot && it.executionId == original.id },
+        )
+        val afterDeleteSeries =
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("correction-series"), StatisticsPeriod.AllTime)
+        assertEquals(0L, afterDeleteSeries.executionCount)
+        assertEquals(Duration.ZERO, afterDeleteSeries.durations.total)
+        val statisticsAfterDelete = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        assertEquals(
+            0L,
+            statisticsAfterDelete
+                .numberFieldStatistics(
+                    StatisticsSeriesId("correction-series"),
+                    StatisticsFieldId.Activity(ActivityTemplateFieldId("correction-number")),
+                    StatisticsPeriod.AllTime,
+                ).recordedCount,
+        )
+        assertEquals(
+            0L,
+            statisticsAfterDelete
+                .categoryFieldStatistics(
+                    StatisticsSeriesId("correction-series"),
+                    StatisticsFieldId.Activity(ActivityTemplateFieldId("correction-category")),
+                    StatisticsPeriod.AllTime,
+                ).recordedCount,
+        )
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.softDeleteHistory(original.id, deleted.updatedAt, Instant.parse("2026-08-24T00:00:01Z"))
+        }
     }
 
     @Test
