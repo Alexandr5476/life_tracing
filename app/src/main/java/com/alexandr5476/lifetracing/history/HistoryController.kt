@@ -88,7 +88,9 @@ class HistoryController internal constructor(
     @Volatile
     private var routeActive = false
 
-    private var pageCursor: CompletedHistoryCursor? = null
+    @Volatile
+    private var retryRequest: HistoryRequest? = null
+
     private var nextCursor: CompletedHistoryCursor? = null
 
     fun dispatch(action: HistoryAction) {
@@ -99,7 +101,7 @@ class HistoryController internal constructor(
                     .newer(today())
                     ?.let(::load)
             HistoryAction.LoadMore -> nextCursor?.let { load(mutableState.value.window, it) }
-            HistoryAction.Retry -> load(mutableState.value.window, pageCursor)
+            HistoryAction.Retry -> retryRequest?.let { load(it.window, it.continuation) }
         }
     }
 
@@ -126,6 +128,8 @@ class HistoryController internal constructor(
     ) {
         if (closed) return
         val request = generation.incrementAndGet()
+        val admittedRequest = HistoryRequest(window, continuation)
+        retryRequest = admittedRequest
         val canNavigateNewer = window.endDate < today()
         mutableState.update {
             it.copy(
@@ -137,10 +141,9 @@ class HistoryController internal constructor(
         }
         scope.launch {
             try {
-                val roots = readRoots(window.query(continuation))
+                val roots = readRoots(admittedRequest.window.query(admittedRequest.continuation))
                 if (!closed && generation.get() == request) {
                     val page = roots.take(HISTORY_RESULT_LIMIT)
-                    pageCursor = continuation
                     nextCursor = page.lastOrNull()?.cursor()?.takeIf { roots.size > HISTORY_RESULT_LIMIT }
                     mutableState.update {
                         it.copy(
@@ -163,6 +166,11 @@ class HistoryController internal constructor(
 
     private fun initialWindow(today: LocalDate): HistoryBrowseWindow =
         HistoryBrowseWindow(today.minusDays(HISTORY_WINDOW_DAYS - 1), today)
+
+    private data class HistoryRequest(
+        val window: HistoryBrowseWindow,
+        val continuation: CompletedHistoryCursor?,
+    )
 }
 
 sealed interface HistoryDetailLoad<out T> {

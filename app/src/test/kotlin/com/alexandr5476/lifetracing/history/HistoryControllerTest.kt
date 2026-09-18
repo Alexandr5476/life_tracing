@@ -145,7 +145,93 @@ class HistoryControllerTest {
         }
 
     @Test
-    fun slowerObsoleteWindowCannotReplaceNewestResult() =
+    fun retryRepeatsTheFailedLoadMoreRequestAndRestoresItsNextPage() =
+        runBlocking {
+            val roots = (0..HISTORY_RESULT_LIMIT).map { root("root-%03d".format(it)) }
+            var failLoadMore = true
+            val fixture =
+                fixture { query ->
+                    if (query.continuation != null && failLoadMore) {
+                        failLoadMore = false
+                        error("load more failed")
+                    }
+                    val after = query.continuation?.executionId
+                    roots
+                        .drop(if (after == null) 0 else roots.indexOfFirst { it.cursorId() == after } + 1)
+                        .take(query.limit)
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            fixture.controller.dispatch(HistoryAction.LoadMore)
+            fixture.awaitLoad<HistoryRootsLoad.Failure>()
+            val failedLoadMore = fixture.queries.last()
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            assertEquals(failedLoadMore, fixture.queries.last())
+            assertEquals(listOf("root-100"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun retryAfterFailedNewerFromOlderContinuationUsesTheNewerWindowFirstPage() =
+        runBlocking {
+            val initialRange = HistoryDateRange(TODAY.minusDays(HISTORY_WINDOW_DAYS - 1), TODAY)
+            val olderRange =
+                HistoryDateRange(
+                    initialRange.startDate.minusDays(HISTORY_WINDOW_DAYS),
+                    initialRange.startDate.minusDays(1),
+                )
+            val olderRoots = (0..HISTORY_RESULT_LIMIT).map { root("older-%03d".format(it)) }
+            var failNewer = false
+            val fixture =
+                fixture { query ->
+                    when (query.dateRange) {
+                        olderRange -> {
+                            val after = query.continuation?.executionId
+                            olderRoots
+                                .drop(if (after == null) 0 else olderRoots.indexOfFirst { it.cursorId() == after } + 1)
+                                .take(query.limit)
+                        }
+
+                        initialRange -> {
+                            if (failNewer) {
+                                failNewer = false
+                                error("newer failed")
+                            }
+                            if (query.continuation == null) listOf(root("newer-window")) else emptyList()
+                        }
+
+                        else -> error("Unexpected history range")
+                    }
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            fixture.controller.dispatch(HistoryAction.LoadMore)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            failNewer = true
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitLoad<HistoryRootsLoad.Failure>()
+            assertEquals(null, fixture.queries.last().continuation)
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            val retry = fixture.queries.last()
+            assertEquals(initialRange, retry.dateRange)
+            assertEquals(null, retry.continuation)
+            assertEquals(listOf("newer-window"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun slowerObsoleteWindowCannotReplaceNewestResultOrRetryOwnership() =
         runBlocking {
             val first = CompletableDeferred<List<CompletedHistoryRoot>>()
             val second = CompletableDeferred<List<CompletedHistoryRoot>>()
@@ -163,6 +249,9 @@ class HistoryControllerTest {
             yield()
 
             assertEquals(listOf("newest"), fixture.contentIds())
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitQueries(3)
+            assertEquals(fixture.queries[1], fixture.queries[2])
             fixture.close()
         }
 
