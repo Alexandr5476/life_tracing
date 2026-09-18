@@ -3,11 +3,13 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntryOptionReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValue
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionDurationCalculator
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
@@ -61,7 +63,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -766,7 +767,7 @@ class ActivityCommandRepositoryTest {
     }
 
     @Test
-    fun planUsesFrozenSnapshotNoAutoMatchAndHistoryCorrectionDeleteStayExplicit() {
+    fun planUsesFrozenSnapshotNoAutoMatchAndHistoryDeleteStaysExplicit() {
         template("planned", TimeTrackingMode.STOPWATCH, fields = true, shortComment = "old")
         val plans = planRepository()
         val explicit =
@@ -818,71 +819,13 @@ class ActivityCommandRepositoryTest {
         assertEquals("planned", planSnapshot.name)
         assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(explicit.id)?.status)
 
-        val noOp =
-            ActivityHistoryCorrection(
-                execution.updatedAt,
-                ActivityHistoryTimeCorrection.Timed(
-                    requireNotNull(execution.startedAt),
-                    requireNotNull(execution.completedAt),
-                ),
-                execution.originalZoneId,
-                execution.values,
-                planSnapshot.shortComment,
-            )
-        val valuesBeforeNoOp = database.activityExecutionDao().getValues(execution.id.value)
-        val snapshotsBeforeNoOp = count("activity_snapshots")
-        val unchanged = repository.correctHistory(execution.id, noOp, instant(400))
-        assertEquals(execution.updatedAt, unchanged.execution.updatedAt)
-        assertEquals(planSnapshot.id, unchanged.snapshot.id)
-        assertEquals(valuesBeforeNoOp, database.activityExecutionDao().getValues(execution.id.value))
-        assertEquals(snapshotsBeforeNoOp, count("activity_snapshots"))
-
-        val correction =
-            noOp.copy(
-                time = ActivityHistoryTimeCorrection.Timed(instant(90), instant(210)),
-                shortComment = "corrected",
-            )
-        val corrected = repository.correctHistory(execution.id, correction, instant(400))
-        assertNotEquals(planSnapshot.id, corrected.snapshot.id)
-        assertEquals("corrected", corrected.snapshot.shortComment)
-        assertNotNull(database.activitySnapshotDao().getById(planSnapshot.id.value))
-        assertEquals(planSnapshot.id, plans.getPlan(explicit.id)?.activitySnapshotId)
-        assertEquals(execution.values.size, corrected.execution.values.size)
-        assertTrue(
-            corrected.execution.values.none { value ->
-                execution.values.any {
-                    it.snapshotFieldId ==
-                        value.snapshotFieldId
-                }
-            },
-        )
-        assertEquals(
-            planSnapshot.fields.map { it.sourceFieldId },
-            corrected.snapshot.fields.map { it.sourceFieldId },
-        )
-        assertEquals(
-            planSnapshot.fields.flatMap { it.categoryOptions }.map { it.sourceOptionId },
-            corrected.snapshot.fields
-                .flatMap { it.categoryOptions }
-                .map { it.sourceOptionId },
-        )
-        assertEquals(planSnapshot.settings, corrected.snapshot.settings)
-        assertEquals(planSnapshot.locallyModified, corrected.snapshot.locallyModified)
-
-        assertThrows(ConcurrentModificationException::class.java) {
-            repository.correctHistory(execution.id, correction, instant(500))
-        }
-        assertThrows(ConcurrentModificationException::class.java) {
-            repository.softDeleteHistory(execution.id, execution.updatedAt, instant(500))
-        }
-        assertEquals(corrected, repository.getHistory(execution.id))
         val planBeforeDelete = requireNotNull(plans.getPlan(explicit.id))
         val planRowBeforeDelete = requireNotNull(database.planEntryDao().getById(explicit.id.value))
         val userStateBeforeDelete = database.activityTemplateDao().getUserState("planned")
-        val snapshotBeforeDelete = corrected.execution.snapshotId
+        val snapshotBeforeDelete = execution.snapshotId
         val valuesBeforeDelete = database.activityExecutionDao().getValues(execution.id.value)
         observedSql.clear()
-        val deleted = repository.softDeleteHistory(execution.id, corrected.execution.updatedAt, instant(500))
+        val deleted = repository.softDeleteHistory(execution.id, execution.updatedAt, instant(500))
         val deleteSql = synchronized(observedSql) { observedSql.map(String::lowercase) }
         assertFalse(deleteSql.any { it.startsWith("update plan_entries") })
         assertEquals(instant(500), deleted.deletedAt)
@@ -917,11 +860,58 @@ class ActivityCommandRepositoryTest {
                 .activitySeries(StatisticsSeriesId("planned-series"), StatisticsPeriod.AllTime)
                 .executionCount,
         )
-        assertFalse(repository.overlapsCompletedHistory(instant(90), instant(210), execution.id))
+        assertFalse(repository.overlapsCompletedHistory(instant(100), instant(200), execution.id))
     }
 
     @Test
-    fun fulfilledPlanCorrectionRejectsArbitrarySnapshotButAcceptsCommentOnlyReplacement() {
+    fun planLinkedExactNoOpCorrectionIsRejectedWithoutResidue() {
+        assertPlanLinkedCorrectionRejected { execution, snapshot ->
+            ActivityHistoryCorrection(
+                execution.updatedAt,
+                ActivityHistoryTimeCorrection.Timed(
+                    requireNotNull(execution.startedAt),
+                    requireNotNull(execution.completedAt),
+                ),
+                execution.originalZoneId,
+                execution.values,
+                snapshot.shortComment,
+            )
+        }
+    }
+
+    @Test
+    fun planLinkedShortCommentCorrectionIsRejectedWithoutResidue() {
+        assertPlanLinkedCorrectionRejected { execution, _ ->
+            ActivityHistoryCorrection(
+                execution.updatedAt,
+                ActivityHistoryTimeCorrection.Timed(
+                    requireNotNull(execution.startedAt),
+                    requireNotNull(execution.completedAt),
+                ),
+                execution.originalZoneId,
+                execution.values,
+                "forbidden replacement",
+            )
+        }
+    }
+
+    @Test
+    fun planLinkedTimeAndValueCorrectionIsRejectedWithoutResidue() {
+        assertPlanLinkedCorrectionRejected { execution, snapshot ->
+            ActivityHistoryCorrection(
+                execution.updatedAt,
+                ActivityHistoryTimeCorrection.Timed(instant(9), instant(21)),
+                execution.originalZoneId,
+                execution.values.map { value ->
+                    if (value is NumberExecutionValue) value.copy(scaledValue = 0) else value
+                },
+                snapshot.shortComment,
+            )
+        }
+    }
+
+    @Test
+    fun daoRejectsPlanLinkedAndArbitrarySnapshotCorrections() {
         template("plan-boundary", TimeTrackingMode.STOPWATCH)
         val plans = planRepository()
         val plan =
@@ -959,7 +949,6 @@ class ActivityCommandRepositoryTest {
                 executionBefore.copy(
                     execution =
                         executionBefore.execution.copy(
-                            snapshotId = arbitrary.id.value,
                             updatedAtMs = instant(40).toEpochMilli(),
                         ),
                 ),
@@ -968,43 +957,43 @@ class ActivityCommandRepositoryTest {
         assertEquals(executionBefore, database.activityExecutionDao().getAggregate(execution.id.value))
         assertEquals(planBefore, database.planEntryDao().getById(plan.id.value))
 
-        val corrected =
-            repository.correctHistory(
-                execution.id,
-                ActivityHistoryCorrection(
-                    execution.updatedAt,
-                    ActivityHistoryTimeCorrection.Timed(instant(10), instant(20)),
-                    ZoneOffset.UTC,
-                    execution.values,
-                    "corrected comment",
-                ),
+        val standalone =
+            repository.addManualTimed(
+                ActivityEntrySource.Template(ActivityTemplateId("plan-boundary")),
                 instant(50),
+                instant(60),
+                instant(70),
+                ZoneOffset.UTC,
             )
-        assertNotEquals(frozen.id, corrected.snapshot.id)
-        assertEquals("corrected comment", corrected.snapshot.shortComment)
-        assertEquals(frozen.id, plans.getPlan(plan.id)?.activitySnapshotId)
-        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
+        val standaloneBefore = requireNotNull(database.activityExecutionDao().getAggregate(standalone.id.value))
+        assertThrows(IllegalArgumentException::class.java) {
+            database.activityExecutionDao().correctCompletedStandalone(
+                standalone.updatedAt.toEpochMilli(),
+                standalone.snapshotId.value,
+                standaloneBefore.copy(
+                    execution =
+                        standaloneBefore.execution.copy(
+                            snapshotId = arbitrary.id.value,
+                            updatedAtMs = instant(80).toEpochMilli(),
+                        ),
+                ),
+            )
+        }
+        assertEquals(standaloneBefore, database.activityExecutionDao().getAggregate(standalone.id.value))
     }
 
     @Test
     fun commentOnlyCorrectionSurvivesRoomReorderingTiedFieldAndOptionPositions() {
         template("room-order", TimeTrackingMode.STOPWATCH, fields = true, tiedSchemaPositions = true)
-        val plans = planRepository()
-        val plan =
-            plans.createActivityPlanFromTemplate(
-                ActivityTemplateId("room-order"),
-                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(0),
-            )
         val execution =
             repository("room-order-entry").addManualTimed(
-                ActivityEntrySource.Plan(plan.id),
+                ActivityEntrySource.Template(ActivityTemplateId("room-order")),
                 instant(10),
                 instant(20),
                 instant(30),
                 ZoneOffset.UTC,
             )
-        val oldSnapshotId = requireNotNull(plan.activitySnapshotId)
+        val oldSnapshotId = execution.snapshotId
         val oldSnapshot = requireNotNull(database.activitySnapshotDao().getAggregate(oldSnapshotId.value)).toDomain()
         val fieldIds =
             listOf(
@@ -1034,13 +1023,12 @@ class ActivityCommandRepositoryTest {
                 ),
                 instant(40),
             )
-        val reloadedOld = requireNotNull(database.activitySnapshotDao().getAggregate(oldSnapshotId.value)).toDomain()
         val reloadedReplacement =
             requireNotNull(database.activitySnapshotDao().getAggregate(corrected.snapshot.id.value)).toDomain()
 
         assertEquals(
             listOf("room-order-category", "room-order-number"),
-            reloadedOld.fields.filter { it.position == 0 }.map { it.sourceFieldId?.value },
+            oldSnapshot.fields.filter { it.position == 0 }.map { it.sourceFieldId?.value },
         )
         assertEquals(
             listOf("room-order-number", "room-order-category"),
@@ -1048,7 +1036,7 @@ class ActivityCommandRepositoryTest {
         )
         assertEquals(
             listOf("room-order-option-a", "room-order-option-b"),
-            reloadedOld.fields
+            oldSnapshot.fields
                 .single { it.type == CustomFieldType.CATEGORY }
                 .categoryOptions
                 .map { it.sourceOptionId?.value },
@@ -1061,14 +1049,12 @@ class ActivityCommandRepositoryTest {
                 .map { it.sourceOptionId?.value },
         )
         assertTrue(
-            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(reloadedOld, reloadedReplacement),
+            ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(oldSnapshot, reloadedReplacement),
         )
         assertEquals(
             corrected.snapshot.id.value,
             database.activityExecutionDao().getById(execution.id.value)?.snapshotId,
         )
-        assertEquals(oldSnapshot.id, plans.getPlan(plan.id)?.activitySnapshotId)
-        assertEquals(PlanEntryStatus.FULFILLED, plans.getPlan(plan.id)?.status)
     }
 
     @Test
@@ -1467,6 +1453,70 @@ class ActivityCommandRepositoryTest {
         }
         assertEquals(existing, executionCollision.getHistory(existing.execution.id))
         assertEquals(snapshotsBefore, count("activity_snapshots"))
+    }
+
+    private fun assertPlanLinkedCorrectionRejected(
+        correctionFor: (ActivityExecution, ActivityConfigSnapshot) -> ActivityHistoryCorrection,
+    ) {
+        template("forbidden-plan", TimeTrackingMode.STOPWATCH, fields = true, shortComment = "original")
+        val plans = planRepository()
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("forbidden-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(0),
+            )
+        val repository = repository("forbidden-plan")
+        val execution =
+            repository.addManualTimed(
+                ActivityEntrySource.Plan(plan.id),
+                instant(10),
+                instant(20),
+                instant(30),
+                ZoneOffset.UTC,
+            )
+        val snapshot =
+            requireNotNull(database.activitySnapshotDao().getAggregate(execution.snapshotId.value)).toDomain()
+        val executionBefore = requireNotNull(database.activityExecutionDao().getAggregate(execution.id.value))
+        val snapshotBefore = requireNotNull(database.activitySnapshotDao().getAggregate(snapshot.id.value))
+        val snapshotCountBefore = count("activity_snapshots")
+        val planBefore = requireNotNull(plans.getPlan(plan.id))
+        val planRowBefore = requireNotNull(database.planEntryDao().getById(plan.id.value))
+        val userStateBefore = database.activityTemplateDao().getUserState("forbidden-plan")
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        val globalBefore = statistics.global(StatisticsPeriod.AllTime)
+        val seriesBefore =
+            statistics.activitySeries(requireNotNull(execution.statisticsSeriesId), StatisticsPeriod.AllTime)
+
+        observedSql.clear()
+        val correction = correctionFor(execution, snapshot)
+        val failure =
+            assertThrows(IllegalArgumentException::class.java) {
+                repository.correctHistory(execution.id, correction, instant(40))
+            }
+        assertEquals("Plan-linked Activity history cannot be corrected", failure.message)
+        assertThrows(ConcurrentModificationException::class.java) {
+            repository.correctHistory(
+                execution.id,
+                correction.copy(expectedUpdatedAt = execution.updatedAt.minusMillis(1)),
+                instant(40),
+            )
+        }
+        val correctionSql = synchronized(observedSql) { observedSql.map(String::lowercase) }
+
+        assertEquals(executionBefore, database.activityExecutionDao().getAggregate(execution.id.value))
+        assertEquals(snapshotBefore, database.activitySnapshotDao().getAggregate(snapshot.id.value))
+        assertEquals(snapshotCountBefore, count("activity_snapshots"))
+        assertEquals(planBefore, plans.getPlan(plan.id))
+        assertEquals(planRowBefore, database.planEntryDao().getById(plan.id.value))
+        assertEquals(userStateBefore, database.activityTemplateDao().getUserState("forbidden-plan"))
+        assertEquals(globalBefore, statistics.global(StatisticsPeriod.AllTime))
+        assertEquals(
+            seriesBefore,
+            statistics.activitySeries(requireNotNull(execution.statisticsSeriesId), StatisticsPeriod.AllTime),
+        )
+        assertFalse(correctionSql.any { it.startsWith("update plan_entries") })
+        assertEquals(execution, requireNotNull(repository.getHistory(execution.id)).execution)
     }
 
     private fun repository(

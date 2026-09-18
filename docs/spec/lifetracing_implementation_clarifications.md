@@ -33,6 +33,12 @@ This prevents replacement of a Plan snapshot, target, or source revision beneath
 
 After any successful historical correction of a fulfilled Plan-linked terminal `SequenceExecution`, including structural `Close gap`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The same Plan remains `FULFILLED`, and its same `fulfilledSequenceExecutionId` continues to identify this Sequence; after success, `PlanEntry.fulfilledAt == SequenceExecution.endedAt`. Plan ID, target, precision, snapshot, source linkage/revision, and cancellation semantics remain unchanged. The Plan is never reopened or replaced. This rule applies only to Plan-linked Sequence correction, not standalone Activity correction.
 
+## Standalone Activity historical mutation boundary
+
+Canonical Activity correction is limited to completed, nondeleted, standalone `ActivityExecution` with `planEntryId == null`. A Plan-linked Activity correction command is invalid even when it is an exact no-op or changes only the Short Comment. Its execution, snapshot, values, Statistics contribution, source user state, and complete Plan state remain unchanged; v1 defines no `PlanEntry.fulfilledAt` consequence for such a correction.
+
+A completed standalone Plan-linked Activity may still be soft-deleted. Deletion preserves its execution identity, snapshot, values, StatisticsSeries identity, `planEntryId`, and historical facts while setting only the Activity deletion metadata. The linked Plan remains the same `FULFILLED` value: `fulfilledAt`, fulfilled execution/snapshot linkage, source metadata, and Plan timestamps are not rewritten.
+
 ## Past overdue Plans
 
 The v1 resolution for the deferred Past-day question in product spec §14.6 is that passing time never reschedules, copies, cancels, fulfills, or otherwise replaces a Plan. An unfulfilled passed Plan remains its original `PlanEntry`, with the same `PlanEntryId`, target, snapshot/source linkage, and stored `PLANNED` status. `overdue` is derived read/presentation metadata only; v1 adds neither `MISSED` nor persisted `OVERDUE`, an overdue cache, nor any new Plan lifecycle state.

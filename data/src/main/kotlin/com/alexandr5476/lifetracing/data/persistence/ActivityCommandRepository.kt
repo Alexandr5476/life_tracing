@@ -192,6 +192,7 @@ class ActivityCommandRepository internal constructor(
             if (current.execution.updatedAt != expectedUpdatedAt) {
                 throw ConcurrentModificationException("Activity history changed concurrently")
             }
+            ActivityHistoryCorrectionPolicy.requireEligible(current.execution)
             if (ActivityHistoryCorrectionPolicy.isNoOp(current.execution, current.snapshot, correction)) {
                 return@transaction current
             }

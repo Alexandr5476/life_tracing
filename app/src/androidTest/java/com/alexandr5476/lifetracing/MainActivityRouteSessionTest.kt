@@ -506,7 +506,7 @@ class MainActivityRouteSessionTest {
     }
 
     @Test
-    fun productionHistoryDetailRetainsDurableIdentityAndReloadsAfterActivityRecreation() {
+    fun restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState() {
         val suffix = System.nanoTime().toString()
         val name = "Recreated history $suffix"
         val now = Instant.now()
@@ -527,6 +527,10 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.onNodeWithText(name).performScrollTo().performClick()
         composeTestRule.onNodeWithText(name).assertIsDisplayed()
+        val released = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.release(released)
+        }
 
         recreateActivity()
 
@@ -534,6 +538,9 @@ class MainActivityRouteSessionTest {
             composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.onNodeWithText(name).assertIsDisplayed()
+        val restored = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        assertNotSame(released, restored)
+        assertNull(restored.controller.state.value.draft)
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_title)).assertIsDisplayed()
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }

@@ -665,6 +665,7 @@ internal abstract class ActivityExecutionDao {
         ) {
             throw ConcurrentModificationException("Activity history changed concurrently")
         }
+        require(current.execution.planEntryId == null) { "Plan-linked Activity history cannot be corrected" }
         require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
             "Only non-deleted completed history can be corrected"
         }
