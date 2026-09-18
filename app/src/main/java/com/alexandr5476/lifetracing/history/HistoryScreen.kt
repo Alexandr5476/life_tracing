@@ -156,15 +156,22 @@ internal fun HistoryScreen(
                 HistoryRootsLoad.Empty -> HistoryCard { Text(stringResource(R.string.history_empty)) }
                 is HistoryRootsLoad.Failure -> FailureCard(onRetry = { onAction(HistoryAction.Retry) })
                 is HistoryRootsLoad.Content ->
-                    load.roots
-                        .groupBy(CompletedHistoryRoot::primaryLocalDate)
-                        .toSortedMap(compareByDescending { it })
-                        .forEach { (date, roots) ->
-                            Text(historyDate(date), style = MaterialTheme.typography.titleMedium)
-                            roots.forEach { root ->
-                                HistoryRootRow(root, onOpenActivity, onOpenSequence)
+                    {
+                        load.roots
+                            .groupBy(CompletedHistoryRoot::primaryLocalDate)
+                            .toSortedMap(compareByDescending { it })
+                            .forEach { (date, roots) ->
+                                Text(historyDate(date), style = MaterialTheme.typography.titleMedium)
+                                roots.forEach { root ->
+                                    HistoryRootRow(root, onOpenActivity, onOpenSequence)
+                                }
+                            }
+                        if (state.canLoadMore) {
+                            LifeTracingSecondaryButton(onClick = { onAction(HistoryAction.LoadMore) }) {
+                                Text(stringResource(R.string.manual_history_load_more))
                             }
                         }
+                    }
             }
         }
     }

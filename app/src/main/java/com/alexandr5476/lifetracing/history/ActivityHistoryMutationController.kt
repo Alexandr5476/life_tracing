@@ -314,10 +314,6 @@ class ActivityHistoryMutationController internal constructor(
         if (detail.root.planEntryId != null) return
         val commandAt = now()
         val correction = buildCorrection(detail, draft, commandAt) ?: return
-        if (isNoOp(detail, correction)) {
-            mutableState.update { it.copy(draft = null, issue = null) }
-            return
-        }
         mutableState.update { it.copy(isMutating = true, issue = null) }
         operation =
             scope.launch {
@@ -458,32 +454,6 @@ class ActivityHistoryMutationController internal constructor(
             values,
             if (draft.shortCommentWasEdited) draft.shortComment.ifBlank { null } else draft.originalShortComment,
         )
-    }
-
-    private fun isNoOp(
-        detail: ActivityHistoryDetail,
-        correction: ActivityHistoryCorrection,
-    ): Boolean {
-        val timeMatches =
-            when (val time = correction.time) {
-                is ActivityHistoryTimeCorrection.Timed ->
-                    detail.root.startedAt == time.startedAt && detail.root.completedAt == time.completedAt
-                is ActivityHistoryTimeCorrection.NoLive ->
-                    detail.root.startedAt == null && detail.root.completedAt == time.completedAt
-            }
-        val currentValues =
-            detail.fields
-                .mapNotNull { field ->
-                    when (val actual = field.actualValue) {
-                        ActivityHistoryActualValue.Missing -> null
-                        is ActivityHistoryActualValue.Number -> NumberExecutionValue(field.id, actual.scaledValue)
-                        is ActivityHistoryActualValue.Category -> CategoryExecutionValue(field.id, actual.optionId)
-                        is ActivityHistoryActualValue.Text -> TextExecutionValue(field.id, actual.value)
-                    }
-                }.sortedBy { it.snapshotFieldId.value }
-        return timeMatches &&
-            currentValues == correction.values.sortedBy { it.snapshotFieldId.value } &&
-            detail.root.shortComment == correction.shortComment
     }
 
     private fun resolve(

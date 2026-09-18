@@ -100,6 +100,37 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun committingFreezesTheCapturedProposalAndAllMutablePresentationState() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val fixture = fixture(timedTemplate(), timedWriteGate = gate)
+            fixture.select()
+            fixture.editTimes("2026-09-16 09:00", "2026-09-16 10:00")
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitting()
+            val before = fixture.controller.state.value
+
+            fixture.controller.dispatch(ManualActivityEntryAction.EditStarted("2026-09-15 09:00"))
+            fixture.controller.dispatch(ManualActivityEntryAction.EditCompleted("2026-09-15 10:00"))
+            fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "9"))
+            fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(TEXT_ID))
+            fixture.controller.dispatch(
+                ManualActivityEntryAction.SelectCategory(CATEGORY_ID, CategoryOptionId("archived")),
+            )
+            fixture.controller.dispatch(ManualActivityEntryAction.Select(TEMPLATE_ID))
+            fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+
+            assertEquals(before, fixture.controller.state.value)
+            gate.complete(Unit)
+            fixture.awaitCommitted()
+            assertEquals(1, fixture.timed.size)
+            assertEquals(Instant.parse("2026-09-16T09:00:00Z"), fixture.timed.single().startedAt)
+            assertEquals(Instant.parse("2026-09-16T10:00:00Z"), fixture.timed.single().completedAt)
+            fixture.close()
+        }
+
+    @Test
     fun springGapIsTypedInvalidAndDoesNotCheckOverlapOrWrite() =
         runBlocking {
             val fixture = fixture(timedTemplate(), zone = BERLIN)

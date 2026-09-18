@@ -54,9 +54,27 @@ class HistoryReadRepository internal constructor(
         return run {
             val startDate = query.dateRange.startDate.toString()
             val endDate = query.dateRange.endDate.toString()
+            val cursor = query.continuation
             val activityRows =
-                database.activityExecutionDao().getCompletedStandaloneHistoryRoots(startDate, endDate, query.limit)
-            val sequenceRows = database.sequenceExecutionDao().getTerminalHistoryRoots(startDate, endDate, query.limit)
+                database.activityExecutionDao().getCompletedStandaloneHistoryRoots(
+                    startDate,
+                    endDate,
+                    query.limit,
+                    cursor?.primaryLocalDate?.toString(),
+                    cursor?.completedAt?.toEpochMilli(),
+                    cursor?.kind?.name,
+                    cursor?.executionId,
+                )
+            val sequenceRows =
+                database.sequenceExecutionDao().getTerminalHistoryRoots(
+                    startDate,
+                    endDate,
+                    query.limit,
+                    cursor?.primaryLocalDate?.toString(),
+                    cursor?.completedAt?.toEpochMilli(),
+                    cursor?.kind?.name,
+                    cursor?.executionId,
+                )
             val activitySnapshots =
                 activityRows
                     .map(ActivityHistoryRootEntity::snapshotId)

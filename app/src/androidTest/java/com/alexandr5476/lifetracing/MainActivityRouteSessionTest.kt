@@ -483,6 +483,9 @@ class MainActivityRouteSessionTest {
         recreateActivity()
         assertSame(retained, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
         assertTrue(controller.state.value.command is ManualEntryCommand.Committing)
+        val committedDraft = controller.state.value.completedText
+        controller.dispatch(ManualActivityEntryAction.EditCompleted("2025-10-26 03:30"))
+        assertEquals(committedDraft, controller.state.value.completedText)
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
 
         releaseWriter.complete(Unit)

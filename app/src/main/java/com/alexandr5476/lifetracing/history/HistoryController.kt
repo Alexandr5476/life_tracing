@@ -3,9 +3,11 @@
 package com.alexandr5476.lifetracing.history
 
 import androidx.lifecycle.ViewModel
+import com.alexandr5476.lifetracing.domain.CompletedHistoryCursor
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
+import com.alexandr5476.lifetracing.domain.cursor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,8 +27,8 @@ data class HistoryBrowseWindow(
         require(startDate <= endDate) { "History window must be ordered" }
     }
 
-    fun query(): CompletedHistoryQuery =
-        CompletedHistoryQuery(HistoryDateRange(startDate, endDate), HISTORY_RESULT_LIMIT)
+    fun query(continuation: CompletedHistoryCursor?): CompletedHistoryQuery =
+        CompletedHistoryQuery(HistoryDateRange(startDate, endDate), HISTORY_RESULT_LIMIT + 1, continuation)
 
     fun older(): HistoryBrowseWindow =
         HistoryBrowseWindow(startDate.minusDays(HISTORY_WINDOW_DAYS), startDate.minusDays(1))
@@ -56,12 +58,15 @@ data class HistoryPresentationState(
     val window: HistoryBrowseWindow,
     val load: HistoryRootsLoad = HistoryRootsLoad.Loading,
     val canNavigateNewer: Boolean = false,
+    val canLoadMore: Boolean = false,
 )
 
 sealed interface HistoryAction {
     data object Older : HistoryAction
 
     data object Newer : HistoryAction
+
+    data object LoadMore : HistoryAction
 
     data object Retry : HistoryAction
 }
@@ -83,6 +88,9 @@ class HistoryController internal constructor(
     @Volatile
     private var routeActive = false
 
+    private var pageCursor: CompletedHistoryCursor? = null
+    private var nextCursor: CompletedHistoryCursor? = null
+
     fun dispatch(action: HistoryAction) {
         when (action) {
             HistoryAction.Older -> load(mutableState.value.window.older())
@@ -90,7 +98,8 @@ class HistoryController internal constructor(
                 mutableState.value.window
                     .newer(today())
                     ?.let(::load)
-            HistoryAction.Retry -> load(mutableState.value.window)
+            HistoryAction.LoadMore -> nextCursor?.let { load(mutableState.value.window, it) }
+            HistoryAction.Retry -> load(mutableState.value.window, pageCursor)
         }
     }
 
@@ -111,19 +120,33 @@ class HistoryController internal constructor(
         generation.incrementAndGet()
     }
 
-    private fun load(window: HistoryBrowseWindow) {
+    private fun load(
+        window: HistoryBrowseWindow,
+        continuation: CompletedHistoryCursor? = null,
+    ) {
         if (closed) return
         val request = generation.incrementAndGet()
         val canNavigateNewer = window.endDate < today()
         mutableState.update {
-            it.copy(window = window, load = HistoryRootsLoad.Loading, canNavigateNewer = canNavigateNewer)
+            it.copy(
+                window = window,
+                load = HistoryRootsLoad.Loading,
+                canNavigateNewer = canNavigateNewer,
+                canLoadMore = false,
+            )
         }
         scope.launch {
             try {
-                val roots = readRoots(window.query())
+                val roots = readRoots(window.query(continuation))
                 if (!closed && generation.get() == request) {
+                    val page = roots.take(HISTORY_RESULT_LIMIT)
+                    pageCursor = continuation
+                    nextCursor = page.lastOrNull()?.cursor()?.takeIf { roots.size > HISTORY_RESULT_LIMIT }
                     mutableState.update {
-                        it.copy(load = if (roots.isEmpty()) HistoryRootsLoad.Empty else HistoryRootsLoad.Content(roots))
+                        it.copy(
+                            load = if (page.isEmpty()) HistoryRootsLoad.Empty else HistoryRootsLoad.Content(page),
+                            canLoadMore = nextCursor != null,
+                        )
                     }
                 }
             } catch (cancelled: CancellationException) {

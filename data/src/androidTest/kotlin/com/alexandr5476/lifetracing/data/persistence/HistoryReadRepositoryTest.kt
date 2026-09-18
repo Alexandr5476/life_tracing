@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
+import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
@@ -37,6 +38,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.cursor
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -490,6 +492,32 @@ class HistoryReadRepositoryTest {
             listOf("activity-a", "activity-b", "activity-c", "sequence-a"),
             rootIds(repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 4))),
         )
+    }
+
+    @Test
+    fun continuationExhaustsSameDayMixedTiesWithoutSkipsOrDuplicates() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", null)
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", null)
+        val sameInstant = at(100)
+        repeat(101) { insertActivity("activity-%03d".format(it), sameInstant) }
+        listOf("sequence-a", "sequence-b").forEach {
+            insertSequence(it, sameInstant, SequenceExecutionStatus.COMPLETED)
+        }
+
+        val range = HistoryDateRange(LocalDate.parse("2026-08-20"), LocalDate.parse("2026-08-20"))
+        var cursor = null as com.alexandr5476.lifetracing.domain.CompletedHistoryCursor?
+        val seen = mutableListOf<CompletedHistoryRoot>()
+        do {
+            val page = repository.getCompletedRoots(CompletedHistoryQuery(range, 100, cursor))
+            seen += page
+            cursor = page.lastOrNull()?.cursor()
+        } while (seen.size % 100 == 0 && cursor != null)
+
+        assertEquals(
+            (0..100).map { "activity-%03d".format(it) } + listOf("sequence-a", "sequence-b"),
+            rootIds(seen),
+        )
+        assertEquals(103, rootIds(seen).distinct().size)
     }
 
     @Test

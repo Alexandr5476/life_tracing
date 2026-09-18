@@ -227,6 +227,7 @@ class ManualActivityEntryController internal constructor(
 
     fun dispatch(action: ManualActivityEntryAction) {
         if (closed) return
+        if (mutableState.value.command is ManualEntryCommand.Committing) return
         when (action) {
             ManualActivityEntryAction.RetryCatalog -> loadCatalog(catalogRequestCursor)
             ManualActivityEntryAction.LoadMore -> mutableState.value.nextCatalogCursor?.let(::loadCatalog)

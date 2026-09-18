@@ -54,20 +54,21 @@ internal fun ManualActivityEntryScreen(
     onBack: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.background) {
+        val isCommitting = state.command is ManualEntryCommand.Committing
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.manual_history_title), style = MaterialTheme.typography.headlineSmall)
-                TextButton(onClick = onBack) { Text(stringResource(R.string.history_back)) }
+                TextButton(onClick = onBack, enabled = !isCommitting) { Text(stringResource(R.string.history_back)) }
             }
-            Catalog(state.catalog, state.canLoadMore, onAction)
+            Catalog(state.catalog, state.canLoadMore, !isCommitting, onAction)
             when (val selected = state.selected) {
                 ManualEntryLoad.Idle -> Unit
                 ManualEntryLoad.Loading -> Text(stringResource(R.string.manual_history_template_loading))
                 is ManualEntryLoad.Failure -> IssueText(selected.issue)
-                is ManualEntryLoad.Content -> EntryForm(selected.value, state, onAction)
+                is ManualEntryLoad.Content -> EntryForm(selected.value, state, !isCommitting, onAction)
             }
             Command(state.command, state.startedIssue, state.completedIssue, onAction)
         }
@@ -78,6 +79,7 @@ internal fun ManualActivityEntryScreen(
 private fun Catalog(
     catalog: ManualEntryLoad<List<ReusableActivityCatalogItem>>,
     canLoadMore: Boolean,
+    enabled: Boolean,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
     Text(stringResource(R.string.manual_history_choose_activity), style = MaterialTheme.typography.titleMedium)
@@ -87,19 +89,20 @@ private fun Catalog(
             IssueText(catalog.issue)
             LifeTracingSecondaryButton(onClick = {
                 onAction(ManualActivityEntryAction.RetryCatalog)
-            }) { Text(stringResource(R.string.history_retry)) }
+            }, enabled = enabled) { Text(stringResource(R.string.history_retry)) }
         }
         is ManualEntryLoad.Content -> {
             catalog.value.forEach { item ->
                 TextButton(
                     onClick = { onAction(ManualActivityEntryAction.Select(item.id)) },
+                    enabled = enabled,
                     modifier = Modifier.fillMaxWidth().testTag("manual-history-activity-${item.id.value}"),
                 ) { Text(item.name) }
             }
             if (canLoadMore) {
                 LifeTracingSecondaryButton(onClick = {
                     onAction(ManualActivityEntryAction.LoadMore)
-                }) { Text(stringResource(R.string.manual_history_load_more)) }
+                }, enabled = enabled) { Text(stringResource(R.string.manual_history_load_more)) }
             }
         }
     }
@@ -109,6 +112,7 @@ private fun Catalog(
 private fun EntryForm(
     template: ActivityTemplate,
     state: ManualActivityEntryState,
+    enabled: Boolean,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
     Text(template.name, style = MaterialTheme.typography.titleLarge)
@@ -116,23 +120,23 @@ private fun EntryForm(
         Text(stringResource(R.string.manual_history_timer_target, requireNotNull(template.timerTarget).durationText()))
     }
     if (template.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
-        TimeInput(R.string.manual_history_started, state.startedText) {
+        TimeInput(R.string.manual_history_started, state.startedText, enabled) {
             onAction(ManualActivityEntryAction.EditStarted(it))
         }
         state.startedIssue?.let { IssueText(it) }
-        state.startedAmbiguity?.let { AmbiguityChoices(it, true, onAction) }
+        state.startedAmbiguity?.let { AmbiguityChoices(it, true, enabled, onAction) }
     }
-    TimeInput(R.string.manual_history_completed, state.completedText) {
+    TimeInput(R.string.manual_history_completed, state.completedText, enabled) {
         onAction(ManualActivityEntryAction.EditCompleted(it))
     }
     state.completedIssue?.let { IssueText(it) }
-    state.completedAmbiguity?.let { AmbiguityChoices(it, false, onAction) }
+    state.completedAmbiguity?.let { AmbiguityChoices(it, false, enabled, onAction) }
     template.fields.filter { it.deletedAt == null }.forEach { field ->
-        Field(field, state.values.getValue(field.id), onAction)
+        Field(field, state.values.getValue(field.id), enabled, onAction)
     }
     LifeTracingPrimaryButton(
         onClick = { onAction(ManualActivityEntryAction.Save) },
-        enabled = state.command !is ManualEntryCommand.Committing,
+        enabled = enabled,
         modifier = Modifier.testTag("manual-history-save"),
     ) { Text(stringResource(R.string.manual_history_save)) }
 }
@@ -141,10 +145,12 @@ private fun EntryForm(
 private fun TimeInput(
     label: Int,
     value: String,
+    enabled: Boolean,
     onValueChange: (String) -> Unit,
 ) = LifeTracingOutlinedTextField(
     value = value,
     onValueChange = onValueChange,
+    enabled = enabled,
     modifier = Modifier.fillMaxWidth(),
     label = { Text(stringResource(label)) },
     supportingText = { Text(stringResource(R.string.manual_history_datetime_hint)) },
@@ -154,6 +160,7 @@ private fun TimeInput(
 private fun AmbiguityChoices(
     ambiguity: ManualTimeAmbiguity,
     started: Boolean,
+    enabled: Boolean,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
     Text(stringResource(R.string.manual_history_ambiguous_choose), color = MaterialTheme.colorScheme.error)
@@ -168,6 +175,7 @@ private fun AmbiguityChoices(
                     },
                 )
             },
+            enabled = enabled,
             modifier = Modifier.testTag("manual-history-${if (started) "started" else "completed"}-offset-$index"),
         ) {
             Text(
@@ -190,6 +198,7 @@ private fun AmbiguityChoices(
 private fun Field(
     field: ActivityTemplateField,
     draft: ManualEntryFieldDraft,
+    enabled: Boolean,
     onAction: (ManualActivityEntryAction) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
@@ -204,20 +213,23 @@ private fun Field(
                 LifeTracingOutlinedTextField(
                     draft.numberText,
                     { onAction(ManualActivityEntryAction.EditNumber(field.id, it)) },
-                    Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
                 )
             CustomFieldType.TEXT ->
                 LifeTracingOutlinedTextField(
                     draft.text,
                     { onAction(ManualActivityEntryAction.EditText(field.id, it)) },
-                    Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth().testTag("manual-history-field-${field.id.value}-actual"),
                     label = { Text(stringResource(R.string.manual_history_actual)) },
                 )
             CustomFieldType.CATEGORY ->
                 field.categoryOptions.filterNot { it.isArchived }.forEach { option ->
                     TextButton(
                         onClick = { onAction(ManualActivityEntryAction.SelectCategory(field.id, option.id)) },
+                        enabled = enabled,
                         modifier = Modifier.testTag("manual-history-option-${option.id.value}"),
                     ) {
                         Text(
@@ -243,6 +255,7 @@ private fun Field(
                 )
             },
             modifier = Modifier.testTag("manual-history-field-${field.id.value}-missing"),
+            enabled = enabled,
         ) {
             Text(
                 stringResource(

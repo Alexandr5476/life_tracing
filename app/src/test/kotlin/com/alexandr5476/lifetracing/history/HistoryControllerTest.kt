@@ -7,6 +7,11 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +76,44 @@ class HistoryControllerTest {
             }
             assertTrue(fixture.queries.all { it.dateRange.lengthInDays() == HISTORY_WINDOW_DAYS })
             assertEquals(listOf("root-5"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun sameDayContinuationReachesEveryMixedRootOnceThenKeepsDateNavigationAdjacent() =
+        runBlocking {
+            val roots =
+                (0..100).map { root("activity-%03d".format(it)) } +
+                    listOf(sequence("sequence-a"), sequence("sequence-b"))
+            val fixture =
+                fixture { query ->
+                    val after = query.continuation?.executionId
+                    roots
+                        .drop(if (after == null) 0 else roots.indexOfFirst { it.cursorId() == after } + 1)
+                        .take(query.limit)
+                }
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val first = fixture.rootIds()
+            assertEquals(HISTORY_RESULT_LIMIT, first.size)
+            assertTrue(fixture.controller.state.value.canLoadMore)
+
+            fixture.controller.dispatch(HistoryAction.LoadMore)
+            fixture.awaitQueries(2)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val second = fixture.rootIds()
+            assertEquals(listOf("activity-100", "sequence-a", "sequence-b"), second)
+            assertEquals(roots.map { it.cursorId() }, first + second)
+            assertEquals(roots.size, (first + second).distinct().size)
+            assertTrue(fixture.queries.all { it.limit == HISTORY_RESULT_LIMIT + 1 })
+
+            val current = fixture.controller.state.value.window
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitQueries(3)
+            assertEquals(current.startDate.minusDays(1), fixture.queries[2].dateRange.endDate)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(4)
+            assertEquals(current.dateRange(), fixture.queries[3].dateRange)
             fixture.close()
         }
 
@@ -228,6 +271,9 @@ class HistoryControllerTest {
                 (it as CompletedActivityHistoryRoot).executionId.value
             }
 
+        fun rootIds(): List<String> =
+            (controller.state.value.load as HistoryRootsLoad.Content).roots.map { it.cursorId() }
+
         fun close() {
             controller.close()
             scope.cancel()
@@ -272,6 +318,30 @@ class HistoryControllerTest {
                 TimeTrackingMode.STOPWATCH,
                 null,
             )
+
+        private fun sequence(id: String) =
+            CompletedSequenceHistoryRoot(
+                SequenceExecutionId(id),
+                SequenceSnapshotId("snapshot-$id"),
+                TODAY,
+                NOW,
+                NOW.minusSeconds(60),
+                SequenceExecutionStatus.COMPLETED,
+                Duration.ofSeconds(60),
+                Duration.ZERO,
+                Duration.ofSeconds(60),
+                null,
+                id,
+                null,
+            )
+
+        private fun CompletedHistoryRoot.cursorId(): String =
+            when (this) {
+                is CompletedActivityHistoryRoot -> executionId.value
+                is CompletedSequenceHistoryRoot -> executionId.value
+            }
+
+        private fun HistoryBrowseWindow.dateRange() = HistoryDateRange(startDate, endDate)
 
         private fun detail(title: String = "detail") =
             ActivityHistoryDetail(

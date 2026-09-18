@@ -106,6 +106,48 @@ class ActivityHistoryMutationControllerTest {
         }
 
     @Test
+    fun currentNoOpStillUsesRepositoryValidationAndReloadsCanonicalDetail() =
+        runBlocking {
+            val fixture = fixture(detail())
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+            fixture.awaitRefresh()
+
+            assertEquals(1, fixture.correctAttempts)
+            assertEquals(TOKEN, fixture.corrections.single().expectedUpdatedAt)
+            assertEquals(TOKEN, (fixture.controller.state.value.load as HistoryDetailLoad.Content).value.updatedAt)
+            fixture.close()
+        }
+
+    @Test
+    fun staleNoOpReloadsCompetingCanonicalDetail() =
+        runBlocking {
+            val loaded = detail()
+            val competing = loaded.copy(updatedAt = TOKEN.plusSeconds(1))
+            val reads = ArrayDeque(listOf(loaded, competing))
+            val fixture =
+                fixture(
+                    loaded,
+                    read = { reads.removeFirst() },
+                    correct = { _, _, _ -> throw ConcurrentModificationException() },
+                )
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+
+            withTimeout(2_000) {
+                fixture.controller.state.first {
+                    it.issue == ActivityHistoryMutationIssue.STALE &&
+                        (it.load as? HistoryDetailLoad.Content)?.value?.updatedAt == competing.updatedAt
+                }
+            }
+            assertEquals(1, fixture.correctAttempts)
+            assertNull(fixture.controller.state.value.draft)
+            fixture.close()
+        }
+
+    @Test
     fun strictGapOverlapOrderingAndFutureValidationUsePersistedEventZone() =
         runBlocking {
             val fixture =

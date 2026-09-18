@@ -50,12 +50,22 @@ internal abstract class SequenceExecutionDao {
             "pause_duration_ms, wall_duration_ms, primary_local_date FROM sequence_executions " +
             "WHERE status IN ('COMPLETED', 'ENDED_EARLY') " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "AND (:cursorDate IS NULL OR primary_local_date < :cursorDate " +
+            "OR (primary_local_date = :cursorDate AND ended_at_ms < :cursorCompletedAtMs) " +
+            "OR (:cursorKind = 'ACTIVITY' AND primary_local_date = :cursorDate " +
+            "AND ended_at_ms = :cursorCompletedAtMs) " +
+            "OR (:cursorKind = 'SEQUENCE' AND primary_local_date = :cursorDate " +
+            "AND ended_at_ms = :cursorCompletedAtMs AND id > :cursorId)) " +
             "ORDER BY primary_local_date DESC, ended_at_ms DESC, id ASC LIMIT :limit",
     )
     abstract fun getTerminalHistoryRoots(
         startDate: String,
         endDate: String,
         limit: Int,
+        cursorDate: String?,
+        cursorCompletedAtMs: Long?,
+        cursorKind: String?,
+        cursorId: String?,
     ): List<SequenceHistoryRootEntity>
 
     @Query(

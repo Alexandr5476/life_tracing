@@ -17,16 +17,35 @@ data class HistoryDateRange(
 data class CompletedHistoryQuery(
     val dateRange: HistoryDateRange,
     val limit: Int,
+    val continuation: CompletedHistoryCursor? = null,
 ) {
     init {
         require(limit > 0) { "History result limit must be positive" }
     }
 }
 
+enum class CompletedHistoryRootKind { ACTIVITY, SEQUENCE }
+
+/** Stable position in the canonical completed-History order. */
+data class CompletedHistoryCursor(
+    val primaryLocalDate: LocalDate,
+    val completedAt: Instant,
+    val kind: CompletedHistoryRootKind,
+    val executionId: String,
+)
+
 sealed interface CompletedHistoryRoot {
     val primaryLocalDate: LocalDate
     val completedAt: Instant
 }
+
+fun CompletedHistoryRoot.cursor(): CompletedHistoryCursor =
+    when (this) {
+        is CompletedActivityHistoryRoot ->
+            CompletedHistoryCursor(primaryLocalDate, completedAt, CompletedHistoryRootKind.ACTIVITY, executionId.value)
+        is CompletedSequenceHistoryRoot ->
+            CompletedHistoryCursor(primaryLocalDate, completedAt, CompletedHistoryRootKind.SEQUENCE, executionId.value)
+    }
 
 data class CompletedActivityHistoryRoot(
     val executionId: ActivityExecutionId,

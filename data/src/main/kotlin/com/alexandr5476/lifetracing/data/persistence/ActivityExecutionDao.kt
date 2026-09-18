@@ -84,12 +84,20 @@ internal abstract class ActivityExecutionDao {
             "primary_local_date FROM activity_executions " +
             "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "AND (:cursorDate IS NULL OR primary_local_date < :cursorDate " +
+            "OR (primary_local_date = :cursorDate AND completed_at_ms < :cursorCompletedAtMs) " +
+            "OR (:cursorKind = 'ACTIVITY' AND primary_local_date = :cursorDate " +
+            "AND completed_at_ms = :cursorCompletedAtMs AND id > :cursorId)) " +
             "ORDER BY primary_local_date DESC, completed_at_ms DESC, id ASC LIMIT :limit",
     )
     abstract fun getCompletedStandaloneHistoryRoots(
         startDate: String,
         endDate: String,
         limit: Int,
+        cursorDate: String?,
+        cursorCompletedAtMs: Long?,
+        cursorKind: String?,
+        cursorId: String?,
     ): List<ActivityHistoryRootEntity>
 
     @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
