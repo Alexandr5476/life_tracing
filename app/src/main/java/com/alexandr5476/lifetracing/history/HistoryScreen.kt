@@ -153,10 +153,14 @@ internal fun HistoryScreen(
             }
             when (val load = state.load) {
                 HistoryRootsLoad.Loading -> HistoryCard { Text(stringResource(R.string.history_loading)) }
-                HistoryRootsLoad.Empty -> HistoryCard { Text(stringResource(R.string.history_empty)) }
+                HistoryRootsLoad.Empty -> {
+                    state.discoveryFailure?.let { FailureCard(onRetry = { onAction(HistoryAction.Retry) }) }
+                        ?: HistoryCard { Text(stringResource(R.string.history_empty)) }
+                }
                 is HistoryRootsLoad.Failure -> FailureCard(onRetry = { onAction(HistoryAction.Retry) })
                 is HistoryRootsLoad.Content ->
                     {
+                        state.discoveryFailure?.let { FailureCard(onRetry = { onAction(HistoryAction.Retry) }) }
                         load.roots
                             .groupBy(CompletedHistoryRoot::primaryLocalDate)
                             .toSortedMap(compareByDescending { it })

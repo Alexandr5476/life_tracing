@@ -391,6 +391,53 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun failedInitialDiscoveryAfterOlderKeepsRetryableOwnershipAndLaterNewerBound() =
+        runBlocking {
+            val initialDiscovery = CompletableDeferred<LocalDate?>()
+            val latest = TODAY.plusDays(HISTORY_WINDOW_DAYS + 2)
+            var discoveries = 0
+            val fixture =
+                fixture(
+                    readLatestDate = {
+                        if (discoveries++ == 0) initialDiscovery.await() else latest
+                    },
+                ) { query -> listOf(root(query.dateRange.endDate.toString())) }
+
+            fixture.controller.onRouteEntered()
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val olderWindow = fixture.controller.state.value.window
+
+            initialDiscovery.completeExceptionally(IllegalStateException("discovery failed"))
+            fixture.awaitDiscoveryFailure()
+
+            assertEquals(olderWindow, fixture.controller.state.value.window)
+            assertInstanceOf(HistoryRootsLoad.Content::class.java, fixture.controller.state.value.load)
+            assertEquals("discovery failed", fixture.controller.state.value.discoveryFailure)
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitDiscoveryRecovered()
+
+            assertEquals(olderWindow, fixture.controller.state.value.window)
+            assertTrue(fixture.controller.state.value.canNavigateNewer)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(2)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(3)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(4)
+            assertEquals(
+                latest,
+                fixture.queries
+                    .last()
+                    .dateRange
+                    .endDate,
+            )
+            assertTrue(fixture.queries.all { it.dateRange.lengthInDays() <= HISTORY_WINDOW_DAYS })
+            fixture.close()
+        }
+
+    @Test
     fun refreshRediscoversNewestDateBeforeReloadingRoots() =
         runBlocking {
             var persistedDate = TODAY
@@ -532,6 +579,12 @@ class HistoryControllerTest {
 
         suspend inline fun <reified T : HistoryRootsLoad> awaitLoad() =
             withTimeout(2_000) { controller.state.first { it.load is T } }
+
+        suspend fun awaitDiscoveryFailure() =
+            withTimeout(2_000) { controller.state.first { it.discoveryFailure != null } }
+
+        suspend fun awaitDiscoveryRecovered() =
+            withTimeout(2_000) { controller.state.first { it.discoveryFailure == null && it.canNavigateNewer } }
 
         fun contentIds(): List<String> =
             (controller.state.value.load as HistoryRootsLoad.Content).roots.map {
