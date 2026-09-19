@@ -139,6 +139,58 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
+    fun latestDateDiscoveryUsesOnlyFutureDatePartitionsAndExistingIndexes() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", "Frozen note")
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", "Sequence note")
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+        insertSequence("running-sequence", at(100), SequenceExecutionStatus.RUNNING)
+        repeat(1_000) { index ->
+            insertSequenceChild(
+                "child-$index",
+                "running-sequence",
+                "occurrence-$index",
+                at(200L + index),
+                index,
+            )
+        }
+        observedSql.clear()
+
+        assertNull(repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)))
+        assertTrue(observedSql.any { it.contains("activity_executions_context_completed") })
+        assertTrue(observedSql.any { it.contains("sequence_executions_primary_local_date") })
+        assertTrue(
+            explain(
+                "SELECT EXISTS(SELECT 1 FROM activity_executions " +
+                    "INDEXED BY activity_executions_context_completed " +
+                    "WHERE context_type = 'STANDALONE' AND completed_at_ms BETWEEN 0 AND 0 " +
+                    "AND primary_local_date = '2026-08-21' AND status = 'COMPLETED' " +
+                    "AND deleted_at_ms IS NULL LIMIT 1)",
+            ).any { it.contains("activity_executions_context_completed") },
+        )
+        assertTrue(
+            explain(
+                "SELECT EXISTS(SELECT 1 FROM sequence_executions " +
+                    "INDEXED BY sequence_executions_primary_local_date " +
+                    "WHERE primary_local_date = '2026-08-21' " +
+                    "AND status IN ('COMPLETED', 'ENDED_EARLY') LIMIT 1)",
+            ).any { it.contains("sequence_executions_primary_local_date") },
+        )
+    }
+
+    @Test
+    fun latestDateDiscoveryRetainsAReachableOriginalZoneDate() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", "Frozen note")
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+        val persisted = Instant.parse("2026-08-20T06:00:00Z")
+        insertActivity("future-primary-date", persisted, ZoneOffset.ofHours(18))
+
+        assertEquals(
+            LocalDate.parse("2026-08-21"),
+            repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)),
+        )
+    }
+
+    @Test
     fun activityDetailUsesFrozenLabelsAndKeepsSnapshotConfigurationAndNoLiveMissingDuration() {
         database.statisticsSeriesDao().insert(StatisticsSeriesEntity("series", "ACTIVITY", "Source", 0, null))
         database.activityTemplateDao().insertAggregate(
@@ -1334,12 +1386,14 @@ class HistoryReadRepositoryTest {
         sequenceId: String,
         occurrenceId: String,
         completedAt: Instant,
+        runtimePosition: Int = 0,
     ) {
         database.openHelper.writableDatabase.execSQL(
-            "INSERT INTO sequence_occurrences (id, sequence_execution_id, source_sequence_snapshot_node_id, activity_snapshot_id, runtime_position, repeat_source_snapshot_node_id, repeat_iteration, status, entered_at_ms, completed_at_ms, completion_reason, is_runtime_added, is_deleted_from_history) VALUES (?, ?, NULL, 'activity-snapshot', 0, NULL, NULL, 'COMPLETED', ?, ?, NULL, 1, 0)",
+            "INSERT INTO sequence_occurrences (id, sequence_execution_id, source_sequence_snapshot_node_id, activity_snapshot_id, runtime_position, repeat_source_snapshot_node_id, repeat_iteration, status, entered_at_ms, completed_at_ms, completion_reason, is_runtime_added, is_deleted_from_history) VALUES (?, ?, NULL, 'activity-snapshot', ?, NULL, NULL, 'COMPLETED', ?, ?, NULL, 1, 0)",
             arrayOf<Any?>(
                 occurrenceId,
                 sequenceId,
+                runtimePosition,
                 completedAt.minusMillis(1).toEpochMilli(),
                 completedAt.toEpochMilli(),
             ),
@@ -1364,5 +1418,12 @@ class HistoryReadRepositoryTest {
         database.openHelper.writableDatabase.query("SELECT COUNT(*) FROM $table").use { cursor ->
             cursor.moveToFirst()
             cursor.getLong(0)
+        }
+
+    private fun explain(sql: String): List<String> =
+        database.openHelper.writableDatabase.query("EXPLAIN QUERY PLAN $sql").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getString(3))
+            }
         }
 }

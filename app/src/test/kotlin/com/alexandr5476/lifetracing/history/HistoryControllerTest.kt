@@ -145,6 +145,38 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun failedUpperBoundDiscoveryRetriesDiscoveryBeforeLoadingTheInitialWindow() =
+        runBlocking {
+            var discoveries = 0
+            val persistedDate = TODAY.plusDays(1)
+            val fixture =
+                fixture(
+                    readLatestDate = {
+                        if (discoveries++ == 0) error("upper bound failed")
+                        persistedDate
+                    },
+                ) { listOf(root("recovered")) }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Failure>()
+            assertTrue(fixture.queries.isEmpty())
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            assertEquals(2, discoveries)
+            assertEquals(
+                persistedDate,
+                fixture.queries
+                    .single()
+                    .dateRange
+                    .endDate,
+            )
+            assertEquals(listOf("recovered"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
     fun retryRepeatsTheFailedLoadMoreRequestAndRestoresItsNextPage() =
         runBlocking {
             val roots = (0..HISTORY_RESULT_LIMIT).map { root("root-%03d".format(it)) }
@@ -276,6 +308,47 @@ class HistoryControllerTest {
 
             assertEquals(2, fixture.queries.size)
             assertEquals(listOf("reentered"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun lateDiscoveryAfterExitCannotReplaceTheReenteredRoute() =
+        runBlocking {
+            val first = CompletableDeferred<LocalDate?>()
+            val second = CompletableDeferred<LocalDate?>()
+            val discoveries = ArrayDeque(listOf(first, second))
+            val fixture = fixture(readLatestDate = { discoveries.removeFirst().await() }) { listOf(root("current")) }
+
+            fixture.controller.onRouteEntered()
+            fixture.controller.onRouteExited()
+            fixture.controller.onRouteEntered()
+            second.complete(TODAY)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            first.completeExceptionally(IllegalStateException("obsolete discovery"))
+            yield()
+
+            assertEquals(TODAY, fixture.controller.state.value.window.endDate)
+            assertEquals(listOf("current"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun supersedingRootLoadOwnsRetryAfterAnObsoleteDiscoverySuccess() =
+        runBlocking {
+            val discovery = CompletableDeferred<LocalDate?>()
+            val fixture = fixture(readLatestDate = { discovery.await() }) { listOf(root("newest")) }
+
+            fixture.controller.onRouteEntered()
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val supersedingQuery = fixture.queries.single()
+            discovery.complete(TODAY.plusDays(5))
+            yield()
+
+            assertEquals(listOf("newest"), fixture.contentIds())
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitQueries(2)
+            assertEquals(supersedingQuery, fixture.queries.last())
             fixture.close()
         }
 

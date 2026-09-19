@@ -69,10 +69,12 @@ internal abstract class SequenceExecutionDao {
     ): List<SequenceHistoryRootEntity>
 
     @Query(
-        "SELECT primary_local_date FROM sequence_executions " +
-            "WHERE status IN ('COMPLETED', 'ENDED_EARLY') ORDER BY primary_local_date DESC LIMIT 1",
+        "SELECT EXISTS(SELECT 1 FROM sequence_executions " +
+            "INDEXED BY sequence_executions_primary_local_date " +
+            "WHERE primary_local_date = :primaryLocalDate " +
+            "AND status IN ('COMPLETED', 'ENDED_EARLY') LIMIT 1)",
     )
-    abstract fun getLatestTerminalHistoryDate(): String?
+    abstract fun hasTerminalHistoryRootOn(primaryLocalDate: String): Boolean
 
     @Query(
         "SELECT * FROM sequence_occurrences WHERE sequence_execution_id = :executionId ORDER BY runtime_position, id",

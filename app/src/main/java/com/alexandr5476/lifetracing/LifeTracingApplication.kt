@@ -579,8 +579,9 @@ class LifeTracingRuntimeGraph internal constructor(
                         java.time.Instant::now,
                         ZoneId::systemDefault,
                         {
+                            val now = java.time.Instant.now()
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                historyReadRepository.getLatestCompletedPrimaryLocalDate()
+                                historyReadRepository.getLatestCompletedPrimaryLocalDate(now, ZoneId.systemDefault())
                             }
                         },
                     )
