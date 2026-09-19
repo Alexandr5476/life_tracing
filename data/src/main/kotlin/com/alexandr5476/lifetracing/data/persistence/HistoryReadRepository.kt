@@ -49,6 +49,14 @@ class HistoryReadRepository internal constructor(
         return transaction { getCompletedRootsLocked(query) }
     }
 
+    fun getLatestCompletedPrimaryLocalDate(): LocalDate? =
+        transaction {
+            listOfNotNull(
+                database.activityExecutionDao().getLatestCompletedStandaloneHistoryDate()?.let(LocalDate::parse),
+                database.sequenceExecutionDao().getLatestTerminalHistoryDate()?.let(LocalDate::parse),
+            ).maxOrNull()
+        }
+
     internal fun getCompletedRootsLocked(query: CompletedHistoryQuery): List<CompletedHistoryRoot> {
         require(query.limit <= MAXIMUM_RESULT_LIMIT) { "History result limit exceeds $MAXIMUM_RESULT_LIMIT" }
         return run {
@@ -111,9 +119,9 @@ class HistoryReadRepository internal constructor(
                 database.activityExecutionDao().getAggregate(id.value)?.toDomain() ?: return@transaction null
             require(
                 execution.context == ActivityExecutionContext.STANDALONE &&
-                    execution.status == ActivityExecutionStatus.COMPLETED &&
-                    execution.deletedAt == null,
-            ) { "Activity detail is available only for non-deleted completed standalone history" }
+                    execution.status == ActivityExecutionStatus.COMPLETED,
+            ) { "Activity detail is available only for completed standalone history" }
+            if (execution.deletedAt != null) return@transaction null
             val snapshot =
                 requireNotNull(database.activitySnapshotDao().getAggregate(execution.snapshotId.value)) {
                     "Activity history references a missing snapshot: ${execution.snapshotId.value}"

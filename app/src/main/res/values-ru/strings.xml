@@ -472,6 +472,8 @@
     <string name="manual_history_nonexistent_time">Такого местного времени не существует из-за перевода часов вперёд.</string>
     <string name="manual_history_ambiguous_time">Это местное время наступает дважды. Выберите нужный вариант.</string>
     <string name="manual_history_ambiguous_choose">Выберите вариант:</string>
+    <string name="history_overlap_warning">Эта правка пересекается с другой завершённой активностью. Вы всё равно можете продолжить.</string>
+    <string name="history_overlap_proceed">Продолжить</string>
     <string name="manual_history_first_occurrence">Первый вариант (%1$s)</string>
     <string name="manual_history_second_occurrence">Второй вариант (%1$s)</string>
     <string name="manual_history_future_completion">Время завершения не может быть в будущем.</string>

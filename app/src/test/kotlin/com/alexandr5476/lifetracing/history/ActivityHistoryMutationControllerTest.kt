@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.history
 
+import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCategoryOption
 import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
@@ -243,6 +244,94 @@ class ActivityHistoryMutationControllerTest {
         }
 
     @Test
+    fun timedOverlapWarnsThenCancelDoesNotWriteAndProceedCommitsTheValidatedCorrectionOnce() =
+        runBlocking {
+            val fixture =
+                fixture(detail(), overlaps = { _, _, excluding -> excluding == ActivityExecutionId("execution") })
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+
+            withTimeout(2_000) { fixture.controller.state.first { it.overlapWarning } }
+            assertEquals(1, fixture.overlapCalls.size)
+            assertEquals(ActivityExecutionId("execution"), fixture.overlapCalls.single().excludingExecutionId)
+            assertEquals(0, fixture.correctAttempts)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.CancelOverlap)
+            assertFalse(fixture.controller.state.value.overlapWarning)
+            assertEquals(0, fixture.correctAttempts)
+
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+            withTimeout(2_000) { fixture.controller.state.first { it.overlapWarning } }
+            fixture.controller.dispatch(ActivityHistoryMutationAction.ProceedOverlap)
+            fixture.awaitRefresh()
+            assertEquals(1, fixture.correctAttempts)
+            assertEquals(TOKEN, fixture.corrections.single().expectedUpdatedAt)
+            fixture.close()
+        }
+
+    @Test
+    fun timedNonOverlapCommitsWithoutWarning() =
+        runBlocking {
+            val fixture = fixture(detail(), overlaps = { _, _, _ -> false })
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+            fixture.awaitRefresh()
+
+            assertEquals(1, fixture.overlapCalls.size)
+            assertFalse(fixture.controller.state.value.overlapWarning)
+            assertEquals(1, fixture.correctAttempts)
+            fixture.close()
+        }
+
+    @Test
+    fun persistedFallBackOccurrencesAreRetainedUntilTheTimestampIsEdited() =
+        runBlocking {
+            val early = Instant.parse("2026-10-25T00:30:00Z")
+            val late = Instant.parse("2026-10-25T01:30:00Z")
+            val timed = fixture(detail(startedAt = early, completedAt = late))
+            timed.awaitLoaded()
+            timed.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            val draft = requireNotNull(timed.controller.state.value.draft)
+            assertEquals(ZoneOffset.ofHours(2), draft.startedOffset)
+            assertEquals(ZoneOffset.ofHours(1), draft.completedOffset)
+            assertEquals(listOf(ZoneOffset.ofHours(2), ZoneOffset.ofHours(1)), draft.startedOffsets)
+            assertEquals(listOf(ZoneOffset.ofHours(2), ZoneOffset.ofHours(1)), draft.completedOffsets)
+            timed.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
+            timed.controller.dispatch(ActivityHistoryMutationAction.Save)
+            timed.awaitRefresh()
+            assertEquals(ActivityHistoryTimeCorrection.Timed(early, late), timed.corrections.single().time)
+            timed.close()
+
+            listOf(early, late).forEach { completedAt ->
+                val noLive = fixture(detail(TimeTrackingMode.NO_LIVE_TRACKING, null, completedAt))
+                noLive.awaitLoaded()
+                noLive.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+                assertEquals(
+                    completedAt.atZone(BERLIN).offset,
+                    noLive.controller.state.value.draft
+                        ?.completedOffset,
+                )
+                noLive.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
+                noLive.controller.dispatch(ActivityHistoryMutationAction.Save)
+                noLive.awaitRefresh()
+                assertEquals(ActivityHistoryTimeCorrection.NoLive(completedAt), noLive.corrections.single().time)
+                noLive.close()
+            }
+
+            val edited = fixture(detail(startedAt = early, completedAt = late))
+            edited.awaitLoaded()
+            edited.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            edited.controller.dispatch(ActivityHistoryMutationAction.EditStarted("2026-10-25 02:45"))
+            edited.controller.dispatch(ActivityHistoryMutationAction.Save)
+            assertEquals(ActivityHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME, edited.controller.state.value.issue)
+            assertEquals(0, edited.correctAttempts)
+            edited.close()
+        }
+
+    @Test
     fun deleteFailureKeepsConfirmationForRetryOrCancel() =
         runBlocking {
             var fail = true
@@ -308,6 +397,50 @@ class ActivityHistoryMutationControllerTest {
             assertEquals(2, fixture.correctAttempts)
             assertEquals(fresh.updatedAt, fixture.corrections.last().expectedUpdatedAt)
             fixture.close()
+        }
+
+    @Test
+    fun staleCorrectionOrDeleteThatLosesToSoftDeleteReloadsUnavailableAndRetryStaysUnavailable() =
+        runBlocking {
+            val correctionReads = ArrayDeque<ActivityHistoryDetail?>(listOf(detail(), null, null))
+            val correction =
+                fixture(
+                    detail(),
+                    read = { correctionReads.removeFirst() },
+                    correct = { _, _, _ -> throw ConcurrentModificationException() },
+                )
+            correction.awaitLoaded()
+            correction.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            correction.controller.dispatch(ActivityHistoryMutationAction.Save)
+            withTimeout(2_000) {
+                correction.controller.state.first {
+                    it.issue == ActivityHistoryMutationIssue.STALE && it.load is HistoryDetailLoad.Unavailable
+                }
+            }
+            correction.controller.dispatch(ActivityHistoryMutationAction.Retry)
+            withTimeout(2_000) { correction.controller.state.first { it.load is HistoryDetailLoad.Unavailable } }
+            assertEquals(1, correction.correctAttempts)
+            correction.close()
+
+            val deleteReads = ArrayDeque<ActivityHistoryDetail?>(listOf(detail(), null, null))
+            val delete =
+                fixture(
+                    detail(),
+                    read = { deleteReads.removeFirst() },
+                    delete = { _, _, _ -> throw ConcurrentModificationException() },
+                )
+            delete.awaitLoaded()
+            delete.controller.dispatch(ActivityHistoryMutationAction.RequestDelete)
+            delete.controller.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+            withTimeout(2_000) {
+                delete.controller.state.first {
+                    it.issue == ActivityHistoryMutationIssue.STALE && it.load is HistoryDetailLoad.Unavailable
+                }
+            }
+            delete.controller.dispatch(ActivityHistoryMutationAction.Retry)
+            withTimeout(2_000) { delete.controller.state.first { it.load is HistoryDetailLoad.Unavailable } }
+            assertEquals(1, delete.deleteAttempts)
+            delete.close()
         }
 
     @Test
@@ -426,6 +559,7 @@ class ActivityHistoryMutationControllerTest {
             Instant,
             Instant,
         ) -> Unit = { _, _, _ -> },
+        overlaps: suspend (Instant, Instant, ActivityExecutionId) -> Boolean = { _, _, _ -> false },
     ): Fixture {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         lateinit var fixture: Fixture
@@ -444,6 +578,10 @@ class ActivityHistoryMutationControllerTest {
                     delete(id, expected, at)
                 },
                 { COMMAND_AT },
+                { startedAt, completedAt, excludingExecutionId ->
+                    fixture.overlapCalls += OverlapCall(startedAt, completedAt, excludingExecutionId)
+                    overlaps(startedAt, completedAt, excludingExecutionId)
+                },
             )
         return Fixture(scope, controller).also { fixture = it }
     }
@@ -454,6 +592,7 @@ class ActivityHistoryMutationControllerTest {
         val corrections: MutableList<ActivityHistoryCorrection> = mutableListOf(),
         var correctAttempts: Int = 0,
         var deleteAttempts: Int = 0,
+        val overlapCalls: MutableList<OverlapCall> = mutableListOf(),
     ) {
         suspend fun awaitLoaded() =
             withTimeout(2_000) { controller.state.first { it.load is HistoryDetailLoad.Content } }
@@ -465,6 +604,12 @@ class ActivityHistoryMutationControllerTest {
             scope.cancel()
         }
     }
+
+    private data class OverlapCall(
+        val startedAt: Instant,
+        val completedAt: Instant,
+        val excludingExecutionId: ActivityExecutionId,
+    )
 
     companion object {
         private val BERLIN = ZoneId.of("Europe/Berlin")

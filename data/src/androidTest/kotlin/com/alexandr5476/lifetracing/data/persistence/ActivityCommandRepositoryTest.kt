@@ -699,6 +699,29 @@ class ActivityCommandRepositoryTest {
     }
 
     @Test
+    fun completedStandaloneOverlapExcludesTheEditedExecutionButFindsAnotherActivity() {
+        template("overlap", TimeTrackingMode.STOPWATCH)
+        val repository = repository("overlap")
+        val first =
+            repository.addManualTimed(
+                ActivityEntrySource.Template(ActivityTemplateId("overlap")),
+                instant(100),
+                instant(200),
+                instant(300),
+                ZoneOffset.UTC,
+            )
+        assertFalse(repository.overlapsCompletedHistory(instant(100), instant(200), first.id))
+        repository.addManualTimed(
+            ActivityEntrySource.Template(ActivityTemplateId("overlap")),
+            instant(150),
+            instant(250),
+            instant(301),
+            ZoneOffset.UTC,
+        )
+        assertTrue(repository.overlapsCompletedHistory(instant(100), instant(200), first.id))
+    }
+
+    @Test
     fun oneOffLiveTimedAndNoLiveRemainSourceLessAndUseSystemBucket() {
         val repository = repository("one-off")
         val manual =
@@ -1286,7 +1309,7 @@ class ActivityCommandRepositoryTest {
         assertEquals(Instant.parse("2026-08-24T00:00:00Z"), deleted.deletedAt)
         assertEquals(activeBeforeDelete, database.activeSessionDao().get())
         assertEquals(liveBeforeDelete, database.activityExecutionDao().getAggregate(live.id.value))
-        assertThrows(IllegalArgumentException::class.java) { history.getActivityDetail(original.id) }
+        assertNull(history.getActivityDetail(original.id))
         assertTrue(
             daily
                 .getDaily(DailyQuery(LocalDate.of(2026, 8, 21), instant(500), 10))

@@ -292,6 +292,8 @@ private fun ActivityHistoryMutationSurface(
                 is HistoryDetailLoad.Failure -> FailureCard { onAction(ActivityHistoryMutationAction.Retry) }
                 is HistoryDetailLoad.Content -> {
                     when {
+                        state.overlapWarning ->
+                            OverlapWarning(state.isMutating, onAction)
                         state.draft != null -> CorrectionEditor(load.value, state, onAction)
                         state.deleteConfirmation ->
                             DeleteConfirmation(load.value, state.isMutating, state.issue, onAction)
@@ -315,6 +317,26 @@ private fun ActivityHistoryMutationSurface(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OverlapWarning(
+    isMutating: Boolean,
+    onAction: (ActivityHistoryMutationAction) -> Unit,
+) {
+    Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.CancelOverlap) },
+            enabled = !isMutating,
+            modifier = Modifier.testTag("history-overlap-cancel"),
+        ) { Text(stringResource(R.string.manual_history_cancel)) }
+        LifeTracingPrimaryButton(
+            onClick = { onAction(ActivityHistoryMutationAction.ProceedOverlap) },
+            enabled = !isMutating,
+            modifier = Modifier.testTag("history-overlap-proceed"),
+        ) { Text(stringResource(R.string.history_overlap_proceed)) }
     }
 }
 

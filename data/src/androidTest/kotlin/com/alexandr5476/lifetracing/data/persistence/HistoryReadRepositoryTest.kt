@@ -20,7 +20,9 @@ import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -37,6 +39,8 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.cursor
 import org.junit.After
@@ -50,6 +54,7 @@ import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.Collections
 import java.util.concurrent.Executor
@@ -640,6 +645,64 @@ class HistoryReadRepositoryTest {
         assertEquals(executionBeforeRead, database.activityExecutionDao().getById(execution.id.value))
         assertEquals(snapshotsBeforeRead, count("activity_snapshots"))
         assertEquals(activeSessionBeforeRead, database.activeSessionDao().get())
+    }
+
+    @Test
+    fun softDeletedStandaloneSurvivesReloadButItsDetailIsUnavailable() {
+        reopenFileDatabase("history-standalone-delete-reload.db")
+        insertNoLiveTemplate("source")
+        val commands = commands("delete")
+        val execution =
+            commands.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                at(100),
+                at(101),
+                ZoneOffset.UTC,
+            )
+        commands.softDeleteHistory(execution.id, execution.updatedAt, at(102))
+
+        reopenFileDatabase("history-standalone-delete-reload.db", deleteFirst = false)
+        val persisted = requireNotNull(database.activityExecutionDao().getAggregate(execution.id.value)).toDomain()
+        assertEquals(at(102), persisted.deletedAt)
+        assertNull(repository.getActivityDetail(execution.id))
+        assertTrue(repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 10)).isEmpty())
+        assertTrue(
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(LocalDate.parse("2026-08-20"), at(103), 10))
+                .completedHistory
+                .isEmpty(),
+        )
+        assertEquals(
+            0L,
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("source-series"), StatisticsPeriod.AllTime)
+                .executionCount,
+        )
+    }
+
+    @Test
+    fun originalZonePrimaryDateAheadOfDeviceDateRemainsQueryableAfterReload() {
+        reopenFileDatabase("history-original-zone-date-reload.db")
+        insertNoLiveTemplate("source")
+        val commands = commands("zone")
+        val completedAt = Instant.parse("2026-09-16T10:00:00Z")
+        val execution =
+            commands.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                completedAt,
+                Instant.parse("2026-09-18T00:00:00Z"),
+                ZoneId.of("Pacific/Kiritimati"),
+            )
+
+        reopenFileDatabase("history-original-zone-date-reload.db", deleteFirst = false)
+        assertEquals(LocalDate.parse("2026-09-17"), execution.primaryLocalDate)
+        assertEquals(
+            listOf(execution.id.value),
+            repository
+                .getCompletedRoots(query("2026-09-17", "2026-09-17", 10))
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .map { it.executionId.value },
+        )
     }
 
     private fun rootIds(roots: List<com.alexandr5476.lifetracing.domain.CompletedHistoryRoot>) =

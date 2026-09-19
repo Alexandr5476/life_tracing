@@ -280,6 +280,43 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun persistedOriginalDateAheadOfDeviceTodayRemainsReachableAfterZoneChange() =
+        runBlocking {
+            val persistedDate = TODAY.plusDays(1)
+            var zone = ZoneOffset.UTC
+            val fixture =
+                fixture(
+                    readLatestDate = { persistedDate },
+                    zoneId = { zone },
+                ) { query ->
+                    if (persistedDate in query.dateRange.startDate..query.dateRange.endDate) {
+                        listOf(root("persisted").copy(primaryLocalDate = persistedDate))
+                    } else {
+                        emptyList()
+                    }
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(persistedDate, fixture.controller.state.value.window.endDate)
+            assertEquals(listOf("persisted"), fixture.contentIds())
+            assertTrue(fixture.queries.all { it.limit in 1..500 })
+
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Empty>()
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            zone = ZoneOffset.ofHours(-12)
+            fixture.controller.onRouteExited()
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(persistedDate, fixture.controller.state.value.window.endDate)
+            assertEquals(listOf("persisted"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
     fun detailLoadsContentUnavailableAndFailureThenRetries() =
         runBlocking {
             val contentFixture = detailFixture { detail() }
@@ -324,7 +361,11 @@ class HistoryControllerTest {
             closed.scope.cancel()
         }
 
-    private fun fixture(read: suspend (CompletedHistoryQuery) -> List<CompletedHistoryRoot>): RootFixture {
+    private fun fixture(
+        readLatestDate: suspend () -> LocalDate? = { null },
+        zoneId: () -> ZoneOffset = { ZoneOffset.UTC },
+        read: suspend (CompletedHistoryQuery) -> List<CompletedHistoryRoot>,
+    ): RootFixture {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val queries = mutableListOf<CompletedHistoryQuery>()
         val controller =
@@ -335,7 +376,8 @@ class HistoryControllerTest {
                     read(query)
                 },
                 { NOW },
-                { ZoneOffset.UTC },
+                zoneId,
+                readLatestDate,
             )
         return RootFixture(scope, controller, queries)
     }

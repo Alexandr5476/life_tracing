@@ -33,10 +33,10 @@ data class HistoryBrowseWindow(
     fun older(): HistoryBrowseWindow =
         HistoryBrowseWindow(startDate.minusDays(HISTORY_WINDOW_DAYS), startDate.minusDays(1))
 
-    fun newer(today: LocalDate): HistoryBrowseWindow? {
-        if (endDate >= today) return null
+    fun newer(upperBound: LocalDate): HistoryBrowseWindow? {
+        if (endDate >= upperBound) return null
         val start = endDate.plusDays(1)
-        return HistoryBrowseWindow(start, minOf(start.plusDays(HISTORY_WINDOW_DAYS - 1), today))
+        return HistoryBrowseWindow(start, minOf(start.plusDays(HISTORY_WINDOW_DAYS - 1), upperBound))
     }
 }
 
@@ -76,6 +76,7 @@ class HistoryController internal constructor(
     private val readRoots: suspend (CompletedHistoryQuery) -> List<CompletedHistoryRoot>,
     private val now: () -> Instant = Instant::now,
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
+    private val readLatestDate: suspend () -> LocalDate? = { null },
 ) {
     private val generation = AtomicLong()
     private val initialToday = now().atZone(zoneId()).toLocalDate()
@@ -92,13 +93,14 @@ class HistoryController internal constructor(
     private var retryRequest: HistoryRequest? = null
 
     private var nextCursor: CompletedHistoryCursor? = null
+    private var upperBound = initialToday
 
     fun dispatch(action: HistoryAction) {
         when (action) {
             HistoryAction.Older -> load(mutableState.value.window.older())
             HistoryAction.Newer ->
                 mutableState.value.window
-                    .newer(today())
+                    .newer(upperBound)
                     ?.let(::load)
             HistoryAction.LoadMore -> nextCursor?.let { load(mutableState.value.window, it) }
             HistoryAction.Retry -> retryRequest?.let { load(it.window, it.continuation) }
@@ -108,7 +110,18 @@ class HistoryController internal constructor(
     fun onRouteEntered() {
         if (closed || routeActive) return
         routeActive = true
-        load(mutableState.value.window)
+        val request = generation.incrementAndGet()
+        scope.launch {
+            val latest = readLatestDate()
+            if (!closed && routeActive && generation.get() == request) {
+                val previousUpperBound = upperBound
+                upperBound = maxOf(today(), latest ?: today())
+                val window =
+                    mutableState.value.window.takeUnless { it.endDate == previousUpperBound }
+                        ?: initialWindow(upperBound)
+                load(window)
+            }
+        }
     }
 
     fun onRouteExited() {
@@ -130,7 +143,7 @@ class HistoryController internal constructor(
         val request = generation.incrementAndGet()
         val admittedRequest = HistoryRequest(window, continuation)
         retryRequest = admittedRequest
-        val canNavigateNewer = window.endDate < today()
+        val canNavigateNewer = window.endDate < upperBound
         mutableState.update {
             it.copy(
                 window = window,

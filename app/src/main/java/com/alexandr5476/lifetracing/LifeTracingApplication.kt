@@ -578,6 +578,11 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         java.time.Instant::now,
                         ZoneId::systemDefault,
+                        {
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getLatestCompletedPrimaryLocalDate()
+                            }
+                        },
                     )
                 },
                 {
@@ -650,6 +655,15 @@ class LifeTracingRuntimeGraph internal constructor(
                             }
                         },
                         java.time.Instant::now,
+                        { startedAt, completedAt, excludingExecutionId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(
+                                    startedAt,
+                                    completedAt,
+                                    excludingExecutionId,
+                                )
+                            }
+                        },
                     )
                 },
                 { executionId ->

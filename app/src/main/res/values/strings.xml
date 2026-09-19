@@ -472,6 +472,8 @@
     <string name="manual_history_nonexistent_time">This local time does not exist because the clock moves forward.</string>
     <string name="manual_history_ambiguous_time">This local time occurs twice. Choose which occurrence you mean.</string>
     <string name="manual_history_ambiguous_choose">Choose the occurrence:</string>
+    <string name="history_overlap_warning">This correction overlaps another completed activity. You can still proceed.</string>
+    <string name="history_overlap_proceed">Proceed</string>
     <string name="manual_history_first_occurrence">First occurrence (%1$s)</string>
     <string name="manual_history_second_occurrence">Second occurrence (%1$s)</string>
     <string name="manual_history_future_completion">Completion cannot be in the future.</string>

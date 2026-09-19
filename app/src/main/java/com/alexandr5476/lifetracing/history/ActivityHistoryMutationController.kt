@@ -95,6 +95,7 @@ data class ActivityHistoryMutationState(
     val load: HistoryDetailLoad<ActivityHistoryDetail> = HistoryDetailLoad.Loading,
     val draft: ActivityHistoryCorrectionDraft? = null,
     val deleteConfirmation: Boolean = false,
+    val overlapWarning: Boolean = false,
     val isMutating: Boolean = false,
     val issue: ActivityHistoryMutationIssue? = null,
     val refreshGeneration: Long = 0,
@@ -150,6 +151,10 @@ sealed interface ActivityHistoryMutationAction {
 
     data object Save : ActivityHistoryMutationAction
 
+    data object ProceedOverlap : ActivityHistoryMutationAction
+
+    data object CancelOverlap : ActivityHistoryMutationAction
+
     data object RequestDelete : ActivityHistoryMutationAction
 
     data object ConfirmDelete : ActivityHistoryMutationAction
@@ -162,10 +167,12 @@ class ActivityHistoryMutationController internal constructor(
     private val correct: suspend (ActivityExecutionId, ActivityHistoryCorrection, Instant) -> Unit,
     private val softDelete: suspend (ActivityExecutionId, Instant, Instant) -> Unit,
     private val now: () -> Instant = Instant::now,
+    private val overlaps: suspend (Instant, Instant, ActivityExecutionId) -> Boolean = { _, _, _ -> false },
 ) {
     private val mutableState = MutableStateFlow(ActivityHistoryMutationState())
     val state: StateFlow<ActivityHistoryMutationState> = mutableState
     private var operation: Job? = null
+    private var pendingCorrection: PendingCorrection? = null
     private var closed = false
 
     init {
@@ -209,6 +216,8 @@ class ActivityHistoryMutationController internal constructor(
                 }
             is ActivityHistoryMutationAction.SetMissing -> editValue(action.id) { copy(missing = action.missing) }
             ActivityHistoryMutationAction.Save -> save()
+            ActivityHistoryMutationAction.ProceedOverlap -> proceedOverlap()
+            ActivityHistoryMutationAction.CancelOverlap -> cancelOverlap()
             ActivityHistoryMutationAction.RequestDelete -> requestDelete()
             ActivityHistoryMutationAction.ConfirmDelete -> delete()
         }
@@ -217,7 +226,7 @@ class ActivityHistoryMutationController internal constructor(
     fun handleBack(): Boolean {
         val state = mutableState.value
         if (state.isMutating) return true
-        if (state.draft != null || state.deleteConfirmation) {
+        if (state.draft != null || state.deleteConfirmation || state.overlapWarning) {
             cancelTransient()
             return true
         }
@@ -232,7 +241,15 @@ class ActivityHistoryMutationController internal constructor(
     private fun reload(issue: ActivityHistoryMutationIssue? = null) {
         if (closed || mutableState.value.isMutating) return
         operation?.cancel()
-        mutableState.update { it.copy(load = HistoryDetailLoad.Loading, draft = null, deleteConfirmation = false) }
+        pendingCorrection = null
+        mutableState.update {
+            it.copy(
+                load = HistoryDetailLoad.Loading,
+                draft = null,
+                deleteConfirmation = false,
+                overlapWarning = false,
+            )
+        }
         operation =
             scope.launch {
                 try {
@@ -267,6 +284,8 @@ class ActivityHistoryMutationController internal constructor(
         val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
         if (detail.root.planEntryId != null) return
         val zone = detail.originalZoneId
+        val startedOccurrence = detail.root.startedAt?.occurrenceIn(zone)
+        val completedOccurrence = detail.root.completedAt.occurrenceIn(zone)
         mutableState.update {
             it.copy(
                 draft =
@@ -277,6 +296,10 @@ class ActivityHistoryMutationController internal constructor(
                             DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(instant.atZone(zone))
                         },
                         DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(detail.root.completedAt.atZone(zone)),
+                        startedOffset = startedOccurrence?.selectedOffset,
+                        completedOffset = completedOccurrence.selectedOffset,
+                        startedOffsets = startedOccurrence?.validOffsets.orEmpty(),
+                        completedOffsets = completedOccurrence.validOffsets,
                         values = detail.fields.associate { field -> field.id to field.actualDraft() },
                         shortComment = detail.root.shortComment.orEmpty(),
                         originalShortComment = detail.root.shortComment,
@@ -288,17 +311,26 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     private fun requestDelete() {
-        if (mutableState.value.isMutating || mutableState.value.load !is HistoryDetailLoad.Content) return
+        if (
+            mutableState.value.isMutating ||
+            mutableState.value.overlapWarning ||
+            mutableState.value.load !is HistoryDetailLoad.Content
+        ) {
+            return
+        }
         mutableState.update { it.copy(draft = null, deleteConfirmation = true, issue = null) }
     }
 
     private fun cancelTransient() {
         if (mutableState.value.isMutating) return
-        mutableState.update { it.copy(draft = null, deleteConfirmation = false, issue = null) }
+        pendingCorrection = null
+        mutableState.update {
+            it.copy(draft = null, deleteConfirmation = false, overlapWarning = false, issue = null)
+        }
     }
 
     private fun editDraft(transform: ActivityHistoryCorrectionDraft.() -> ActivityHistoryCorrectionDraft) {
-        if (mutableState.value.isMutating) return
+        if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
         mutableState.update { state -> state.copy(draft = state.draft?.transform(), issue = null) }
     }
 
@@ -308,7 +340,7 @@ class ActivityHistoryMutationController internal constructor(
     ) = editDraft { copy(values = values[id]?.let { values + (id to it.transform()) } ?: values) }
 
     private fun save() {
-        if (mutableState.value.isMutating) return
+        if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
         val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
         val draft = mutableState.value.draft ?: return
         if (detail.root.planEntryId != null) return
@@ -318,34 +350,12 @@ class ActivityHistoryMutationController internal constructor(
         operation =
             scope.launch {
                 try {
-                    correct(executionId, correction, commandAt)
-                    if (!closed) {
-                        mutableState.update {
-                            it.copy(
-                                load = HistoryDetailLoad.Loading,
-                                draft = null,
-                                isMutating = false,
-                                refreshGeneration = it.refreshGeneration + 1,
-                            )
-                        }
-                        val canonical =
-                            try {
-                                readDetail(executionId)
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (_: Exception) {
-                                mutableState.update { it.copy(load = HistoryDetailLoad.Failure("read")) }
-                                return@launch
-                            }
-                        if (!closed) {
-                            mutableState.update {
-                                it.copy(
-                                    load =
-                                        canonical?.let(HistoryDetailLoad<ActivityHistoryDetail>::Content)
-                                            ?: HistoryDetailLoad.Unavailable,
-                                )
-                            }
-                        }
+                    val timed = correction.time as? ActivityHistoryTimeCorrection.Timed
+                    if (timed != null && overlaps(timed.startedAt, timed.completedAt, executionId)) {
+                        pendingCorrection = PendingCorrection(correction, commandAt)
+                        mutableState.update { it.copy(isMutating = false, overlapWarning = true) }
+                    } else {
+                        commitCorrection(correction, commandAt)
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -367,8 +377,76 @@ class ActivityHistoryMutationController internal constructor(
             }
     }
 
-    private fun delete() {
+    private fun proceedOverlap() {
         if (mutableState.value.isMutating) return
+        val pending = pendingCorrection ?: return
+        pendingCorrection = null
+        mutableState.update { it.copy(isMutating = true, overlapWarning = false, issue = null) }
+        operation =
+            scope.launch {
+                try {
+                    commitCorrection(pending.correction, pending.commandAt)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: ConcurrentModificationException) {
+                    if (!closed) {
+                        mutableState.update { it.copy(isMutating = false, draft = null) }
+                        reload(ActivityHistoryMutationIssue.STALE)
+                    }
+                } catch (_: Exception) {
+                    if (!closed) {
+                        mutableState.update {
+                            it.copy(isMutating = false, issue = ActivityHistoryMutationIssue.SAVE_FAILURE)
+                        }
+                    }
+                }
+            }
+    }
+
+    private fun cancelOverlap() {
+        if (mutableState.value.isMutating) return
+        pendingCorrection = null
+        mutableState.update { it.copy(overlapWarning = false, issue = null) }
+    }
+
+    private suspend fun commitCorrection(
+        correction: ActivityHistoryCorrection,
+        commandAt: Instant,
+    ) {
+        correct(executionId, correction, commandAt)
+        if (!closed) {
+            mutableState.update {
+                it.copy(
+                    load = HistoryDetailLoad.Loading,
+                    draft = null,
+                    isMutating = false,
+                    overlapWarning = false,
+                    refreshGeneration = it.refreshGeneration + 1,
+                )
+            }
+            val canonical =
+                try {
+                    readDetail(executionId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    mutableState.update { it.copy(load = HistoryDetailLoad.Failure("read")) }
+                    return
+                }
+            if (!closed) {
+                mutableState.update {
+                    it.copy(
+                        load =
+                            canonical?.let(HistoryDetailLoad<ActivityHistoryDetail>::Content)
+                                ?: HistoryDetailLoad.Unavailable,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun delete() {
+        if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
         val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
         val commandAt = now()
         mutableState.update { it.copy(isMutating = true, issue = null) }
@@ -490,6 +568,23 @@ class ActivityHistoryMutationController internal constructor(
         mutableState.update { it.copy(issue = issue) }
         return null
     }
+
+    private fun Instant.occurrenceIn(zone: ZoneId): Occurrence {
+        val zoned = atZone(zone)
+        val local = zoned.toLocalDateTime()
+        val offsets = zone.rules.getValidOffsets(local)
+        return Occurrence(offsets.takeIf { it.size == 2 }.orEmpty(), zoned.offset.takeIf { it in offsets })
+    }
+
+    private data class Occurrence(
+        val validOffsets: List<ZoneOffset>,
+        val selectedOffset: ZoneOffset?,
+    )
+
+    private data class PendingCorrection(
+        val correction: ActivityHistoryCorrection,
+        val commandAt: Instant,
+    )
 
     private fun com.alexandr5476.lifetracing.domain.ActivityHistoryField.actualDraft(): ActivityHistoryFieldDraft =
         when (val actual = actualValue) {

@@ -6,6 +6,8 @@ Read this addendum together with the frozen product v0.16, domain v0.10, and dat
 
 The approved production History Parent narrows product-spec §42 only for canonical completed-History detail. Field and Category-option labels are frozen at execution/snapshot history: use the snapshot local override when present, otherwise its `name_at_creation` or `label_at_creation`. Completed History does not consult mutable ActivityTemplate or SequenceTemplate display metadata, so later source rename/archive/schema evolution cannot reinterpret a stored result. Stable source Field and option identities, Statistics grouping, and all non-History Template, Plan, and SequenceTemplate rename-propagation semantics remain unchanged.
 
+History navigation derives its reachable newest date from the latest persisted completed root's `primaryLocalDate`, or current local date when later. It never treats the current device date as a hard cap, so a later original-zone date remains reachable after a device timezone change. The lookup remains a bounded canonical History read; it does not reinterpret persisted timestamps or load unbounded history.
+
 ## First coded Plan UI scope
 
 The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.

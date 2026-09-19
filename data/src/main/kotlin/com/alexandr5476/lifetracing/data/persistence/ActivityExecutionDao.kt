@@ -100,6 +100,13 @@ internal abstract class ActivityExecutionDao {
         cursorId: String?,
     ): List<ActivityHistoryRootEntity>
 
+    @Query(
+        "SELECT primary_local_date FROM activity_executions " +
+            "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "ORDER BY primary_local_date DESC LIMIT 1",
+    )
+    abstract fun getLatestCompletedStandaloneHistoryDate(): String?
+
     @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
     protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?
 
