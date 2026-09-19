@@ -438,6 +438,55 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun discoveryRetryKeepsAnAlreadyFailedOlderRequestRetryable() =
+        runBlocking {
+            val initialDiscovery = CompletableDeferred<LocalDate?>()
+            val latest = TODAY.plusDays(HISTORY_WINDOW_DAYS + 2)
+            var discoveries = 0
+            var failOlder = true
+            val fixture =
+                fixture(
+                    readLatestDate = {
+                        if (discoveries++ == 0) initialDiscovery.await() else latest
+                    },
+                ) { query ->
+                    if (failOlder) {
+                        failOlder = false
+                        error("older failed")
+                    }
+                    listOf(root(query.dateRange.endDate.toString()))
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Failure>()
+            val failedOlder = fixture.queries.single()
+
+            initialDiscovery.completeExceptionally(IllegalStateException("discovery failed"))
+            fixture.awaitDiscoveryFailure()
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitDiscoveryRecovered()
+
+            assertInstanceOf(HistoryRootsLoad.Failure::class.java, fixture.controller.state.value.load)
+            assertEquals(1, fixture.queries.size)
+
+            fixture.controller.dispatch(HistoryAction.Retry)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(failedOlder, fixture.queries.last())
+
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(3)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(4)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(5)
+            assertEquals(latest, fixture.controller.state.value.window.endDate)
+            assertTrue(fixture.queries.all { it.dateRange.lengthInDays() <= HISTORY_WINDOW_DAYS })
+            fixture.close()
+        }
+
+    @Test
     fun refreshRediscoversNewestDateBeforeReloadingRoots() =
         runBlocking {
             var persistedDate = TODAY

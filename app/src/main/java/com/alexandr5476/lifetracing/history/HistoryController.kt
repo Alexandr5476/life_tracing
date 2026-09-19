@@ -147,13 +147,12 @@ class HistoryController internal constructor(
     ) {
         if (closed || !routeActive) return
         val request = discoveryGeneration.incrementAndGet()
-        retryRequest = null
+        val retriesSupersededInitialDiscovery =
+            purpose == DiscoveryPurpose.Initial && visibleRequest != generation.get()
+        if (!retriesSupersededInitialDiscovery) retryRequest = null
         retryDiscovery = DiscoveryRequest(purpose, visibleRequest)
         mutableState.update {
-            val hasVisiblePage = it.load is HistoryRootsLoad.Content || it.load is HistoryRootsLoad.Empty
-            val retriesSupersededInitialDiscovery =
-                purpose == DiscoveryPurpose.Initial && visibleRequest != generation.get()
-            if (!hasVisiblePage || !retriesSupersededInitialDiscovery) {
+            if (!retriesSupersededInitialDiscovery) {
                 it.copy(
                     load = HistoryRootsLoad.Loading,
                     canNavigateNewer = false,
