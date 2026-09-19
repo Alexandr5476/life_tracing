@@ -69,6 +69,9 @@ sealed interface HistoryAction {
     data object LoadMore : HistoryAction
 
     data object Retry : HistoryAction
+
+    /** Reload after a durable mutation that can change a completed root's placement. */
+    data object Refresh : HistoryAction
 }
 
 class HistoryController internal constructor(
@@ -79,6 +82,7 @@ class HistoryController internal constructor(
     private val readLatestDate: suspend () -> LocalDate? = { null },
 ) {
     private val generation = AtomicLong()
+    private val discoveryGeneration = AtomicLong()
     private val initialToday = now().atZone(zoneId()).toLocalDate()
     private val mutableState = MutableStateFlow(HistoryPresentationState(initialWindow(initialToday)))
     val state: StateFlow<HistoryPresentationState> = mutableState
@@ -104,38 +108,43 @@ class HistoryController internal constructor(
                     ?.let(::load)
             HistoryAction.LoadMore -> nextCursor?.let { load(mutableState.value.window, it) }
             HistoryAction.Retry ->
-                if (retryDiscovery) {
-                    discoverAndLoad()
-                } else {
-                    retryRequest?.let { load(it.window, it.continuation) }
-                }
+                retryDiscovery?.let(::discoverAndLoad) ?: retryRequest?.let { load(it.window, it.continuation) }
+            HistoryAction.Refresh -> {
+                if (closed || !routeActive) return
+                generation.incrementAndGet()
+                nextCursor = null
+                discoverAndLoad(DiscoveryPurpose.Refresh)
+            }
         }
     }
 
     fun onRouteEntered() {
         if (closed || routeActive) return
         routeActive = true
-        discoverAndLoad()
+        discoverAndLoad(DiscoveryPurpose.Initial)
     }
 
     fun onRouteExited() {
         routeActive = false
-        retryDiscovery = false
+        retryDiscovery = null
         generation.incrementAndGet()
+        discoveryGeneration.incrementAndGet()
     }
 
     fun close() {
         closed = true
         routeActive = false
-        retryDiscovery = false
+        retryDiscovery = null
         generation.incrementAndGet()
+        discoveryGeneration.incrementAndGet()
     }
 
-    private fun discoverAndLoad() {
+    private fun discoverAndLoad(purpose: DiscoveryPurpose) {
         if (closed || !routeActive) return
-        val request = generation.incrementAndGet()
+        val request = discoveryGeneration.incrementAndGet()
+        val visibleRequest = generation.get()
         retryRequest = null
-        retryDiscovery = true
+        retryDiscovery = purpose
         mutableState.update {
             it.copy(
                 load = HistoryRootsLoad.Loading,
@@ -145,25 +154,37 @@ class HistoryController internal constructor(
         }
         scope.launch {
             try {
-                val latest = readLatestDate()
-                if (!closed && routeActive && generation.get() == request) {
-                    val previousUpperBound = upperBound
-                    upperBound = maxOf(today(), latest ?: today())
-                    val window =
-                        mutableState.value.window.takeUnless { it.endDate == previousUpperBound }
-                            ?: initialWindow(upperBound)
-                    retryDiscovery = false
-                    load(window)
-                }
+                publishDiscoverySuccess(request, visibleRequest, purpose, readLatestDate())
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (!closed && routeActive && generation.get() == request) {
+                if (isCurrentDiscovery(request) && generation.get() == visibleRequest) {
                     mutableState.update { it.copy(load = HistoryRootsLoad.Failure(failure.message ?: "Unknown error")) }
                 }
             }
         }
     }
+
+    private fun publishDiscoverySuccess(
+        request: Long,
+        visibleRequest: Long,
+        purpose: DiscoveryPurpose,
+        latest: LocalDate?,
+    ) {
+        if (!isCurrentDiscovery(request)) return
+        upperBound = maxOf(today(), latest ?: today())
+        retryDiscovery = null
+        if (purpose == DiscoveryPurpose.Refresh || generation.get() == visibleRequest) {
+            load(initialWindow(upperBound))
+        } else {
+            mutableState.update { state ->
+                state.copy(canNavigateNewer = state.window.endDate < upperBound)
+            }
+        }
+    }
+
+    private fun isCurrentDiscovery(request: Long): Boolean =
+        !closed && routeActive && discoveryGeneration.get() == request
 
     private fun load(
         window: HistoryBrowseWindow,
@@ -173,7 +194,7 @@ class HistoryController internal constructor(
         val request = generation.incrementAndGet()
         val admittedRequest = HistoryRequest(window, continuation)
         retryRequest = admittedRequest
-        retryDiscovery = false
+        retryDiscovery = null
         val canNavigateNewer = window.endDate < upperBound
         mutableState.update {
             it.copy(
@@ -212,12 +233,17 @@ class HistoryController internal constructor(
         HistoryBrowseWindow(today.minusDays(HISTORY_WINDOW_DAYS - 1), today)
 
     @Volatile
-    private var retryDiscovery = false
+    private var retryDiscovery: DiscoveryPurpose? = null
 
     private data class HistoryRequest(
         val window: HistoryBrowseWindow,
         val continuation: CompletedHistoryCursor?,
     )
+
+    private enum class DiscoveryPurpose {
+        Initial,
+        Refresh,
+    }
 }
 
 sealed interface HistoryDetailLoad<out T> {

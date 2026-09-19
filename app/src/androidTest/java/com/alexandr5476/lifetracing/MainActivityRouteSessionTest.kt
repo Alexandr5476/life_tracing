@@ -11,6 +11,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -34,6 +35,8 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
+import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
@@ -75,7 +78,10 @@ import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.history.ActivityHistoryMutationAction
 import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
 import com.alexandr5476.lifetracing.history.ActivityHistoryMutationIssue
+import com.alexandr5476.lifetracing.history.HistoryAction
+import com.alexandr5476.lifetracing.history.HistoryController
 import com.alexandr5476.lifetracing.history.HistoryDetailLoad
+import com.alexandr5476.lifetracing.history.HistoryRootsLoad
 import com.alexandr5476.lifetracing.history.ManualActivityEntryAction
 import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
@@ -90,6 +96,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -98,6 +105,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
@@ -111,6 +119,23 @@ import java.util.concurrent.atomic.AtomicInteger
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Before
+    fun removeStaleMovedHistoryFixture() {
+        val commandNow = Instant.parse("2099-09-17T20:00:00Z")
+        val oldDate = LocalDate.parse("2099-09-17")
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        HistoryReadRepository
+            .create(composeTestRule.activity)
+            .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(oldDate, oldDate.plusDays(1)), 100))
+            .filterIsInstance<CompletedActivityHistoryRoot>()
+            .filter { it.title.startsWith("Moved history ") }
+            .forEach { root ->
+                commands.getHistory(root.executionId)?.execution?.takeIf { it.deletedAt == null }?.let { stale ->
+                    commands.softDeleteHistory(root.executionId, stale.updatedAt, commandNow.plusSeconds(1))
+                }
+            }
+    }
 
     @Test
     fun realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement() {
@@ -183,6 +208,93 @@ class MainActivityRouteSessionTest {
         assertEquals("external", requireNotNull(history.getActivityDetail(execution.id)).root.shortComment)
         assertNotEquals(original.snapshot.id, external.snapshot.id)
         controller.close()
+    }
+
+    @Test
+    fun correctedNoLiveActivityRefreshesHistoryDiscoveryIntoItsNewOriginalDate() {
+        val deviceZone = ZoneOffset.UTC
+        val originalZone = ZoneOffset.ofHours(14)
+        val commandNow = Instant.parse("2099-09-17T20:00:00Z")
+        val oldDate = LocalDate.parse("2099-09-17")
+        val newDate = oldDate.plusDays(1)
+        val initialCompletedAt = oldDate.atTime(9, 0).toInstant(originalZone)
+        val correctedCompletedAt = newDate.atTime(9, 0).toInstant(originalZone)
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val suffix = System.nanoTime().toString()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft("Moved history $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = commandNow.minusSeconds(1),
+                )
+        val execution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(template.id),
+                initialCompletedAt,
+                commandNow.minusSeconds(1),
+                originalZone,
+                expectedTemplateRevision = template.revision,
+            )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            HistoryController(
+                scope,
+                { query -> withContext(Dispatchers.IO) { history.getCompletedRoots(query) } },
+                { commandNow },
+                { deviceZone },
+                {
+                    withContext(Dispatchers.IO) {
+                        history.getLatestCompletedPrimaryLocalDate(commandNow, deviceZone)
+                    }
+                },
+            )
+
+        try {
+            controller.onRouteEntered()
+            composeTestRule.waitUntil(5_000) { controller.state.value.load is HistoryRootsLoad.Content }
+            assertEquals(oldDate, controller.state.value.window.endDate)
+            assertEquals(1, controller.rootsWith(execution.id.value).size)
+
+            val before = requireNotNull(commands.getHistory(execution.id))
+            commands.correctHistory(
+                execution.id,
+                ActivityHistoryCorrection(
+                    before.execution.updatedAt,
+                    ActivityHistoryTimeCorrection.NoLive(correctedCompletedAt),
+                    originalZone,
+                    before.execution.values,
+                    before.snapshot.shortComment,
+                ),
+                commandNow,
+            )
+            controller.dispatch(HistoryAction.Refresh)
+            composeTestRule.waitUntil(5_000) {
+                controller.state.value.window.endDate == newDate &&
+                    controller.state.value.load is HistoryRootsLoad.Content
+            }
+
+            val refreshed = controller.rootsWith(execution.id.value)
+            assertEquals(listOf(execution.id.value), refreshed.map { it.executionId.value })
+            assertEquals(newDate, refreshed.single().primaryLocalDate)
+            assertEquals(
+                0,
+                history
+                    .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(oldDate, oldDate), 100))
+                    .filterIsInstance<CompletedActivityHistoryRoot>()
+                    .count { it.executionId == execution.id },
+            )
+        } finally {
+            controller.close()
+            scope.cancel()
+            commands.getHistory(execution.id)?.execution?.let { current ->
+                if (current.deletedAt == null) {
+                    commands.softDeleteHistory(execution.id, current.updatedAt, commandNow.plusSeconds(1))
+                }
+            }
+        }
     }
 
     @Test
@@ -610,7 +722,17 @@ class MainActivityRouteSessionTest {
             }
         }
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
-        composeTestRule.onNodeWithText(correctionTemplate.name).performScrollTo().performClick()
+        val correctionTag = "history-activity-${correctionExecution.id.value}"
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithTag(correctionTag, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithTag(correctionTag, useUnmergedTree = true)
+            .performScrollTo()
+            .performClick()
         composeTestRule.onNodeWithTag("history-correct").performClick()
         composeTestRule.onNodeWithTag("history-correction-comment").performTextReplacement("after")
         val correctionSession =
@@ -631,8 +753,12 @@ class MainActivityRouteSessionTest {
         }
         assertEquals(1, correctionWrites.get())
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_back)).performClick()
+        val deleteTag = "history-activity-${deleteExecution.id.value}"
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodesWithText(deleteTemplate.name).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule
+                .onAllNodesWithTag(deleteTag, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
         }
 
         val deleteEntered = CompletableDeferred<Unit>()
@@ -659,7 +785,10 @@ class MainActivityRouteSessionTest {
                 deleteExecution.id,
             ) { deleteController }
         }
-        composeTestRule.onNodeWithText(deleteTemplate.name).performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithTag(deleteTag, useUnmergedTree = true)
+            .performScrollTo()
+            .performClick()
         composeTestRule.onNodeWithTag("history-delete").performClick()
         composeTestRule
             .onNodeWithText(
@@ -2325,6 +2454,11 @@ class MainActivityRouteSessionTest {
                 DailyQuery(now.atZone(ZoneId.systemDefault()).toLocalDate(), now, 100),
             )
         }
+
+    private fun HistoryController.rootsWith(executionId: String): List<CompletedActivityHistoryRoot> =
+        ((state.value.load as? HistoryRootsLoad.Content)?.roots.orEmpty())
+            .filterIsInstance<CompletedActivityHistoryRoot>()
+            .filter { it.executionId.value == executionId }
 
     private fun durableCount(
         table: String,

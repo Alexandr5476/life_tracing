@@ -34,6 +34,7 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorRouteSessionOwn
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.history.ActivityHistoryDetailRoute
 import com.alexandr5476.lifetracing.history.ActivityHistoryMutationRouteSessionOwner
+import com.alexandr5476.lifetracing.history.HistoryAction
 import com.alexandr5476.lifetracing.history.HistoryControllerOwner
 import com.alexandr5476.lifetracing.history.HistoryRoute
 import com.alexandr5476.lifetracing.history.ManualActivityEntryRoute
@@ -290,7 +291,7 @@ internal fun LifeTracingApp(
                                         backStack.completeManualActivityEntry {
                                             historyOwner
                                                 .get(runtimeGraph::createHistoryController)
-                                                .dispatch(com.alexandr5476.lifetracing.history.HistoryAction.Retry)
+                                                .dispatch(HistoryAction.Refresh)
                                         }
                                     }
                                 else -> {
@@ -489,7 +490,7 @@ internal fun LifeTracingApp(
                                 onRefresh = {
                                     historyOwner
                                         .get(runtimeGraph::createHistoryController)
-                                        .dispatch(com.alexandr5476.lifetracing.history.HistoryAction.Retry)
+                                        .dispatch(HistoryAction.Refresh)
                                     controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
                                 },
                                 onDeleted = {
@@ -517,7 +518,7 @@ internal fun LifeTracingApp(
                                             backStack.completeManualActivityEntry {
                                                 historyOwner
                                                     .get(runtimeGraph::createHistoryController)
-                                                    .dispatch(com.alexandr5476.lifetracing.history.HistoryAction.Retry)
+                                                    .dispatch(HistoryAction.Refresh)
                                             }
                                         }
                                     },

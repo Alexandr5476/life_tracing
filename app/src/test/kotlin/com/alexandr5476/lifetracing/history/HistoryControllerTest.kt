@@ -353,6 +353,69 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun delayedInitialDiscoveryRetainsOlderWindowAndSuppliesItsNewerBound() =
+        runBlocking {
+            val discovery = CompletableDeferred<LocalDate?>()
+            val latest = TODAY.plusDays(5)
+            val fixture =
+                fixture(readLatestDate = { discovery.await() }) { query ->
+                    listOf(
+                        root(query.dateRange.endDate.toString()).copy(
+                            primaryLocalDate = query.dateRange.endDate,
+                        ),
+                    )
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val older = fixture.queries.single().dateRange
+
+            discovery.complete(latest)
+            yield()
+
+            assertEquals(older, fixture.queries.single().dateRange)
+            assertTrue(fixture.controller.state.value.canNavigateNewer)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(2)
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitQueries(3)
+            assertEquals(
+                latest,
+                fixture.queries
+                    .last()
+                    .dateRange
+                    .endDate,
+            )
+            fixture.close()
+        }
+
+    @Test
+    fun refreshRediscoversNewestDateBeforeReloadingRoots() =
+        runBlocking {
+            var persistedDate = TODAY
+            val executionId = "corrected"
+            val fixture =
+                fixture(readLatestDate = { persistedDate }) { query ->
+                    listOf(root(executionId).copy(primaryLocalDate = persistedDate))
+                        .filter { it.primaryLocalDate in query.dateRange.startDate..query.dateRange.endDate }
+                }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(TODAY, fixture.controller.state.value.window.endDate)
+
+            persistedDate = TODAY.plusDays(1)
+            fixture.controller.dispatch(HistoryAction.Refresh)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            assertEquals(persistedDate, fixture.controller.state.value.window.endDate)
+            assertEquals(listOf(executionId), fixture.contentIds())
+            assertEquals(1, fixture.contentIds().distinct().size)
+            fixture.close()
+        }
+
+    @Test
     fun persistedOriginalDateAheadOfDeviceTodayRemainsReachableAfterZoneChange() =
         runBlocking {
             val persistedDate = TODAY.plusDays(1)
