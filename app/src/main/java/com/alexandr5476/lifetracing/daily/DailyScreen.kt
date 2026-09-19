@@ -74,6 +74,7 @@ fun DailyRoute(
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
+    onHistory: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -90,6 +91,7 @@ fun DailyRoute(
         onStartActivity = onStartActivity,
         onLibrary = onLibrary,
         onPlan = onPlan,
+        onHistory = onHistory,
         onExpandSequence = onExpandSequence,
         onExecutePlan = onExecutePlan,
     )
@@ -103,6 +105,7 @@ internal fun DailyScreen(
     onStartActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
+    onHistory: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -116,7 +119,7 @@ internal fun DailyScreen(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary, onPlan)
+            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary, onPlan, onHistory)
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
@@ -138,6 +141,7 @@ private fun DateHeader(
     onStartActivity: () -> Unit,
     onLibrary: () -> Unit,
     onPlan: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -167,11 +171,16 @@ private fun DateHeader(
                     Text(stringResource(R.string.daily_start_activity))
                 }
             }
-            LifeTracingSecondaryButton(onClick = onLibrary) {
-                Text(stringResource(R.string.daily_library))
-            }
-            LifeTracingSecondaryButton(onClick = onPlan) {
-                Text(stringResource(R.string.daily_plan))
+            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                LifeTracingSecondaryButton(onClick = onLibrary) {
+                    Text(stringResource(R.string.daily_library))
+                }
+                LifeTracingSecondaryButton(onClick = onPlan) {
+                    Text(stringResource(R.string.daily_plan))
+                }
+                LifeTracingSecondaryButton(onClick = onHistory) {
+                    Text(stringResource(R.string.daily_history))
+                }
             }
         }
         TextButton(

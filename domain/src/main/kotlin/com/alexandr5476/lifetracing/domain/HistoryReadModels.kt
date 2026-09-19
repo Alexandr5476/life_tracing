@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.domain
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 
 data class HistoryDateRange(
     val startDate: LocalDate,
@@ -16,16 +17,35 @@ data class HistoryDateRange(
 data class CompletedHistoryQuery(
     val dateRange: HistoryDateRange,
     val limit: Int,
+    val continuation: CompletedHistoryCursor? = null,
 ) {
     init {
         require(limit > 0) { "History result limit must be positive" }
     }
 }
 
+enum class CompletedHistoryRootKind { ACTIVITY, SEQUENCE }
+
+/** Stable position in the canonical completed-History order. */
+data class CompletedHistoryCursor(
+    val primaryLocalDate: LocalDate,
+    val completedAt: Instant,
+    val kind: CompletedHistoryRootKind,
+    val executionId: String,
+)
+
 sealed interface CompletedHistoryRoot {
     val primaryLocalDate: LocalDate
     val completedAt: Instant
 }
+
+fun CompletedHistoryRoot.cursor(): CompletedHistoryCursor =
+    when (this) {
+        is CompletedActivityHistoryRoot ->
+            CompletedHistoryCursor(primaryLocalDate, completedAt, CompletedHistoryRootKind.ACTIVITY, executionId.value)
+        is CompletedSequenceHistoryRoot ->
+            CompletedHistoryCursor(primaryLocalDate, completedAt, CompletedHistoryRootKind.SEQUENCE, executionId.value)
+    }
 
 data class CompletedActivityHistoryRoot(
     val executionId: ActivityExecutionId,
@@ -58,6 +78,8 @@ data class CompletedSequenceHistoryRoot(
 
 data class ActivityHistoryDetail(
     val root: CompletedActivityHistoryRoot,
+    val updatedAt: Instant,
+    val originalZoneId: ZoneId,
     val settings: ActivityTemplateSettings,
     val fields: List<ActivityHistoryField>,
 )

@@ -178,6 +178,35 @@ class ActivityCommandPoliciesTest {
     }
 
     @Test
+    fun `Plan-linked Activity history is never correction-eligible`() {
+        val snapshot = timedSnapshot()
+        val execution =
+            executions.createManualTimed(
+                snapshot,
+                instant(10),
+                instant(40),
+                instant(50),
+                ZoneOffset.UTC,
+                PlanEntryId("plan"),
+            )
+        val correction =
+            ActivityHistoryCorrection(
+                execution.updatedAt,
+                ActivityHistoryTimeCorrection.Timed(instant(10), instant(40)),
+                ZoneOffset.UTC,
+                execution.values,
+                snapshot.shortComment,
+            )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityHistoryCorrectionPolicy.isNoOp(execution, snapshot, correction)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ActivityHistoryCorrectionPolicy.correct(execution, snapshot, correction, instant(60))
+        }
+    }
+
+    @Test
     fun `No-live correction keeps missing duration and rejects timed shape`() {
         val snapshot = noLiveSnapshot()
         val initial = executions.createManualNoLiveHistory(snapshot, instant(10), instant(20), ZoneOffset.UTC)

@@ -73,6 +73,47 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun historyAndDurableDetailRoutesUseTheExistingDailyBackStack() {
+        val backStack = dailyInitialBackStack.toMutableList()
+
+        backStack.openHistory()
+        backStack.openHistory()
+        backStack.openActivityHistoryDetail("activity")
+        backStack.openActivityHistoryDetail("other")
+        backStack.removeActivityHistoryDetail("stale")
+        assertEquals(listOf(DailyRoot, HistoryRoot, ActivityHistoryDetailRoot("activity")), backStack)
+        backStack.removeActivityHistoryDetail("activity")
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+        backStack.openSequenceHistoryDetail("sequence")
+        backStack.openSequenceHistoryDetail("other")
+        backStack.removeSequenceHistoryDetail("other")
+
+        assertEquals(listOf(DailyRoot, HistoryRoot, SequenceHistoryDetailRoot("sequence")), backStack)
+        backStack.removeSequenceHistoryDetail("sequence")
+        backStack.removeHistory()
+        assertEquals(listOf(DailyRoot), backStack)
+    }
+
+    @Test
+    fun manualHistoryRouteBackRestoreAndSuccessfulDeliveryAreExactlyOnce() {
+        val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, HistoryRoot)
+        var reloads = 0
+
+        backStack.openManualActivityEntry()
+        backStack.openManualActivityEntry()
+        assertEquals(listOf(DailyRoot, HistoryRoot, ManualActivityEntryRoot), backStack)
+        backStack.completeManualActivityEntry { reloads++ }
+        backStack.completeManualActivityEntry { reloads++ }
+        assertEquals(1, reloads)
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+
+        backStack.openManualActivityEntry()
+        backStack.normalizeRestoredManualActivityEntry()
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+        assertEquals(1, reloads)
+    }
+
+    @Test
     fun planExecutionKeepsOneExactRouteAndRestoredRouteNormalizesToItsOrigin() {
         val backStack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
         val first = planIdentity("plan-a")

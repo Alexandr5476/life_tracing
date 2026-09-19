@@ -2,6 +2,12 @@
 
 Read this addendum together with the frozen product v0.16, domain v0.10, and database v0.6 specifications. The historical versioned documents remain unchanged.
 
+## Canonical completed-History display
+
+The approved production History Parent narrows product-spec §42 only for canonical completed-History detail. Field and Category-option labels are frozen at execution/snapshot history: use the snapshot local override when present, otherwise its `name_at_creation` or `label_at_creation`. Completed History does not consult mutable ActivityTemplate or SequenceTemplate display metadata, so later source rename/archive/schema evolution cannot reinterpret a stored result. Stable source Field and option identities, Statistics grouping, and all non-History Template, Plan, and SequenceTemplate rename-propagation semantics remain unchanged.
+
+History navigation derives its reachable newest date from the latest persisted completed root's `primaryLocalDate`, or current local date when later. It never treats the current device date as a hard cap, so a later original-zone date remains reachable after a device timezone change. The lookup checks only the one or two `primaryLocalDate` partitions later than the device's current local date that are representable at the current instant; it uses existing-index-compatible bounded reads and does not reinterpret persisted timestamps or load unbounded history. Completed-History paging remains the bounded canonical read.
+
 ## First coded Plan UI scope
 
 The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.
@@ -28,6 +34,12 @@ While engaged, the Plan cannot be cancelled, rescheduled, updated from its Templ
 This prevents replacement of a Plan snapshot, target, or source revision beneath its running Execution. An explicit `End sequence early` makes a linked `PLANNED` Sequence Plan `FULFILLED` atomically with its fulfilling `SequenceExecution`; `PlanEntry.fulfilledAt` equals that execution's `endedAt`. The runtime domain transition only produces terminal `ENDED_EARLY`; the later repository transaction owns the atomic Plan update.
 
 After any successful historical correction of a fulfilled Plan-linked terminal `SequenceExecution`, including structural `Close gap`, if the Sequence `endedAt` changes, the repository transaction must atomically set `PlanEntry.fulfilledAt` to that corrected `endedAt`. The same Plan remains `FULFILLED`, and its same `fulfilledSequenceExecutionId` continues to identify this Sequence; after success, `PlanEntry.fulfilledAt == SequenceExecution.endedAt`. Plan ID, target, precision, snapshot, source linkage/revision, and cancellation semantics remain unchanged. The Plan is never reopened or replaced. This rule applies only to Plan-linked Sequence correction, not standalone Activity correction.
+
+## Standalone Activity historical mutation boundary
+
+Canonical Activity correction is limited to completed, nondeleted, standalone `ActivityExecution` with `planEntryId == null`. A Plan-linked Activity correction command is invalid even when it is an exact no-op or changes only the Short Comment. Its execution, snapshot, values, Statistics contribution, source user state, and complete Plan state remain unchanged; v1 defines no `PlanEntry.fulfilledAt` consequence for such a correction.
+
+A completed standalone Plan-linked Activity may still be soft-deleted. Deletion preserves its execution identity, snapshot, values, StatisticsSeries identity, `planEntryId`, and historical facts while setting only the Activity deletion metadata. The linked Plan remains the same `FULFILLED` value: `fulfilledAt`, fulfilled execution/snapshot linkage, source metadata, and Plan timestamps are not rewritten.
 
 ## Past overdue Plans
 

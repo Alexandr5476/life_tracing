@@ -419,11 +419,22 @@ object ActivityExecutionValuePolicy {
 }
 
 object ActivityHistoryCorrectionPolicy {
+    fun requireEligible(execution: ActivityExecution) {
+        require(execution.context == ActivityExecutionContext.STANDALONE) {
+            "Sequence child history requires coordinated Sequence correction"
+        }
+        require(execution.planEntryId == null) { "Plan-linked Activity history cannot be corrected" }
+        require(execution.status == ActivityExecutionStatus.COMPLETED && execution.deletedAt == null) {
+            "Only non-deleted completed history can be corrected"
+        }
+    }
+
     fun isNoOp(
         execution: ActivityExecution,
         snapshot: ActivityConfigSnapshot,
         correction: ActivityHistoryCorrection,
     ): Boolean {
+        requireEligible(execution)
         val timeMatches =
             when (val time = correction.time) {
                 is ActivityHistoryTimeCorrection.Timed ->
@@ -444,12 +455,7 @@ object ActivityHistoryCorrectionPolicy {
         correction: ActivityHistoryCorrection,
         correctedAt: Instant,
     ): ActivityExecution {
-        require(execution.context == ActivityExecutionContext.STANDALONE) {
-            "Sequence child history requires coordinated Sequence correction"
-        }
-        require(execution.status == ActivityExecutionStatus.COMPLETED && execution.deletedAt == null) {
-            "Only non-deleted completed history can be corrected"
-        }
+        requireEligible(execution)
         val persistedCorrectionTime = correctedAt.toPersistenceInstant()
         require(persistedCorrectionTime > execution.updatedAt) { "Historical correction time must advance" }
         val corrected =
