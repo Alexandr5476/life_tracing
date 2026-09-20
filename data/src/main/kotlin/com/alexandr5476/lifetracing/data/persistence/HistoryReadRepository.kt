@@ -39,7 +39,6 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.util.concurrent.Callable
 
 @Suppress("TooManyFunctions") // Immutable root/detail mapping keeps the read boundary self-contained.
@@ -51,31 +50,22 @@ class HistoryReadRepository internal constructor(
         return transaction { getCompletedRootsLocked(query) }
     }
 
+    @Suppress("UnusedParameter") // Callers retain one coherent context; durable History has no clock horizon.
     fun getLatestCompletedPrimaryLocalDate(
         now: Instant,
         deviceZoneId: ZoneId,
-    ): LocalDate? {
-        val persistedNow = Instant.ofEpochMilli(now.toEpochMilli())
-        val today = persistedNow.atZone(deviceZoneId).toLocalDate()
-        var candidate = persistedNow.atZone(ZoneOffset.MAX).toLocalDate()
-        return transaction {
-            while (candidate > today) {
-                val earliestCompletedAt = candidate.atStartOfDay(ZoneOffset.MAX).toInstant().toEpochMilli()
-                val hasActivity =
-                    database.activityExecutionDao().hasCompletedStandaloneHistoryRootOn(
-                        candidate.toString(),
-                        earliestCompletedAt,
-                        persistedNow.toEpochMilli(),
-                    )
-                val hasSequence = database.sequenceExecutionDao().hasTerminalHistoryRootOn(candidate.toString())
-                if (hasActivity || hasSequence) {
-                    return@transaction candidate
-                }
-                candidate = candidate.minusDays(1)
-            }
-            null
+    ): LocalDate? =
+        transaction {
+            listOfNotNull(
+                database.activityExecutionDao().getLatestCompletedStandaloneHistoryRootDate(),
+                database.sequenceExecutionDao().getLatestTerminalHistoryRootDate(
+                    SequenceExecutionStatus.COMPLETED.name,
+                ),
+                database.sequenceExecutionDao().getLatestTerminalHistoryRootDate(
+                    SequenceExecutionStatus.ENDED_EARLY.name,
+                ),
+            ).maxOrNull()?.let(LocalDate::parse)
         }
-    }
 
     internal fun getCompletedRootsLocked(query: CompletedHistoryQuery): List<CompletedHistoryRoot> {
         require(query.limit <= MAXIMUM_RESULT_LIMIT) { "History result limit exceeds $MAXIMUM_RESULT_LIMIT" }

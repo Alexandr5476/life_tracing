@@ -139,7 +139,7 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun latestDateDiscoveryUsesOnlyFutureDatePartitionsAndExistingIndexes() {
+    fun latestDateDiscoveryUsesBoundedEligibleRootIndexes() {
         insertActivitySnapshot("activity-snapshot", "Frozen Activity", "Frozen note")
         insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", "Sequence note")
         val now = Instant.parse("2026-08-20T12:00:00Z")
@@ -153,27 +153,37 @@ class HistoryReadRepositoryTest {
                 index,
             )
         }
+        repeat(1_000) { index ->
+            insertSequence(
+                "future-running-sequence-$index",
+                now.plusSeconds(86_400L + index),
+                SequenceExecutionStatus.RUNNING,
+            )
+        }
         observedSql.clear()
 
         assertNull(repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)))
-        assertTrue(observedSql.any { it.contains("activity_executions_context_completed") })
-        assertTrue(observedSql.any { it.contains("sequence_executions_primary_local_date") })
+        assertTrue(observedSql.any { it.contains("activity_executions_history_latest_root") })
+        assertTrue(observedSql.any { it.contains("sequence_executions_status_primary_date") })
         assertTrue(
             explain(
-                "SELECT EXISTS(SELECT 1 FROM activity_executions " +
-                    "INDEXED BY activity_executions_context_completed " +
-                    "WHERE context_type = 'STANDALONE' AND completed_at_ms BETWEEN 0 AND 0 " +
-                    "AND primary_local_date = '2026-08-21' AND status = 'COMPLETED' " +
-                    "AND deleted_at_ms IS NULL LIMIT 1)",
-            ).any { it.contains("activity_executions_context_completed") },
+                "SELECT primary_local_date FROM activity_executions " +
+                    "INDEXED BY activity_executions_history_latest_root " +
+                    "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+                    "ORDER BY primary_local_date DESC LIMIT 1",
+            ).any {
+                it.contains("activity_executions_history_latest_root") &&
+                    it.contains("context_type=? AND status=? AND deleted_at_ms=?")
+            },
         )
         assertTrue(
             explain(
-                "SELECT EXISTS(SELECT 1 FROM sequence_executions " +
-                    "INDEXED BY sequence_executions_primary_local_date " +
-                    "WHERE primary_local_date = '2026-08-21' " +
-                    "AND status IN ('COMPLETED', 'ENDED_EARLY') LIMIT 1)",
-            ).any { it.contains("sequence_executions_primary_local_date") },
+                "SELECT primary_local_date FROM sequence_executions " +
+                    "INDEXED BY sequence_executions_status_primary_date " +
+                    "WHERE status = 'COMPLETED' ORDER BY primary_local_date DESC LIMIT 1",
+            ).any {
+                it.contains("sequence_executions_status_primary_date") && it.contains("status=?")
+            },
         )
     }
 
@@ -755,6 +765,70 @@ class HistoryReadRepositoryTest {
                 .filterIsInstance<CompletedActivityHistoryRoot>()
                 .map { it.executionId.value },
         )
+    }
+
+    @Test
+    fun durableStandaloneHistoryRemainsReachableAfterWallClockRollback() {
+        reopenFileDatabase("history-wall-clock-rollback-activity.db")
+        insertNoLiveTemplate("source")
+        val completedAt = Instant.parse("2026-09-17T12:00:00Z")
+        val execution =
+            commands("rollback").addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                completedAt,
+                completedAt.plusSeconds(1),
+                ZoneOffset.UTC,
+            )
+
+        reopenFileDatabase("history-wall-clock-rollback-activity.db", deleteFirst = false)
+        val rolledBackNow = Instant.parse("2026-09-14T00:00:00Z")
+        assertTrue(execution.primaryLocalDate > rolledBackNow.atZone(ZoneOffset.MAX).toLocalDate())
+        assertEquals(
+            execution.primaryLocalDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.UTC),
+        )
+        val roots =
+            repository
+                .getCompletedRoots(
+                    query(
+                        execution.primaryLocalDate.minusDays(27).toString(),
+                        execution.primaryLocalDate.toString(),
+                        100,
+                    ),
+                ).filterIsInstance<CompletedActivityHistoryRoot>()
+        assertEquals(listOf(execution.id.value), roots.map { it.executionId.value })
+        assertEquals(execution.primaryLocalDate, roots.single().primaryLocalDate)
+    }
+
+    @Test
+    fun durableTerminalSequenceRemainsLatestAfterWallClockRollbackAndZoneChange() {
+        reopenFileDatabase("history-wall-clock-rollback-sequence.db")
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", null)
+        val terminalAt = Instant.parse("2026-09-17T12:00:00Z")
+        insertSequence("rolled-sequence", terminalAt, SequenceExecutionStatus.COMPLETED)
+
+        reopenFileDatabase("history-wall-clock-rollback-sequence.db", deleteFirst = false)
+        val persistedDate = terminalAt.minusMillis(1).atZone(ZoneOffset.UTC).toLocalDate()
+        val rolledBackNow = Instant.parse("2026-09-14T00:00:00Z")
+        assertEquals(
+            persistedDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.ofHours(-12)),
+        )
+        assertEquals(
+            persistedDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.ofHours(14)),
+        )
+        val roots =
+            repository
+                .getCompletedRoots(
+                    query(
+                        persistedDate.toString(),
+                        persistedDate.toString(),
+                        10,
+                    ),
+                ).filterIsInstance<CompletedSequenceHistoryRoot>()
+        assertEquals(listOf("rolled-sequence"), roots.map { it.executionId.value })
+        assertEquals(persistedDate, roots.single().primaryLocalDate)
     }
 
     private fun rootIds(roots: List<com.alexandr5476.lifetracing.domain.CompletedHistoryRoot>) =

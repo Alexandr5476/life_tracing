@@ -37,6 +37,7 @@ import androidx.room.Index
         Index(value = ["statistics_series_id", "ended_at_ms"], name = "sequence_executions_series_ended"),
         Index(value = ["plan_entry_id"], name = "sequence_executions_plan_entry_id"),
         Index(value = ["primary_local_date"], name = "sequence_executions_primary_local_date"),
+        Index(value = ["status", "primary_local_date"], name = "sequence_executions_status_primary_date"),
         Index(value = ["snapshot_id"], name = "sequence_executions_snapshot_id"),
         Index(value = ["current_occurrence_id"], name = "sequence_executions_current_occurrence_id"),
     ],

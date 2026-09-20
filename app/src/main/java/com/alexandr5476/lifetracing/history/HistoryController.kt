@@ -10,6 +10,7 @@ import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.cursor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -38,6 +39,13 @@ data class HistoryBrowseWindow(
         val start = endDate.plusDays(1)
         return HistoryBrowseWindow(start, minOf(start.plusDays(HISTORY_WINDOW_DAYS - 1), upperBound))
     }
+}
+
+internal data class HistoryTimeContext(
+    val now: Instant,
+    val zoneId: ZoneId,
+) {
+    val today: LocalDate = now.atZone(zoneId).toLocalDate()
 }
 
 sealed interface HistoryRootsLoad {
@@ -80,7 +88,8 @@ class HistoryController internal constructor(
     private val readRoots: suspend (CompletedHistoryQuery) -> List<CompletedHistoryRoot>,
     private val now: () -> Instant = Instant::now,
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
-    private val readLatestDate: suspend () -> LocalDate? = { null },
+    private val readLatestDate: suspend (HistoryTimeContext) -> LocalDate? = { null },
+    private val semanticGeneration: StateFlow<Long> = MutableStateFlow(0L),
 ) {
     private val generation = AtomicLong()
     private val discoveryGeneration = AtomicLong()
@@ -99,6 +108,17 @@ class HistoryController internal constructor(
 
     private var nextCursor: CompletedHistoryCursor? = null
     private var upperBound = initialToday
+    private val initialSemanticGeneration = semanticGeneration.value
+    private val invalidationJob: Job =
+        scope.launch {
+            var handled = initialSemanticGeneration
+            semanticGeneration.collect { semanticGeneration ->
+                if (semanticGeneration != handled) {
+                    handled = semanticGeneration
+                    if (routeActive) discoverAndLoad(DiscoveryPurpose.Refresh)
+                }
+            }
+        }
 
     fun dispatch(action: HistoryAction) {
         when (action) {
@@ -131,6 +151,7 @@ class HistoryController internal constructor(
         retryDiscovery = null
         generation.incrementAndGet()
         discoveryGeneration.incrementAndGet()
+        invalidationJob.cancel()
     }
 
     fun close() {
@@ -150,6 +171,7 @@ class HistoryController internal constructor(
         val retriesSupersededDiscovery = visibleRequest != generation.get()
         if (!retriesSupersededDiscovery) retryRequest = null
         retryDiscovery = DiscoveryRequest(purpose, visibleRequest)
+        val timeContext = HistoryTimeContext(now(), zoneId())
         mutableState.update {
             if (!retriesSupersededDiscovery) {
                 it.copy(
@@ -164,7 +186,7 @@ class HistoryController internal constructor(
         }
         scope.launch {
             try {
-                publishDiscoverySuccess(request, visibleRequest, readLatestDate())
+                publishDiscoverySuccess(request, visibleRequest, timeContext, readLatestDate(timeContext))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -185,10 +207,11 @@ class HistoryController internal constructor(
     private fun publishDiscoverySuccess(
         request: Long,
         visibleRequest: Long,
+        timeContext: HistoryTimeContext,
         latest: LocalDate?,
     ) {
         if (!isCurrentDiscovery(request)) return
-        upperBound = maxOf(today(), latest ?: today())
+        upperBound = maxOf(timeContext.today, latest ?: timeContext.today)
         retryDiscovery = null
         if (generation.get() == visibleRequest) {
             load(initialWindow(upperBound))
@@ -244,8 +267,6 @@ class HistoryController internal constructor(
             }
         }
     }
-
-    private fun today(): LocalDate = now().atZone(zoneId()).toLocalDate()
 
     private fun initialWindow(today: LocalDate): HistoryBrowseWindow =
         HistoryBrowseWindow(today.minusDays(HISTORY_WINDOW_DAYS - 1), today)

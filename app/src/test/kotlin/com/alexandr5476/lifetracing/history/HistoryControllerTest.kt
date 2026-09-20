@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -31,6 +33,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 
+@Suppress("LargeClass") // One controller fixture keeps the behavior matrix self-contained.
 class HistoryControllerTest {
     @Test
     fun initialRouteEntryIssuesOneFiniteQueryContainingToday() =
@@ -635,6 +638,61 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun inFlightZoneChangePublishesUsingTheCapturedDiscoveryContext() =
+        runBlocking {
+            val persistedDate = TODAY
+            val discoveryStarted = CompletableDeferred<Unit>()
+            val latestDate = CompletableDeferred<LocalDate?>()
+            var zone = ZoneOffset.ofHours(12)
+            val fixture =
+                fixture(
+                    readLatestDateWithContext = { context ->
+                        assertEquals(ZoneOffset.ofHours(12), context.zoneId)
+                        discoveryStarted.complete(Unit)
+                        latestDate.await()
+                    },
+                    zoneId = { zone },
+                ) { query ->
+                    if (persistedDate in query.dateRange.startDate..query.dateRange.endDate) {
+                        listOf(root("persisted"))
+                    } else {
+                        emptyList()
+                    }
+                }
+
+            fixture.controller.onRouteEntered()
+            discoveryStarted.await()
+            zone = ZoneOffset.ofHours(-12)
+            latestDate.complete(null)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            assertEquals(persistedDate, fixture.controller.state.value.window.endDate)
+            assertEquals(listOf("persisted"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun timeSemanticInvalidationRediscoversWithTheCurrentZone() =
+        runBlocking {
+            val semanticGeneration = MutableStateFlow(0L)
+            var zone = ZoneOffset.UTC
+            val fixture =
+                fixture(
+                    zoneId = { zone },
+                    semanticGeneration = semanticGeneration,
+                ) { emptyList() }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(1)
+            zone = ZoneOffset.ofHours(-12)
+            semanticGeneration.value = 1L
+            fixture.awaitQueries(2)
+
+            assertEquals(TODAY.minusDays(1), fixture.controller.state.value.window.endDate)
+            fixture.close()
+        }
+
+    @Test
     fun detailLoadsContentUnavailableAndFailureThenRetries() =
         runBlocking {
             val contentFixture = detailFixture { detail() }
@@ -681,7 +739,9 @@ class HistoryControllerTest {
 
     private fun fixture(
         readLatestDate: suspend () -> LocalDate? = { null },
+        readLatestDateWithContext: suspend (HistoryTimeContext) -> LocalDate? = { readLatestDate() },
         zoneId: () -> ZoneOffset = { ZoneOffset.UTC },
+        semanticGeneration: StateFlow<Long> = MutableStateFlow(0L),
         read: suspend (CompletedHistoryQuery) -> List<CompletedHistoryRoot>,
     ): RootFixture {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -695,7 +755,8 @@ class HistoryControllerTest {
                 },
                 { NOW },
                 zoneId,
-                readLatestDate,
+                readLatestDateWithContext,
+                semanticGeneration,
             )
         return RootFixture(scope, controller, queries)
     }
