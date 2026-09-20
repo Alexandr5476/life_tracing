@@ -8,6 +8,14 @@ The approved production History Parent narrows product-spec §42 only for canoni
 
 History navigation derives its reachable newest date from the latest persisted completed root's `primaryLocalDate`, or current local date when later. It never treats the current device date as a hard cap, so a later original-zone date remains reachable after a device timezone change. The lookup checks only the one or two `primaryLocalDate` partitions later than the device's current local date that are representable at the current instant; it uses existing-index-compatible bounded reads and does not reinterpret persisted timestamps or load unbounded history. Completed-History paging remains the bounded canonical read.
 
+## Exact historical-overlap preflight performance exception
+
+`overlapsCompletedHistory` remains the canonical exact in-database overlap predicate for completed standalone timed Activities: `started_at_ms <= proposedEnd` and `completed_at_ms >= proposedStart`. It uses the existing `(context_type, completed_at_ms)` access path, `EXISTS`, and short-circuit behavior; it neither loads History into application/UI memory nor performs an application-side History scan.
+
+The frozen v1 schema has no interval-aware persisted access structure. Because valid historical Activities have no maximum duration, the predicate may examine an unbounded number of rows in a worst-case negative case: completion ordering can leave arbitrarily many later non-overlapping rows to test `started_at_ms`, while start ordering would analogously leave arbitrarily many earlier rows to test `completed_at_ms`. This is an explicit exception to the Parent's bounded/no-global-history-scan overlap-warning requirement. It does not permit a calendar cutoff, duration bound, false negative, or approximate overlap result.
+
+A future schema/performance change may introduce an exact interval-aware persisted index (such as an R-tree-backed design). Until then, the current exact database predicate is intentional and must not be represented as worst-case bounded.
+
 ## First coded Plan UI scope
 
 The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.
