@@ -151,13 +151,13 @@ class HistoryController internal constructor(
         retryDiscovery = null
         generation.incrementAndGet()
         discoveryGeneration.incrementAndGet()
-        invalidationJob.cancel()
     }
 
     fun close() {
         closed = true
         routeActive = false
         retryDiscovery = null
+        invalidationJob.cancel()
         generation.incrementAndGet()
         discoveryGeneration.incrementAndGet()
     }

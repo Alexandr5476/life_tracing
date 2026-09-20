@@ -693,6 +693,40 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun retainedControllerRediscoversAfterReentryWhenSemanticTimeContextChanges() =
+        runBlocking {
+            val semanticGeneration = MutableStateFlow(0L)
+            var zone = ZoneOffset.UTC
+            val discoveryContexts = mutableListOf<HistoryTimeContext>()
+            val fixture =
+                fixture(
+                    zoneId = { zone },
+                    semanticGeneration = semanticGeneration,
+                    readLatestDateWithContext = { context ->
+                        discoveryContexts += context
+                        context.today
+                    },
+                ) { query -> listOf(root(query.dateRange.endDate.toString())) }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(1)
+            fixture.controller.onRouteExited()
+
+            zone = ZoneOffset.ofHours(-12)
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(2)
+
+            zone = ZoneOffset.ofHours(14)
+            semanticGeneration.value = 1L
+            fixture.awaitQueries(3)
+
+            assertEquals(3, discoveryContexts.size)
+            assertEquals(HistoryTimeContext(NOW, zone), discoveryContexts.last())
+            assertEquals(TODAY.plusDays(1), fixture.controller.state.value.window.endDate)
+            fixture.close()
+        }
+
+    @Test
     fun detailLoadsContentUnavailableAndFailureThenRetries() =
         runBlocking {
             val contentFixture = detailFixture { detail() }
