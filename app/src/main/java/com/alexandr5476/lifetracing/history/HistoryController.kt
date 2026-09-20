@@ -165,7 +165,7 @@ class HistoryController internal constructor(
         }
         scope.launch {
             try {
-                publishDiscoverySuccess(request, visibleRequest, purpose, readLatestDate())
+                publishDiscoverySuccess(request, visibleRequest, readLatestDate())
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -186,13 +186,12 @@ class HistoryController internal constructor(
     private fun publishDiscoverySuccess(
         request: Long,
         visibleRequest: Long,
-        purpose: DiscoveryPurpose,
         latest: LocalDate?,
     ) {
         if (!isCurrentDiscovery(request)) return
         upperBound = maxOf(today(), latest ?: today())
         retryDiscovery = null
-        if (purpose == DiscoveryPurpose.Refresh || generation.get() == visibleRequest) {
+        if (generation.get() == visibleRequest) {
             load(initialWindow(upperBound))
         } else {
             mutableState.update { state ->

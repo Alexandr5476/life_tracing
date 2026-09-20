@@ -512,6 +512,43 @@ class HistoryControllerTest {
         }
 
     @Test
+    fun refreshDiscoverySupersededByOlderKeepsOlderWindowAndUpdatesNewerBound() =
+        runBlocking {
+            val refreshDiscovery = CompletableDeferred<LocalDate?>()
+            val latest = TODAY.plusDays(HISTORY_WINDOW_DAYS + 2)
+            var discoveries = 0
+            val fixture =
+                fixture(
+                    readLatestDate = {
+                        if (discoveries++ == 0) TODAY else refreshDiscovery.await()
+                    },
+                ) { query -> listOf(root(query.dateRange.endDate.toString())) }
+
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+
+            fixture.controller.dispatch(HistoryAction.Refresh)
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val olderWindow = fixture.controller.state.value.window
+            val olderContent = fixture.contentIds()
+
+            refreshDiscovery.complete(latest)
+            yield()
+
+            assertEquals(2, fixture.queries.size)
+            assertEquals(olderWindow, fixture.controller.state.value.window)
+            assertEquals(olderContent, fixture.contentIds())
+            assertTrue(fixture.controller.state.value.canNavigateNewer)
+
+            repeat(3) { fixture.controller.dispatch(HistoryAction.Newer) }
+            fixture.awaitQueries(5)
+            assertEquals(latest, fixture.controller.state.value.window.endDate)
+            assertTrue(fixture.queries.all { it.dateRange.lengthInDays() <= HISTORY_WINDOW_DAYS })
+            fixture.close()
+        }
+
+    @Test
     fun persistedOriginalDateAheadOfDeviceTodayRemainsReachableAfterZoneChange() =
         runBlocking {
             val persistedDate = TODAY.plusDays(1)
