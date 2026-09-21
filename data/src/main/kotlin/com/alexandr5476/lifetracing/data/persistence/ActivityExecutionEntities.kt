@@ -48,6 +48,10 @@ import androidx.room.Index
         Index(value = ["plan_entry_id"], name = "activity_executions_plan_entry_id"),
         Index(value = ["deleted_at_ms"], name = "activity_executions_deleted_at"),
         Index(value = ["primary_local_date", "deleted_at_ms"], name = "activity_executions_primary_date_deleted"),
+        Index(
+            value = ["context_type", "status", "deleted_at_ms", "primary_local_date"],
+            name = "activity_executions_history_latest_root",
+        ),
         Index(value = ["sequence_occurrence_id"], name = "idx_one_child_execution_per_occurrence", unique = true),
     ],
 )

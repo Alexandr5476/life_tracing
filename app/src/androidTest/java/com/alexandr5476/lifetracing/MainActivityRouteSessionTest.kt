@@ -11,6 +11,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -22,15 +23,20 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import com.alexandr5476.lifetracing.daily.DailyAction
 import com.alexandr5476.lifetracing.daily.DailyLoadState
+import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
+import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
@@ -38,20 +44,24 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.FolderId
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TagId
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
@@ -65,6 +75,17 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
 import com.alexandr5476.lifetracing.editor.inputIsInvalid
 import com.alexandr5476.lifetracing.editor.inputText
 import com.alexandr5476.lifetracing.editor.readyDraft
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationAction
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationIssue
+import com.alexandr5476.lifetracing.history.HistoryAction
+import com.alexandr5476.lifetracing.history.HistoryController
+import com.alexandr5476.lifetracing.history.HistoryDetailLoad
+import com.alexandr5476.lifetracing.history.HistoryRootsLoad
+import com.alexandr5476.lifetracing.history.ManualActivityEntryAction
+import com.alexandr5476.lifetracing.history.ManualActivityEntryController
+import com.alexandr5476.lifetracing.history.ManualEntryCommand
+import com.alexandr5476.lifetracing.history.ManualEntryLoad
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
@@ -72,6 +93,11 @@ import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -79,15 +105,712 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivityRouteSessionTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Before
+    fun removeStaleMovedHistoryFixture() {
+        val commandNow = Instant.parse("2099-09-17T20:00:00Z")
+        val oldDate = LocalDate.parse("2099-09-17")
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        HistoryReadRepository
+            .create(composeTestRule.activity)
+            .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(oldDate, oldDate.plusDays(1)), 100))
+            .filterIsInstance<CompletedActivityHistoryRoot>()
+            .filter { it.title.startsWith("Moved history ") }
+            .forEach { root ->
+                commands.getHistory(root.executionId)?.execution?.takeIf { it.deletedAt == null }?.let { stale ->
+                    commands.softDeleteHistory(root.executionId, stale.updatedAt, commandNow.plusSeconds(1))
+                }
+            }
+    }
+
+    @Test
+    fun realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement() {
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Stale history ${System.nanoTime()}",
+                        "original",
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = now.minusSeconds(600),
+                )
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val execution =
+            commands.addManualTimed(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(template.id),
+                now.minusSeconds(300),
+                now.minusSeconds(240),
+                now.minusSeconds(180),
+                ZoneOffset.UTC,
+                expectedTemplateRevision = template.revision,
+            )
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val controller =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                execution.id,
+                { id -> withContext(Dispatchers.IO) { history.getActivityDetail(id) } },
+                { id, correction, at ->
+                    withContext(Dispatchers.IO) { commands.correctHistory(id, correction, at) }
+                },
+                { _, _, _ -> error("delete is unused") },
+                { now },
+            )
+        composeTestRule.waitUntil(5_000) { controller.state.value.load is HistoryDetailLoad.Content }
+        controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+        controller.dispatch(ActivityHistoryMutationAction.EditComment("stale draft"))
+
+        val original = requireNotNull(commands.getHistory(execution.id))
+        val external =
+            commands.correctHistory(
+                execution.id,
+                com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection(
+                    execution.updatedAt,
+                    com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection.Timed(
+                        requireNotNull(execution.startedAt),
+                        requireNotNull(execution.completedAt),
+                    ),
+                    ZoneOffset.UTC,
+                    execution.values,
+                    "external",
+                ),
+                now.minusSeconds(60),
+            )
+        val snapshotsAfterExternal = tableCount("activity_snapshots")
+        controller.dispatch(ActivityHistoryMutationAction.Save)
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.issue == ActivityHistoryMutationIssue.STALE &&
+                (controller.state.value.load as? HistoryDetailLoad.Content)?.value?.updatedAt ==
+                external.execution.updatedAt
+        }
+
+        assertNull(controller.state.value.draft)
+        assertEquals(snapshotsAfterExternal, tableCount("activity_snapshots"))
+        assertEquals("external", requireNotNull(history.getActivityDetail(execution.id)).root.shortComment)
+        assertNotEquals(original.snapshot.id, external.snapshot.id)
+        controller.close()
+    }
+
+    @Test
+    fun correctedNoLiveActivityRefreshesHistoryDiscoveryIntoItsNewOriginalDate() {
+        val deviceZone = ZoneOffset.UTC
+        val originalZone = ZoneOffset.ofHours(14)
+        val commandNow = Instant.parse("2099-09-17T20:00:00Z")
+        val oldDate = LocalDate.parse("2099-09-17")
+        val newDate = oldDate.plusDays(1)
+        val initialCompletedAt = oldDate.atTime(9, 0).toInstant(originalZone)
+        val correctedCompletedAt = newDate.atTime(9, 0).toInstant(originalZone)
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val suffix = System.nanoTime().toString()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft("Moved history $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = commandNow.minusSeconds(1),
+                )
+        val execution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(template.id),
+                initialCompletedAt,
+                commandNow.minusSeconds(1),
+                originalZone,
+                expectedTemplateRevision = template.revision,
+            )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            HistoryController(
+                scope,
+                { query -> withContext(Dispatchers.IO) { history.getCompletedRoots(query) } },
+                { commandNow },
+                { deviceZone },
+                {
+                    withContext(Dispatchers.IO) {
+                        history.getLatestCompletedPrimaryLocalDate(commandNow, deviceZone)
+                    }
+                },
+            )
+
+        try {
+            controller.onRouteEntered()
+            composeTestRule.waitUntil(5_000) { controller.state.value.load is HistoryRootsLoad.Content }
+            assertEquals(oldDate, controller.state.value.window.endDate)
+            assertEquals(1, controller.rootsWith(execution.id.value).size)
+
+            val before = requireNotNull(commands.getHistory(execution.id))
+            commands.correctHistory(
+                execution.id,
+                ActivityHistoryCorrection(
+                    before.execution.updatedAt,
+                    ActivityHistoryTimeCorrection.NoLive(correctedCompletedAt),
+                    originalZone,
+                    before.execution.values,
+                    before.snapshot.shortComment,
+                ),
+                commandNow,
+            )
+            controller.dispatch(HistoryAction.Refresh)
+            composeTestRule.waitUntil(5_000) {
+                controller.state.value.window.endDate == newDate &&
+                    controller.state.value.load is HistoryRootsLoad.Content
+            }
+
+            val refreshed = controller.rootsWith(execution.id.value)
+            assertEquals(listOf(execution.id.value), refreshed.map { it.executionId.value })
+            assertEquals(newDate, refreshed.single().primaryLocalDate)
+            assertEquals(
+                0,
+                history
+                    .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(oldDate, oldDate), 100))
+                    .filterIsInstance<CompletedActivityHistoryRoot>()
+                    .count { it.executionId == execution.id },
+            )
+        } finally {
+            controller.close()
+            scope.cancel()
+            commands.getHistory(execution.id)?.execution?.let { current ->
+                if (current.deletedAt == null) {
+                    commands.softDeleteHistory(execution.id, current.updatedAt, commandNow.plusSeconds(1))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun productionManualHistoryBackBeforeCommitCreatesNothing() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual cancelled $suffix"
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = Instant.now(),
+                )
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_back)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null
+        }
+
+        assertEquals(0, durableCount("activity_snapshots", template.id.value))
+        assertEquals(0, durableCount("activity_executions", template.id.value))
+        val today = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate()
+        assertTrue(
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(today.minusDays(1), today.plusDays(1)), 100),
+                ).none { it is CompletedActivityHistoryRoot && it.title == name },
+        )
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun overlapCancelThroughControllerAndRealRepositoryLeavesNoResidueThenProceedWritesOnce() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual overlap $suffix"
+        val zone = ZoneId.systemDefault()
+        val date = LocalDate.now(zone).minusDays(2)
+        val startLocal = date.atTime(10, 0)
+        val endLocal = date.atTime(11, 0)
+        val start = startLocal.toInstant(zone.rules.getValidOffsets(startLocal).single())
+        val end = endLocal.toInstant(zone.rules.getValidOffsets(endLocal).single())
+        val commandAt = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(
+                        name,
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("number"),
+                                    0,
+                                    "Number",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = 0,
+                                    defaultNumberScaled = 0,
+                                ),
+                            ),
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+        val repository = ActivityCommandRepository.create(composeTestRule.activity)
+        repository.addManualTimed(
+            com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                .Template(template.id),
+            start,
+            end,
+            commandAt,
+            zone,
+            expectedTemplateRevision = template.revision,
+        )
+        val planRepository = PlanRepository.create(composeTestRule.activity)
+        val plan =
+            planRepository.createActivityPlanFromTemplate(
+                template.id,
+                PlanSchedule.FloatingDay(date),
+                commandAt.plusMillis(1),
+            )
+        val library = LibraryRepository.create(composeTestRule.activity)
+        val statistics = StatisticsRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        val before =
+            listOf(
+                tableCount("activity_snapshots"),
+                tableCount("activity_executions"),
+                tableCount("activity_execution_field_values"),
+            )
+        val recentBefore = library.getRecent(1_000)
+        val planBefore = planRepository.getPlan(plan.id)
+        val statisticsBefore =
+            statistics.activitySeries(requireNotNull(template.statisticsSeriesId), StatisticsPeriod.AllTime)
+        val activeBefore = live.getActiveRuntime()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val controller =
+            ManualActivityEntryController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                { emptyList() },
+                { id -> withContext(Dispatchers.IO) { authoring.getActivityTemplate(id) } },
+                { from, to -> withContext(Dispatchers.IO) { repository.overlapsCompletedHistory(from, to) } },
+                { proposal ->
+                    withContext(Dispatchers.IO) {
+                        repository.addManualTimed(
+                            proposal.source,
+                            requireNotNull(proposal.startedAt),
+                            proposal.completedAt,
+                            proposal.commandAt,
+                            proposal.zoneId,
+                            proposal.values,
+                            proposal.expectedTemplateRevision,
+                        )
+                    }
+                },
+                { error("No-live writer is not used") },
+                { commandAt.plusSeconds(1) },
+                { zone },
+            )
+        controller.dispatch(ManualActivityEntryAction.Select(template.id))
+        composeTestRule.waitUntil(5_000) { controller.state.value.selected is ManualEntryLoad.Content }
+        val formatter = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm")
+        controller.dispatch(ManualActivityEntryAction.EditStarted(formatter.format(startLocal)))
+        controller.dispatch(ManualActivityEntryAction.EditCompleted(formatter.format(endLocal)))
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Overlap }
+        controller.dispatch(ManualActivityEntryAction.CancelOverlap)
+
+        assertEquals(
+            before,
+            listOf(
+                tableCount("activity_snapshots"),
+                tableCount("activity_executions"),
+                tableCount("activity_execution_field_values"),
+            ),
+        )
+        assertEquals(recentBefore, library.getRecent(1_000))
+        assertEquals(planBefore, planRepository.getPlan(plan.id))
+        assertEquals(
+            statisticsBefore,
+            statistics.activitySeries(requireNotNull(template.statisticsSeriesId), StatisticsPeriod.AllTime),
+        )
+        assertEquals(activeBefore, live.getActiveRuntime())
+
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Overlap }
+        controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+        composeTestRule.waitUntil(5_000) { controller.state.value.command is ManualEntryCommand.Committed }
+        assertEquals(before[1] + 1, tableCount("activity_executions"))
+        assertEquals(before[2] + 1, tableCount("activity_execution_field_values"))
+        controller.close()
+    }
+
+    @Test
+    fun productionManualHistoryDraftSurvivesRecreationAndCommitsExactlyOnceToCanonicalHistory() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual recreated $suffix"
+        TemplateAuthoringRepository
+            .create(composeTestRule.activity)
+            .createActivityTemplate(
+                ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = Instant.now(),
+            )
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title))
+            .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.selected is com.alexandr5476.lifetracing.history.ManualEntryLoad.Content
+        }
+        val session = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+
+        recreateActivity()
+        assertSame(session, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        composeTestRule.onNodeWithTag("manual-history-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty() &&
+                composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null
+        }
+
+        val zone = ZoneId.systemDefault()
+        val today = Instant.now().atZone(zone).toLocalDate()
+        val roots =
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(
+                    CompletedHistoryQuery(HistoryDateRange(today.minusDays(1), today.plusDays(1)), 100),
+                )
+        val matching = roots.filterIsInstance<CompletedActivityHistoryRoot>().count { it.title == name }
+        assertEquals(1, matching)
+    }
+
+    @Test
+    fun manualHistoryCommitHeldAcrossRecreationIgnoresDuplicateSaveProceedAndBack() {
+        val suffix = System.nanoTime().toString()
+        val name = "Manual in flight $suffix"
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now.minusSeconds(1),
+                )
+        val repository = ActivityCommandRepository.create(composeTestRule.activity)
+        val enteredWriter = CompletableDeferred<Unit>()
+        val releaseWriter = CompletableDeferred<Unit>()
+        val controller =
+            ManualActivityEntryController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                {
+                    listOf(
+                        ReusableActivityCatalogItem(
+                            template.id,
+                            template.name,
+                            template.timeTrackingMode,
+                            template.timerTarget,
+                            null,
+                            null,
+                            null,
+                            null,
+                        ),
+                    )
+                },
+                { id -> template.takeIf { it.id == id } },
+                { _, _ -> false },
+                { error("Timed writer is not used") },
+                { proposal ->
+                    withContext(Dispatchers.IO) {
+                        enteredWriter.complete(Unit)
+                        releaseWriter.await()
+                        repository.addManualNoLive(
+                            proposal.source,
+                            proposal.completedAt,
+                            proposal.commandAt,
+                            proposal.zoneId,
+                            proposal.values,
+                            proposal.expectedTemplateRevision,
+                        )
+                    }
+                },
+                { now },
+                { ZoneId.of("Europe/Berlin") },
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.manualActivityEntryRouteSessions.acquire { controller }
+        }
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.manual_history_title)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performClick()
+        controller.dispatch(ManualActivityEntryAction.EditCompleted("2025-10-26 02:30"))
+        controller.dispatch(ManualActivityEntryAction.Save)
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.command is ManualEntryCommand.Invalid &&
+                controller.state.value.completedAmbiguity != null
+        }
+        controller.dispatch(ManualActivityEntryAction.SelectCompletedOffset(ZoneOffset.ofHours(1)))
+        val reviewedDraft = controller.state.value
+        val draftSession = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(draftSession, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        assertEquals(reviewedDraft.completedText, controller.state.value.completedText)
+        assertEquals(
+            reviewedDraft.completedAmbiguity?.selectedOffset,
+            controller.state.value.completedAmbiguity
+                ?.selectedOffset,
+        )
+        composeTestRule.onNodeWithTag("manual-history-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            enteredWriter.isCompleted && controller.state.value.command is ManualEntryCommand.Committing
+        }
+
+        controller.dispatch(ManualActivityEntryAction.Save)
+        controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        val retained = requireNotNull(composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(retained, composeTestRule.activity.manualActivityEntryRouteSessions.activeSession)
+        assertTrue(controller.state.value.command is ManualEntryCommand.Committing)
+        val committedDraft = controller.state.value.completedText
+        controller.dispatch(ManualActivityEntryAction.EditCompleted("2025-10-26 03:30"))
+        assertEquals(committedDraft, controller.state.value.completedText)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+
+        releaseWriter.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.manualActivityEntryRouteSessions.activeSession == null &&
+                composeTestRule
+                    .onAllNodesWithText(composeTestRule.activity.getString(R.string.history_title))
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+        }
+
+        val eventDate = LocalDate.of(2025, 10, 26)
+        val matching =
+            HistoryReadRepository
+                .create(composeTestRule.activity)
+                .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(eventDate, eventDate), 100))
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .count { it.title == name }
+        assertEquals(1, matching)
+        assertEquals(1, durableCount("activity_executions", template.id.value))
+    }
+
+    @Test
+    fun restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState() {
+        val suffix = System.nanoTime().toString()
+        val name = "Recreated history $suffix"
+        val now = Instant.now()
+        val template =
+            TemplateAuthoringRepository
+                .create(composeTestRule.activity)
+                .createActivityTemplate(
+                    ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = now,
+                )
+        LibraryRepository
+            .create(composeTestRule.activity)
+            .completeNoLiveActivityFromTemplate(template.id, now, now, ZoneId.systemDefault())
+
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).performScrollTo().performClick()
+        composeTestRule.onNodeWithText(name).assertIsDisplayed()
+        val released = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.release(released)
+        }
+
+        recreateActivity()
+
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(name).assertIsDisplayed()
+        val restored = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        assertNotSame(released, restored)
+        assertNull(restored.controller.state.value.draft)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_title)).assertIsDisplayed()
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).assertIsDisplayed()
+    }
+
+    @Test
+    @Suppress("LongMethod")
+    fun historyMutationWritesAndRouteEffectsRemainExactlyOnceAcrossRecreation() {
+        val suffix = System.nanoTime().toString()
+        val now = Instant.now()
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val commands = ActivityCommandRepository.create(composeTestRule.activity)
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val correctionTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Correct retained $suffix", "before", TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now.minusSeconds(10),
+            )
+        val deleteTemplate =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Delete retained $suffix", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = now.minusSeconds(9),
+            )
+        val correctionExecution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(correctionTemplate.id),
+                now.minusSeconds(5),
+                now.minusSeconds(4),
+                ZoneId.systemDefault(),
+            )
+        val deleteExecution =
+            commands.addManualNoLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(deleteTemplate.id),
+                now.minusSeconds(3),
+                now.minusSeconds(2),
+                ZoneId.systemDefault(),
+            )
+
+        val correctionEntered = CompletableDeferred<Unit>()
+        val correctionRelease = CompletableDeferred<Unit>()
+        val correctionWrites = AtomicInteger()
+        val correctionController =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                correctionExecution.id,
+                { withContext(Dispatchers.IO) { history.getActivityDetail(it) } },
+                { id, correction, at ->
+                    withContext(Dispatchers.IO) {
+                        correctionWrites.incrementAndGet()
+                        correctionEntered.complete(Unit)
+                        correctionRelease.await()
+                        commands.correctHistory(id, correction, at)
+                    }
+                },
+                { _, _, _ -> error("delete unused") },
+                Instant::now,
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.acquire(correctionExecution.id) {
+                correctionController
+            }
+        }
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+        val correctionTag = "history-activity-${correctionExecution.id.value}"
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithTag(correctionTag, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithTag(correctionTag, useUnmergedTree = true)
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("history-correct").performClick()
+        composeTestRule.onNodeWithTag("history-correction-comment").performTextReplacement("after")
+        val correctionSession =
+            requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(correctionSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        composeTestRule.onNodeWithTag("history-correction-save").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { correctionEntered.isCompleted }
+        correctionController.dispatch(ActivityHistoryMutationAction.Save)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        recreateActivity()
+        assertSame(correctionSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        correctionRelease.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            correctionController.state.value.refreshGeneration == 1L &&
+                !correctionController.state.value.isMutating &&
+                history.getActivityDetail(correctionExecution.id)?.root?.shortComment == "after"
+        }
+        assertEquals(1, correctionWrites.get())
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.history_back)).performClick()
+        val deleteTag = "history-activity-${deleteExecution.id.value}"
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithTag(deleteTag, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        val deleteEntered = CompletableDeferred<Unit>()
+        val deleteRelease = CompletableDeferred<Unit>()
+        val deleteWrites = AtomicInteger()
+        val deleteController =
+            ActivityHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                deleteExecution.id,
+                { withContext(Dispatchers.IO) { history.getActivityDetail(it) } },
+                { _, _, _ -> error("correction unused") },
+                { id, expected, at ->
+                    withContext(Dispatchers.IO) {
+                        deleteWrites.incrementAndGet()
+                        deleteEntered.complete(Unit)
+                        deleteRelease.await()
+                        commands.softDeleteHistory(id, expected, at)
+                    }
+                },
+                Instant::now,
+            )
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.acquire(
+                deleteExecution.id,
+            ) { deleteController }
+        }
+        composeTestRule
+            .onNodeWithTag(deleteTag, useUnmergedTree = true)
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("history-delete").performClick()
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.manual_history_cancel),
+            ).performClick()
+        assertEquals(0, deleteWrites.get())
+        composeTestRule.onNodeWithTag("history-delete").performClick()
+        composeTestRule.onNodeWithTag("history-delete-confirm").performClick()
+        composeTestRule.waitUntil(5_000) { deleteEntered.isCompleted }
+        deleteController.dispatch(ActivityHistoryMutationAction.ConfirmDelete)
+        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        val deleteSession = requireNotNull(composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        recreateActivity()
+        assertSame(deleteSession, composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession)
+        deleteRelease.complete(Unit)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.activityHistoryMutationRouteSessions.activeSession == null
+        }
+        assertEquals(1, deleteWrites.get())
+        assertEquals(1L, deleteController.state.value.refreshGeneration)
+        assertTrue(requireNotNull(commands.getHistory(deleteExecution.id)).execution.deletedAt != null)
+    }
 
     @Test
     @Suppress("LongMethod") // One production route is exercised across recreation, exit, refresh, and all transients.
@@ -121,7 +844,7 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.onNode(hasTestTag("plan-day-$selected")).performClick()
         composeTestRule.waitUntil(5_000) { controller.state.value.selectedDate == selected }
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(
             controller,
             composeTestRule.activity.planControllerOwner.get { error("Plan controller must survive recreation") },
@@ -323,7 +1046,7 @@ class MainActivityRouteSessionTest {
             .performTextReplacement("Edited $suffix")
         composeTestRule.onNodeWithTag("plan-execution-submit").performScrollTo().assertIsEnabled()
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
         val recreatedDraft = requireNotNull(retained.quickDraft)
         assertEquals("7.5", recreatedDraft.numberTexts[missing.id])
@@ -489,7 +1212,7 @@ class MainActivityRouteSessionTest {
                 ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
         }
         val retained = requireNotNull(composeTestRule.activity.planExecutionRouteSessions.activeSession)
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         assertSame(retained, composeTestRule.activity.planExecutionRouteSessions.activeSession)
 
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
@@ -932,7 +1655,7 @@ class MainActivityRouteSessionTest {
                 sequence.revision,
             )
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         expandSequence(started.execution.id)
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession != null
@@ -959,7 +1682,7 @@ class MainActivityRouteSessionTest {
         assertNotSame(firstSession, retained)
         assertEquals(started.execution.id, retained.executionId)
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(retained, composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession)
         assertEquals(started.execution.id, retained.controller.executionId)
@@ -1011,7 +1734,7 @@ class MainActivityRouteSessionTest {
         )
 
         live.endSequenceEarly(second.execution.id, Instant.now())
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.expandedLiveSequenceRouteSessions.activeSession ==
                 null
@@ -1037,7 +1760,7 @@ class MainActivityRouteSessionTest {
             first.controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "bad", 0, 0) {}
         }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(first, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
@@ -1113,7 +1836,7 @@ class MainActivityRouteSessionTest {
         val manipulationDraft =
             second.controller.state.value
                 .readyDraft()
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
         assertEquals(
@@ -1160,7 +1883,7 @@ class MainActivityRouteSessionTest {
             existing.controller.state.value.load is SequenceTemplateEditorLoad.Ready
         }
         composeTestRule.runOnUiThread { existing.controller.updateDraft { it.copy(shortComment = "retained") } }
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
         assertSame(existing, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
         assertEquals(
@@ -1189,7 +1912,7 @@ class MainActivityRouteSessionTest {
         val pending = LibraryTemplateId.Activity(ActivityTemplateId("pending"))
         composeTestRule.runOnUiThread { first.interaction.select(pending) }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(first, composeTestRule.activity.startActivityRouteSessions.activeSession)
@@ -1238,7 +1961,7 @@ class MainActivityRouteSessionTest {
             .onNode(hasText(composeTestRule.activity.getString(R.string.activity_editor_name)) and hasSetTextAction())
             .performTextInput(name)
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
         composeTestRule.waitForIdle()
 
         assertSame(session, composeTestRule.activity.activityTemplateEditorRouteSessions.activeSession)
@@ -1294,7 +2017,7 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) { publicationStarted.isCompleted }
 
         try {
-            composeTestRule.activityRule.scenario.recreate()
+            recreateActivity()
 
             val recreated =
                 composeTestRule.activity.libraryControllerOwner.get {
@@ -1343,7 +2066,7 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.libraryControllerOwner.refreshIfInitialized()
         }
 
-        composeTestRule.activityRule.scenario.recreate()
+        recreateActivity()
 
         assertSame(
             controller,
@@ -1687,6 +2410,20 @@ class MainActivityRouteSessionTest {
             .performSemanticsAction(SemanticsActions.OnClick) { it() }
     }
 
+    private fun recreateActivity() {
+        val previous = composeTestRule.activity
+        val coordinator = LifeTracingRuntimeGraph.from(previous).coordinator
+        val semanticGeneration = coordinator.semanticGeneration.value
+        composeTestRule.runOnUiThread(previous::recreate)
+        composeTestRule.waitUntil(5_000) {
+            runCatching {
+                composeTestRule.activity !== previous &&
+                    coordinator.semanticGeneration.value > semanticGeneration
+            }.getOrDefault(false)
+        }
+        composeTestRule.waitForIdle()
+    }
+
     private fun openDailyPlan(
         planId: PlanEntryId,
         title: String,
@@ -1718,6 +2455,11 @@ class MainActivityRouteSessionTest {
             )
         }
 
+    private fun HistoryController.rootsWith(executionId: String): List<CompletedActivityHistoryRoot> =
+        ((state.value.load as? HistoryRootsLoad.Content)?.roots.orEmpty())
+            .filterIsInstance<CompletedActivityHistoryRoot>()
+            .filter { it.executionId.value == executionId }
+
     private fun durableCount(
         table: String,
         sourceTemplateId: String,
@@ -1737,6 +2479,22 @@ class MainActivityRouteSessionTest {
                         "WHERE s.source_template_id = ?"
                 }
             db.rawQuery(query, arrayOf(sourceTemplateId)).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
+        }
+    }
+
+    private fun tableCount(table: String): Int {
+        require(table in setOf("activity_snapshots", "activity_executions", "activity_execution_field_values"))
+        val database =
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                composeTestRule.activity.getDatabasePath("lifetracing.db").path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+            )
+        return database.use { db ->
+            db.rawQuery("SELECT COUNT(*) FROM $table", null).use { cursor ->
                 check(cursor.moveToFirst())
                 cursor.getInt(0)
             }

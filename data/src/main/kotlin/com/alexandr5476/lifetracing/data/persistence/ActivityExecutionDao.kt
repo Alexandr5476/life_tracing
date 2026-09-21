@@ -84,13 +84,29 @@ internal abstract class ActivityExecutionDao {
             "primary_local_date FROM activity_executions " +
             "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
+            "AND (:cursorDate IS NULL OR primary_local_date < :cursorDate " +
+            "OR (primary_local_date = :cursorDate AND completed_at_ms < :cursorCompletedAtMs) " +
+            "OR (:cursorKind = 'ACTIVITY' AND primary_local_date = :cursorDate " +
+            "AND completed_at_ms = :cursorCompletedAtMs AND id > :cursorId)) " +
             "ORDER BY primary_local_date DESC, completed_at_ms DESC, id ASC LIMIT :limit",
     )
     abstract fun getCompletedStandaloneHistoryRoots(
         startDate: String,
         endDate: String,
         limit: Int,
+        cursorDate: String?,
+        cursorCompletedAtMs: Long?,
+        cursorKind: String?,
+        cursorId: String?,
     ): List<ActivityHistoryRootEntity>
+
+    @Query(
+        "SELECT primary_local_date FROM activity_executions " +
+            "INDEXED BY activity_executions_history_latest_root " +
+            "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "ORDER BY primary_local_date DESC LIMIT 1",
+    )
+    abstract fun getLatestCompletedStandaloneHistoryRootDate(): String?
 
     @Query("SELECT * FROM activity_executions WHERE sequence_occurrence_id = :occurrenceId")
     protected abstract fun getByOccurrence(occurrenceId: String): ActivityExecutionEntity?
@@ -659,14 +675,15 @@ internal abstract class ActivityExecutionDao {
         require(current.execution.contextType == "STANDALONE") {
             "Sequence child history requires coordinated Sequence correction"
         }
-        require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
-            "Only non-deleted completed history can be corrected"
-        }
         if (
             current.execution.updatedAtMs != expectedUpdatedAtMs ||
             current.execution.snapshotId != expectedSnapshotId
         ) {
             throw ConcurrentModificationException("Activity history changed concurrently")
+        }
+        require(current.execution.planEntryId == null) { "Plan-linked Activity history cannot be corrected" }
+        require(current.execution.status == "COMPLETED" && current.execution.deletedAtMs == null) {
+            "Only non-deleted completed history can be corrected"
         }
         require(after.execution.updatedAtMs > current.execution.updatedAtMs) {
             "Historical correction time must advance"
@@ -847,12 +864,10 @@ internal abstract class ActivityExecutionDao {
         require(current.contextType == "STANDALONE") {
             "Sequence child history requires coordinated Sequence deletion"
         }
-        require(current.status == "COMPLETED" && current.deletedAtMs == null) {
-            "Only non-deleted completed history can be deleted"
-        }
-        if (current.updatedAtMs != expectedUpdatedAtMs) {
+        if (current.updatedAtMs != expectedUpdatedAtMs || current.deletedAtMs != null) {
             throw ConcurrentModificationException("Activity history changed concurrently")
         }
+        require(current.status == "COMPLETED") { "Only completed history can be deleted" }
         require(deletedAtMs > current.updatedAtMs) { "Historical deletion time must advance" }
         if (softDeleteCompletedStandaloneUnchecked(id, expectedUpdatedAtMs, deletedAtMs) != 1) {
             throw ConcurrentModificationException("Activity history changed concurrently")

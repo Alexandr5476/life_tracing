@@ -1,4 +1,4 @@
-@file:Suppress("LongParameterList")
+@file:Suppress("LongParameterList", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing
 
@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.daily.DailyController
 import com.alexandr5476.lifetracing.daily.DailyRuntimeCommand
 import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
@@ -27,6 +28,10 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
+import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
+import com.alexandr5476.lifetracing.history.HistoryController
+import com.alexandr5476.lifetracing.history.HistoryDetailController
+import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -112,6 +117,20 @@ class LifeTracingRuntimeGraph internal constructor(
         error("Plan execution is unavailable")
     },
     private val planControllerFactory: () -> PlanController = { error("Plan is unavailable") },
+    private val historyControllerFactory: () -> HistoryController = { error("History is unavailable") },
+    private val manualActivityEntryControllerFactory: () -> ManualActivityEntryController = {
+        error("Manual History entry is unavailable")
+    },
+    private val activityHistoryDetailControllerFactory: (
+        com.alexandr5476.lifetracing.domain.ActivityExecutionId,
+    ) -> ActivityHistoryMutationController = {
+        error("Activity History is unavailable")
+    },
+    private val sequenceHistoryDetailControllerFactory: (
+        com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> = {
+        error("Sequence History is unavailable")
+    },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -137,6 +156,19 @@ class LifeTracingRuntimeGraph internal constructor(
         planExecutionControllerFactory(expectedIdentity)
 
     fun createPlanController(): PlanController = planControllerFactory()
+
+    fun createHistoryController(): HistoryController = historyControllerFactory()
+
+    fun createManualActivityEntryController(): ManualActivityEntryController = manualActivityEntryControllerFactory()
+
+    fun createActivityHistoryDetailController(
+        executionId: com.alexandr5476.lifetracing.domain.ActivityExecutionId,
+    ): ActivityHistoryMutationController = activityHistoryDetailControllerFactory(executionId)
+
+    fun createSequenceHistoryDetailController(
+        executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
+    ): HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> =
+        sequenceHistoryDetailControllerFactory(executionId)
 
     companion object {
         @Volatile
@@ -172,6 +204,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val activityCommandRepository = ActivityCommandRepository.create(context)
             val planReadRepository = PlanReadRepository.create(context)
             val planRepository = PlanRepository.create(context)
+            val historyReadRepository = HistoryReadRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -534,6 +567,115 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         coordinator.semanticGeneration,
                     )
+                },
+                {
+                    HistoryController(
+                        uiScope,
+                        { query ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getCompletedRoots(query)
+                            }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
+                        { timeContext ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getLatestCompletedPrimaryLocalDate(
+                                    timeContext.now,
+                                    timeContext.zoneId,
+                                )
+                            }
+                        },
+                        coordinator.semanticGeneration,
+                    )
+                },
+                {
+                    ManualActivityEntryController(
+                        uiScope,
+                        { after ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                libraryRepository.getReusableActivityCatalog(
+                                    com.alexandr5476.lifetracing.history.MANUAL_ACTIVITY_CATALOG_PAGE_SIZE,
+                                    after,
+                                )
+                            }
+                        },
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        { startedAt, completedAt ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(startedAt, completedAt)
+                            }
+                        },
+                        { proposal ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.addManualTimed(
+                                    proposal.source,
+                                    requireNotNull(proposal.startedAt),
+                                    proposal.completedAt,
+                                    proposal.commandAt,
+                                    proposal.zoneId,
+                                    proposal.values,
+                                    proposal.expectedTemplateRevision,
+                                )
+                            }
+                        },
+                        { proposal ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.addManualNoLive(
+                                    proposal.source,
+                                    proposal.completedAt,
+                                    proposal.commandAt,
+                                    proposal.zoneId,
+                                    proposal.values,
+                                    proposal.expectedTemplateRevision,
+                                )
+                            }
+                        },
+                        java.time.Instant::now,
+                        ZoneId::systemDefault,
+                    )
+                },
+                { executionId ->
+                    ActivityHistoryMutationController(
+                        uiScope,
+                        executionId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getActivityDetail(id)
+                            }
+                        },
+                        { id, correction, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.correctHistory(id, correction, at)
+                            }
+                        },
+                        { id, expectedUpdatedAt, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.softDeleteHistory(id, expectedUpdatedAt, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                        { startedAt, completedAt, excludingExecutionId ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(
+                                    startedAt,
+                                    completedAt,
+                                    excludingExecutionId,
+                                )
+                            }
+                        },
+                    )
+                },
+                { executionId ->
+                    HistoryDetailController(uiScope) {
+                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            historyReadRepository.getSequenceDetail(executionId)
+                        }
+                    }
                 },
             )
         }

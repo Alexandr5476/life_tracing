@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.data.persistence
 
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
+import org.junit.Ignore
 import java.util.Locale
 
 /**
@@ -124,6 +125,7 @@ internal object LifeTracingMigrationTestDatabaseFactory {
         }
 }
 
+@Ignore("Migration-schema value object, not an instrumentation test")
 internal data class SequenceExecutionManualSchema(
     val rootColumns: List<String>,
     val rootForeignKeys: Map<String, String>,

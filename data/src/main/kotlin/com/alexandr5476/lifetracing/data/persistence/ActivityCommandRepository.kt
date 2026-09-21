@@ -101,9 +101,16 @@ class ActivityCommandRepository internal constructor(
         createdAt: Instant,
         eventZoneId: ZoneId,
         valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+        expectedTemplateRevision: Long? = null,
     ): ActivityExecution =
         transaction {
-            val prepared = prepare(source, createdAt)
+            val prepared =
+                prepare(
+                    source,
+                    createdAt,
+                    expectedTemplateRevision,
+                    staleOnUnavailableTemplate = expectedTemplateRevision != null,
+                )
             require(prepared.snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Timed history requires a timed Activity"
             }
@@ -125,9 +132,16 @@ class ActivityCommandRepository internal constructor(
         createdAt: Instant,
         eventZoneId: ZoneId,
         valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+        expectedTemplateRevision: Long? = null,
     ): ActivityExecution =
         transaction {
-            val prepared = prepare(source, createdAt)
+            val prepared =
+                prepare(
+                    source,
+                    createdAt,
+                    expectedTemplateRevision,
+                    staleOnUnavailableTemplate = expectedTemplateRevision != null,
+                )
             require(prepared.snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "No-live history requires a NO_LIVE_TRACKING Activity"
             }
@@ -178,6 +192,7 @@ class ActivityCommandRepository internal constructor(
             if (current.execution.updatedAt != expectedUpdatedAt) {
                 throw ConcurrentModificationException("Activity history changed concurrently")
             }
+            ActivityHistoryCorrectionPolicy.requireEligible(current.execution)
             if (ActivityHistoryCorrectionPolicy.isNoOp(current.execution, current.snapshot, correction)) {
                 return@transaction current
             }
@@ -274,13 +289,17 @@ class ActivityCommandRepository internal constructor(
         source: ActivityEntrySource,
         createdAt: Instant,
         expectedTemplateRevision: Long? = null,
+        staleOnUnavailableTemplate: Boolean = false,
     ): PreparedSource =
         when (source) {
             is ActivityEntrySource.Template -> {
+                val aggregate = database.activityTemplateDao().getAggregate(source.id.value)
+                if (aggregate == null && staleOnUnavailableTemplate) throw StaleLauncherTargetException()
                 val template =
-                    requireNotNull(database.activityTemplateDao().getAggregate(source.id.value)) {
-                        "Unknown ActivityTemplate: ${source.id.value}"
-                    }.toDomain()
+                    requireNotNull(aggregate) { "Unknown ActivityTemplate: ${source.id.value}" }.toDomain()
+                if (template.deletedAt != null && staleOnUnavailableTemplate) {
+                    throw StaleLauncherTargetException()
+                }
                 require(template.deletedAt == null) { "Archived ActivityTemplate cannot be used directly" }
                 if (expectedTemplateRevision != null && template.revision != expectedTemplateRevision) {
                     throw StaleLauncherTargetException()

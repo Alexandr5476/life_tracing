@@ -2,10 +2,12 @@ package com.alexandr5476.lifetracing.domain
 
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 
 data class SequenceHistoryDetail(
     val root: CompletedSequenceHistoryRoot,
     val updatedAt: Instant,
+    val originalZoneId: ZoneId,
     val settings: SequenceSnapshotSettings,
     val fields: List<SequenceHistoryField>,
     val occurrences: List<SequenceHistoryOccurrence>,

@@ -18,8 +18,11 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
+import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -27,6 +30,8 @@ import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
@@ -34,7 +39,10 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.cursor
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -46,6 +54,7 @@ import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.Collections
 import java.util.concurrent.Executor
@@ -130,7 +139,69 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun activityDetailUsesEffectiveLabelsButKeepsSnapshotConfigurationAndNoLiveMissingDuration() {
+    fun latestDateDiscoveryUsesBoundedEligibleRootIndexes() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", "Frozen note")
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", "Sequence note")
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+        insertSequence("running-sequence", at(100), SequenceExecutionStatus.RUNNING)
+        repeat(1_000) { index ->
+            insertSequenceChild(
+                "child-$index",
+                "running-sequence",
+                "occurrence-$index",
+                at(200L + index),
+                index,
+            )
+        }
+        repeat(1_000) { index ->
+            insertSequence(
+                "future-running-sequence-$index",
+                now.plusSeconds(86_400L + index),
+                SequenceExecutionStatus.RUNNING,
+            )
+        }
+        observedSql.clear()
+
+        assertNull(repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)))
+        assertTrue(observedSql.any { it.contains("activity_executions_history_latest_root") })
+        assertTrue(observedSql.any { it.contains("sequence_executions_status_primary_date") })
+        assertTrue(
+            explain(
+                "SELECT primary_local_date FROM activity_executions " +
+                    "INDEXED BY activity_executions_history_latest_root " +
+                    "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+                    "ORDER BY primary_local_date DESC LIMIT 1",
+            ).any {
+                it.contains("activity_executions_history_latest_root") &&
+                    it.contains("context_type=? AND status=? AND deleted_at_ms=?")
+            },
+        )
+        assertTrue(
+            explain(
+                "SELECT primary_local_date FROM sequence_executions " +
+                    "INDEXED BY sequence_executions_status_primary_date " +
+                    "WHERE status = 'COMPLETED' ORDER BY primary_local_date DESC LIMIT 1",
+            ).any {
+                it.contains("sequence_executions_status_primary_date") && it.contains("status=?")
+            },
+        )
+    }
+
+    @Test
+    fun latestDateDiscoveryRetainsAReachableOriginalZoneDate() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", "Frozen note")
+        val now = Instant.parse("2026-08-20T12:00:00Z")
+        val persisted = Instant.parse("2026-08-20T06:00:00Z")
+        insertActivity("future-primary-date", persisted, ZoneOffset.ofHours(18))
+
+        assertEquals(
+            LocalDate.parse("2026-08-21"),
+            repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)),
+        )
+    }
+
+    @Test
+    fun activityDetailUsesFrozenLabelsAndKeepsSnapshotConfigurationAndNoLiveMissingDuration() {
         database.statisticsSeriesDao().insert(StatisticsSeriesEntity("series", "ACTIVITY", "Source", 0, null))
         database.activityTemplateDao().insertAggregate(
             ActivityTemplateAggregateEntity(
@@ -307,11 +378,13 @@ class HistoryReadRepositoryTest {
 
         assertEquals("Frozen Activity", detail.root.title)
         assertNull(detail.root.activeDuration)
-        assertEquals("Current number", detail.fields[0].name)
+        assertEquals(detailExecution.updatedAt, detail.updatedAt)
+        assertEquals(ZoneOffset.UTC, detail.originalZoneId)
+        assertEquals("Creation number", detail.fields[0].name)
         assertTrue(detail.fields[0].isMainValue)
         assertFalse(detail.fields[1].isMainValue)
         assertEquals(ActivityHistoryActualValue.Number(0), detail.fields[0].actualValue)
-        assertEquals("Current option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
+        assertEquals("Creation option", (detail.fields[1].actualValue as ActivityHistoryActualValue.Category).label)
         assertEquals(ActivityHistoryActualValue.Text("configured"), detail.fields[2].actualValue)
         assertEquals("Local text", detail.fields[2].name)
         val localOption = detail.fields[1].categoryOptions.single { it.id.value == "local-option" }
@@ -321,7 +394,9 @@ class HistoryReadRepositoryTest {
                 it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete")
             },
         )
-        database.activityTemplateDao().archive("template", 3)
+        database.activityTemplateDao().archiveOption("option-source")
+        database.activityTemplateDao().archiveField("number-source", 3)
+        database.activityTemplateDao().archive("template", 4)
 
         val archived = requireNotNull(repository.getActivityDetail(ActivityExecutionId("detail")))
         assertEquals("Creation number", archived.fields[0].name)
@@ -348,12 +423,12 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun unavailableSourceOptionFallsBackWithoutChangingFrozenActivityFacts() {
+    fun sourceOptionArchiveDoesNotChangeFrozenActivityLabels() {
         val execution = insertSourceDisplayFixture()
         database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
 
         val current = requireNotNull(repository.getActivityDetail(execution.id))
-        assertEquals("Current option", categoryActual(current).label)
+        assertEquals("Creation option", categoryActual(current).label)
 
         database.activityTemplateDao().archiveOption("display-option-source")
         val unavailable = requireNotNull(repository.getActivityDetail(execution.id))
@@ -372,7 +447,7 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun unavailableSourceFieldsFallBackWithTheirCategoryOptions() {
+    fun sourceFieldArchiveDoesNotChangeFrozenActivityLabels() {
         val execution = insertSourceDisplayFixture()
         database.activityTemplateDao().updateFieldDisplayName("display-number-source", "Current number", 2)
         database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current option")
@@ -380,7 +455,7 @@ class HistoryReadRepositoryTest {
         database.activityTemplateDao().archiveField("display-number-source", 3)
         val numberUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
         assertEquals("Creation number", numberUnavailable.fields[0].name)
-        assertEquals("Current option", categoryActual(numberUnavailable).label)
+        assertEquals("Creation option", categoryActual(numberUnavailable).label)
 
         database.activityTemplateDao().archiveField("display-category-source", 4)
         val categoryUnavailable = requireNotNull(repository.getActivityDetail(execution.id))
@@ -394,6 +469,75 @@ class HistoryReadRepositoryTest {
                 .categoryOptions
                 .single { it.id.value == "display-local-option" }
                 .label,
+        )
+    }
+
+    @Test
+    fun sequenceDetailUsesFrozenLabelsForSequenceAndChildActivityHistory() {
+        val sequence = insertSequenceDisplayFixture()
+        database.sequenceTemplateDao().updateFieldDisplayName("sequence-number-source", "Current sequence number", 12)
+        database.sequenceTemplateDao().updateOptionDisplayLabel("sequence-option-source", "Current sequence option")
+        database.activityTemplateDao().updateFieldDisplayName("display-number-source", "Current child number", 12)
+        database.activityTemplateDao().updateOptionDisplayLabel("display-option-source", "Current child option")
+        observedSql.clear()
+
+        val detail = requireNotNull(repository.getSequenceDetail(sequence.id))
+
+        assertEquals(sequence.updatedAt, detail.updatedAt)
+        assertEquals(ZoneOffset.ofHours(3), detail.originalZoneId)
+        assertEquals("Creation sequence number", detail.fields[0].name)
+        assertEquals(
+            SequenceHistoryConfiguredValue.Number(7),
+            detail.fields[0].configuredValue,
+        )
+        assertEquals(
+            SequenceHistoryActualValue.Number(0),
+            detail.fields[0].actualValue,
+        )
+        assertEquals(
+            "Creation sequence option",
+            (detail.fields[1].actualValue as SequenceHistoryActualValue.Category).label,
+        )
+        val localSequenceOption = detail.fields[1].categoryOptions.single { it.id.value == "sequence-local-option" }
+        assertEquals(
+            "Local sequence option",
+            localSequenceOption.label,
+        )
+        assertEquals("Local sequence text", detail.fields[2].name)
+        assertEquals(
+            "Creation number",
+            requireNotNull(
+                detail.occurrences
+                    .single()
+                    .activity.mainValue,
+            ).name,
+        )
+        assertEquals(
+            "Creation number",
+            detail.occurrences
+                .single()
+                .child
+                ?.fields
+                ?.first()
+                ?.name,
+        )
+        assertEquals(
+            "Creation option",
+            (
+                detail.occurrences
+                    .single()
+                    .child!!
+                    .fields[1]
+                    .actualValue as ActivityHistoryActualValue.Category
+            ).label,
+        )
+        assertFalse(
+            synchronized(observedSql) { observedSql.map(String::lowercase) }.any {
+                "activity_template_fields" in it ||
+                    "activity_template_category_options" in it ||
+                    "sequence_template_fields" in it ||
+                    "sequence_template_category_options" in it
+            },
         )
     }
 
@@ -415,6 +559,32 @@ class HistoryReadRepositoryTest {
             listOf("activity-a", "activity-b", "activity-c", "sequence-a"),
             rootIds(repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 4))),
         )
+    }
+
+    @Test
+    fun continuationExhaustsSameDayMixedTiesWithoutSkipsOrDuplicates() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", null)
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", null)
+        val sameInstant = at(100)
+        repeat(101) { insertActivity("activity-%03d".format(it), sameInstant) }
+        listOf("sequence-a", "sequence-b").forEach {
+            insertSequence(it, sameInstant, SequenceExecutionStatus.COMPLETED)
+        }
+
+        val range = HistoryDateRange(LocalDate.parse("2026-08-20"), LocalDate.parse("2026-08-20"))
+        var cursor = null as com.alexandr5476.lifetracing.domain.CompletedHistoryCursor?
+        val seen = mutableListOf<CompletedHistoryRoot>()
+        do {
+            val page = repository.getCompletedRoots(CompletedHistoryQuery(range, 100, cursor))
+            seen += page
+            cursor = page.lastOrNull()?.cursor()
+        } while (seen.size % 100 == 0 && cursor != null)
+
+        assertEquals(
+            (0..100).map { "activity-%03d".format(it) } + listOf("sequence-a", "sequence-b"),
+            rootIds(seen),
+        )
+        assertEquals(103, rootIds(seen).distinct().size)
     }
 
     @Test
@@ -443,14 +613,13 @@ class HistoryReadRepositoryTest {
     }
 
     @Test
-    fun detailUsesOneBatchedSourceDisplayLookupPerMetadataKindAndDoesNotWrite() {
+    fun detailUsesOnlyItsExecutionAndSnapshotGraphAndDoesNotWrite() {
         val execution = insertSourceDisplayFixture()
         observedSql.clear()
         repository.getActivityDetail(execution.id)
         val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
 
-        assertEquals(1, queries.count { "from activity_template_fields" in it })
-        assertEquals(1, queries.count { "from activity_template_category_options" in it })
+        assertFalse(queries.any { "activity_template_fields" in it || "activity_template_category_options" in it })
         assertFalse(queries.any { it.startsWith("insert") || it.startsWith("update") || it.startsWith("delete") })
     }
 
@@ -538,6 +707,128 @@ class HistoryReadRepositoryTest {
         assertEquals(executionBeforeRead, database.activityExecutionDao().getById(execution.id.value))
         assertEquals(snapshotsBeforeRead, count("activity_snapshots"))
         assertEquals(activeSessionBeforeRead, database.activeSessionDao().get())
+    }
+
+    @Test
+    fun softDeletedStandaloneSurvivesReloadButItsDetailIsUnavailable() {
+        reopenFileDatabase("history-standalone-delete-reload.db")
+        insertNoLiveTemplate("source")
+        val commands = commands("delete")
+        val execution =
+            commands.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                at(100),
+                at(101),
+                ZoneOffset.UTC,
+            )
+        commands.softDeleteHistory(execution.id, execution.updatedAt, at(102))
+
+        reopenFileDatabase("history-standalone-delete-reload.db", deleteFirst = false)
+        val persisted = requireNotNull(database.activityExecutionDao().getAggregate(execution.id.value)).toDomain()
+        assertEquals(at(102), persisted.deletedAt)
+        assertNull(repository.getActivityDetail(execution.id))
+        assertTrue(repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 10)).isEmpty())
+        assertTrue(
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(LocalDate.parse("2026-08-20"), at(103), 10))
+                .completedHistory
+                .isEmpty(),
+        )
+        assertEquals(
+            0L,
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(StatisticsSeriesId("source-series"), StatisticsPeriod.AllTime)
+                .executionCount,
+        )
+    }
+
+    @Test
+    fun originalZonePrimaryDateAheadOfDeviceDateRemainsQueryableAfterReload() {
+        reopenFileDatabase("history-original-zone-date-reload.db")
+        insertNoLiveTemplate("source")
+        val commands = commands("zone")
+        val completedAt = Instant.parse("2026-09-16T10:00:00Z")
+        val execution =
+            commands.addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                completedAt,
+                Instant.parse("2026-09-18T00:00:00Z"),
+                ZoneId.of("Pacific/Kiritimati"),
+            )
+
+        reopenFileDatabase("history-original-zone-date-reload.db", deleteFirst = false)
+        assertEquals(LocalDate.parse("2026-09-17"), execution.primaryLocalDate)
+        assertEquals(
+            listOf(execution.id.value),
+            repository
+                .getCompletedRoots(query("2026-09-17", "2026-09-17", 10))
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .map { it.executionId.value },
+        )
+    }
+
+    @Test
+    fun durableStandaloneHistoryRemainsReachableAfterWallClockRollback() {
+        reopenFileDatabase("history-wall-clock-rollback-activity.db")
+        insertNoLiveTemplate("source")
+        val completedAt = Instant.parse("2026-09-17T12:00:00Z")
+        val execution =
+            commands("rollback").addManualNoLive(
+                ActivityEntrySource.Template(ActivityTemplateId("source")),
+                completedAt,
+                completedAt.plusSeconds(1),
+                ZoneOffset.UTC,
+            )
+
+        reopenFileDatabase("history-wall-clock-rollback-activity.db", deleteFirst = false)
+        val rolledBackNow = Instant.parse("2026-09-14T00:00:00Z")
+        assertTrue(execution.primaryLocalDate > rolledBackNow.atZone(ZoneOffset.MAX).toLocalDate())
+        assertEquals(
+            execution.primaryLocalDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.UTC),
+        )
+        val roots =
+            repository
+                .getCompletedRoots(
+                    query(
+                        execution.primaryLocalDate.minusDays(27).toString(),
+                        execution.primaryLocalDate.toString(),
+                        100,
+                    ),
+                ).filterIsInstance<CompletedActivityHistoryRoot>()
+        assertEquals(listOf(execution.id.value), roots.map { it.executionId.value })
+        assertEquals(execution.primaryLocalDate, roots.single().primaryLocalDate)
+    }
+
+    @Test
+    fun durableTerminalSequenceRemainsLatestAfterWallClockRollbackAndZoneChange() {
+        reopenFileDatabase("history-wall-clock-rollback-sequence.db")
+        insertSequenceSnapshot("sequence-snapshot", "Frozen Sequence", null)
+        val terminalAt = Instant.parse("2026-09-17T12:00:00Z")
+        insertSequence("rolled-sequence", terminalAt, SequenceExecutionStatus.COMPLETED)
+
+        reopenFileDatabase("history-wall-clock-rollback-sequence.db", deleteFirst = false)
+        val persistedDate = terminalAt.minusMillis(1).atZone(ZoneOffset.UTC).toLocalDate()
+        val rolledBackNow = Instant.parse("2026-09-14T00:00:00Z")
+        assertEquals(
+            persistedDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.ofHours(-12)),
+        )
+        assertEquals(
+            persistedDate,
+            repository.getLatestCompletedPrimaryLocalDate(rolledBackNow, ZoneOffset.ofHours(14)),
+        )
+        val roots =
+            repository
+                .getCompletedRoots(
+                    query(
+                        persistedDate.toString(),
+                        persistedDate.toString(),
+                        10,
+                    ),
+                ).filterIsInstance<CompletedSequenceHistoryRoot>()
+        assertEquals(listOf("rolled-sequence"), roots.map { it.executionId.value })
+        assertEquals(persistedDate, roots.single().primaryLocalDate)
     }
 
     private fun rootIds(roots: List<com.alexandr5476.lifetracing.domain.CompletedHistoryRoot>) =
@@ -727,7 +1018,7 @@ class HistoryReadRepositoryTest {
                         7,
                         null,
                         null,
-                        false,
+                        true,
                     ),
                     ActivitySnapshotFieldEntity(
                         "display-category-snapshot",
@@ -787,6 +1078,267 @@ class HistoryReadRepositoryTest {
         database.activityExecutionDao().upsertValue(
             ActivityExecutionFieldValueEntity(
                 execution.id.value,
+                "display-category-snapshot",
+                null,
+                "display-option-snapshot",
+                null,
+            ),
+        )
+        return execution
+    }
+
+    private fun insertSequenceDisplayFixture(): SequenceExecution {
+        insertSourceDisplayFixture()
+        database.statisticsSeriesDao().insert(
+            StatisticsSeriesEntity("sequence-display-series", "SEQUENCE", "Sequence", 0, null),
+        )
+        database.sequenceTemplateDao().insertAggregate(
+            SequenceTemplateAggregateEntity(
+                SequenceTemplateEntity(
+                    "sequence-display-template",
+                    "Sequence",
+                    null,
+                    "sequence-display-series",
+                    1,
+                    0,
+                    0,
+                    null,
+                    null,
+                ),
+                SequenceTemplateSettingsEntity("sequence-display-template"),
+                SequenceTemplateUserStateEntity("sequence-display-template", null, null),
+                listOf(
+                    SequenceTemplateFieldEntity(
+                        "sequence-number-source",
+                        "sequence-display-template",
+                        0,
+                        "Creation sequence number",
+                        "NUMBER",
+                        null,
+                        0,
+                        7,
+                        null,
+                        null,
+                        true,
+                        0,
+                        0,
+                        null,
+                    ),
+                    SequenceTemplateFieldEntity(
+                        "sequence-category-source",
+                        "sequence-display-template",
+                        1,
+                        "Creation sequence category",
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "sequence-option-source",
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                    SequenceTemplateFieldEntity(
+                        "sequence-text-source",
+                        "sequence-display-template",
+                        2,
+                        "Creation sequence text",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                        0,
+                        0,
+                        null,
+                    ),
+                ),
+                listOf(
+                    SequenceTemplateCategoryOptionEntity(
+                        "sequence-option-source",
+                        "sequence-category-source",
+                        0,
+                        "Creation sequence option",
+                    ),
+                ),
+            ),
+        )
+        database.sequenceSnapshotDao().insertAggregate(
+            SequenceSnapshotAggregateEntity(
+                SequenceSnapshotEntity(
+                    "sequence-display-snapshot",
+                    "Frozen Sequence",
+                    null,
+                    "sequence-display-template",
+                    1,
+                    "sequence-display-series",
+                    0,
+                ),
+                SequenceSnapshotSettingsEntity(
+                    "sequence-display-snapshot",
+                    false,
+                    0,
+                    0,
+                    true,
+                    true,
+                    false,
+                    false,
+                    false,
+                    "ACTIVE",
+                ),
+                listOf(
+                    SequenceSnapshotFieldEntity(
+                        "sequence-number-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-number-source",
+                        0,
+                        "Creation sequence number",
+                        null,
+                        "NUMBER",
+                        null,
+                        0,
+                        7,
+                        null,
+                        null,
+                        true,
+                    ),
+                    SequenceSnapshotFieldEntity(
+                        "sequence-category-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-category-source",
+                        1,
+                        "Creation sequence category",
+                        null,
+                        "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        "sequence-option-snapshot",
+                        null,
+                        false,
+                    ),
+                    SequenceSnapshotFieldEntity(
+                        "sequence-text-snapshot",
+                        "sequence-display-snapshot",
+                        "sequence-text-source",
+                        2,
+                        "Creation sequence text",
+                        "Local sequence text",
+                        "TEXT",
+                        null,
+                        null,
+                        null,
+                        null,
+                        "configured",
+                        false,
+                    ),
+                ),
+                listOf(
+                    SequenceSnapshotCategoryOptionEntity(
+                        "sequence-option-snapshot",
+                        "sequence-category-snapshot",
+                        "sequence-option-source",
+                        0,
+                        "Creation sequence option",
+                        null,
+                    ),
+                    SequenceSnapshotCategoryOptionEntity(
+                        "sequence-local-option",
+                        "sequence-category-snapshot",
+                        null,
+                        1,
+                        "Creation local sequence option",
+                        "Local sequence option",
+                    ),
+                ),
+                listOf(
+                    SequenceSnapshotNodeEntity(
+                        "sequence-display-node",
+                        "sequence-display-snapshot",
+                        "STEP",
+                        null,
+                        0,
+                        "display-snapshot",
+                        null,
+                    ),
+                ),
+            ),
+        )
+        val startedAt = at(800)
+        val endedAt = at(810)
+        val occurrenceId = SequenceOccurrenceId("sequence-display-occurrence")
+        val execution =
+            SequenceExecution(
+                SequenceExecutionId("sequence-display-execution"),
+                SequenceSnapshotId("sequence-display-snapshot"),
+                com.alexandr5476.lifetracing.domain
+                    .StatisticsSeriesId("sequence-display-series"),
+                SequenceExecutionStatus.COMPLETED,
+                startedAt,
+                endedAt,
+                Duration.ofMillis(10),
+                Duration.ZERO,
+                Duration.ofMillis(10),
+                ZoneOffset.ofHours(3),
+                180,
+                startedAt.atZone(ZoneOffset.ofHours(3)).toLocalDate(),
+                null,
+                startedAt,
+                endedAt.plusMillis(1),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.RuntimeOccurrence(
+                        occurrenceId,
+                        SequenceSnapshotNodeId("sequence-display-node"),
+                        ActivitySnapshotId("display-snapshot"),
+                        0,
+                        null,
+                        null,
+                        com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus.COMPLETED,
+                        startedAt,
+                        endedAt,
+                        com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason.MANUAL_FINISH,
+                        false,
+                        false,
+                    ),
+                ),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.SequenceInterval(
+                        SequenceIntervalId("sequence-display-interval"),
+                        com.alexandr5476.lifetracing.domain.SequenceIntervalKind.ACTIVE_STEP,
+                        startedAt,
+                        endedAt,
+                        occurrenceId,
+                    ),
+                ),
+                listOf(
+                    com.alexandr5476.lifetracing.domain.NumberSequenceExecutionValue(
+                        SequenceSnapshotFieldId("sequence-number-snapshot"),
+                        0,
+                    ),
+                    com.alexandr5476.lifetracing.domain.CategorySequenceExecutionValue(
+                        SequenceSnapshotFieldId("sequence-category-snapshot"),
+                        SequenceSnapshotCategoryOptionId("sequence-option-snapshot"),
+                    ),
+                ),
+            )
+        database.sequenceExecutionDao().insertAggregate(execution.toEntityAggregate())
+        val childExecution =
+            ActivityExecutionFactory { ActivityExecutionId("sequence-display-child") }
+                .completeSequenceChildNoLive(
+                    requireNotNull(database.activitySnapshotDao().getAggregate("display-snapshot")).toDomain(),
+                    execution.id,
+                    occurrenceId,
+                    endedAt,
+                    ZoneOffset.UTC,
+                )
+        database.activityExecutionDao().insertAggregate(childExecution.toEntityAggregate())
+        database.activityExecutionDao().upsertValue(
+            ActivityExecutionFieldValueEntity(
+                childExecution.id.value,
                 "display-category-snapshot",
                 null,
                 "display-option-snapshot",
@@ -908,12 +1460,14 @@ class HistoryReadRepositoryTest {
         sequenceId: String,
         occurrenceId: String,
         completedAt: Instant,
+        runtimePosition: Int = 0,
     ) {
         database.openHelper.writableDatabase.execSQL(
-            "INSERT INTO sequence_occurrences (id, sequence_execution_id, source_sequence_snapshot_node_id, activity_snapshot_id, runtime_position, repeat_source_snapshot_node_id, repeat_iteration, status, entered_at_ms, completed_at_ms, completion_reason, is_runtime_added, is_deleted_from_history) VALUES (?, ?, NULL, 'activity-snapshot', 0, NULL, NULL, 'COMPLETED', ?, ?, NULL, 1, 0)",
+            "INSERT INTO sequence_occurrences (id, sequence_execution_id, source_sequence_snapshot_node_id, activity_snapshot_id, runtime_position, repeat_source_snapshot_node_id, repeat_iteration, status, entered_at_ms, completed_at_ms, completion_reason, is_runtime_added, is_deleted_from_history) VALUES (?, ?, NULL, 'activity-snapshot', ?, NULL, NULL, 'COMPLETED', ?, ?, NULL, 1, 0)",
             arrayOf<Any?>(
                 occurrenceId,
                 sequenceId,
+                runtimePosition,
                 completedAt.minusMillis(1).toEpochMilli(),
                 completedAt.toEpochMilli(),
             ),
@@ -938,5 +1492,12 @@ class HistoryReadRepositoryTest {
         database.openHelper.writableDatabase.query("SELECT COUNT(*) FROM $table").use { cursor ->
             cursor.moveToFirst()
             cursor.getLong(0)
+        }
+
+    private fun explain(sql: String): List<String> =
+        database.openHelper.writableDatabase.query("EXPLAIN QUERY PLAN $sql").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getString(3))
+            }
         }
 }
