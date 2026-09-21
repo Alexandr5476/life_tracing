@@ -948,6 +948,10 @@ class SequenceHistoryCommandRepositoryTest {
         val tombstone = detail.occurrences.single { it.occurrenceId.value == "a" }
         assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, tombstone.status)
         assertNull(tombstone.child)
+        assertEquals(ActivityExecutionId("child-a"), tombstone.childMutationFacts?.executionId)
+        assertEquals(beforeChild.toDomain().startedAt, tombstone.childMutationFacts?.startedAt)
+        assertEquals(beforeChild.toDomain().completedAt, tombstone.childMutationFacts?.completedAt)
+        assertEquals(beforeChild.toDomain().pauses, tombstone.childMutationFacts?.pauses)
         assertEquals(beforeDetail.occurrences.first().activity, tombstone.activity)
         assertTrue(detail.occurrences.single { it.occurrenceId.value == "b" }.child != null)
         assertEquals(beforeDetail.intervals, detail.intervals)
@@ -1012,6 +1016,10 @@ class SequenceHistoryCommandRepositoryTest {
         assertEquals(beforeChild.pauses, afterChild.pauses)
         assertEquals(beforeChild.values, afterChild.values)
         assertEquals(40_000L, afterChild.execution.deletedAtMs)
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(PAUSED_SEQUENCE_ID))
+        val tombstone = detail.occurrences.single { it.occurrenceId.value == "paused-a" }
+        assertNull(tombstone.child)
+        assertEquals(beforeChild.toDomain().pauses, tombstone.childMutationFacts?.pauses)
     }
 
     @Test

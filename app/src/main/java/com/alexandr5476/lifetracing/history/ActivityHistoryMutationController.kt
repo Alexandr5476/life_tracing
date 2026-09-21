@@ -32,28 +32,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
-import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeFormatterBuilder
-import java.time.format.DateTimeParseException
-import java.time.format.ResolverStyle
-import java.time.temporal.ChronoField
-
-private val CORRECTION_DATE_TIME_FORMATTER =
-    DateTimeFormatterBuilder()
-        .appendPattern("uuuu-MM-dd'T'HH:mm")
-        .optionalStart()
-        .appendPattern(":ss")
-        .optionalStart()
-        .appendFraction(ChronoField.NANO_OF_SECOND, 1, MAX_MILLISECOND_DIGITS, true)
-        .optionalEnd()
-        .optionalEnd()
-        .toFormatter()
-        .withResolverStyle(ResolverStyle.STRICT)
-
-private const val MAX_MILLISECOND_DIGITS = 3
 
 enum class ActivityHistoryMutationIssue {
     INVALID_DATE_TIME,
@@ -284,8 +265,8 @@ class ActivityHistoryMutationController internal constructor(
         val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
         if (detail.root.planEntryId != null) return
         val zone = detail.originalZoneId
-        val startedOccurrence = detail.root.startedAt?.occurrenceIn(zone)
-        val completedOccurrence = detail.root.completedAt.occurrenceIn(zone)
+        val startedOccurrence = detail.root.startedAt?.toHistoricalLocalDateTime(zone)
+        val completedOccurrence = detail.root.completedAt.toHistoricalLocalDateTime(zone)
         mutableState.update {
             it.copy(
                 draft =
@@ -539,47 +520,34 @@ class ActivityHistoryMutationController internal constructor(
         zone: ZoneId,
         selectedOffset: ZoneOffset?,
         started: Boolean,
-    ): Instant? {
-        val local =
-            try {
-                LocalDateTime.parse(text.trim().replace(' ', 'T'), CORRECTION_DATE_TIME_FORMATTER)
-            } catch (_: DateTimeParseException) {
-                return invalid(ActivityHistoryMutationIssue.INVALID_DATE_TIME)
+    ): Instant? =
+        when (val result = resolveHistoricalLocalDateTime(text, zone, selectedOffset)) {
+            is HistoricalLocalDateTimeResolution.Resolved -> result.instant
+            HistoricalLocalDateTimeResolution.Invalid -> invalid(ActivityHistoryMutationIssue.INVALID_DATE_TIME)
+            HistoricalLocalDateTimeResolution.Nonexistent ->
+                invalid(ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME)
+            is HistoricalLocalDateTimeResolution.Ambiguous -> {
+                mutableState.update { state ->
+                    state.copy(
+                        draft =
+                            state.draft?.let {
+                                if (started) {
+                                    it.copy(startedOffsets = result.offsets)
+                                } else {
+                                    it.copy(completedOffsets = result.offsets)
+                                }
+                            },
+                        issue = ActivityHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME,
+                    )
+                }
+                null
             }
-        val offsets = zone.rules.getValidOffsets(local)
-        if (offsets.isEmpty()) return invalid(ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME)
-        if (offsets.size > 2) error("ZoneRules returned ${offsets.size} valid offsets")
-        if (offsets.size == 2 && (selectedOffset == null || selectedOffset !in offsets)) {
-            mutableState.update { state ->
-                state.copy(
-                    draft =
-                        state.draft?.let {
-                            if (started) it.copy(startedOffsets = offsets) else it.copy(completedOffsets = offsets)
-                        },
-                    issue = ActivityHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME,
-                )
-            }
-            return null
         }
-        return local.toInstant(selectedOffset ?: offsets.single())
-    }
 
     private fun <T> invalid(issue: ActivityHistoryMutationIssue): T? {
         mutableState.update { it.copy(issue = issue) }
         return null
     }
-
-    private fun Instant.occurrenceIn(zone: ZoneId): Occurrence {
-        val zoned = atZone(zone)
-        val local = zoned.toLocalDateTime()
-        val offsets = zone.rules.getValidOffsets(local)
-        return Occurrence(offsets.takeIf { it.size == 2 }.orEmpty(), zoned.offset.takeIf { it in offsets })
-    }
-
-    private data class Occurrence(
-        val validOffsets: List<ZoneOffset>,
-        val selectedOffset: ZoneOffset?,
-    )
 
     private data class PendingCorrection(
         val correction: ActivityHistoryCorrection,

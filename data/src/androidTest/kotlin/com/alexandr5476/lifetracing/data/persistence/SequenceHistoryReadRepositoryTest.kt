@@ -124,6 +124,9 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(ActivityHistoryConfiguredValue.Number(11), skippedMainValue.configuredValue)
         assertEquals(ActivityHistoryActualValue.Missing, skippedMainValue.actualValue)
         assertEquals(ActivityExecutionId("child-runtime"), detail.occurrences[0].child?.executionId)
+        assertEquals(ActivityExecutionId("child-runtime"), detail.occurrences[0].childMutationFacts?.executionId)
+        assertEquals(Instant.ofEpochSecond(10), detail.occurrences[0].childMutationFacts?.completedAt)
+        assertTrue(requireNotNull(detail.occurrences[0].childMutationFacts).pauses.isEmpty())
         assertNull(detail.occurrences[0].child?.activeDuration)
         assertTrue(requireNotNull(detail.occurrences[0].child).fields.single().isMainValue)
         assertEquals(
@@ -131,6 +134,8 @@ class SequenceHistoryReadRepositoryTest {
             requireNotNull(detail.occurrences[0].child).fields.single().actualValue,
         )
         assertEquals(2, detail.intervals.size)
+        assertNull(detail.occurrences[2].childMutationFacts)
+        assertNull(detail.occurrences[3].childMutationFacts)
         assertEquals(SequenceHistoryConfiguredValue.Number(7), detail.fields[0].configuredValue)
         assertEquals(SequenceHistoryActualValue.Number(0), detail.fields[0].actualValue)
         assertEquals(

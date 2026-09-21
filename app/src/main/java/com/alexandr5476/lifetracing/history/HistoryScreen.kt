@@ -27,7 +27,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -105,13 +104,30 @@ internal fun ActivityHistoryDetailRoute(
 }
 
 @Composable
-fun SequenceHistoryDetailRoute(
-    controller: HistoryDetailController<SequenceHistoryDetail>,
+internal fun SequenceHistoryDetailRoute(
+    session: SequenceHistoryMutationRouteSession,
     onBack: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
-    DisposableEffect(controller) { onDispose(controller::close) }
-    val load by controller.state.collectAsState()
-    HistoryDetailSurface(onBack, load, controller::reload) { SequenceDetail(it) }
+    val controller = session.controller
+    val state by controller.state.collectAsState()
+    BackHandler(
+        enabled =
+            state.isMutating ||
+                state.timingDraft != null ||
+                state.childDeletionProposal != null ||
+                state.structuralTarget != null,
+    ) {
+        controller.handleBack()
+    }
+    LaunchedEffect(state.refreshGeneration) {
+        session.deliverRefresh(state.refreshGeneration, onRefresh)
+    }
+    HistoryDetailSurface(
+        onBack = { if (!controller.handleBack()) onBack() },
+        load = state.load,
+        onRetry = { controller.dispatch(SequenceHistoryMutationAction.Retry) },
+    ) { SequenceDetail(it) }
 }
 
 @Composable
