@@ -2,11 +2,13 @@
 
 package com.alexandr5476.lifetracing.history
 
+import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceChildTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
@@ -75,6 +77,23 @@ data class SequenceHistoryOccurrenceDescriptor(
     val isRuntimeAdded: Boolean,
 )
 
+data class SequenceHistoryIntervalDescriptor(
+    val intervalId: SequenceIntervalId,
+    val kind: SequenceIntervalKind,
+    val startedAt: Instant,
+    val endedAt: Instant,
+)
+
+data class SequenceHistoryOwnerlessPlacementChoice(
+    val intervalId: SequenceIntervalId,
+    val kind: SequenceIntervalKind,
+    val fixedStartedAt: Instant,
+    val fixedEndedAt: Instant,
+    val translatedStartedAt: Instant,
+    val translatedEndedAt: Instant,
+    val selectedPlacement: OwnerlessIntervalPlacement?,
+)
+
 /** Display-only facts derived with the proposal; Compose never rebuilds a correction from them. */
 sealed interface SequenceHistoryPreviewChange {
     data class Timestamp(
@@ -97,12 +116,15 @@ sealed interface SequenceHistoryPreviewChange {
     ) : SequenceHistoryPreviewChange
 
     data class RemovedInterval(
-        val intervalId: SequenceIntervalId,
+        val interval: SequenceHistoryIntervalDescriptor,
     ) : SequenceHistoryPreviewChange
 
     data class OwnerlessPlacement(
         val intervalId: SequenceIntervalId,
+        val kind: SequenceIntervalKind,
         val placement: OwnerlessIntervalPlacement,
+        val resultingStartedAt: Instant,
+        val resultingEndedAt: Instant,
     ) : SequenceHistoryPreviewChange
 }
 
@@ -138,6 +160,7 @@ data class SequenceHistoryStructuralProposal(
     val mode: SequenceHistoryStructuralRemovalMode,
     val shiftMillis: Long,
     val ownerlessPlacements: Map<SequenceIntervalId, OwnerlessIntervalPlacement?>,
+    val ownerlessChoices: List<SequenceHistoryOwnerlessPlacementChoice>,
     val command: SequenceHistoryStructuralRemovalCommand?,
     val changes: List<SequenceHistoryPreviewChange>,
 ) {
@@ -146,20 +169,14 @@ data class SequenceHistoryStructuralProposal(
 }
 
 object SequenceHistoryProposalBuilder {
+    fun occurrenceDescriptors(
+        detail: SequenceHistoryDetail,
+    ): Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor> = detail.occurrenceIndex().descriptorsById
+
     fun occurrenceDescriptor(
         detail: SequenceHistoryDetail,
         occurrenceId: SequenceOccurrenceId,
-    ): SequenceHistoryOccurrenceDescriptor? =
-        detail.occurrences.singleOrNull { it.occurrenceId == occurrenceId }?.let {
-            SequenceHistoryOccurrenceDescriptor(
-                it.occurrenceId,
-                it.activity.title,
-                it.runtimePosition,
-                it.sourceSequenceSnapshotNodeId != null,
-                it.repeatIteration,
-                it.isRuntimeAdded,
-            )
-        }
+    ): SequenceHistoryOccurrenceDescriptor? = detail.occurrenceIndex().descriptorsById[occurrenceId]
 
     fun timingDraft(detail: SequenceHistoryDetail): SequenceHistoryTimingDraft {
         val zone = detail.originalZoneId
@@ -199,6 +216,8 @@ object SequenceHistoryProposalBuilder {
         detail: SequenceHistoryDetail,
         draft: SequenceHistoryTimingDraft,
     ): SequenceHistoryTimingBuildResult {
+        val occurrenceIndex = detail.occurrenceIndex()
+        val intervalsById = detail.intervals.uniqueIndex(SequenceInterval::id, "Sequence interval")
         val resolved = linkedMapOf<SequenceHistoryTimestampTarget, Instant>()
         draft.timestamps.forEach { (target, value) ->
             when (
@@ -297,7 +316,7 @@ object SequenceHistoryProposalBuilder {
             SequenceHistoryTimingProposal(
                 correction,
                 hasActiveOverlap(intervals),
-                timestampChanges(detail, correction),
+                timestampChanges(detail, correction, occurrenceIndex, intervalsById),
             ),
         )
     }
@@ -308,7 +327,10 @@ object SequenceHistoryProposalBuilder {
         mode: SequenceHistoryStructuralRemovalMode,
         placements: Map<SequenceIntervalId, OwnerlessIntervalPlacement> = emptyMap(),
     ): SequenceHistoryStructuralProposal? {
-        val target = detail.occurrences.singleOrNull { it.occurrenceId == occurrenceId } ?: return null
+        val occurrenceIndex = detail.occurrenceIndex()
+        val intervalsById = detail.intervals.uniqueIndex(SequenceInterval::id, "Sequence interval")
+        val target = occurrenceIndex.occurrencesById[occurrenceId] ?: return null
+        val targetDescriptor = requireNotNull(occurrenceIndex.descriptorsById[occurrenceId])
         if (target.status !in PERFORMED || target.isDeletedFromHistory) return null
         val childId = target.childMutationFacts?.executionId ?: return null
         val targetStart = target.enteredAt ?: return null
@@ -318,10 +340,11 @@ object SequenceHistoryProposalBuilder {
         if (mode == SequenceHistoryStructuralRemovalMode.LEAVE_GAP) {
             return SequenceHistoryStructuralProposal(
                 occurrenceId,
-                requireNotNull(occurrenceDescriptor(detail, occurrenceId)),
+                targetDescriptor,
                 mode,
                 0,
                 emptyMap(),
+                emptyList(),
                 SequenceHistoryStructuralRemovalCommand(
                     detail.updatedAt,
                     occurrenceId,
@@ -330,11 +353,14 @@ object SequenceHistoryProposalBuilder {
                     detail.root.completedAt,
                     retained,
                 ),
-                listOf(
-                    SequenceHistoryPreviewChange.RemovedOccurrence(
-                        requireNotNull(occurrenceDescriptor(detail, occurrenceId)),
-                    ),
-                ),
+                buildList {
+                    add(SequenceHistoryPreviewChange.RemovedOccurrence(targetDescriptor))
+                    detail.intervals
+                        .filter { it.occurrenceId == occurrenceId }
+                        .forEach {
+                            add(SequenceHistoryPreviewChange.RemovedInterval(it.toDescriptor()))
+                        }
+                },
             )
         }
         if (shift <= 0) return null
@@ -342,6 +368,7 @@ object SequenceHistoryProposalBuilder {
         val later = detail.occurrences.filter { it.runtimePosition > target.runtimePosition }
         val laterIds = later.mapTo(hashSetOf()) { it.occurrenceId }
         val placementState = linkedMapOf<SequenceIntervalId, OwnerlessIntervalPlacement?>()
+        val placementChoices = mutableListOf<SequenceHistoryOwnerlessPlacementChoice>()
         val finalIntervals =
             retained.map { interval ->
                 when {
@@ -362,7 +389,19 @@ object SequenceHistoryProposalBuilder {
                                 fixedLegal -> OwnerlessIntervalPlacement.FIXED
                                 else -> return null
                             }
-                        if (fixedLegal && translatedLegal) placementState[interval.id] = placement
+                        if (fixedLegal && translatedLegal) {
+                            placementState[interval.id] = placement
+                            placementChoices +=
+                                SequenceHistoryOwnerlessPlacementChoice(
+                                    interval.id,
+                                    interval.kind,
+                                    interval.startedAt,
+                                    requireNotNull(interval.endedAt),
+                                    translated.startedAt,
+                                    requireNotNull(translated.endedAt),
+                                    placement,
+                                )
+                        }
                         if (placement == OwnerlessIntervalPlacement.TRANSLATED) translated else interval
                     }
                 }
@@ -409,18 +448,23 @@ object SequenceHistoryProposalBuilder {
             }
         return SequenceHistoryStructuralProposal(
             occurrenceId,
-            requireNotNull(occurrenceDescriptor(detail, occurrenceId)),
+            targetDescriptor,
             mode,
             shift,
             placementState,
+            placementChoices,
             command,
-            command?.let { structuralChanges(detail, it, placementState) }.orEmpty(),
+            command
+                ?.let { structuralChanges(detail, it, placementState, occurrenceIndex, intervalsById) }
+                .orEmpty(),
         )
     }
 
     private fun timestampChanges(
         detail: SequenceHistoryDetail,
         correction: SequenceHistoryTimingCorrection,
+        occurrenceIndex: OccurrenceIndex,
+        intervalsById: Map<SequenceIntervalId, SequenceInterval>,
     ): List<SequenceHistoryPreviewChange.Timestamp> =
         buildList {
             correction.startedAt?.let {
@@ -442,7 +486,7 @@ object SequenceHistoryProposalBuilder {
                 )
             }
             correction.occurrenceTimings.forEach { timing ->
-                val occurrence = detail.occurrences.single { it.occurrenceId == timing.occurrenceId }
+                val occurrence = occurrenceIndex.occurrencesById.getValue(timing.occurrenceId)
                 val enteredBefore = occurrence.enteredAt
                 val enteredAfter = timing.enteredAt
                 if (enteredBefore != enteredAfter && enteredBefore != null && enteredAfter != null) {
@@ -467,7 +511,7 @@ object SequenceHistoryProposalBuilder {
                 }
             }
             correction.childTimings.forEach { timing ->
-                val occurrence = detail.occurrences.single { it.child?.executionId == timing.executionId }
+                val occurrence = occurrenceIndex.occurrencesByChildExecutionId.getValue(timing.executionId)
                 occurrence.child?.startedAt?.let { before ->
                     (timing.time as? ActivityHistoryTimeCorrection.Timed)?.startedAt?.let { after ->
                         if (before !=
@@ -499,7 +543,7 @@ object SequenceHistoryProposalBuilder {
                 }
             }
             correction.finalIntervals?.forEach { after ->
-                val before = detail.intervals.single { it.id == after.id }
+                val before = intervalsById.getValue(after.id)
                 if (before.startedAt !=
                     after.startedAt
                 ) {
@@ -532,16 +576,19 @@ object SequenceHistoryProposalBuilder {
         detail: SequenceHistoryDetail,
         command: SequenceHistoryStructuralRemovalCommand,
         placements: Map<SequenceIntervalId, OwnerlessIntervalPlacement?>,
-    ): List<SequenceHistoryPreviewChange> =
-        buildList {
+        occurrenceIndex: OccurrenceIndex,
+        intervalsById: Map<SequenceIntervalId, SequenceInterval>,
+    ): List<SequenceHistoryPreviewChange> {
+        val finalIntervalsById = command.finalIntervals.uniqueIndex(SequenceInterval::id, "Final Sequence interval")
+        return buildList {
             add(
                 SequenceHistoryPreviewChange.RemovedOccurrence(
-                    requireNotNull(occurrenceDescriptor(detail, command.occurrenceId)),
+                    occurrenceIndex.descriptorsById.getValue(command.occurrenceId),
                 ),
             )
             detail.intervals
                 .filter { it.occurrenceId == command.occurrenceId }
-                .forEach { add(SequenceHistoryPreviewChange.RemovedInterval(it.id)) }
+                .forEach { add(SequenceHistoryPreviewChange.RemovedInterval(it.toDescriptor())) }
             if (detail.root.completedAt != command.finalEndedAt) {
                 add(
                     SequenceHistoryPreviewChange.Timestamp(
@@ -552,7 +599,7 @@ object SequenceHistoryProposalBuilder {
                 )
             }
             command.occurrenceTimings.forEach { timing ->
-                val before = detail.occurrences.single { it.occurrenceId == timing.occurrenceId }
+                val before = occurrenceIndex.occurrencesById.getValue(timing.occurrenceId)
                 before.enteredAt?.let {
                     add(
                         SequenceHistoryPreviewChange.Timestamp(
@@ -573,8 +620,7 @@ object SequenceHistoryProposalBuilder {
                 }
             }
             command.childTimings.forEach { timing ->
-                val occurrence =
-                    detail.occurrences.single { it.childMutationFacts?.executionId == timing.executionId }
+                val occurrence = occurrenceIndex.occurrencesByChildExecutionId.getValue(timing.executionId)
                 if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) return@forEach
                 val before = requireNotNull(occurrence.childMutationFacts)
                 occurrence.child?.startedAt?.let {
@@ -593,13 +639,13 @@ object SequenceHistoryProposalBuilder {
                         timing.time.completedAt(),
                     ),
                 )
-                val afterPauses = timing.pauses.associateBy { it.id }
+                val afterPauses = timing.pauses.uniqueIndex({ it.id }, "Child pause")
                 before.pauses.forEach { pause ->
                     val after = requireNotNull(afterPauses[pause.id])
                     if (pause != after) {
                         add(
                             SequenceHistoryPreviewChange.ChildPauseTimestamp(
-                                requireNotNull(occurrenceDescriptor(detail, occurrence.occurrenceId)),
+                                occurrenceIndex.descriptorsById.getValue(occurrence.occurrenceId),
                                 pause.id,
                                 pause.startedAt,
                                 pause.endedAt,
@@ -611,7 +657,7 @@ object SequenceHistoryProposalBuilder {
                 }
             }
             command.finalIntervals.forEach { after ->
-                val before = detail.intervals.single { it.id == after.id }
+                val before = intervalsById.getValue(after.id)
                 if (before.startedAt !=
                     after.startedAt
                 ) {
@@ -639,9 +685,22 @@ object SequenceHistoryProposalBuilder {
                 }
             }
             placements.forEach { (id, placement) ->
-                placement?.let { add(SequenceHistoryPreviewChange.OwnerlessPlacement(id, it)) }
+                placement?.let {
+                    val interval = intervalsById.getValue(id)
+                    val resulting = finalIntervalsById.getValue(id)
+                    add(
+                        SequenceHistoryPreviewChange.OwnerlessPlacement(
+                            id,
+                            interval.kind,
+                            it,
+                            resulting.startedAt,
+                            requireNotNull(resulting.endedAt),
+                        ),
+                    )
+                }
             }
         }
+    }
 
     private fun ActivityHistoryTimeCorrection.completedAt(): Instant =
         when (this) {
@@ -663,8 +722,60 @@ object SequenceHistoryProposalBuilder {
         return false
     }
 
+    private fun SequenceHistoryDetail.occurrenceIndex(): OccurrenceIndex {
+        val occurrencesById = linkedMapOf<SequenceOccurrenceId, SequenceHistoryOccurrence>()
+        val descriptorsById = linkedMapOf<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>()
+        val occurrencesByChildExecutionId = linkedMapOf<ActivityExecutionId, SequenceHistoryOccurrence>()
+        occurrences.forEach { occurrence ->
+            require(occurrencesById.put(occurrence.occurrenceId, occurrence) == null) {
+                "Sequence occurrence identities must be unique"
+            }
+            descriptorsById[occurrence.occurrenceId] = occurrence.toDescriptor()
+            val displayChildId = occurrence.child?.executionId
+            val mutationChildId = occurrence.childMutationFacts?.executionId
+            require(displayChildId == null || mutationChildId == null || displayChildId == mutationChildId) {
+                "Sequence child display and mutation identities must match"
+            }
+            (mutationChildId ?: displayChildId)?.let { childId ->
+                require(occurrencesByChildExecutionId.put(childId, occurrence) == null) {
+                    "Sequence child execution identities must be unique"
+                }
+            }
+        }
+        return OccurrenceIndex(occurrencesById, descriptorsById, occurrencesByChildExecutionId)
+    }
+
+    private fun SequenceHistoryOccurrence.toDescriptor() =
+        SequenceHistoryOccurrenceDescriptor(
+            occurrenceId,
+            activity.title,
+            runtimePosition,
+            sourceSequenceSnapshotNodeId != null,
+            repeatIteration,
+            isRuntimeAdded,
+        )
+
+    private fun SequenceInterval.toDescriptor() =
+        SequenceHistoryIntervalDescriptor(id, kind, startedAt, requireNotNull(endedAt))
+
+    private fun <K, V> Iterable<V>.uniqueIndex(
+        key: (V) -> K,
+        label: String,
+    ): Map<K, V> =
+        buildMap {
+            this@uniqueIndex.forEach { value ->
+                require(put(key(value), value) == null) { "$label identities must be unique" }
+            }
+        }
+
     private fun SequenceInterval.translated(millis: Long) =
         copy(startedAt = startedAt.minusMillis(millis), endedAt = endedAt?.minusMillis(millis))
 
     private val PERFORMED = setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION)
+
+    private data class OccurrenceIndex(
+        val occurrencesById: Map<SequenceOccurrenceId, SequenceHistoryOccurrence>,
+        val descriptorsById: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
+        val occurrencesByChildExecutionId: Map<ActivityExecutionId, SequenceHistoryOccurrence>,
+    )
 }

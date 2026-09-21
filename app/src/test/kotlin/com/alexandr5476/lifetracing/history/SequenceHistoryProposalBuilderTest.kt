@@ -218,6 +218,18 @@ class SequenceHistoryProposalBuilderTest {
             )
         assertFalse(unresolved.isConfirmable)
         assertEquals(mapOf(OWNERLESS to null), unresolved.ownerlessPlacements)
+        assertEquals(
+            SequenceHistoryOwnerlessPlacementChoice(
+                OWNERLESS,
+                SequenceIntervalKind.EXPLICIT_PAUSE,
+                minute(35),
+                minute(37),
+                minute(25),
+                minute(27),
+                null,
+            ),
+            unresolved.ownerlessChoices.single(),
+        )
 
         val close =
             requireNotNull(
@@ -229,12 +241,23 @@ class SequenceHistoryProposalBuilderTest {
                 ),
             )
         val command = requireNotNull(close.command)
+        assertEquals(OwnerlessIntervalPlacement.TRANSLATED, close.ownerlessChoices.single().selectedPlacement)
         assertEquals(minute(40), command.finalEndedAt)
         assertEquals(
             detail.intervals.filter { it.occurrenceId != TARGET }.map { it.id },
             command.finalIntervals.map { it.id },
         )
         assertEquals(minute(25), command.finalIntervals.single { it.id == OWNERLESS }.startedAt)
+        assertEquals(
+            SequenceHistoryPreviewChange.OwnerlessPlacement(
+                OWNERLESS,
+                SequenceIntervalKind.EXPLICIT_PAUSE,
+                OwnerlessIntervalPlacement.TRANSLATED,
+                minute(25),
+                minute(27),
+            ),
+            close.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single(),
+        )
         assertEquals(listOf(LATER, SECOND_LATER), command.occurrenceTimings.map { it.occurrenceId })
         assertEquals(listOf(minute(0), minute(10)), command.occurrenceTimings.map { it.enteredAt })
         assertEquals(listOf(minute(10), minute(20)), command.occurrenceTimings.map { it.completedAt })
@@ -306,7 +329,73 @@ class SequenceHistoryProposalBuilderTest {
                 ).command,
             )
         assertEquals(minute(35), fixedChoice.finalIntervals.single { it.id == OWNERLESS }.startedAt)
+        val fixedPreview =
+            requireNotNull(
+                SequenceHistoryProposalBuilder.structural(
+                    detail,
+                    TARGET,
+                    SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                    mapOf(OWNERLESS to OwnerlessIntervalPlacement.FIXED),
+                ),
+            )
+        assertEquals(
+            SequenceHistoryPreviewChange.OwnerlessPlacement(
+                OWNERLESS,
+                SequenceIntervalKind.EXPLICIT_PAUSE,
+                OwnerlessIntervalPlacement.FIXED,
+                minute(35),
+                minute(37),
+            ),
+            fixedPreview.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single(),
+        )
+        assertEquals(OwnerlessIntervalPlacement.FIXED, fixedPreview.ownerlessChoices.single().selectedPlacement)
+        assertEquals(
+            detail.intervals.single { it.id == OWNERLESS }.let { it.id to (it.kind to it.occurrenceId) },
+            requireNotNull(fixedPreview.command).finalIntervals.single { it.id == OWNERLESS }.let {
+                it.id to (it.kind to it.occurrenceId)
+            },
+        )
         assertNull(detail.occurrences.single { it.occurrenceId == SKIPPED }.childMutationFacts)
+    }
+
+    @Test
+    fun leaveGapPreviewListsExactlyEveryTargetOwnedIntervalWithOriginalFacts() {
+        val base = detail()
+        val targetPause = interval("target-pause", SequenceIntervalKind.STEP_PAUSE, minute(2), minute(3), TARGET)
+        val detail = base.copy(intervals = base.intervals + targetPause)
+
+        val proposal =
+            requireNotNull(
+                SequenceHistoryProposalBuilder.structural(
+                    detail,
+                    TARGET,
+                    SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                ),
+            )
+
+        assertEquals(detail.root.completedAt, requireNotNull(proposal.command).finalEndedAt)
+        assertEquals(
+            listOf(
+                SequenceHistoryIntervalDescriptor(
+                    TARGET_INTERVAL,
+                    SequenceIntervalKind.ACTIVE_STEP,
+                    minute(0),
+                    minute(10),
+                ),
+                SequenceHistoryIntervalDescriptor(
+                    targetPause.id,
+                    targetPause.kind,
+                    targetPause.startedAt,
+                    requireNotNull(targetPause.endedAt),
+                ),
+            ),
+            proposal.changes.filterIsInstance<SequenceHistoryPreviewChange.RemovedInterval>().map { it.interval },
+        )
+        assertTrue(
+            proposal.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.RemovedInterval>()
+                .none { it.interval.intervalId == OWNERLESS || it.interval.intervalId == LATER_INTERVAL },
+        )
     }
 
     @Test

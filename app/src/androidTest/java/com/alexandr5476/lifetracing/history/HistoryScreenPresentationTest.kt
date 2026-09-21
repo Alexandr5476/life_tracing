@@ -383,6 +383,35 @@ class HistoryScreenPresentationTest {
         composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_interval,
+                    text(R.string.history_interval_explicit_pause),
+                    "ownerless",
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNode(
+                hasTestTag("sequence-history-ownerless-ownerless-fixed") and
+                    hasText(
+                        text(
+                            R.string.sequence_history_ownerless_fixed_choice,
+                            historicalInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
+                        ),
+                    ),
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNode(
+                hasTestTag("sequence-history-ownerless-ownerless-translated") and
+                    hasText(
+                        text(
+                            R.string.sequence_history_ownerless_translated_choice,
+                            historicalInterval(START.plusSeconds(240), START.plusSeconds(250), detail.originalZoneId),
+                        ),
+                    ),
+            ).assertIsDisplayed()
+        composeTestRule
             .onNodeWithTag("sequence-history-ownerless-ownerless-fixed")
             .performScrollTo()
             .performClick()
@@ -402,13 +431,48 @@ class HistoryScreenPresentationTest {
             .onNodeWithText(text(R.string.sequence_history_child_completed, deletedTarget))
             .assertDoesNotExist()
         composeTestRule
-            .onNodeWithText(text(R.string.sequence_history_fixed), substring = true)
-            .performScrollTo()
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_selection,
+                    text(R.string.history_interval_explicit_pause),
+                    "ownerless",
+                    text(R.string.sequence_history_fixed),
+                    historicalInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
+                ),
+            ).performScrollTo()
             .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(text(R.string.sequence_history_translated), substring = true)
-            .performScrollTo()
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_selection,
+                    text(R.string.history_interval_implicit_idle),
+                    "ownerless-2",
+                    text(R.string.sequence_history_translated),
+                    historicalInterval(START.plusSeconds(270), START.plusSeconds(280), detail.originalZoneId),
+                ),
+            ).performScrollTo()
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun leaveGapReviewShowsEveryTargetOwnedIntervalRemovalBeforeConfirmation() {
+        val detail = structuralMutationDetail()
+        setSequenceMutationDetail(detail)
+
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
+
+        composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_removed_interval,
+                    text(R.string.history_interval_active_step),
+                    "performed",
+                    historicalInterval(START.plusSeconds(10), START.plusSeconds(70), detail.originalZoneId),
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed()
     }
 
     @Test
@@ -596,6 +660,12 @@ class HistoryScreenPresentationTest {
             .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
             .withLocale(composeTestRule.activity.resources.configuration.locales[0])
             .format(instant.atZone(zoneId))
+
+    private fun historicalInterval(
+        startedAt: Instant,
+        endedAt: Instant,
+        zoneId: ZoneId,
+    ): String = "${historicalTime(startedAt, zoneId)} – ${historicalTime(endedAt, zoneId)}"
 
     private fun localDate(date: LocalDate): String =
         DateTimeFormatter

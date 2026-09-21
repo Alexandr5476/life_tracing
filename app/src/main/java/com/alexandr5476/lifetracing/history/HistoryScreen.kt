@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
@@ -56,6 +57,7 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -524,15 +526,17 @@ private fun SequenceHistoryMutationSurface(
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
+    val occurrenceDescriptors =
+        remember(detail.occurrences) { SequenceHistoryProposalBuilder.occurrenceDescriptors(detail) }
     when {
         state.childDeletionProposal != null -> SequenceChildDeletionConfirmation(detail, state, onAction)
         state.structuralTarget != null && state.structuralProposal == null ->
             StructuralModeChooser(state, onAction)
         state.structuralProposal != null && !state.structuralProposal.isConfirmable ->
-            OwnerlessPlacementChooser(state, onAction)
-        state.structuralProposal != null -> StructuralReview(detail, state, onAction)
-        state.timingProposal != null -> TimingReview(detail, state, onAction)
-        state.timingDraft != null -> TimingEditor(detail, state, onAction)
+            OwnerlessPlacementChooser(detail, state, onAction)
+        state.structuralProposal != null -> StructuralReview(detail, occurrenceDescriptors, state, onAction)
+        state.timingProposal != null -> TimingReview(detail, occurrenceDescriptors, state, onAction)
+        state.timingDraft != null -> TimingEditor(detail, occurrenceDescriptors, state, onAction)
         else -> {
             state.issue?.let { SequenceMutationIssue(it) }
             SequenceDetail(
@@ -554,6 +558,7 @@ private fun SequenceHistoryMutationSurface(
 @Composable
 private fun TimingEditor(
     detail: SequenceHistoryDetail,
+    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
@@ -565,7 +570,7 @@ private fun TimingEditor(
             value.text,
             { onAction(SequenceHistoryMutationAction.EditTimestamp(target, it)) },
             Modifier.fillMaxWidth().testTag("sequence-history-timestamp-${timestampTargetKey(target)}"),
-            label = { Text(timestampTargetLabel(detail, target)) },
+            label = { Text(timestampTargetLabel(occurrenceDescriptors, target)) },
             enabled = !state.isMutating,
         )
         OffsetChoices(value.validOffsets, value.selectedOffset, enabled = !state.isMutating) {
@@ -592,12 +597,13 @@ private fun TimingEditor(
 @Composable
 private fun TimingReview(
     detail: SequenceHistoryDetail,
+    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
     val proposal = requireNotNull(state.timingProposal)
     Text(stringResource(R.string.sequence_history_timing_review), style = MaterialTheme.typography.headlineSmall)
-    ProposalChanges(detail, proposal.changes)
+    ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
     state.issue?.let { SequenceMutationIssue(it) }
     if (state.overlapWarning) {
         Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
@@ -680,6 +686,7 @@ private fun StructuralModeChooser(
 
 @Composable
 private fun OwnerlessPlacementChooser(
+    detail: SequenceHistoryDetail,
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
@@ -688,34 +695,58 @@ private fun OwnerlessPlacementChooser(
     OccurrenceTarget(proposal.target)
     Text(stringResource(R.string.sequence_history_ownerless_message))
     state.issue?.let { SequenceMutationIssue(it) }
-    proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { intervalId ->
+    proposal.ownerlessChoices.filter { it.selectedPlacement == null }.forEach { choice ->
         HistoryCard {
-            Text(stringResource(R.string.sequence_history_ownerless_interval, intervalId.value))
-            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                LifeTracingSecondaryButton(
-                    onClick = {
-                        onAction(
-                            SequenceHistoryMutationAction.PlaceOwnerlessInterval(
-                                intervalId,
-                                OwnerlessIntervalPlacement.FIXED,
-                            ),
-                        )
-                    },
-                    enabled = !state.isMutating,
-                    modifier = Modifier.testTag("sequence-history-ownerless-${intervalId.value}-fixed"),
-                ) { Text(stringResource(R.string.sequence_history_fixed)) }
-                LifeTracingPrimaryButton(
-                    onClick = {
-                        onAction(
-                            SequenceHistoryMutationAction.PlaceOwnerlessInterval(
-                                intervalId,
-                                OwnerlessIntervalPlacement.TRANSLATED,
-                            ),
-                        )
-                    },
-                    enabled = !state.isMutating,
-                    modifier = Modifier.testTag("sequence-history-ownerless-${intervalId.value}-translated"),
-                ) { Text(stringResource(R.string.sequence_history_translated)) }
+            Text(
+                stringResource(
+                    R.string.sequence_history_ownerless_interval,
+                    stringResource(intervalKindResource(choice.kind)),
+                    choice.intervalId.value,
+                ),
+            )
+            LifeTracingSecondaryButton(
+                onClick = {
+                    onAction(
+                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                            choice.intervalId,
+                            OwnerlessIntervalPlacement.FIXED,
+                        ),
+                    )
+                },
+                enabled = !state.isMutating,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("sequence-history-ownerless-${choice.intervalId.value}-fixed"),
+            ) {
+                Text(
+                    stringResource(
+                        R.string.sequence_history_ownerless_fixed_choice,
+                        historyInterval(choice.fixedStartedAt, choice.fixedEndedAt, detail.originalZoneId),
+                    ),
+                )
+            }
+            LifeTracingPrimaryButton(
+                onClick = {
+                    onAction(
+                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                            choice.intervalId,
+                            OwnerlessIntervalPlacement.TRANSLATED,
+                        ),
+                    )
+                },
+                enabled = !state.isMutating,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("sequence-history-ownerless-${choice.intervalId.value}-translated"),
+            ) {
+                Text(
+                    stringResource(
+                        R.string.sequence_history_ownerless_translated_choice,
+                        historyInterval(choice.translatedStartedAt, choice.translatedEndedAt, detail.originalZoneId),
+                    ),
+                )
             }
         }
     }
@@ -728,6 +759,7 @@ private fun OwnerlessPlacementChooser(
 @Composable
 private fun StructuralReview(
     detail: SequenceHistoryDetail,
+    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
@@ -749,7 +781,7 @@ private fun StructuralReview(
             historyInstant(requireNotNull(proposal.command).finalEndedAt, detail.originalZoneId),
         ),
     )
-    ProposalChanges(detail, proposal.changes)
+    ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
     state.issue?.let { SequenceMutationIssue(it) }
     ReviewActions(
         isMutating = state.isMutating,
@@ -784,6 +816,7 @@ private fun ReviewActions(
 @Composable
 private fun ProposalChanges(
     detail: SequenceHistoryDetail,
+    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
     changes: List<SequenceHistoryPreviewChange>,
 ) {
     Text(stringResource(R.string.sequence_history_changes), style = MaterialTheme.typography.titleMedium)
@@ -793,7 +826,7 @@ private fun ProposalChanges(
                 Text(
                     stringResource(
                         R.string.sequence_history_change,
-                        timestampTargetLabel(detail, change.target),
+                        timestampTargetLabel(occurrenceDescriptors, change.target),
                         historyInstant(change.before, detail.originalZoneId),
                         historyInstant(change.after, detail.originalZoneId),
                     ),
@@ -819,11 +852,19 @@ private fun ProposalChanges(
                     ),
                 )
             is SequenceHistoryPreviewChange.RemovedInterval ->
-                Text(stringResource(R.string.sequence_history_removed_interval, change.intervalId.value))
+                Text(
+                    stringResource(
+                        R.string.sequence_history_removed_interval,
+                        stringResource(intervalKindResource(change.interval.kind)),
+                        change.interval.intervalId.value,
+                        historyInterval(change.interval.startedAt, change.interval.endedAt, detail.originalZoneId),
+                    ),
+                )
             is SequenceHistoryPreviewChange.OwnerlessPlacement ->
                 Text(
                     stringResource(
                         R.string.sequence_history_ownerless_selection,
+                        stringResource(intervalKindResource(change.kind)),
                         change.intervalId.value,
                         stringResource(
                             if (change.placement == OwnerlessIntervalPlacement.FIXED) {
@@ -831,6 +872,11 @@ private fun ProposalChanges(
                             } else {
                                 R.string.sequence_history_translated
                             },
+                        ),
+                        historyInterval(
+                            change.resultingStartedAt,
+                            change.resultingEndedAt,
+                            detail.originalZoneId,
                         ),
                     ),
                 )
@@ -840,7 +886,7 @@ private fun ProposalChanges(
 
 @Composable
 private fun timestampTargetLabel(
-    detail: SequenceHistoryDetail,
+    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
     target: SequenceHistoryTimestampTarget,
 ): String =
     when (target) {
@@ -849,30 +895,22 @@ private fun timestampTargetLabel(
         is SequenceHistoryTimestampTarget.OccurrenceEnteredAt ->
             stringResource(
                 R.string.sequence_history_occurrence_entered,
-                occurrenceTargetText(
-                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
-                ),
+                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
             )
         is SequenceHistoryTimestampTarget.OccurrenceCompletedAt ->
             stringResource(
                 R.string.sequence_history_occurrence_completed,
-                occurrenceTargetText(
-                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
-                ),
+                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
             )
         is SequenceHistoryTimestampTarget.ChildStartedAt ->
             stringResource(
                 R.string.sequence_history_child_started,
-                occurrenceTargetText(
-                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
-                ),
+                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
             )
         is SequenceHistoryTimestampTarget.ChildCompletedAt ->
             stringResource(
                 R.string.sequence_history_child_completed,
-                occurrenceTargetText(
-                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
-                ),
+                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
             )
         is SequenceHistoryTimestampTarget.IntervalStartedAt ->
             stringResource(
