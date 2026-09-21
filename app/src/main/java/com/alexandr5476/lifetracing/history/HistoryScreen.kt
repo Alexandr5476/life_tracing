@@ -1,4 +1,6 @@
 @file:Suppress(
+    "ComplexCondition",
+    "CyclomaticComplexMethod",
     "FunctionNaming",
     "LongMethod",
     "TooManyFunctions",
@@ -51,6 +53,7 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
@@ -127,7 +130,7 @@ internal fun SequenceHistoryDetailRoute(
         onBack = { if (!controller.handleBack()) onBack() },
         load = state.load,
         onRetry = { controller.dispatch(SequenceHistoryMutationAction.Retry) },
-    ) { SequenceDetail(it) }
+    ) { SequenceHistoryMutationSurface(it, state, controller::dispatch) }
 }
 
 @Composable
@@ -491,12 +494,13 @@ private fun CorrectionField(
 private fun OffsetChoices(
     offsets: List<ZoneOffset>,
     selected: ZoneOffset?,
+    enabled: Boolean = true,
     onSelect: (ZoneOffset) -> Unit,
 ) {
     if (offsets.size != 2) return
     Text(stringResource(R.string.manual_history_ambiguous_time), color = MaterialTheme.colorScheme.error)
     offsets.forEachIndexed { index, offset ->
-        TextButton(onClick = { onSelect(offset) }) {
+        TextButton(onClick = { onSelect(offset) }, enabled = enabled) {
             Text(
                 (if (selected == offset) "✓ " else "") +
                     stringResource(
@@ -512,6 +516,368 @@ private fun OffsetChoices(
             )
         }
     }
+}
+
+@Composable
+private fun SequenceHistoryMutationSurface(
+    detail: SequenceHistoryDetail,
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    when {
+        state.childDeletionProposal != null -> SequenceChildDeletionConfirmation(detail, state, onAction)
+        state.structuralTarget != null && state.structuralProposal == null ->
+            StructuralModeChooser(state, onAction)
+        state.structuralProposal != null && !state.structuralProposal.isConfirmable ->
+            OwnerlessPlacementChooser(state, onAction)
+        state.structuralProposal != null -> StructuralReview(detail, state, onAction)
+        state.timingProposal != null -> TimingReview(detail, state, onAction)
+        state.timingDraft != null -> TimingEditor(detail, state, onAction)
+        else -> {
+            state.issue?.let { SequenceMutationIssue(it) }
+            SequenceDetail(
+                detail,
+                onDeleteChild = { onAction(SequenceHistoryMutationAction.RequestChildDeletion(it)) },
+                onRemoveOccurrence = { onAction(SequenceHistoryMutationAction.BeginStructuralRemoval(it)) },
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                LifeTracingSecondaryButton(
+                    onClick = { onAction(SequenceHistoryMutationAction.BeginTiming) },
+                    enabled = !state.isMutating,
+                    modifier = Modifier.testTag("sequence-history-timing"),
+                ) { Text(stringResource(R.string.sequence_history_correct_timing)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimingEditor(
+    detail: SequenceHistoryDetail,
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    val draft = requireNotNull(state.timingDraft)
+    Text(detail.root.title, style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.history_event_zone, detail.originalZoneId.id))
+    draft.timestamps.forEach { (target, value) ->
+        LifeTracingOutlinedTextField(
+            value.text,
+            { onAction(SequenceHistoryMutationAction.EditTimestamp(target, it)) },
+            Modifier.fillMaxWidth().testTag("sequence-history-timestamp-${timestampTargetKey(target)}"),
+            label = { Text(timestampTargetLabel(target)) },
+            enabled = !state.isMutating,
+        )
+        OffsetChoices(value.validOffsets, value.selectedOffset, enabled = !state.isMutating) {
+            onAction(SequenceHistoryMutationAction.SelectTimestampOffset(target, it))
+        }
+    }
+    if (state.noTimingChanges) {
+        Text(stringResource(R.string.sequence_history_no_timing_changes))
+    }
+    state.issue?.let { SequenceMutationIssue(it) }
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(
+            onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
+            enabled = !state.isMutating,
+        ) { Text(stringResource(R.string.manual_history_cancel)) }
+        LifeTracingPrimaryButton(
+            onClick = { onAction(SequenceHistoryMutationAction.ReviewTiming) },
+            enabled = !state.isMutating,
+            modifier = Modifier.testTag("sequence-history-review-timing"),
+        ) { Text(stringResource(R.string.sequence_history_review_timing)) }
+    }
+}
+
+@Composable
+private fun TimingReview(
+    detail: SequenceHistoryDetail,
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    val proposal = requireNotNull(state.timingProposal)
+    Text(stringResource(R.string.sequence_history_timing_review), style = MaterialTheme.typography.headlineSmall)
+    ProposalChanges(detail, proposal.changes)
+    if (state.overlapWarning) {
+        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
+        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            LifeTracingSecondaryButton(
+                onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
+                enabled = !state.isMutating,
+                modifier = Modifier.testTag("sequence-history-overlap-cancel"),
+            ) { Text(stringResource(R.string.manual_history_cancel)) }
+            LifeTracingPrimaryButton(
+                onClick = { onAction(SequenceHistoryMutationAction.ProceedOverlap) },
+                enabled = !state.isMutating,
+                modifier = Modifier.testTag("sequence-history-overlap-proceed"),
+            ) { Text(stringResource(R.string.history_overlap_proceed)) }
+        }
+    } else {
+        ReviewActions(
+            isMutating = state.isMutating,
+            confirmLabel = R.string.history_save_correction,
+            confirmTag = "sequence-history-confirm-timing",
+            onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
+            onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmTiming) },
+        )
+    }
+}
+
+@Composable
+private fun SequenceChildDeletionConfirmation(
+    detail: SequenceHistoryDetail,
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    Text(stringResource(R.string.sequence_history_delete_child_title), style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.sequence_history_delete_child_message, detail.root.title))
+    state.issue?.let { SequenceMutationIssue(it) }
+    ReviewActions(
+        isMutating = state.isMutating,
+        confirmLabel = if (state.isMutating) R.string.history_deleting else R.string.history_delete,
+        confirmTag = "sequence-history-confirm-delete-child",
+        onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
+        onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmChildDeletion) },
+    )
+}
+
+@Composable
+private fun StructuralModeChooser(
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    Text(stringResource(R.string.sequence_history_structural_title), style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.sequence_history_structural_mode_prompt))
+    state.issue?.let { SequenceMutationIssue(it) }
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(
+            onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
+            enabled = !state.isMutating,
+        ) { Text(stringResource(R.string.manual_history_cancel)) }
+        LifeTracingSecondaryButton(
+            onClick = {
+                onAction(
+                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.LEAVE_GAP),
+                )
+            },
+            enabled = !state.isMutating,
+            modifier = Modifier.testTag("sequence-history-leave-gap"),
+        ) { Text(stringResource(R.string.sequence_history_leave_gap)) }
+        LifeTracingPrimaryButton(
+            onClick = {
+                onAction(
+                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.CLOSE_GAP),
+                )
+            },
+            enabled = !state.isMutating,
+            modifier = Modifier.testTag("sequence-history-close-gap"),
+        ) { Text(stringResource(R.string.sequence_history_close_gap)) }
+    }
+}
+
+@Composable
+private fun OwnerlessPlacementChooser(
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    val proposal = requireNotNull(state.structuralProposal)
+    Text(stringResource(R.string.sequence_history_ownerless_title), style = MaterialTheme.typography.headlineSmall)
+    Text(stringResource(R.string.sequence_history_ownerless_message))
+    proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { intervalId ->
+        HistoryCard {
+            Text(stringResource(R.string.sequence_history_ownerless_interval, intervalId.value))
+            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                LifeTracingSecondaryButton(
+                    onClick = {
+                        onAction(
+                            SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                                intervalId,
+                                OwnerlessIntervalPlacement.FIXED,
+                            ),
+                        )
+                    },
+                    enabled = !state.isMutating,
+                    modifier = Modifier.testTag("sequence-history-ownerless-${intervalId.value}-fixed"),
+                ) { Text(stringResource(R.string.sequence_history_fixed)) }
+                LifeTracingPrimaryButton(
+                    onClick = {
+                        onAction(
+                            SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                                intervalId,
+                                OwnerlessIntervalPlacement.TRANSLATED,
+                            ),
+                        )
+                    },
+                    enabled = !state.isMutating,
+                    modifier = Modifier.testTag("sequence-history-ownerless-${intervalId.value}-translated"),
+                ) { Text(stringResource(R.string.sequence_history_translated)) }
+            }
+        }
+    }
+    LifeTracingSecondaryButton(
+        onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
+        enabled = !state.isMutating,
+    ) { Text(stringResource(R.string.manual_history_cancel)) }
+}
+
+@Composable
+private fun StructuralReview(
+    detail: SequenceHistoryDetail,
+    state: SequenceHistoryMutationState,
+    onAction: (SequenceHistoryMutationAction) -> Unit,
+) {
+    val proposal = requireNotNull(state.structuralProposal)
+    Text(stringResource(R.string.sequence_history_structural_review), style = MaterialTheme.typography.headlineSmall)
+    Text(
+        stringResource(
+            if (proposal.mode == SequenceHistoryStructuralRemovalMode.LEAVE_GAP) {
+                R.string.sequence_history_leave_gap
+            } else {
+                R.string.sequence_history_close_gap
+            },
+        ),
+    )
+    Text(
+        stringResource(
+            R.string.sequence_history_final_root_end,
+            historyInstant(requireNotNull(proposal.command).finalEndedAt, detail.originalZoneId),
+        ),
+    )
+    ProposalChanges(detail, proposal.changes)
+    state.issue?.let { SequenceMutationIssue(it) }
+    ReviewActions(
+        isMutating = state.isMutating,
+        confirmLabel = R.string.sequence_history_confirm_structural,
+        confirmTag = "sequence-history-confirm-structural",
+        onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
+        onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmStructuralRemoval) },
+    )
+}
+
+@Composable
+private fun ReviewActions(
+    isMutating: Boolean,
+    confirmLabel: Int,
+    confirmTag: String,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    if (isMutating) Text(stringResource(R.string.history_saving))
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LifeTracingSecondaryButton(onClick = onCancel, enabled = !isMutating) {
+            Text(stringResource(R.string.manual_history_cancel))
+        }
+        LifeTracingPrimaryButton(
+            onClick = onConfirm,
+            enabled = !isMutating,
+            modifier = Modifier.testTag(confirmTag),
+        ) { Text(stringResource(confirmLabel)) }
+    }
+}
+
+@Composable
+private fun ProposalChanges(
+    detail: SequenceHistoryDetail,
+    changes: List<SequenceHistoryPreviewChange>,
+) {
+    Text(stringResource(R.string.sequence_history_changes), style = MaterialTheme.typography.titleMedium)
+    changes.forEach { change ->
+        when (change) {
+            is SequenceHistoryPreviewChange.Timestamp ->
+                Text(
+                    stringResource(
+                        R.string.sequence_history_change,
+                        timestampTargetLabel(change.target),
+                        historyInstant(change.before, detail.originalZoneId),
+                        historyInstant(change.after, detail.originalZoneId),
+                    ),
+                )
+            is SequenceHistoryPreviewChange.RemovedOccurrence ->
+                Text(stringResource(R.string.sequence_history_removed_occurrence, change.occurrenceId.value))
+            is SequenceHistoryPreviewChange.RemovedInterval ->
+                Text(stringResource(R.string.sequence_history_removed_interval, change.intervalId.value))
+            is SequenceHistoryPreviewChange.OwnerlessPlacement ->
+                Text(
+                    stringResource(
+                        R.string.sequence_history_ownerless_selection,
+                        change.intervalId.value,
+                        stringResource(
+                            if (change.placement == OwnerlessIntervalPlacement.FIXED) {
+                                R.string.sequence_history_fixed
+                            } else {
+                                R.string.sequence_history_translated
+                            },
+                        ),
+                    ),
+                )
+        }
+    }
+}
+
+@Composable
+private fun timestampTargetLabel(target: SequenceHistoryTimestampTarget): String =
+    when (target) {
+        SequenceHistoryTimestampTarget.RootStartedAt -> stringResource(R.string.sequence_history_root_started)
+        SequenceHistoryTimestampTarget.RootEndedAt -> stringResource(R.string.sequence_history_root_ended)
+        is SequenceHistoryTimestampTarget.OccurrenceEnteredAt ->
+            stringResource(
+                R.string.sequence_history_occurrence_entered,
+                target.occurrenceId.value,
+            )
+        is SequenceHistoryTimestampTarget.OccurrenceCompletedAt ->
+            stringResource(
+                R.string.sequence_history_occurrence_completed,
+                target.occurrenceId.value,
+            )
+        is SequenceHistoryTimestampTarget.ChildStartedAt ->
+            stringResource(
+                R.string.sequence_history_child_started,
+                target.occurrenceId.value,
+            )
+        is SequenceHistoryTimestampTarget.ChildCompletedAt ->
+            stringResource(
+                R.string.sequence_history_child_completed,
+                target.occurrenceId.value,
+            )
+        is SequenceHistoryTimestampTarget.IntervalStartedAt ->
+            stringResource(
+                R.string.sequence_history_interval_started,
+                target.intervalId.value,
+            )
+        is SequenceHistoryTimestampTarget.IntervalEndedAt ->
+            stringResource(
+                R.string.sequence_history_interval_ended,
+                target.intervalId.value,
+            )
+    }
+
+private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
+    when (target) {
+        SequenceHistoryTimestampTarget.RootStartedAt -> "root-started"
+        SequenceHistoryTimestampTarget.RootEndedAt -> "root-ended"
+        is SequenceHistoryTimestampTarget.OccurrenceEnteredAt -> "occurrence-${target.occurrenceId.value}-entered"
+        is SequenceHistoryTimestampTarget.OccurrenceCompletedAt -> "occurrence-${target.occurrenceId.value}-completed"
+        is SequenceHistoryTimestampTarget.ChildStartedAt -> "child-${target.occurrenceId.value}-started"
+        is SequenceHistoryTimestampTarget.ChildCompletedAt -> "child-${target.occurrenceId.value}-completed"
+        is SequenceHistoryTimestampTarget.IntervalStartedAt -> "interval-${target.intervalId.value}-started"
+        is SequenceHistoryTimestampTarget.IntervalEndedAt -> "interval-${target.intervalId.value}-ended"
+    }
+
+@Composable
+private fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
+    val resource =
+        when (issue) {
+            SequenceHistoryMutationIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
+            SequenceHistoryMutationIssue.NONEXISTENT_LOCAL_TIME -> R.string.manual_history_nonexistent_time
+            SequenceHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME -> R.string.manual_history_ambiguous_time
+            SequenceHistoryMutationIssue.INVALID_PROPOSAL -> R.string.sequence_history_invalid_proposal
+            SequenceHistoryMutationIssue.STALE -> R.string.history_changed_review
+            SequenceHistoryMutationIssue.READ_FAILURE -> R.string.history_read_failure
+            SequenceHistoryMutationIssue.TIMING_FAILURE -> R.string.sequence_history_timing_failure
+            SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE -> R.string.sequence_history_child_deletion_failure
+            SequenceHistoryMutationIssue.STRUCTURAL_FAILURE -> R.string.sequence_history_structural_failure
+        }
+    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
 }
 
 @Composable
@@ -556,7 +922,11 @@ private fun MutationIssue(issue: ActivityHistoryMutationIssue) {
 }
 
 @Composable
-internal fun SequenceDetail(detail: SequenceHistoryDetail) {
+internal fun SequenceDetail(
+    detail: SequenceHistoryDetail,
+    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
+    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
+) {
     Text(detail.root.title, style = MaterialTheme.typography.headlineSmall)
     detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
     Text(
@@ -578,7 +948,9 @@ internal fun SequenceDetail(detail: SequenceHistoryDetail) {
         detail.fields.forEach { HistoryField(it) }
     }
     Text(stringResource(R.string.history_occurrences), style = MaterialTheme.typography.titleMedium)
-    detail.occurrences.forEach { occurrence -> Occurrence(detail.originalZoneId, occurrence) }
+    detail.occurrences.forEach { occurrence ->
+        Occurrence(detail.originalZoneId, occurrence, onDeleteChild, onRemoveOccurrence)
+    }
     Text(stringResource(R.string.history_intervals), style = MaterialTheme.typography.titleMedium)
     detail.intervals.forEach { interval -> HistoryInterval(detail.originalZoneId, interval) }
 }
@@ -587,6 +959,8 @@ internal fun SequenceDetail(detail: SequenceHistoryDetail) {
 private fun Occurrence(
     zoneId: ZoneId,
     occurrence: SequenceHistoryOccurrence,
+    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
+    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
 ) {
     HistoryCard(modifier = Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
         Text(
@@ -619,6 +993,28 @@ private fun Occurrence(
                 Text(stringResource(R.string.history_actual_duration, durationOrMissing(child.activeDuration)))
                 child.fields.forEach { HistoryField(it) }
             }
+        }
+        if (
+            onDeleteChild != null &&
+            occurrence.status == RuntimeOccurrenceStatus.COMPLETED &&
+            !occurrence.isDeletedFromHistory &&
+            occurrence.childMutationFacts != null
+        ) {
+            LifeTracingSecondaryButton(
+                onClick = { onDeleteChild(occurrence.occurrenceId) },
+                modifier = Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
+            ) { Text(stringResource(R.string.sequence_history_delete_child)) }
+        }
+        if (
+            onRemoveOccurrence != null &&
+            occurrence.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION) &&
+            !occurrence.isDeletedFromHistory &&
+            occurrence.childMutationFacts != null
+        ) {
+            LifeTracingSecondaryButton(
+                onClick = { onRemoveOccurrence(occurrence.occurrenceId) },
+                modifier = Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
+            ) { Text(stringResource(R.string.sequence_history_remove_occurrence)) }
         }
     }
 }

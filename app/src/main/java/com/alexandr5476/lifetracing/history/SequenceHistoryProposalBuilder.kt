@@ -62,7 +62,30 @@ data class SequenceHistoryTimingDraft(
 data class SequenceHistoryTimingProposal(
     val correction: SequenceHistoryTimingCorrection,
     val hasActiveIntervalOverlap: Boolean,
+    val changes: List<SequenceHistoryPreviewChange>,
 )
+
+/** Display-only facts derived with the proposal; Compose never rebuilds a correction from them. */
+sealed interface SequenceHistoryPreviewChange {
+    data class Timestamp(
+        val target: SequenceHistoryTimestampTarget,
+        val before: Instant,
+        val after: Instant,
+    ) : SequenceHistoryPreviewChange
+
+    data class RemovedOccurrence(
+        val occurrenceId: SequenceOccurrenceId,
+    ) : SequenceHistoryPreviewChange
+
+    data class RemovedInterval(
+        val intervalId: SequenceIntervalId,
+    ) : SequenceHistoryPreviewChange
+
+    data class OwnerlessPlacement(
+        val intervalId: SequenceIntervalId,
+        val placement: OwnerlessIntervalPlacement,
+    ) : SequenceHistoryPreviewChange
+}
 
 sealed interface SequenceHistoryTimingBuildResult {
     data object NoChange : SequenceHistoryTimingBuildResult
@@ -96,6 +119,7 @@ data class SequenceHistoryStructuralProposal(
     val shiftMillis: Long,
     val ownerlessPlacements: Map<SequenceIntervalId, OwnerlessIntervalPlacement?>,
     val command: SequenceHistoryStructuralRemovalCommand?,
+    val changes: List<SequenceHistoryPreviewChange>,
 ) {
     val isConfirmable: Boolean
         get() = command != null
@@ -235,7 +259,11 @@ object SequenceHistoryProposalBuilder {
             return SequenceHistoryTimingBuildResult.NoChange
         }
         return SequenceHistoryTimingBuildResult.Ready(
-            SequenceHistoryTimingProposal(correction, hasActiveOverlap(intervals)),
+            SequenceHistoryTimingProposal(
+                correction,
+                hasActiveOverlap(intervals),
+                timestampChanges(detail, correction),
+            ),
         )
     }
 
@@ -266,6 +294,7 @@ object SequenceHistoryProposalBuilder {
                     detail.root.completedAt,
                     retained,
                 ),
+                listOf(SequenceHistoryPreviewChange.RemovedOccurrence(occurrenceId)),
             )
         }
         if (shift <= 0) return null
@@ -338,8 +367,236 @@ object SequenceHistoryProposalBuilder {
                     childTimings,
                 )
             }
-        return SequenceHistoryStructuralProposal(occurrenceId, mode, shift, placementState, command)
+        return SequenceHistoryStructuralProposal(
+            occurrenceId,
+            mode,
+            shift,
+            placementState,
+            command,
+            command?.let { structuralChanges(detail, it, placementState) }.orEmpty(),
+        )
     }
+
+    private fun timestampChanges(
+        detail: SequenceHistoryDetail,
+        correction: SequenceHistoryTimingCorrection,
+    ): List<SequenceHistoryPreviewChange.Timestamp> =
+        buildList {
+            correction.startedAt?.let {
+                add(
+                    SequenceHistoryPreviewChange.Timestamp(
+                        SequenceHistoryTimestampTarget.RootStartedAt,
+                        requireNotNull(detail.root.startedAt),
+                        it,
+                    ),
+                )
+            }
+            correction.endedAt?.let {
+                add(
+                    SequenceHistoryPreviewChange.Timestamp(
+                        SequenceHistoryTimestampTarget.RootEndedAt,
+                        detail.root.completedAt,
+                        it,
+                    ),
+                )
+            }
+            correction.occurrenceTimings.forEach { timing ->
+                val occurrence = detail.occurrences.single { it.occurrenceId == timing.occurrenceId }
+                val enteredBefore = occurrence.enteredAt
+                val enteredAfter = timing.enteredAt
+                if (enteredBefore != enteredAfter && enteredBefore != null && enteredAfter != null) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.OccurrenceEnteredAt(timing.occurrenceId),
+                            enteredBefore,
+                            enteredAfter,
+                        ),
+                    )
+                }
+                val completedBefore = occurrence.completedAt
+                val completedAfter = timing.completedAt
+                if (completedBefore != completedAfter && completedBefore != null && completedAfter != null) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.OccurrenceCompletedAt(timing.occurrenceId),
+                            completedBefore,
+                            completedAfter,
+                        ),
+                    )
+                }
+            }
+            correction.childTimings.forEach { timing ->
+                val occurrence = detail.occurrences.single { it.child?.executionId == timing.executionId }
+                occurrence.child?.startedAt?.let { before ->
+                    (timing.time as? ActivityHistoryTimeCorrection.Timed)?.startedAt?.let { after ->
+                        if (before !=
+                            after
+                        ) {
+                            add(
+                                SequenceHistoryPreviewChange.Timestamp(
+                                    SequenceHistoryTimestampTarget.ChildStartedAt(occurrence.occurrenceId),
+                                    before,
+                                    after,
+                                ),
+                            )
+                        }
+                    }
+                }
+                occurrence.child?.completedAt?.let { before ->
+                    val after = timing.time.completedAt()
+                    if (before !=
+                        after
+                    ) {
+                        add(
+                            SequenceHistoryPreviewChange.Timestamp(
+                                SequenceHistoryTimestampTarget.ChildCompletedAt(occurrence.occurrenceId),
+                                before,
+                                after,
+                            ),
+                        )
+                    }
+                }
+            }
+            correction.finalIntervals?.forEach { after ->
+                val before = detail.intervals.single { it.id == after.id }
+                if (before.startedAt !=
+                    after.startedAt
+                ) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.IntervalStartedAt(after.id),
+                            before.startedAt,
+                            after.startedAt,
+                        ),
+                    )
+                }
+                val endedBefore = before.endedAt
+                val endedAfter = after.endedAt
+                if (endedBefore != endedAfter &&
+                    endedBefore != null &&
+                    endedAfter != null
+                ) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.IntervalEndedAt(after.id),
+                            endedBefore,
+                            endedAfter,
+                        ),
+                    )
+                }
+            }
+        }
+
+    private fun structuralChanges(
+        detail: SequenceHistoryDetail,
+        command: SequenceHistoryStructuralRemovalCommand,
+        placements: Map<SequenceIntervalId, OwnerlessIntervalPlacement?>,
+    ): List<SequenceHistoryPreviewChange> =
+        buildList {
+            add(SequenceHistoryPreviewChange.RemovedOccurrence(command.occurrenceId))
+            detail.intervals
+                .filter { it.occurrenceId == command.occurrenceId }
+                .forEach { add(SequenceHistoryPreviewChange.RemovedInterval(it.id)) }
+            if (detail.root.completedAt != command.finalEndedAt) {
+                add(
+                    SequenceHistoryPreviewChange.Timestamp(
+                        SequenceHistoryTimestampTarget.RootEndedAt,
+                        detail.root.completedAt,
+                        command.finalEndedAt,
+                    ),
+                )
+            }
+            command.occurrenceTimings.forEach { timing ->
+                val before = detail.occurrences.single { it.occurrenceId == timing.occurrenceId }
+                before.enteredAt?.let {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.OccurrenceEnteredAt(timing.occurrenceId),
+                            it,
+                            requireNotNull(timing.enteredAt),
+                        ),
+                    )
+                }
+                before.completedAt?.let {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.OccurrenceCompletedAt(timing.occurrenceId),
+                            it,
+                            requireNotNull(timing.completedAt),
+                        ),
+                    )
+                }
+            }
+            command.childTimings.forEach { timing ->
+                val before =
+                    detail.occurrences
+                        .single { it.childMutationFacts?.executionId == timing.executionId }
+                        .childMutationFacts
+                before?.startedAt?.let {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.ChildStartedAt(
+                                detail.occurrences
+                                    .single {
+                                        it.childMutationFacts?.executionId ==
+                                            timing.executionId
+                                    }.occurrenceId,
+                            ),
+                            it,
+                            requireNotNull((timing.time as? ActivityHistoryTimeCorrection.Timed)?.startedAt),
+                        ),
+                    )
+                }
+                val occurrenceId =
+                    detail.occurrences
+                        .single { it.childMutationFacts?.executionId == timing.executionId }
+                        .occurrenceId
+                add(
+                    SequenceHistoryPreviewChange.Timestamp(
+                        SequenceHistoryTimestampTarget.ChildCompletedAt(occurrenceId),
+                        requireNotNull(before).completedAt,
+                        timing.time.completedAt(),
+                    ),
+                )
+            }
+            command.finalIntervals.forEach { after ->
+                val before = detail.intervals.single { it.id == after.id }
+                if (before.startedAt !=
+                    after.startedAt
+                ) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.IntervalStartedAt(after.id),
+                            before.startedAt,
+                            after.startedAt,
+                        ),
+                    )
+                }
+                val endedBefore = before.endedAt
+                val endedAfter = after.endedAt
+                if (endedBefore != endedAfter &&
+                    endedBefore != null &&
+                    endedAfter != null
+                ) {
+                    add(
+                        SequenceHistoryPreviewChange.Timestamp(
+                            SequenceHistoryTimestampTarget.IntervalEndedAt(after.id),
+                            endedBefore,
+                            endedAfter,
+                        ),
+                    )
+                }
+            }
+            placements.forEach { (id, placement) ->
+                placement?.let { add(SequenceHistoryPreviewChange.OwnerlessPlacement(id, it)) }
+            }
+        }
+
+    private fun ActivityHistoryTimeCorrection.completedAt(): Instant =
+        when (this) {
+            is ActivityHistoryTimeCorrection.Timed -> completedAt
+            is ActivityHistoryTimeCorrection.NoLive -> completedAt
+        }
 
     private fun hasActiveOverlap(intervals: List<SequenceInterval>): Boolean {
         var latestEnd: Instant? = null

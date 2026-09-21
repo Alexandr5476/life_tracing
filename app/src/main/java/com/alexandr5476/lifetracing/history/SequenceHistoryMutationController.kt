@@ -47,6 +47,7 @@ data class SequenceHistoryMutationState(
     val load: HistoryDetailLoad<SequenceHistoryDetail> = HistoryDetailLoad.Loading,
     val timingDraft: SequenceHistoryTimingDraft? = null,
     val timingProposal: SequenceHistoryTimingProposal? = null,
+    val noTimingChanges: Boolean = false,
     val overlapWarning: Boolean = false,
     val childDeletionProposal: SequenceChildHistoryDeletionCommand? = null,
     val structuralTarget: SequenceOccurrenceId? = null,
@@ -136,7 +137,9 @@ class SequenceHistoryMutationController internal constructor(
             SequenceHistoryMutationAction.ProceedOverlap ->
                 mutableState.update { it.copy(overlapWarning = false, issue = null) }
             SequenceHistoryMutationAction.CancelOverlap ->
-                mutableState.update { it.copy(timingProposal = null, overlapWarning = false, issue = null) }
+                mutableState.update {
+                    it.copy(timingProposal = null, noTimingChanges = false, overlapWarning = false, issue = null)
+                }
             SequenceHistoryMutationAction.ConfirmTiming -> confirmTiming()
             is SequenceHistoryMutationAction.RequestChildDeletion -> requestChildDeletion(action.occurrenceId)
             SequenceHistoryMutationAction.ConfirmChildDeletion -> confirmChildDeletion()
@@ -208,6 +211,7 @@ class SequenceHistoryMutationController internal constructor(
             it.copy(
                 timingDraft = SequenceHistoryProposalBuilder.timingDraft(detail),
                 timingProposal = null,
+                noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
                 structuralTarget = null,
@@ -233,6 +237,7 @@ class SequenceHistoryMutationController internal constructor(
                                 (target to value.copy(text = text, selectedOffset = null, validOffsets = emptyList())),
                     ),
                 timingProposal = null,
+                noTimingChanges = false,
                 issue = null,
             )
         }
@@ -252,6 +257,7 @@ class SequenceHistoryMutationController internal constructor(
                         timestamps = draft.timestamps + (target to value.copy(selectedOffset = offset)),
                     ),
                 timingProposal = null,
+                noTimingChanges = false,
                 issue = null,
             )
         }
@@ -263,12 +269,13 @@ class SequenceHistoryMutationController internal constructor(
         when (val result = SequenceHistoryProposalBuilder.timing(detail, draft)) {
             SequenceHistoryTimingBuildResult.NoChange ->
                 mutableState.update {
-                    it.copy(timingProposal = null, overlapWarning = false, issue = null)
+                    it.copy(timingProposal = null, noTimingChanges = true, overlapWarning = false, issue = null)
                 }
             is SequenceHistoryTimingBuildResult.Ready ->
                 mutableState.update {
                     it.copy(
                         timingProposal = result.proposal,
+                        noTimingChanges = false,
                         overlapWarning = result.proposal.hasActiveIntervalOverlap,
                         issue = null,
                     )
@@ -288,6 +295,7 @@ class SequenceHistoryMutationController internal constructor(
                                 )
                             },
                         timingProposal = null,
+                        noTimingChanges = false,
                         overlapWarning = false,
                         issue = result.issue.toMutationIssue(),
                     )
@@ -385,6 +393,7 @@ class SequenceHistoryMutationController internal constructor(
                                 load = HistoryDetailLoad.Loading,
                                 timingDraft = null,
                                 timingProposal = null,
+                                noTimingChanges = false,
                                 overlapWarning = false,
                                 childDeletionProposal = null,
                                 structuralTarget = null,
@@ -413,6 +422,7 @@ class SequenceHistoryMutationController internal constructor(
             it.copy(
                 timingDraft = null,
                 timingProposal = null,
+                noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
                 structuralTarget = null,
@@ -432,6 +442,7 @@ class SequenceHistoryMutationController internal constructor(
                 load = load,
                 timingDraft = null,
                 timingProposal = null,
+                noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
                 structuralTarget = null,
@@ -447,6 +458,7 @@ class SequenceHistoryMutationController internal constructor(
     private fun SequenceHistoryMutationState.hasTransient() =
         timingDraft != null ||
             timingProposal != null ||
+            noTimingChanges ||
             overlapWarning ||
             childDeletionProposal != null ||
             structuralTarget != null ||

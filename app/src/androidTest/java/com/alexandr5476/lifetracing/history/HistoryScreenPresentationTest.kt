@@ -38,9 +38,11 @@ import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildMutationFacts
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrenceActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
@@ -257,6 +259,23 @@ class HistoryScreenPresentationTest {
     }
 
     @Test
+    fun sequenceTimingCorrectionUsesControllerDraftAndCancelWritesNothing() {
+        var timingCommands = 0
+        val detail = sequenceMutationDetail()
+        setSequenceMutationDetail(detail) { _, _, _ -> timingCommands++ }
+
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_active_duration, "10:00")).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().assertIsDisplayed()
+        assertEquals(0, timingCommands)
+    }
+
+    @Test
     fun completedSequenceStatusAndSummaryOnlyMixedListArePresentedWithoutCurrentZoneClocks() {
         val suppliedDate = LocalDate.parse("2001-02-03")
         val activity = activityDetail().root.copy(primaryLocalDate = suppliedDate, title = "Activity summary")
@@ -317,6 +336,37 @@ class HistoryScreenPresentationTest {
         composeTestRule.waitUntil(2_000) {
             controller.state.value.load is HistoryDetailLoad.Content
         }
+        return controller
+    }
+
+    private fun setSequenceMutationDetail(
+        detail: SequenceHistoryDetail,
+        correct: suspend (
+            SequenceExecutionId,
+            SequenceHistoryTimingCorrection,
+            Instant,
+        ) -> Unit,
+    ): SequenceHistoryMutationController {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                detail.root.executionId,
+                { detail },
+                correct,
+                { _, _, _ -> },
+                { _, _, _ -> },
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                SequenceHistoryDetailRoute(
+                    SequenceHistoryMutationRouteSession(detail.root.executionId, controller),
+                    onBack = {},
+                    onRefresh = {},
+                )
+            }
+        }
+        composeTestRule.waitUntil(2_000) { controller.state.value.load is HistoryDetailLoad.Content }
         return controller
     }
 
@@ -492,6 +542,27 @@ class HistoryScreenPresentationTest {
             emptyList(),
             occurrences,
             intervals,
+        )
+    }
+
+    private fun sequenceMutationDetail(): SequenceHistoryDetail {
+        val base = sequenceDetail(SequenceExecutionStatus.COMPLETED, ZoneId.of("America/Los_Angeles"))
+        return base.copy(
+            occurrences =
+                base.occurrences.map { occurrence ->
+                    occurrence.takeIf { it.occurrenceId.value == "performed" }?.let {
+                        val child = requireNotNull(it.child)
+                        it.copy(
+                            childMutationFacts =
+                                SequenceHistoryChildMutationFacts(
+                                    child.executionId,
+                                    child.startedAt,
+                                    requireNotNull(child.completedAt),
+                                    emptyList(),
+                                ),
+                        )
+                    } ?: occurrence
+                },
         )
     }
 
