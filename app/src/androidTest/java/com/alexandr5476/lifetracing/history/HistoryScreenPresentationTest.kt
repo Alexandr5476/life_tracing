@@ -198,13 +198,17 @@ class HistoryScreenPresentationTest {
         val performed = hasAnyAncestor(hasTestTag("history-occurrence-performed"))
         composeTestRule.onNode(hasText(text(R.string.history_occurrence_performed)) and performed).performScrollTo()
         composeTestRule.onNode(hasText(text(R.string.history_source_step)) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_repeat_iteration, 2)) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_runtime_added)) and performed).assertExists()
         composeTestRule.onNode(hasText(text(R.string.history_timer_target, "00:30")) and performed).assertExists()
         composeTestRule.onNode(hasText(text(R.string.history_actual_duration, "01:00")) and performed).assertExists()
         composeTestRule
             .onNode(hasText(text(R.string.history_field_value, "Reps", "7 reps")) and performed)
             .assertExists()
+
+        val repeated = hasAnyAncestor(hasTestTag("history-occurrence-skipped"))
+        composeTestRule.onNode(hasText(text(R.string.history_source_step)) and repeated).assertExists()
+        composeTestRule.onNode(hasText(text(R.string.history_repeat_iteration, 2)) and repeated).assertExists()
+        val runtimeAdded = hasAnyAncestor(hasTestTag("history-occurrence-not-started"))
+        composeTestRule.onNode(hasText(text(R.string.history_runtime_added)) and runtimeAdded).assertExists()
 
         composeTestRule.onNodeWithTag("history-occurrence-skipped").performScrollTo()
         composeTestRule
@@ -375,7 +379,6 @@ class HistoryScreenPresentationTest {
         composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
         composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(text(R.string.history_runtime_added)).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performClick()
         assertEquals(0, deletions)
 
@@ -760,9 +763,9 @@ class HistoryScreenPresentationTest {
                     0,
                     performedActivity.snapshotId,
                     SequenceSnapshotNodeId("source-step"),
-                    SequenceSnapshotNodeId("repeat"),
-                    2,
-                    true,
+                    null,
+                    null,
+                    false,
                     false,
                     RuntimeOccurrenceStatus.COMPLETED,
                     START.plusSeconds(10),
@@ -780,8 +783,21 @@ class HistoryScreenPresentationTest {
                         listOf(childField),
                     ),
                 ),
-                occurrence("skipped", 1, RuntimeOccurrenceStatus.SKIPPED),
-                occurrence("not-started", 2, RuntimeOccurrenceStatus.NOT_STARTED),
+                occurrence(
+                    "skipped",
+                    1,
+                    RuntimeOccurrenceStatus.SKIPPED,
+                    sourceNodeId = "source-repeat-step",
+                    repeatParentNodeId = "repeat",
+                    repeatIteration = 2,
+                ),
+                occurrence(
+                    "not-started",
+                    2,
+                    RuntimeOccurrenceStatus.NOT_STARTED,
+                    sourceNodeId = null,
+                    isRuntimeAdded = true,
+                ),
                 occurrence("tombstone", 3, RuntimeOccurrenceStatus.DELETED_EXECUTION),
             )
         val intervals =
@@ -851,7 +867,13 @@ class HistoryScreenPresentationTest {
 
     private fun structuralMutationDetail(): SequenceHistoryDetail {
         val base = sequenceMutationDetail()
-        val performed = base.occurrences.first()
+        val performed =
+            base.occurrences
+                .first()
+                .copy(
+                    repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("repeat"),
+                    repeatIteration = 2,
+                )
 
         fun performedOccurrence(
             id: String,
@@ -867,7 +889,7 @@ class HistoryScreenPresentationTest {
                 SequenceOccurrenceId(id),
                 position,
                 activity.snapshotId,
-                null,
+                SequenceSnapshotNodeId("source-$id"),
                 null,
                 null,
                 false,
@@ -962,14 +984,18 @@ class HistoryScreenPresentationTest {
         id: String,
         position: Int,
         status: RuntimeOccurrenceStatus,
+        sourceNodeId: String? = "source-$id",
+        repeatParentNodeId: String? = null,
+        repeatIteration: Int? = null,
+        isRuntimeAdded: Boolean = false,
     ) = SequenceHistoryOccurrence(
         SequenceOccurrenceId(id),
         position,
         ActivitySnapshotId("snapshot-$id"),
-        null,
-        null,
-        null,
-        false,
+        sourceNodeId?.let(::SequenceSnapshotNodeId),
+        repeatParentNodeId?.let(::SequenceSnapshotNodeId),
+        repeatIteration,
+        isRuntimeAdded,
         false,
         status,
         null,

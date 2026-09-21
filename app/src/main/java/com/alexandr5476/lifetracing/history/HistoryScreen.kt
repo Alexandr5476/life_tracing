@@ -783,13 +783,29 @@ private fun StructuralReview(
     )
     ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
     state.issue?.let { SequenceMutationIssue(it) }
-    ReviewActions(
-        isMutating = state.isMutating,
-        confirmLabel = R.string.sequence_history_confirm_structural,
-        confirmTag = "sequence-history-confirm-structural",
-        onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-        onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmStructuralRemoval) },
-    )
+    if (state.overlapWarning) {
+        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
+        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            LifeTracingSecondaryButton(
+                onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
+                enabled = !state.isMutating,
+                modifier = Modifier.testTag("sequence-history-overlap-cancel"),
+            ) { Text(stringResource(R.string.manual_history_cancel)) }
+            LifeTracingPrimaryButton(
+                onClick = { onAction(SequenceHistoryMutationAction.ProceedOverlap) },
+                enabled = !state.isMutating,
+                modifier = Modifier.testTag("sequence-history-overlap-proceed"),
+            ) { Text(stringResource(R.string.history_overlap_proceed)) }
+        }
+    } else {
+        ReviewActions(
+            isMutating = state.isMutating,
+            confirmLabel = R.string.sequence_history_confirm_structural,
+            confirmTag = "sequence-history-confirm-structural",
+            onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
+            onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmStructuralRemoval) },
+        )
+    }
 }
 
 @Composable

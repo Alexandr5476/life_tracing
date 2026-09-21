@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.history
 
 import android.content.Context
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -22,6 +23,7 @@ import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
+import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
@@ -32,6 +34,7 @@ import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -258,6 +261,68 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
     }
 
     @Test
+    fun productionControllerCloseGapPersistsMovedNoLiveChildWithoutTimedFacts() =
+        runBlocking {
+            val context = composeTestRule.activity
+            clearActiveSession(context)
+            val execution =
+                completedSequence(
+                    context,
+                    "${System.nanoTime()}-no-live",
+                    Instant.now().minusSeconds(1_000),
+                    listOf(10, 10),
+                    timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING,
+                    nodeCount = 3,
+                    endEarly = true,
+                )
+            val graph = LifeTracingRuntimeGraph.from(context)
+            val history = HistoryReadRepository.create(context)
+            val controller = graph.createSequenceHistoryDetailController(execution)
+            val before = controller.awaitDetail()
+            assertEquals(SequenceExecutionStatus.ENDED_EARLY, before.root.status)
+            val removed = before.occurrences.first()
+            val retained = before.occurrences[1]
+            val retainedChild = requireNotNull(retained.child)
+            assertNull(retainedChild.startedAt)
+            assertNull(retainedChild.activeDuration)
+
+            controller.dispatch(SequenceHistoryMutationAction.BeginStructuralRemoval(removed.occurrenceId))
+            controller.dispatch(
+                SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.CLOSE_GAP),
+            )
+            requireNotNull(controller.state.value.structuralProposal).ownerlessPlacements.keys.forEach { id ->
+                controller.dispatch(
+                    SequenceHistoryMutationAction.PlaceOwnerlessInterval(id, OwnerlessIntervalPlacement.TRANSLATED),
+                )
+            }
+            val proposal = requireNotNull(controller.state.value.structuralProposal)
+            val moved =
+                requireNotNull(proposal.command)
+                    .childTimings
+                    .single { it.executionId == retainedChild.executionId }
+            assertTrue(moved.time is ActivityHistoryTimeCorrection.NoLive)
+            assertTrue(moved.pauses.isEmpty())
+            assertEquals(
+                retained.occurrenceId,
+                proposal.command.occurrenceTimings
+                    .single { it.occurrenceId == retained.occurrenceId }
+                    .occurrenceId,
+            )
+
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmStructuralRemoval)
+            val after = controller.awaitRefresh()
+            val reloaded = requireNotNull(history.getSequenceDetail(execution))
+            val movedOccurrence = after.occurrences.single { it.occurrenceId == retained.occurrenceId }
+            val movedChild = requireNotNull(movedOccurrence.child)
+            assertEquals(after, reloaded)
+            assertEquals(retained.occurrenceId, movedOccurrence.occurrenceId)
+            assertEquals(retainedChild.executionId, movedChild.executionId)
+            assertNull(movedChild.startedAt)
+            assertNull(movedChild.activeDuration)
+            controller.close()
+        }
+
+    @Test
     fun productionRouteOverlapUsesIntervalUnionAndDateMoveRefreshesCanonicalProjections() {
         val context = composeTestRule.activity
         clearActiveSession(context)
@@ -344,6 +409,77 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             previousDayBefore + 1,
             statistics.global(StatisticsPeriod.Day(utcDate.minusDays(1))).topLevelExecutionCount,
         )
+    }
+
+    @Test
+    fun productionRouteStructuralOverlapWarnsCancelsWithoutWritesAndCommitsCloseGapWithUnionDuration() {
+        val context = composeTestRule.activity
+        clearActiveSession(context)
+        val history = HistoryReadRepository.create(context)
+        val execution =
+            completedSequence(
+                context,
+                "${System.nanoTime()}-structural-overlap",
+                Instant.now().minusSeconds(1_000),
+                listOf(10, 10, 10),
+            )
+
+        enterHistory()
+        openSequence(execution)
+        val original = requireNotNull(history.getSequenceDetail(execution))
+        val second = original.occurrences[1]
+        val third = original.occurrences[2]
+        val overlappingStart = requireNotNull(second.enteredAt).plusSeconds(5)
+        val thirdInterval = original.intervals.single { it.occurrenceId == third.occurrenceId }
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        replaceTimestamp(
+            "sequence-history-timestamp-occurrence-${third.occurrenceId.value}-entered",
+            overlappingStart,
+            original.originalZoneId,
+        )
+        replaceTimestamp(
+            "sequence-history-timestamp-child-${third.occurrenceId.value}-started",
+            overlappingStart,
+            original.originalZoneId,
+        )
+        replaceTimestamp(
+            "sequence-history-timestamp-interval-${thirdInterval.id.value}-started",
+            overlappingStart,
+            original.originalZoneId,
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.updatedAt != original.updatedAt }
+
+        val beforeStructural = requireNotNull(history.getSequenceDetail(execution))
+        val target = beforeStructural.occurrences.first()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        resolveOwnerlessIntervals()
+        composeTestRule
+            .onNodeWithText(
+                composeTestRule.activity.getString(R.string.history_overlap_warning),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        assertEquals(beforeStructural.updatedAt, history.getSequenceDetail(execution)?.updatedAt)
+
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        resolveOwnerlessIntervals()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.occurrences?.size == 2 }
+        val after = requireNotNull(history.getSequenceDetail(execution))
+        assertEquals(java.time.Duration.ofSeconds(20), after.root.activeDuration)
+        assertEquals(after, HistoryReadRepository.create(context).getSequenceDetail(execution))
     }
 
     @Test
@@ -502,11 +638,14 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         suffix: String,
         startedAt: Instant,
         stepSeconds: List<Long>,
+        timeTrackingMode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+        nodeCount: Int = stepSeconds.size,
+        endEarly: Boolean = false,
     ): com.alexandr5476.lifetracing.domain.SequenceExecutionId {
         val authoring = TemplateAuthoringRepository.create(context)
         val activity =
             authoring.createActivityTemplate(
-                ActivityTemplateDraft("History step $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                ActivityTemplateDraft("History step $suffix", null, timeTrackingMode, null),
                 createdAt = startedAt.minusSeconds(2),
             )
         val sequence =
@@ -515,7 +654,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                     "History sequence $suffix",
                     null,
                     nodes =
-                        stepSeconds.indices.map { position ->
+                        (0 until nodeCount).map { position ->
                             SequenceNodeDraft.Step(
                                 ActivityStepDraft(
                                     DraftIdentity.New("$suffix-$position"),
@@ -543,6 +682,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             at = at.plusSeconds(seconds)
             runtime = live.completeCurrentSequenceStep(requireNotNull(runtime.execution.currentOccurrenceId), at)
         }
+        if (endEarly) live.endSequenceEarly(at)
         return runtime.execution.id
     }
 

@@ -140,7 +140,17 @@ class SequenceHistoryMutationController internal constructor(
                 mutableState.update { it.copy(overlapWarning = false, issue = null) }
             SequenceHistoryMutationAction.CancelOverlap ->
                 mutableState.update {
-                    it.copy(timingProposal = null, noTimingChanges = false, overlapWarning = false, issue = null)
+                    if (it.structuralProposal != null) {
+                        it.copy(
+                            structuralTarget = null,
+                            structuralTargetDescriptor = null,
+                            structuralProposal = null,
+                            overlapWarning = false,
+                            issue = null,
+                        )
+                    } else {
+                        it.copy(timingProposal = null, noTimingChanges = false, overlapWarning = false, issue = null)
+                    }
                 }
             SequenceHistoryMutationAction.ConfirmTiming -> confirmTiming()
             is SequenceHistoryMutationAction.RequestChildDeletion -> requestChildDeletion(action.occurrenceId)
@@ -360,6 +370,7 @@ class SequenceHistoryMutationController internal constructor(
         mutableState.update {
             it.copy(
                 structuralProposal = proposal,
+                overlapWarning = proposal?.hasActiveIntervalOverlap == true,
                 issue = if (proposal == null) SequenceHistoryMutationIssue.INVALID_PROPOSAL else null,
             )
         }
@@ -380,11 +391,18 @@ class SequenceHistoryMutationController internal constructor(
                 existing.mode,
                 choices + (intervalId to placement),
             ) ?: return
-        mutableState.update { it.copy(structuralProposal = proposal, issue = null) }
+        mutableState.update {
+            it.copy(
+                structuralProposal = proposal,
+                overlapWarning = proposal.hasActiveIntervalOverlap,
+                issue = null,
+            )
+        }
     }
 
     private fun confirmStructural() {
         val command = mutableState.value.structuralProposal?.command ?: return
+        if (mutableState.value.overlapWarning) return
         mutate(SequenceHistoryMutationIssue.STRUCTURAL_FAILURE) { removeOccurrence(executionId, command, it) }
     }
 

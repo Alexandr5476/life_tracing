@@ -163,6 +163,7 @@ data class SequenceHistoryStructuralProposal(
     val ownerlessChoices: List<SequenceHistoryOwnerlessPlacementChoice>,
     val command: SequenceHistoryStructuralRemovalCommand?,
     val changes: List<SequenceHistoryPreviewChange>,
+    val hasActiveIntervalOverlap: Boolean,
 ) {
     val isConfirmable: Boolean
         get() = command != null
@@ -361,6 +362,7 @@ object SequenceHistoryProposalBuilder {
                             add(SequenceHistoryPreviewChange.RemovedInterval(it.toDescriptor()))
                         }
                 },
+                hasActiveOverlap(retained),
             )
         }
         if (shift <= 0) return null
@@ -457,6 +459,7 @@ object SequenceHistoryProposalBuilder {
             command
                 ?.let { structuralChanges(detail, it, placementState, occurrenceIndex, intervalsById) }
                 .orEmpty(),
+            command?.let { hasActiveOverlap(it.finalIntervals) } ?: false,
         )
     }
 

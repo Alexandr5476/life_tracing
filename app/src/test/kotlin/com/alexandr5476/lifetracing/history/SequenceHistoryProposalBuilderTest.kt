@@ -25,6 +25,7 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import kotlinx.coroutines.CompletableDeferred
@@ -356,6 +357,140 @@ class SequenceHistoryProposalBuilderTest {
             },
         )
         assertNull(detail.occurrences.single { it.occurrenceId == SKIPPED }.childMutationFacts)
+    }
+
+    @Test
+    fun structuralOverlapWarnsWithoutBlockingCloseGapAndCancellationDoesNotWrite() =
+        runBlocking {
+            val canonical = structuralOverlapDetail()
+            val overlap =
+                requireNotNull(
+                    SequenceHistoryProposalBuilder.structural(
+                        canonical,
+                        TARGET,
+                        SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                        mapOf(OWNERLESS to OwnerlessIntervalPlacement.TRANSLATED),
+                    ),
+                )
+            assertTrue(overlap.hasActiveIntervalOverlap)
+            assertTrue(
+                requireNotNull(
+                    SequenceHistoryProposalBuilder.structural(
+                        canonical,
+                        TARGET,
+                        SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                    ),
+                ).hasActiveIntervalOverlap,
+            )
+
+            var writes = 0
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val controller =
+                SequenceHistoryMutationController(
+                    scope,
+                    SEQUENCE,
+                    { canonical },
+                    { _, _, _ -> error("unexpected") },
+                    { _, _, _ -> error("unexpected") },
+                    { _, _, _ -> writes++ },
+                )
+            awaitLoaded(controller)
+
+            fun review() {
+                controller.dispatch(SequenceHistoryMutationAction.BeginStructuralRemoval(TARGET))
+                controller.dispatch(
+                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.CLOSE_GAP),
+                )
+                controller.dispatch(
+                    SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                        OWNERLESS,
+                        OwnerlessIntervalPlacement.TRANSLATED,
+                    ),
+                )
+            }
+
+            review()
+            assertTrue(controller.state.value.overlapWarning)
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmStructuralRemoval)
+            controller.dispatch(SequenceHistoryMutationAction.CancelOverlap)
+            assertEquals(0, writes)
+            assertNull(controller.state.value.structuralProposal)
+
+            review()
+            controller.dispatch(SequenceHistoryMutationAction.ProceedOverlap)
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmStructuralRemoval)
+            withTimeout(2_000) { controller.state.first { it.refreshGeneration == 1L } }
+            assertEquals(1, writes)
+            controller.close()
+            scope.cancel()
+        }
+
+    @Test
+    fun closeGapMovesNoLiveChildWithoutFabricatingTimedFactsAndTranslatesNotStartedCountdown() {
+        val base = detail()
+        val noLive =
+            base.copy(
+                occurrences =
+                    base.occurrences
+                        .map { occurrence ->
+                            if (occurrence.occurrenceId != SECOND_LATER) {
+                                occurrence
+                            } else {
+                                occurrence.copy(
+                                    activity =
+                                        occurrence.activity.copy(
+                                            timeTrackingMode =
+                                                TimeTrackingMode.NO_LIVE_TRACKING,
+                                        ),
+                                    child =
+                                        requireNotNull(
+                                            occurrence.child,
+                                        ).copy(startedAt = null, activeDuration = null),
+                                    childMutationFacts =
+                                        requireNotNull(occurrence.childMutationFacts).copy(
+                                            startedAt = null,
+                                            pauses = emptyList(),
+                                        ),
+                                )
+                            }
+                        }.map { occurrence ->
+                            if (occurrence.occurrenceId == SKIPPED) {
+                                occurrence.copy(
+                                    sourceSequenceSnapshotNodeId = SequenceSnapshotNodeId("source-skipped"),
+                                    status = RuntimeOccurrenceStatus.NOT_STARTED,
+                                )
+                            } else {
+                                occurrence
+                            }
+                        },
+            )
+        val command =
+            requireNotNull(
+                requireNotNull(
+                    SequenceHistoryProposalBuilder.structural(
+                        noLive,
+                        TARGET,
+                        SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                        mapOf(OWNERLESS to OwnerlessIntervalPlacement.TRANSLATED),
+                    ),
+                ).command,
+            )
+        val movedNoLive = command.childTimings.single { it.executionId == CHILD_SECOND_LATER }
+        assertEquals(ActivityHistoryTimeCorrection.NoLive(minute(20)), movedNoLive.time)
+        assertTrue(movedNoLive.pauses.isEmpty())
+        assertEquals(
+            SECOND_LATER,
+            command.occurrenceTimings.single { it.occurrenceId == SECOND_LATER }.occurrenceId,
+        )
+        assertFalse(command.occurrenceTimings.any { it.occurrenceId == SKIPPED })
+        assertEquals(
+            minute(20),
+            command.finalIntervals.single { it.id == COUNTDOWN_INTERVAL }.startedAt,
+        )
+        assertEquals(
+            minute(22),
+            command.finalIntervals.single { it.id == COUNTDOWN_INTERVAL }.endedAt,
+        )
     }
 
     @Test
@@ -849,7 +984,7 @@ class SequenceHistoryProposalBuilderTest {
                 SKIPPED,
                 3,
                 ActivitySnapshotId("snapshot-skipped"),
-                null,
+                SequenceSnapshotNodeId("source-skipped"),
                 null,
                 null,
                 false,
@@ -927,7 +1062,7 @@ class SequenceHistoryProposalBuilderTest {
             id,
             position,
             ActivitySnapshotId("snapshot-${id.value}"),
-            null,
+            SequenceSnapshotNodeId("source-${id.value}"),
             null,
             null,
             false,
@@ -973,6 +1108,44 @@ class SequenceHistoryProposalBuilderTest {
     ) = SequenceInterval(SequenceIntervalId(id), kind, start, end, owner)
 
     private fun minute(value: Long): Instant = BASE.plusSeconds(value * 60)
+
+    private fun structuralOverlapDetail(): SequenceHistoryDetail {
+        val base = detail()
+        return base.copy(
+            occurrences =
+                base.occurrences.map { occurrence ->
+                    if (occurrence.occurrenceId != SECOND_LATER) {
+                        occurrence
+                    } else {
+                        occurrence.copy(
+                            enteredAt = minute(15),
+                            completedAt = minute(25),
+                            child =
+                                requireNotNull(
+                                    occurrence.child,
+                                ).copy(startedAt = minute(15), completedAt = minute(25)),
+                            childMutationFacts =
+                                requireNotNull(occurrence.childMutationFacts).copy(
+                                    startedAt = minute(15),
+                                    completedAt = minute(25),
+                                    pauses =
+                                        listOf(
+                                            ActivityExecutionPause(
+                                                ActivityExecutionPauseId("pause-second-later"),
+                                                minute(17),
+                                                minute(18),
+                                            ),
+                                        ),
+                                ),
+                        )
+                    }
+                },
+            intervals =
+                base.intervals.map {
+                    if (it.id == SECOND_LATER_INTERVAL) it.copy(startedAt = minute(15), endedAt = minute(25)) else it
+                },
+        )
+    }
 
     companion object {
         private val BASE = Instant.parse("2026-01-01T00:00:00Z")
