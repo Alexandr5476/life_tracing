@@ -261,6 +261,10 @@ class SequenceHistoryMutationController internal constructor(
         val detail = detail() ?: return
         val draft = mutableState.value.timingDraft ?: return
         when (val result = SequenceHistoryProposalBuilder.timing(detail, draft)) {
+            SequenceHistoryTimingBuildResult.NoChange ->
+                mutableState.update {
+                    it.copy(timingProposal = null, overlapWarning = false, issue = null)
+                }
             is SequenceHistoryTimingBuildResult.Ready ->
                 mutableState.update {
                     it.copy(

@@ -4,8 +4,13 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
+import com.alexandr5476.lifetracing.domain.ActivityExecution
+import com.alexandr5476.lifetracing.domain.ActivityExecutionContext
 import com.alexandr5476.lifetracing.domain.ActivityExecutionFactory
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionPause
+import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -98,8 +103,8 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(SequenceSnapshotId("sequence-snapshot"), detail.root.snapshotId)
         assertEquals(SequenceExecutionStatus.COMPLETED, detail.root.status)
         assertEquals(LocalDate.of(1970, 1, 1), detail.root.primaryLocalDate)
-        assertEquals(Duration.ofSeconds(20), detail.root.activeDuration)
-        assertEquals(Duration.ofSeconds(10), detail.root.pauseDuration)
+        assertEquals(Duration.ofSeconds(19), detail.root.activeDuration)
+        assertEquals(Duration.ofSeconds(11), detail.root.pauseDuration)
         assertEquals(Duration.ofSeconds(30), detail.root.wallDuration)
         assertTrue(detail.fields[0].isMainValue)
         assertFalse(detail.fields[1].isMainValue)
@@ -125,15 +130,23 @@ class SequenceHistoryReadRepositoryTest {
         assertEquals(ActivityHistoryActualValue.Missing, skippedMainValue.actualValue)
         assertEquals(ActivityExecutionId("child-runtime"), detail.occurrences[0].child?.executionId)
         assertEquals(ActivityExecutionId("child-runtime"), detail.occurrences[0].childMutationFacts?.executionId)
+        assertEquals(Instant.EPOCH, detail.occurrences[0].childMutationFacts?.startedAt)
         assertEquals(Instant.ofEpochSecond(10), detail.occurrences[0].childMutationFacts?.completedAt)
-        assertTrue(requireNotNull(detail.occurrences[0].childMutationFacts).pauses.isEmpty())
-        assertNull(detail.occurrences[0].child?.activeDuration)
+        assertEquals(
+            ActivityExecutionPause(
+                ActivityExecutionPauseId("child-runtime-pause"),
+                Instant.ofEpochSecond(2),
+                Instant.ofEpochSecond(3),
+            ),
+            requireNotNull(detail.occurrences[0].childMutationFacts).pauses.single(),
+        )
+        assertEquals(Duration.ofSeconds(9), detail.occurrences[0].child?.activeDuration)
         assertTrue(requireNotNull(detail.occurrences[0].child).fields.single().isMainValue)
         assertEquals(
             ActivityHistoryActualValue.Number(5),
             requireNotNull(detail.occurrences[0].child).fields.single().actualValue,
         )
-        assertEquals(2, detail.intervals.size)
+        assertEquals(3, detail.intervals.size)
         assertNull(detail.occurrences[2].childMutationFacts)
         assertNull(detail.occurrences[3].childMutationFacts)
         assertEquals(SequenceHistoryConfiguredValue.Number(7), detail.fields[0].configuredValue)
@@ -551,7 +564,7 @@ class SequenceHistoryReadRepositoryTest {
 
     private fun seedTerminalRun() {
         activitySnapshot("activity-one", "Frozen one")
-        activitySnapshot("activity-two", "Runtime added", 7)
+        activitySnapshot("activity-two", "Runtime added", 7, "STOPWATCH")
         activitySnapshot("activity-three", "No child runtime added", 11)
         database.sequenceSnapshotDao().insertAggregate(
             SequenceSnapshotAggregateEntity(
@@ -645,8 +658,8 @@ class SequenceHistoryReadRepositoryTest {
                 SequenceExecutionStatus.COMPLETED,
                 Instant.EPOCH,
                 Instant.ofEpochSecond(30),
-                Duration.ofSeconds(20),
-                Duration.ofSeconds(10),
+                Duration.ofSeconds(19),
+                Duration.ofSeconds(11),
                 Duration.ofSeconds(30),
                 ZoneOffset.UTC,
                 0,
@@ -714,9 +727,16 @@ class SequenceHistoryReadRepositoryTest {
                 ),
                 listOf(
                     SequenceInterval(
-                        SequenceIntervalId("runtime-interval"),
+                        SequenceIntervalId("runtime-interval-before-pause"),
                         SequenceIntervalKind.ACTIVE_STEP,
                         Instant.EPOCH,
+                        Instant.ofEpochSecond(2),
+                        runtimeAdded,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("runtime-interval-after-pause"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        Instant.ofEpochSecond(3),
                         Instant.ofEpochSecond(10),
                         runtimeAdded,
                     ),
@@ -741,7 +761,35 @@ class SequenceHistoryReadRepositoryTest {
                     ),
             )
         database.sequenceExecutionDao().insertAggregate(execution.toEntityAggregate())
-        insertNoLiveChild("child-runtime", "activity-two", execution.id, runtimeAdded, Instant.ofEpochSecond(10))
+        database.activityExecutionDao().insertAggregate(
+            ActivityExecution(
+                ActivityExecutionId("child-runtime"),
+                ActivitySnapshotId("activity-two"),
+                ActivityExecutionContext.SEQUENCE_CHILD,
+                null,
+                ActivityExecutionStatus.COMPLETED,
+                Instant.EPOCH,
+                Instant.ofEpochSecond(10),
+                Duration.ofSeconds(9),
+                ZoneOffset.UTC,
+                0,
+                LocalDate.of(1970, 1, 1),
+                null,
+                null,
+                Instant.EPOCH,
+                Instant.ofEpochSecond(10),
+                execution.id,
+                runtimeAdded,
+                pauses =
+                    listOf(
+                        ActivityExecutionPause(
+                            ActivityExecutionPauseId("child-runtime-pause"),
+                            Instant.ofEpochSecond(2),
+                            Instant.ofEpochSecond(3),
+                        ),
+                    ),
+            ).toEntityAggregate(),
+        )
         database.activityExecutionDao().upsertValue(
             ActivityExecutionFieldValueEntity("child-runtime", "activity-two-main", 5, null, null),
         )
@@ -1007,10 +1055,11 @@ class SequenceHistoryReadRepositoryTest {
         id: String,
         name: String,
         mainDefault: Long? = null,
+        timeTrackingMode: String = "NO_LIVE_TRACKING",
     ) {
         database.activitySnapshotDao().insertAggregate(
             ActivitySnapshotAggregateEntity(
-                ActivitySnapshotEntity(id, name, null, "NO_LIVE_TRACKING", null, null, null, null, false, 0),
+                ActivitySnapshotEntity(id, name, null, timeTrackingMode, null, null, null, null, false, 0),
                 ActivitySnapshotSettingsEntity(id),
                 fields =
                     mainDefault

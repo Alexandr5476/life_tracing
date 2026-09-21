@@ -453,12 +453,20 @@ class SequenceHistoryCommandRepositoryTest {
             ),
             second(40),
         )
+        val canonicalTombstone =
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+                .occurrences
+                .single { it.occurrenceId == SequenceOccurrenceId("a") }
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, canonicalTombstone.status)
+        assertNull(canonicalTombstone.child)
+        val childMutationFacts = requireNotNull(canonicalTombstone.childMutationFacts)
+        assertEquals(ActivityExecutionId("child-a"), childMutationFacts.executionId)
         repository.removeOccurrenceHistory(
             SEQUENCE_ID,
             SequenceHistoryStructuralRemovalCommand(
                 detailToken(),
-                SequenceOccurrenceId("a"),
-                ActivityExecutionId("child-a"),
+                canonicalTombstone.occurrenceId,
+                childMutationFacts.executionId,
                 SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
                 second(30),
                 listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
@@ -472,6 +480,11 @@ class SequenceHistoryCommandRepositoryTest {
         val root = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
         assertTrue(root.occurrences.single { it.id == "a" }.isDeletedFromHistory)
         assertEquals(50_000L, root.execution.updatedAtMs)
+        assertTrue(
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+                .occurrences
+                .none { it.occurrenceId == canonicalTombstone.occurrenceId },
+        )
     }
 
     @Test

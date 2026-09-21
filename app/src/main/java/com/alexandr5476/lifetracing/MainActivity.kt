@@ -344,6 +344,10 @@ internal fun LifeTracingApp(
                                 )
                             }
                         }
+                        backStack.lastOrNull() is SequenceHistoryDetailRoot -> {
+                            val route = backStack.last() as SequenceHistoryDetailRoot
+                            backStack.handleSequenceHistoryDetailBack(route.executionId, sequenceHistorySessions)
+                        }
                         else -> backStack.removeLastOrNull()
                     }
                 },
@@ -546,8 +550,10 @@ internal fun LifeTracingApp(
                             SequenceHistoryDetailRoute(
                                 session,
                                 onBack = {
-                                    sequenceHistorySessions.release(session)
-                                    backStack.removeSequenceHistoryDetail(route.executionId)
+                                    backStack.handleSequenceHistoryDetailBack(
+                                        route.executionId,
+                                        sequenceHistorySessions,
+                                    )
                                 },
                                 onRefresh = {
                                     historyOwner
@@ -748,6 +754,17 @@ internal fun MutableList<NavKey>.openSequenceHistoryDetail(executionId: String) 
 
 internal fun MutableList<NavKey>.removeSequenceHistoryDetail(expectedExecutionId: String) {
     if ((lastOrNull() as? SequenceHistoryDetailRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.handleSequenceHistoryDetailBack(
+    expectedExecutionId: String,
+    sessions: SequenceHistoryMutationRouteSessionOwner,
+) {
+    if ((lastOrNull() as? SequenceHistoryDetailRoot)?.executionId != expectedExecutionId) return
+    val session = sessions.activeSession
+    if (session?.executionId?.value == expectedExecutionId && session.controller.handleBack()) return
+    if (session?.executionId?.value == expectedExecutionId) sessions.release(session)
+    removeSequenceHistoryDetail(expectedExecutionId)
 }
 
 internal fun MutableList<NavKey>.openPlanExecution(

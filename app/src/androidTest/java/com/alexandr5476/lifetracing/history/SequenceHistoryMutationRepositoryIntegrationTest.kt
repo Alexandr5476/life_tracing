@@ -82,6 +82,22 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             assertNull(tombstone.child)
             assertNotNull(tombstone.childMutationFacts)
             assertEquals(deletionAfter, history.getSequenceDetail(deletion))
+            deletionController.dispatch(SequenceHistoryMutationAction.BeginStructuralRemoval(tombstone.occurrenceId))
+            deletionController.dispatch(
+                SequenceHistoryMutationAction.ChooseStructuralMode(
+                    SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                ),
+            )
+            assertEquals(
+                tombstone.childMutationFacts?.executionId,
+                deletionController.state.value.structuralProposal
+                    ?.command
+                    ?.childExecutionId,
+            )
+            deletionController.dispatch(SequenceHistoryMutationAction.ConfirmStructuralRemoval)
+            val deletionStructurallyRemoved = deletionController.awaitRefresh(2)
+            assertTrue(deletionStructurallyRemoved.occurrences.isEmpty())
+            assertEquals(deletionStructurallyRemoved, history.getSequenceDetail(deletion))
             deletionController.close()
 
             val leave = completedSequence(context, "$suffix-leave", base.plusSeconds(60), listOf(10))
@@ -193,9 +209,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             (state.first { it.load is HistoryDetailLoad.Content }.load as HistoryDetailLoad.Content).value
         }
 
-    private suspend fun SequenceHistoryMutationController.awaitRefresh(): SequenceHistoryDetail =
+    private suspend fun SequenceHistoryMutationController.awaitRefresh(generation: Long = 1): SequenceHistoryDetail =
         withTimeout(5_000) {
-            val refreshed = state.first { it.refreshGeneration == 1L && it.load is HistoryDetailLoad.Content }
+            val refreshed = state.first { it.refreshGeneration == generation && it.load is HistoryDetailLoad.Content }
             (refreshed.load as HistoryDetailLoad.Content).value
         }
 }

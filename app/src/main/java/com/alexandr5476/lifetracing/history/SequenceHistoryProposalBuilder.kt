@@ -65,6 +65,8 @@ data class SequenceHistoryTimingProposal(
 )
 
 sealed interface SequenceHistoryTimingBuildResult {
+    data object NoChange : SequenceHistoryTimingBuildResult
+
     data class Ready(
         val proposal: SequenceHistoryTimingProposal,
     ) : SequenceHistoryTimingBuildResult
@@ -115,8 +117,13 @@ object SequenceHistoryProposalBuilder {
         add(SequenceHistoryTimestampTarget.RootStartedAt, detail.root.startedAt)
         add(SequenceHistoryTimestampTarget.RootEndedAt, detail.root.completedAt)
         detail.occurrences.forEach { occurrence ->
-            add(SequenceHistoryTimestampTarget.OccurrenceEnteredAt(occurrence.occurrenceId), occurrence.enteredAt)
-            add(SequenceHistoryTimestampTarget.OccurrenceCompletedAt(occurrence.occurrenceId), occurrence.completedAt)
+            if (occurrence.status != RuntimeOccurrenceStatus.DELETED_EXECUTION) {
+                add(SequenceHistoryTimestampTarget.OccurrenceEnteredAt(occurrence.occurrenceId), occurrence.enteredAt)
+                add(
+                    SequenceHistoryTimestampTarget.OccurrenceCompletedAt(occurrence.occurrenceId),
+                    occurrence.completedAt,
+                )
+            }
             occurrence.child?.let {
                 add(SequenceHistoryTimestampTarget.ChildStartedAt(occurrence.occurrenceId), it.startedAt)
                 add(SequenceHistoryTimestampTarget.ChildCompletedAt(occurrence.occurrenceId), it.completedAt)
@@ -165,6 +172,7 @@ object SequenceHistoryProposalBuilder {
         ): Instant? = resolved[target] ?: fallback
         val occurrenceCorrections =
             detail.occurrences.mapNotNull { occurrence ->
+                if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) return@mapNotNull null
                 val entered =
                     value(
                         SequenceHistoryTimestampTarget.OccurrenceEnteredAt(occurrence.occurrenceId),
@@ -223,6 +231,9 @@ object SequenceHistoryProposalBuilder {
                 finalIntervals = intervals.takeIf { intervalsChanged },
                 childTimings = childCorrections,
             )
+        if (correction == SequenceHistoryTimingCorrection(draft.expectedUpdatedAt)) {
+            return SequenceHistoryTimingBuildResult.NoChange
+        }
         return SequenceHistoryTimingBuildResult.Ready(
             SequenceHistoryTimingProposal(correction, hasActiveOverlap(intervals)),
         )
