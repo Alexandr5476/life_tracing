@@ -1,22 +1,42 @@
 package com.alexandr5476.lifetracing.history
 
 import android.content.Context
-import androidx.test.core.app.ApplicationProvider
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
+import com.alexandr5476.lifetracing.MainActivity
+import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
 import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import kotlinx.coroutines.flow.first
@@ -26,19 +46,25 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 @RunWith(AndroidJUnit4::class)
 class SequenceHistoryMutationRepositoryIntegrationTest {
+    @get:Rule
+    val composeTestRule = createAndroidComposeRule<MainActivity>()
+
     @Test
     fun productionControllerPersistsAndCanonicallyReloadsEverySequenceHistoryTransition() =
         runBlocking {
-            val context = ApplicationProvider.getApplicationContext<Context>()
+            val context = composeTestRule.activity
             val suffix = System.nanoTime().toString()
             val base = Instant.now().minusSeconds(1_000)
             val live = LiveSessionRepository.create(context)
@@ -154,6 +180,322 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             assertEquals(closeAfter, history.getSequenceDetail(close))
             closeController.close()
         }
+
+    @Test
+    fun productionRoutePersistsTimingDeletionTombstoneLeaveGapAndCloseGap() {
+        val context = composeTestRule.activity
+        clearActiveSession(context)
+        val suffix = System.nanoTime().toString()
+        val base = Instant.now().minusSeconds(1_000)
+        val history = HistoryReadRepository.create(context)
+        val timing = completedSequence(context, "$suffix-route-timing", base, listOf(10))
+        val deletion = completedSequence(context, "$suffix-route-delete", base.plusSeconds(30), listOf(10))
+        val close = completedSequence(context, "$suffix-route-close", base.plusSeconds(60), listOf(10, 10))
+
+        enterHistory()
+        openSequence(timing)
+        val timingBefore = requireNotNull(history.getSequenceDetail(timing))
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        replaceTimestamp(
+            "sequence-history-timestamp-root-ended",
+            timingBefore.root.completedAt.plusSeconds(1),
+            timingBefore.originalZoneId,
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            history.getSequenceDetail(timing)?.root?.completedAt == timingBefore.root.completedAt.plusSeconds(1)
+        }
+        backToHistory()
+
+        openSequence(deletion)
+        val deletionBefore = requireNotNull(history.getSequenceDetail(deletion))
+        val deletionTarget = deletionBefore.occurrences.single().occurrenceId
+        composeTestRule
+            .onNodeWithTag("sequence-history-delete-child-${deletionTarget.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            history
+                .getSequenceDetail(deletion)
+                ?.occurrences
+                ?.singleOrNull()
+                ?.status ==
+                RuntimeOccurrenceStatus.DELETED_EXECUTION
+        }
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { history.getSequenceDetail(deletion)?.occurrences?.isEmpty() == true }
+        backToHistory()
+
+        openSequence(close)
+        val closeBefore = requireNotNull(history.getSequenceDetail(close))
+        val removed = closeBefore.occurrences.first()
+        val retained = closeBefore.occurrences.last()
+        val removedSpan =
+            requireNotNull(removed.completedAt).toEpochMilli() - requireNotNull(removed.enteredAt).toEpochMilli()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}")
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        resolveOwnerlessIntervals()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            history.getSequenceDetail(close)?.root?.completedAt == closeBefore.root.completedAt.minusMillis(removedSpan)
+        }
+        val closeAfter = requireNotNull(history.getSequenceDetail(close))
+        assertEquals(listOf(retained.occurrenceId), closeAfter.occurrences.map { it.occurrenceId })
+        assertEquals(
+            requireNotNull(retained.enteredAt).minusMillis(removedSpan),
+            closeAfter.occurrences.single().enteredAt,
+        )
+    }
+
+    @Test
+    fun productionRouteOverlapUsesIntervalUnionAndDateMoveRefreshesCanonicalProjections() {
+        val context = composeTestRule.activity
+        clearActiveSession(context)
+        val suffix = System.nanoTime().toString()
+        val history = HistoryReadRepository.create(context)
+        val statistics = StatisticsRepository.create(context)
+        val overlap = completedSequence(context, "$suffix-overlap", Instant.now().minusSeconds(800), listOf(10, 10))
+        val utcDate = LocalDate.now(ZoneOffset.UTC).minusDays(1)
+        val midnight = utcDate.atStartOfDay(ZoneOffset.UTC).toInstant()
+        val moved = completedSequence(context, "$suffix-date", midnight.plusSeconds(30), listOf(20, 20))
+        val currentDayBefore = statistics.global(StatisticsPeriod.Day(utcDate)).topLevelExecutionCount
+        val previousDayBefore = statistics.global(StatisticsPeriod.Day(utcDate.minusDays(1))).topLevelExecutionCount
+
+        enterHistory()
+        openSequence(overlap)
+        val overlapBefore = requireNotNull(history.getSequenceDetail(overlap))
+        val later = overlapBefore.occurrences.last()
+        val earlierStart = requireNotNull(later.enteredAt).minusSeconds(5)
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        replaceTimestamp(
+            "sequence-history-timestamp-occurrence-${later.occurrenceId.value}-entered",
+            earlierStart,
+            overlapBefore.originalZoneId,
+        )
+        replaceTimestamp(
+            "sequence-history-timestamp-child-${later.occurrenceId.value}-started",
+            earlierStart,
+            overlapBefore.originalZoneId,
+        )
+        val laterInterval = overlapBefore.intervals.single { it.occurrenceId == later.occurrenceId }
+        replaceTimestamp(
+            "sequence-history-timestamp-interval-${laterInterval.id.value}-started",
+            earlierStart,
+            overlapBefore.originalZoneId,
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        assertEquals(overlapBefore.updatedAt, history.getSequenceDetail(overlap)?.updatedAt)
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) { history.getSequenceDetail(overlap)?.updatedAt != overlapBefore.updatedAt }
+        val overlapAfter = requireNotNull(history.getSequenceDetail(overlap))
+        assertEquals(java.time.Duration.ofSeconds(20), overlapAfter.root.activeDuration)
+        assertTrue(
+            overlapAfter.occurrences
+                .mapNotNull { it.child?.activeDuration }
+                .fold(java.time.Duration.ZERO) { total, duration -> total.plus(duration) } >
+                overlapAfter.root.activeDuration,
+        )
+        backToHistory()
+
+        openSequence(moved)
+        val movedBefore = requireNotNull(history.getSequenceDetail(moved))
+        assertEquals(utcDate, movedBefore.root.primaryLocalDate)
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        replaceTimestamp(
+            "sequence-history-timestamp-root-started",
+            midnight.minusSeconds(30),
+            movedBefore.originalZoneId,
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            history.getSequenceDetail(moved)?.root?.primaryLocalDate == utcDate.minusDays(1)
+        }
+        val movedAfter = requireNotNull(history.getSequenceDetail(moved))
+        assertEquals(utcDate.minusDays(1), movedAfter.root.primaryLocalDate)
+        assertTrue(historyRoots(context, utcDate).none { it.executionId == moved })
+        assertTrue(historyRoots(context, utcDate.minusDays(1)).any { it.executionId == moved })
+        assertTrue(
+            DailyReadRepository
+                .create(context)
+                .getDaily(DailyQuery(utcDate.minusDays(1), Instant.now(), 100))
+                .completedHistory
+                .filterIsInstance<CompletedSequenceHistoryRoot>()
+                .any { it.executionId == moved },
+        )
+        assertEquals(
+            currentDayBefore - 1,
+            statistics.global(StatisticsPeriod.Day(utcDate)).topLevelExecutionCount,
+        )
+        assertEquals(
+            previousDayBefore + 1,
+            statistics.global(StatisticsPeriod.Day(utcDate.minusDays(1))).topLevelExecutionCount,
+        )
+    }
+
+    @Test
+    fun productionRouteKeepsFulfilledPlanIdentityAndSynchronizesCorrectedEnd() {
+        val context = composeTestRule.activity
+        clearActiveSession(context)
+        val suffix = System.nanoTime().toString()
+        val startedAt = Instant.now().minusSeconds(300)
+        val authoring = TemplateAuthoringRepository.create(context)
+        val activity =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("Plan history step $suffix", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = startedAt.minusSeconds(3),
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Plan history sequence $suffix",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("plan-$suffix"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(activity.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = startedAt.minusSeconds(2),
+            )
+        val plans = PlanRepository.create(context)
+        val plan =
+            plans.createSequencePlanFromTemplate(
+                sequence.id,
+                PlanSchedule.FloatingDay(startedAt.atZone(ZoneOffset.UTC).toLocalDate()),
+                startedAt.minusSeconds(1),
+            )
+        val live = LiveSessionRepository.create(context)
+        val running =
+            live.startSequenceFromPlan(
+                PlanReadRepository.create(context).getFocusedAction(plan.id).identity,
+                startedAt,
+                startedAt,
+                ZoneOffset.UTC,
+            )
+        val completed =
+            live.completeCurrentSequenceStep(
+                requireNotNull(running.execution.currentOccurrenceId),
+                startedAt.plusSeconds(20),
+            )
+        val executionId = completed.execution.id
+        val beforePlan = requireNotNull(plans.getPlan(plan.id))
+        val before = requireNotNull(HistoryReadRepository.create(context).getSequenceDetail(executionId))
+
+        enterHistory()
+        openSequence(executionId)
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        replaceTimestamp(
+            "sequence-history-timestamp-root-ended",
+            before.root.completedAt.plusSeconds(1),
+            before.originalZoneId,
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(
+            5_000,
+        ) { plans.getPlan(plan.id)?.fulfilledAt == before.root.completedAt.plusSeconds(1) }
+
+        val afterPlan = requireNotNull(plans.getPlan(plan.id))
+        val afterExecution = requireNotNull(HistoryReadRepository.create(context).getSequenceDetail(executionId))
+        assertEquals(plan.id, afterPlan.id)
+        assertEquals(PlanEntryStatus.FULFILLED, afterPlan.status)
+        assertEquals(beforePlan.fulfilledSequenceExecutionId, afterPlan.fulfilledSequenceExecutionId)
+        assertEquals(executionId, afterPlan.fulfilledSequenceExecutionId)
+        assertEquals(afterExecution.root.completedAt, afterPlan.fulfilledAt)
+    }
+
+    private fun clearActiveSession(context: Context) {
+        val live = LiveSessionRepository.create(context)
+        when (live.getActiveSession()?.kind) {
+            ActiveSessionKind.ACTIVITY -> live.completeActiveActivity(Instant.now())
+            ActiveSessionKind.SEQUENCE -> live.endSequenceEarly(Instant.now())
+            null -> Unit
+        }
+    }
+
+    private fun enterHistory() {
+        val label = composeTestRule.activity.getString(R.string.daily_history)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(label).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText(label).performClick()
+    }
+
+    private fun openSequence(id: com.alexandr5476.lifetracing.domain.SequenceExecutionId) {
+        val tag = "history-sequence-${id.value}"
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag(tag, useUnmergedTree = true).performScrollTo().performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
+                ?.executionId == id
+        }
+    }
+
+    private fun backToHistory() {
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.history_back))
+            .performClick()
+    }
+
+    private fun replaceTimestamp(
+        tag: String,
+        instant: Instant,
+        zoneId: ZoneId,
+    ) {
+        composeTestRule
+            .onNodeWithTag(tag)
+            .performScrollTo()
+            .performTextReplacement(
+                DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(LocalDateTime.ofInstant(instant, zoneId)),
+            )
+    }
+
+    private fun resolveOwnerlessIntervals() {
+        val proposal =
+            requireNotNull(
+                composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.structuralProposal,
+            )
+        proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { id ->
+            composeTestRule
+                .onNodeWithTag("sequence-history-ownerless-${id.value}-translated")
+                .performScrollTo()
+                .performClick()
+        }
+    }
+
+    private fun historyRoots(
+        context: Context,
+        date: LocalDate,
+    ): List<CompletedSequenceHistoryRoot> =
+        HistoryReadRepository
+            .create(context)
+            .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(date, date), 100))
+            .filterIsInstance<CompletedSequenceHistoryRoot>()
 
     private fun completedSequence(
         context: Context,

@@ -512,6 +512,7 @@
     <string name="sequence_history_occurrence_completed">Occurrence %1$s completed</string>
     <string name="sequence_history_child_started">Child %1$s started</string>
     <string name="sequence_history_child_completed">Child %1$s completed</string>
+    <string name="sequence_history_child_pause">%1$s child pause %2$s</string>
     <string name="sequence_history_interval_started">Interval %1$s started</string>
     <string name="sequence_history_interval_ended">Interval %1$s ended</string>
     <string name="sequence_history_delete_child">Delete child execution</string>

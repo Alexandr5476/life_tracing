@@ -565,7 +565,7 @@ private fun TimingEditor(
             value.text,
             { onAction(SequenceHistoryMutationAction.EditTimestamp(target, it)) },
             Modifier.fillMaxWidth().testTag("sequence-history-timestamp-${timestampTargetKey(target)}"),
-            label = { Text(timestampTargetLabel(target)) },
+            label = { Text(timestampTargetLabel(detail, target)) },
             enabled = !state.isMutating,
         )
         OffsetChoices(value.validOffsets, value.selectedOffset, enabled = !state.isMutating) {
@@ -598,6 +598,7 @@ private fun TimingReview(
     val proposal = requireNotNull(state.timingProposal)
     Text(stringResource(R.string.sequence_history_timing_review), style = MaterialTheme.typography.headlineSmall)
     ProposalChanges(detail, proposal.changes)
+    state.issue?.let { SequenceMutationIssue(it) }
     if (state.overlapWarning) {
         Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
         Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
@@ -630,6 +631,7 @@ private fun SequenceChildDeletionConfirmation(
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
     Text(stringResource(R.string.sequence_history_delete_child_title), style = MaterialTheme.typography.headlineSmall)
+    OccurrenceTarget(requireNotNull(state.childDeletionTarget))
     Text(stringResource(R.string.sequence_history_delete_child_message, detail.root.title))
     state.issue?.let { SequenceMutationIssue(it) }
     ReviewActions(
@@ -647,6 +649,7 @@ private fun StructuralModeChooser(
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
     Text(stringResource(R.string.sequence_history_structural_title), style = MaterialTheme.typography.headlineSmall)
+    OccurrenceTarget(requireNotNull(state.structuralTargetDescriptor))
     Text(stringResource(R.string.sequence_history_structural_mode_prompt))
     state.issue?.let { SequenceMutationIssue(it) }
     Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
@@ -682,7 +685,9 @@ private fun OwnerlessPlacementChooser(
 ) {
     val proposal = requireNotNull(state.structuralProposal)
     Text(stringResource(R.string.sequence_history_ownerless_title), style = MaterialTheme.typography.headlineSmall)
+    OccurrenceTarget(proposal.target)
     Text(stringResource(R.string.sequence_history_ownerless_message))
+    state.issue?.let { SequenceMutationIssue(it) }
     proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { intervalId ->
         HistoryCard {
             Text(stringResource(R.string.sequence_history_ownerless_interval, intervalId.value))
@@ -728,6 +733,7 @@ private fun StructuralReview(
 ) {
     val proposal = requireNotNull(state.structuralProposal)
     Text(stringResource(R.string.sequence_history_structural_review), style = MaterialTheme.typography.headlineSmall)
+    OccurrenceTarget(proposal.target)
     Text(
         stringResource(
             if (proposal.mode == SequenceHistoryStructuralRemovalMode.LEAVE_GAP) {
@@ -787,13 +793,31 @@ private fun ProposalChanges(
                 Text(
                     stringResource(
                         R.string.sequence_history_change,
-                        timestampTargetLabel(change.target),
+                        timestampTargetLabel(detail, change.target),
                         historyInstant(change.before, detail.originalZoneId),
                         historyInstant(change.after, detail.originalZoneId),
                     ),
                 )
             is SequenceHistoryPreviewChange.RemovedOccurrence ->
-                Text(stringResource(R.string.sequence_history_removed_occurrence, change.occurrenceId.value))
+                Text(
+                    stringResource(
+                        R.string.sequence_history_removed_occurrence,
+                        occurrenceTargetText(change.occurrence),
+                    ),
+                )
+            is SequenceHistoryPreviewChange.ChildPauseTimestamp ->
+                Text(
+                    stringResource(
+                        R.string.sequence_history_change,
+                        stringResource(
+                            R.string.sequence_history_child_pause,
+                            occurrenceTargetText(change.occurrence),
+                            change.pauseId.value,
+                        ),
+                        historyInterval(change.beforeStartedAt, change.beforeEndedAt, detail.originalZoneId),
+                        historyInterval(change.afterStartedAt, change.afterEndedAt, detail.originalZoneId),
+                    ),
+                )
             is SequenceHistoryPreviewChange.RemovedInterval ->
                 Text(stringResource(R.string.sequence_history_removed_interval, change.intervalId.value))
             is SequenceHistoryPreviewChange.OwnerlessPlacement ->
@@ -815,29 +839,40 @@ private fun ProposalChanges(
 }
 
 @Composable
-private fun timestampTargetLabel(target: SequenceHistoryTimestampTarget): String =
+private fun timestampTargetLabel(
+    detail: SequenceHistoryDetail,
+    target: SequenceHistoryTimestampTarget,
+): String =
     when (target) {
         SequenceHistoryTimestampTarget.RootStartedAt -> stringResource(R.string.sequence_history_root_started)
         SequenceHistoryTimestampTarget.RootEndedAt -> stringResource(R.string.sequence_history_root_ended)
         is SequenceHistoryTimestampTarget.OccurrenceEnteredAt ->
             stringResource(
                 R.string.sequence_history_occurrence_entered,
-                target.occurrenceId.value,
+                occurrenceTargetText(
+                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
+                ),
             )
         is SequenceHistoryTimestampTarget.OccurrenceCompletedAt ->
             stringResource(
                 R.string.sequence_history_occurrence_completed,
-                target.occurrenceId.value,
+                occurrenceTargetText(
+                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
+                ),
             )
         is SequenceHistoryTimestampTarget.ChildStartedAt ->
             stringResource(
                 R.string.sequence_history_child_started,
-                target.occurrenceId.value,
+                occurrenceTargetText(
+                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
+                ),
             )
         is SequenceHistoryTimestampTarget.ChildCompletedAt ->
             stringResource(
                 R.string.sequence_history_child_completed,
-                target.occurrenceId.value,
+                occurrenceTargetText(
+                    requireNotNull(SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, target.occurrenceId)),
+                ),
             )
         is SequenceHistoryTimestampTarget.IntervalStartedAt ->
             stringResource(
@@ -850,6 +885,27 @@ private fun timestampTargetLabel(target: SequenceHistoryTimestampTarget): String
                 target.intervalId.value,
             )
     }
+
+@Composable
+private fun OccurrenceTarget(target: SequenceHistoryOccurrenceDescriptor) {
+    Text(occurrenceTargetText(target), style = MaterialTheme.typography.titleMedium)
+    if (target.hasSourceStep) Text(stringResource(R.string.history_source_step))
+    target.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
+    if (target.isRuntimeAdded) Text(stringResource(R.string.history_runtime_added))
+}
+
+@Composable
+private fun occurrenceTargetText(target: SequenceHistoryOccurrenceDescriptor): String =
+    stringResource(R.string.history_occurrence, target.runtimePosition + 1, target.activityTitle)
+
+@Composable
+private fun historyInterval(
+    startedAt: Instant,
+    endedAt: Instant?,
+    zoneId: ZoneId,
+): String =
+    "${historyInstant(startedAt, zoneId)} – " +
+        (endedAt?.let { historyInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value))
 
 private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     when (target) {

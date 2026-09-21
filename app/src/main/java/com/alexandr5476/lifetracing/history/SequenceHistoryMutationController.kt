@@ -50,7 +50,9 @@ data class SequenceHistoryMutationState(
     val noTimingChanges: Boolean = false,
     val overlapWarning: Boolean = false,
     val childDeletionProposal: SequenceChildHistoryDeletionCommand? = null,
+    val childDeletionTarget: SequenceHistoryOccurrenceDescriptor? = null,
     val structuralTarget: SequenceOccurrenceId? = null,
+    val structuralTargetDescriptor: SequenceHistoryOccurrenceDescriptor? = null,
     val structuralProposal: SequenceHistoryStructuralProposal? = null,
     val isMutating: Boolean = false,
     val issue: SequenceHistoryMutationIssue? = null,
@@ -214,7 +216,9 @@ class SequenceHistoryMutationController internal constructor(
                 noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
+                childDeletionTarget = null,
                 structuralTarget = null,
+                structuralTargetDescriptor = null,
                 structuralProposal = null,
                 issue = null,
             )
@@ -321,6 +325,7 @@ class SequenceHistoryMutationController internal constructor(
             it.copy(
                 childDeletionProposal =
                     SequenceChildHistoryDeletionCommand(detail.updatedAt, occurrenceId, childId),
+                childDeletionTarget = SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, occurrenceId),
             )
         }
     }
@@ -340,7 +345,12 @@ class SequenceHistoryMutationController internal constructor(
             return
         }
         cancelTransient()
-        mutableState.update { it.copy(structuralTarget = occurrenceId) }
+        mutableState.update {
+            it.copy(
+                structuralTarget = occurrenceId,
+                structuralTargetDescriptor = SequenceHistoryProposalBuilder.occurrenceDescriptor(detail, occurrenceId),
+            )
+        }
     }
 
     private fun chooseStructuralMode(mode: SequenceHistoryStructuralRemovalMode) {
@@ -396,7 +406,9 @@ class SequenceHistoryMutationController internal constructor(
                                 noTimingChanges = false,
                                 overlapWarning = false,
                                 childDeletionProposal = null,
+                                childDeletionTarget = null,
                                 structuralTarget = null,
+                                structuralTargetDescriptor = null,
                                 structuralProposal = null,
                                 refreshGeneration = it.refreshGeneration + 1,
                             )
@@ -409,6 +421,12 @@ class SequenceHistoryMutationController internal constructor(
                     if (!closed) {
                         clearTransient(HistoryDetailLoad.Loading, SequenceHistoryMutationIssue.STALE, isMutating = true)
                         loadCanonical(SequenceHistoryMutationIssue.STALE)
+                    }
+                } catch (_: IllegalArgumentException) {
+                    if (!closed) {
+                        mutableState.update {
+                            it.copy(isMutating = false, issue = SequenceHistoryMutationIssue.INVALID_PROPOSAL)
+                        }
                     }
                 } catch (_: Exception) {
                     if (!closed) mutableState.update { it.copy(isMutating = false, issue = failure) }
@@ -425,7 +443,9 @@ class SequenceHistoryMutationController internal constructor(
                 noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
+                childDeletionTarget = null,
                 structuralTarget = null,
+                structuralTargetDescriptor = null,
                 structuralProposal = null,
                 issue = null,
             )
@@ -445,7 +465,9 @@ class SequenceHistoryMutationController internal constructor(
                 noTimingChanges = false,
                 overlapWarning = false,
                 childDeletionProposal = null,
+                childDeletionTarget = null,
                 structuralTarget = null,
+                structuralTargetDescriptor = null,
                 structuralProposal = null,
                 isMutating = isMutating,
                 issue = issue,

@@ -273,6 +273,27 @@ class SequenceHistoryProposalBuilderTest {
         assertEquals(minute(0), command.finalIntervals.single { it.id == LATER_INTERVAL }.startedAt)
         assertEquals(minute(10), command.finalIntervals.single { it.id == SECOND_LATER_INTERVAL }.startedAt)
         assertEquals(minute(20), command.finalIntervals.single { it.id == COUNTDOWN_INTERVAL }.startedAt)
+        val pauseChanges = close.changes.filterIsInstance<SequenceHistoryPreviewChange.ChildPauseTimestamp>()
+        assertEquals(listOf(ActivityExecutionPauseId("pause-second-later")), pauseChanges.map { it.pauseId })
+        assertEquals(SECOND_LATER, pauseChanges.single().occurrence.occurrenceId)
+        assertEquals(minute(22), pauseChanges.single().beforeStartedAt)
+        assertEquals(minute(12), pauseChanges.single().afterStartedAt)
+        assertFalse(
+            close.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.Timestamp>()
+                .any {
+                    it.target == SequenceHistoryTimestampTarget.ChildStartedAt(LATER) ||
+                        it.target == SequenceHistoryTimestampTarget.ChildCompletedAt(LATER)
+                },
+        )
+        assertEquals(
+            "target",
+            close.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.RemovedOccurrence>()
+                .single()
+                .occurrence
+                .activityTitle,
+        )
         val fixedChoice =
             requireNotNull(
                 requireNotNull(
@@ -690,6 +711,40 @@ class SequenceHistoryProposalBuilderTest {
             assertEquals(2, deliveries)
             commandFailure.close()
             commandScope.cancel()
+        }
+
+    @Test
+    fun repositoryValidationRejectionKeepsProposalVisibleAndDoesNotRefresh() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val controller =
+                SequenceHistoryMutationController(
+                    scope,
+                    SEQUENCE,
+                    { detail() },
+                    { _, _, _ -> throw IllegalArgumentException("canonical validation") },
+                    { _, _, _ -> error("unexpected") },
+                    { _, _, _ -> error("unexpected") },
+                )
+            awaitLoaded(controller)
+            controller.dispatch(SequenceHistoryMutationAction.BeginTiming)
+            controller.dispatch(
+                SequenceHistoryMutationAction.EditTimestamp(
+                    SequenceHistoryTimestampTarget.RootEndedAt,
+                    "2026-01-01T00:49:00",
+                ),
+            )
+            controller.dispatch(SequenceHistoryMutationAction.ReviewTiming)
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
+            withTimeout(2_000) {
+                controller.state.first { it.issue == SequenceHistoryMutationIssue.INVALID_PROPOSAL }
+            }
+
+            assertTrue(controller.state.value.timingProposal != null)
+            assertEquals(0, controller.state.value.refreshGeneration)
+            assertFalse(controller.state.value.isMutating)
+            controller.close()
+            scope.cancel()
         }
 
     private suspend fun awaitLoaded(controller: SequenceHistoryMutationController) {

@@ -512,6 +512,7 @@
     <string name="sequence_history_occurrence_completed">Завершение шага %1$s</string>
     <string name="sequence_history_child_started">Начало дочернего действия %1$s</string>
     <string name="sequence_history_child_completed">Завершение дочернего действия %1$s</string>
+    <string name="sequence_history_child_pause">Пауза дочернего действия %1$s (%2$s)</string>
     <string name="sequence_history_interval_started">Начало интервала %1$s</string>
     <string name="sequence_history_interval_ended">Завершение интервала %1$s</string>
     <string name="sequence_history_delete_child">Удалить дочернее выполнение</string>
