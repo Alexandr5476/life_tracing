@@ -64,7 +64,7 @@ data class SequenceHistoryTimingDraft(
 
 data class SequenceHistoryTimingProposal(
     val correction: SequenceHistoryTimingCorrection,
-    val hasActiveIntervalOverlap: Boolean,
+    val hasIntervalOverlap: Boolean,
     val changes: List<SequenceHistoryPreviewChange>,
 )
 
@@ -163,7 +163,7 @@ data class SequenceHistoryStructuralProposal(
     val ownerlessChoices: List<SequenceHistoryOwnerlessPlacementChoice>,
     val command: SequenceHistoryStructuralRemovalCommand?,
     val changes: List<SequenceHistoryPreviewChange>,
-    val hasActiveIntervalOverlap: Boolean,
+    val hasIntervalOverlap: Boolean,
 ) {
     val isConfirmable: Boolean
         get() = command != null
@@ -316,7 +316,7 @@ object SequenceHistoryProposalBuilder {
         return SequenceHistoryTimingBuildResult.Ready(
             SequenceHistoryTimingProposal(
                 correction,
-                hasActiveOverlap(intervals),
+                hasIntervalOverlap(intervals),
                 timestampChanges(detail, correction, occurrenceIndex, intervalsById),
             ),
         )
@@ -362,7 +362,7 @@ object SequenceHistoryProposalBuilder {
                             add(SequenceHistoryPreviewChange.RemovedInterval(it.toDescriptor()))
                         }
                 },
-                hasActiveOverlap(retained),
+                hasIntervalOverlap(retained),
             )
         }
         if (shift <= 0) return null
@@ -459,7 +459,7 @@ object SequenceHistoryProposalBuilder {
             command
                 ?.let { structuralChanges(detail, it, placementState, occurrenceIndex, intervalsById) }
                 .orEmpty(),
-            command?.let { hasActiveOverlap(it.finalIntervals) } ?: false,
+            command?.let { hasIntervalOverlap(it.finalIntervals) } ?: false,
         )
     }
 
@@ -711,11 +711,11 @@ object SequenceHistoryProposalBuilder {
             is ActivityHistoryTimeCorrection.NoLive -> completedAt
         }
 
-    private fun hasActiveOverlap(intervals: List<SequenceInterval>): Boolean {
+    private fun hasIntervalOverlap(intervals: List<SequenceInterval>): Boolean {
         var latestEnd: Instant? = null
         intervals
             .asSequence()
-            .filter { it.kind == SequenceIntervalKind.ACTIVE_STEP }
+            .filter { it.startedAt < requireNotNull(it.endedAt) }
             .sortedBy(SequenceInterval::startedAt)
             .forEach { interval ->
                 val end = requireNotNull(interval.endedAt)

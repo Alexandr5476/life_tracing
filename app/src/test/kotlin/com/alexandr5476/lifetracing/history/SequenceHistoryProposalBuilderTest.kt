@@ -92,7 +92,7 @@ class SequenceHistoryProposalBuilderTest {
                 ?.single { it.id == TARGET_INTERVAL }
                 ?.startedAt,
         )
-        assertFalse(proposal.hasActiveIntervalOverlap)
+        assertFalse(proposal.hasIntervalOverlap)
     }
 
     @Test
@@ -104,14 +104,22 @@ class SequenceHistoryProposalBuilderTest {
                 timestamps =
                     original.timestamps +
                         (
-                            SequenceHistoryTimestampTarget.IntervalStartedAt(LATER_INTERVAL) to
+                            SequenceHistoryTimestampTarget.IntervalStartedAt(OWNERLESS) to
                                 SequenceHistoryTimestampDraft("2026-01-01T00:05:00")
                         ),
             )
-        assertTrue(
-            (SequenceHistoryProposalBuilder.timing(detail, overlapDraft) as SequenceHistoryTimingBuildResult.Ready)
-                .proposal.hasActiveIntervalOverlap,
+        val proposal =
+            (
+                SequenceHistoryProposalBuilder.timing(detail, overlapDraft) as
+                    SequenceHistoryTimingBuildResult.Ready
+            ).proposal
+        assertFalse(
+            requireNotNull(proposal.correction.finalIntervals)
+                .filter { it.kind == SequenceIntervalKind.ACTIVE_STEP }
+                .zipWithNext()
+                .any { (first, second) -> second.startedAt < requireNotNull(first.endedAt) },
         )
+        assertTrue(proposal.hasIntervalOverlap)
         assertEquals(
             HistoricalLocalDateTimeResolution.Nonexistent,
             resolveHistoricalLocalDateTime("2026-03-29T02:30", BERLIN, null),
@@ -360,9 +368,9 @@ class SequenceHistoryProposalBuilderTest {
     }
 
     @Test
-    fun structuralOverlapWarnsWithoutBlockingCloseGapAndCancellationDoesNotWrite() =
+    fun structuralMixedKindOverlapWarnsWithoutBlockingCloseGapAndCancellationDoesNotWrite() =
         runBlocking {
-            val canonical = structuralOverlapDetail()
+            val canonical = structuralMixedOverlapDetail()
             val overlap =
                 requireNotNull(
                     SequenceHistoryProposalBuilder.structural(
@@ -372,7 +380,14 @@ class SequenceHistoryProposalBuilderTest {
                         mapOf(OWNERLESS to OwnerlessIntervalPlacement.TRANSLATED),
                     ),
                 )
-            assertTrue(overlap.hasActiveIntervalOverlap)
+            assertTrue(overlap.hasIntervalOverlap)
+            assertFalse(
+                requireNotNull(overlap.command)
+                    .finalIntervals
+                    .filter { it.kind == SequenceIntervalKind.ACTIVE_STEP }
+                    .zipWithNext()
+                    .any { (first, second) -> second.startedAt < requireNotNull(first.endedAt) },
+            )
             assertTrue(
                 requireNotNull(
                     SequenceHistoryProposalBuilder.structural(
@@ -380,7 +395,7 @@ class SequenceHistoryProposalBuilderTest {
                         TARGET,
                         SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
                     ),
-                ).hasActiveIntervalOverlap,
+                ).hasIntervalOverlap,
             )
 
             var writes = 0
@@ -571,7 +586,7 @@ class SequenceHistoryProposalBuilderTest {
         }
 
     @Test
-    fun changedOverlapRequiresProceedAndCommitsExactlyOnce() =
+    fun changedMixedKindOverlapRequiresProceedAndCommitsExactlyOnce() =
         runBlocking {
             val canonical = detail()
             val refreshed = canonical.copy(updatedAt = TOKEN.plusSeconds(1))
@@ -591,12 +606,14 @@ class SequenceHistoryProposalBuilderTest {
             controller.dispatch(SequenceHistoryMutationAction.BeginTiming)
             controller.dispatch(
                 SequenceHistoryMutationAction.EditTimestamp(
-                    SequenceHistoryTimestampTarget.IntervalStartedAt(LATER_INTERVAL),
+                    SequenceHistoryTimestampTarget.IntervalStartedAt(OWNERLESS),
                     "2026-01-01T00:05:00",
                 ),
             )
             controller.dispatch(SequenceHistoryMutationAction.ReviewTiming)
             assertTrue(controller.state.value.overlapWarning)
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
+            assertEquals(0, commands)
             controller.dispatch(SequenceHistoryMutationAction.CancelOverlap)
             controller.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
             assertEquals(0, commands)
@@ -1031,7 +1048,7 @@ class SequenceHistoryProposalBuilderTest {
                 interval("later", SequenceIntervalKind.ACTIVE_STEP, minute(10), minute(20), LATER),
                 interval("second-later", SequenceIntervalKind.ACTIVE_STEP, minute(20), minute(30), SECOND_LATER),
                 interval("countdown", SequenceIntervalKind.TRANSITION_COUNTDOWN, minute(30), minute(32), SKIPPED),
-                interval("fixed", SequenceIntervalKind.IMPLICIT_IDLE, minute(0), minute(2), null),
+                interval("fixed", SequenceIntervalKind.IMPLICIT_IDLE, minute(0), minute(0), null),
                 interval("ownerless", SequenceIntervalKind.EXPLICIT_PAUSE, minute(35), minute(37), null),
             ),
         )
@@ -1109,40 +1126,12 @@ class SequenceHistoryProposalBuilderTest {
 
     private fun minute(value: Long): Instant = BASE.plusSeconds(value * 60)
 
-    private fun structuralOverlapDetail(): SequenceHistoryDetail {
+    private fun structuralMixedOverlapDetail(): SequenceHistoryDetail {
         val base = detail()
         return base.copy(
-            occurrences =
-                base.occurrences.map { occurrence ->
-                    if (occurrence.occurrenceId != SECOND_LATER) {
-                        occurrence
-                    } else {
-                        occurrence.copy(
-                            enteredAt = minute(15),
-                            completedAt = minute(25),
-                            child =
-                                requireNotNull(
-                                    occurrence.child,
-                                ).copy(startedAt = minute(15), completedAt = minute(25)),
-                            childMutationFacts =
-                                requireNotNull(occurrence.childMutationFacts).copy(
-                                    startedAt = minute(15),
-                                    completedAt = minute(25),
-                                    pauses =
-                                        listOf(
-                                            ActivityExecutionPause(
-                                                ActivityExecutionPauseId("pause-second-later"),
-                                                minute(17),
-                                                minute(18),
-                                            ),
-                                        ),
-                                ),
-                        )
-                    }
-                },
             intervals =
                 base.intervals.map {
-                    if (it.id == SECOND_LATER_INTERVAL) it.copy(startedAt = minute(15), endedAt = minute(25)) else it
+                    if (it.id == OWNERLESS) it.copy(startedAt = minute(20), endedAt = minute(22)) else it
                 },
         )
     }

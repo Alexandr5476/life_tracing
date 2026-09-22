@@ -1521,32 +1521,35 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
-    fun overlappingIntervalsPersistWithUnionCacheAndChildPausesRemainCoherent() {
+    fun mixedKindOverlappingIntervalsPersistWithUnionCacheAndChildPausesRemainCoherent() {
         val overlapping =
             listOf(
                 interval("a-overlap", 10, 20, SequenceOccurrenceId("a")),
-                interval("b-overlap", 15, 30, SequenceOccurrenceId("b")),
+                interval("b-overlap", 20, 30, SequenceOccurrenceId("b")),
+                SequenceInterval(
+                    SequenceIntervalId("ownerless-explicit-pause"),
+                    SequenceIntervalKind.EXPLICIT_PAUSE,
+                    second(15),
+                    second(25),
+                    null,
+                ),
             )
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
                 detailToken(),
-                occurrenceTimings =
-                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(15), second(30))),
                 finalIntervals = overlapping,
-                childTimings =
-                    listOf(
-                        SequenceChildTimingCorrection(
-                            ActivityExecutionId("child-b"),
-                            ActivityHistoryTimeCorrection.Timed(second(15), second(30)),
-                        ),
-                    ),
             ),
             second(40),
         )
         val overlapReloaded = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
         assertEquals(Duration.ofSeconds(20), overlapReloaded.root.activeDuration)
-        assertEquals(overlapping, overlapReloaded.intervals)
+        assertEquals(Duration.ZERO, overlapReloaded.root.pauseDuration)
+        assertEquals(Duration.ofSeconds(20), overlapReloaded.root.wallDuration)
+        assertEquals(
+            overlapping.sortedWith(compareBy<SequenceInterval> { it.startedAt }.thenBy { it.id.value }),
+            overlapReloaded.intervals,
+        )
 
         seedPausedGraph()
         repository.correctTiming(

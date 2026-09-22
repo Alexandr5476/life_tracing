@@ -290,7 +290,7 @@ class SequenceHistoryMutationController internal constructor(
                     it.copy(
                         timingProposal = result.proposal,
                         noTimingChanges = false,
-                        overlapWarning = result.proposal.hasActiveIntervalOverlap,
+                        overlapWarning = result.proposal.hasIntervalOverlap,
                         issue = null,
                     )
                 }
@@ -370,7 +370,7 @@ class SequenceHistoryMutationController internal constructor(
         mutableState.update {
             it.copy(
                 structuralProposal = proposal,
-                overlapWarning = proposal?.hasActiveIntervalOverlap == true,
+                overlapWarning = proposal?.hasIntervalOverlap == true,
                 issue = if (proposal == null) SequenceHistoryMutationIssue.INVALID_PROPOSAL else null,
             )
         }
@@ -394,7 +394,7 @@ class SequenceHistoryMutationController internal constructor(
         mutableState.update {
             it.copy(
                 structuralProposal = proposal,
-                overlapWarning = proposal.hasActiveIntervalOverlap,
+                overlapWarning = proposal.hasIntervalOverlap,
                 issue = null,
             )
         }
