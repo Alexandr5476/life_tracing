@@ -46,7 +46,9 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.ConcurrentModificationException
+import java.util.Locale
 
 class SequenceHistoryProposalBuilderTest {
     @Test
@@ -141,6 +143,79 @@ class SequenceHistoryProposalBuilderTest {
                 ).instant,
             )
         }
+    }
+
+    @Test
+    fun mutationPreviewDisambiguatesDstOccurrencesEvenWhenLocalWallTimeMatches() {
+        val earlier = Instant.parse("2026-10-25T00:30:00Z")
+        val later = Instant.parse("2026-10-25T01:30:00Z")
+        val earlierText = mutationPreviewInstantText(earlier, BERLIN, Locale.US)
+        val laterText = mutationPreviewInstantText(later, BERLIN, Locale.US)
+
+        assertTrue(earlierText.contains(ZoneOffset.ofHours(2).id))
+        assertTrue(laterText.contains(ZoneOffset.ofHours(1).id))
+        assertFalse(earlierText == laterText)
+    }
+
+    @Test
+    fun closeGapDstSuffixPreviewShowsDifferentOffsetsForEqualWallTimes() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val rootStart = Instant.parse("2026-10-25T00:00:00Z")
+        val targetStart = Instant.parse("2026-10-25T00:20:00Z")
+        val targetEnd = Instant.parse("2026-10-25T01:20:00Z")
+        val nextEnd = Instant.parse("2026-10-25T01:30:00Z")
+        val base = detail()
+        val dstDetail =
+            base.copy(
+                originalZoneId = zone,
+                root = base.root.copy(startedAt = rootStart, completedAt = Instant.parse("2026-10-25T01:50:00Z")),
+                occurrences =
+                    base.occurrences.map { occurrence ->
+                        when (occurrence.occurrenceId) {
+                            TARGET -> occurrence.copy(enteredAt = targetStart, completedAt = targetEnd)
+                            LATER -> occurrence.copy(enteredAt = targetEnd, completedAt = targetEnd.plusSeconds(300))
+                            SECOND_LATER -> occurrence.copy(enteredAt = targetEnd, completedAt = nextEnd)
+                            else -> occurrence
+                        }
+                    },
+                intervals =
+                    base.intervals.map { interval ->
+                        when (interval.id.value) {
+                            "target" -> interval.copy(startedAt = targetStart, endedAt = targetEnd)
+                            "later" -> interval.copy(startedAt = targetEnd, endedAt = targetEnd.plusSeconds(300))
+                            "second-later" -> interval.copy(startedAt = targetEnd, endedAt = nextEnd)
+                            "ownerless" ->
+                                interval.copy(
+                                    startedAt = Instant.parse("2026-10-25T00:35:00Z"),
+                                    endedAt = Instant.parse("2026-10-25T00:37:00Z"),
+                                )
+                            "fixed" -> interval.copy(startedAt = rootStart, endedAt = rootStart)
+                            else -> interval
+                        }
+                    },
+            )
+        val proposal =
+            requireNotNull(
+                SequenceHistoryProposalBuilder.structural(
+                    dstDetail,
+                    TARGET,
+                    SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                ),
+            )
+        val move =
+            proposal.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.Timestamp>()
+                .first { it.before == targetEnd && it.after == targetStart }
+
+        assertTrue(proposal.isConfirmable)
+        assertEquals(
+            mutationPreviewInstantText(move.before, zone, Locale.US).substringBeforeLast(' '),
+            mutationPreviewInstantText(move.after, zone, Locale.US).substringBeforeLast(' '),
+        )
+        assertFalse(
+            mutationPreviewInstantText(move.before, zone, Locale.US) ==
+                mutationPreviewInstantText(move.after, zone, Locale.US),
+        )
     }
 
     @Test

@@ -722,7 +722,7 @@ private fun OwnerlessPlacementChooser(
                 Text(
                     stringResource(
                         R.string.sequence_history_ownerless_fixed_choice,
-                        historyInterval(choice.fixedStartedAt, choice.fixedEndedAt, detail.originalZoneId),
+                        mutationPreviewInterval(choice.fixedStartedAt, choice.fixedEndedAt, detail.originalZoneId),
                     ),
                 )
             }
@@ -744,7 +744,11 @@ private fun OwnerlessPlacementChooser(
                 Text(
                     stringResource(
                         R.string.sequence_history_ownerless_translated_choice,
-                        historyInterval(choice.translatedStartedAt, choice.translatedEndedAt, detail.originalZoneId),
+                        mutationPreviewInterval(
+                            choice.translatedStartedAt,
+                            choice.translatedEndedAt,
+                            detail.originalZoneId,
+                        ),
                     ),
                 )
             }
@@ -778,7 +782,7 @@ private fun StructuralReview(
     Text(
         stringResource(
             R.string.sequence_history_final_root_end,
-            historyInstant(requireNotNull(proposal.command).finalEndedAt, detail.originalZoneId),
+            mutationPreviewInstant(requireNotNull(proposal.command).finalEndedAt, detail.originalZoneId),
         ),
     )
     ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
@@ -843,8 +847,8 @@ private fun ProposalChanges(
                     stringResource(
                         R.string.sequence_history_change,
                         timestampTargetLabel(occurrenceDescriptors, change.target),
-                        historyInstant(change.before, detail.originalZoneId),
-                        historyInstant(change.after, detail.originalZoneId),
+                        mutationPreviewInstant(change.before, detail.originalZoneId),
+                        mutationPreviewInstant(change.after, detail.originalZoneId),
                     ),
                 )
             is SequenceHistoryPreviewChange.RemovedOccurrence ->
@@ -863,8 +867,8 @@ private fun ProposalChanges(
                             occurrenceTargetText(change.occurrence),
                             change.pauseId.value,
                         ),
-                        historyInterval(change.beforeStartedAt, change.beforeEndedAt, detail.originalZoneId),
-                        historyInterval(change.afterStartedAt, change.afterEndedAt, detail.originalZoneId),
+                        mutationPreviewInterval(change.beforeStartedAt, change.beforeEndedAt, detail.originalZoneId),
+                        mutationPreviewInterval(change.afterStartedAt, change.afterEndedAt, detail.originalZoneId),
                     ),
                 )
             is SequenceHistoryPreviewChange.RemovedInterval ->
@@ -873,7 +877,11 @@ private fun ProposalChanges(
                         R.string.sequence_history_removed_interval,
                         stringResource(intervalKindResource(change.interval.kind)),
                         change.interval.intervalId.value,
-                        historyInterval(change.interval.startedAt, change.interval.endedAt, detail.originalZoneId),
+                        mutationPreviewInterval(
+                            change.interval.startedAt,
+                            change.interval.endedAt,
+                            detail.originalZoneId,
+                        ),
                     ),
                 )
             is SequenceHistoryPreviewChange.OwnerlessPlacement ->
@@ -889,7 +897,7 @@ private fun ProposalChanges(
                                 R.string.sequence_history_translated
                             },
                         ),
-                        historyInterval(
+                        mutationPreviewInterval(
                             change.resultingStartedAt,
                             change.resultingEndedAt,
                             detail.originalZoneId,
@@ -953,13 +961,13 @@ private fun occurrenceTargetText(target: SequenceHistoryOccurrenceDescriptor): S
     stringResource(R.string.history_occurrence, target.runtimePosition + 1, target.activityTitle)
 
 @Composable
-private fun historyInterval(
+private fun mutationPreviewInterval(
     startedAt: Instant,
     endedAt: Instant?,
     zoneId: ZoneId,
 ): String =
-    "${historyInstant(startedAt, zoneId)} – " +
-        (endedAt?.let { historyInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value))
+    "${mutationPreviewInstant(startedAt, zoneId)} – " +
+        (endedAt?.let { mutationPreviewInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value))
 
 private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     when (target) {
@@ -1306,6 +1314,35 @@ private fun historyInstant(
             FormatStyle.SHORT,
         ).withLocale(locale)
         .format(instant.atZone(zoneId))
+}
+
+@Composable
+private fun mutationPreviewInstant(
+    instant: Instant,
+    zoneId: ZoneId,
+): String =
+    mutationPreviewInstantText(
+        instant,
+        zoneId,
+        LocalConfiguration.current.locales[0],
+    )
+
+internal fun mutationPreviewInstantText(
+    instant: Instant,
+    zoneId: ZoneId,
+    locale: java.util.Locale,
+): String {
+    val zoned = instant.atZone(zoneId)
+    val formatted =
+        DateTimeFormatter
+            .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+            .withLocale(locale)
+            .format(zoned)
+    return if (zoneId.rules.getValidOffsets(zoned.toLocalDateTime()).size > 1) {
+        "$formatted ${zoned.offset.id}"
+    } else {
+        formatted
+    }
 }
 
 @Composable

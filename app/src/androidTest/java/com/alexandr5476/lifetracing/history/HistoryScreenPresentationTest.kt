@@ -331,6 +331,51 @@ class HistoryScreenPresentationTest {
     }
 
     @Test
+    fun ambiguousTimingReviewKeepsSelectedOffsetVisibleAndInProposal() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val earlierOccurrence = Instant.parse("2026-10-25T00:30:00Z")
+        var committed: SequenceHistoryTimingCorrection? = null
+        val detail =
+            sequenceMutationDetail().copy(
+                originalZoneId = berlin,
+                root = sequenceMutationDetail().root.copy(completedAt = earlierOccurrence),
+            )
+        val controller = setSequenceMutationDetail(detail, correct = { _, correction, _ -> committed = correction })
+
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.manual_history_first_occurrence, "UTC+02:00"), substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.manual_history_second_occurrence, "UTC+01:00"), substring = true)
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+
+        val proposal = requireNotNull(controller.state.value.timingProposal).correction
+        assertEquals(earlierOccurrence, detail.root.completedAt)
+        assertEquals(Instant.parse("2026-10-25T01:30:00Z"), proposal.endedAt)
+        composeTestRule
+            .onNodeWithText(
+                historicalTime(earlierOccurrence, berlin) + " +02:00",
+                substring = true,
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                historicalTime(Instant.parse("2026-10-25T01:30:00Z"), berlin) + " +01:00",
+                substring = true,
+            ).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) { committed != null }
+        assertEquals(Instant.parse("2026-10-25T01:30:00Z"), committed?.endedAt)
+    }
+
+    @Test
     fun timingValidationGenericAndStaleFailuresRemainVisibleInReview() {
         var failure: Exception = IllegalArgumentException("validation")
         val controller =

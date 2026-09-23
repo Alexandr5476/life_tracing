@@ -65,6 +65,53 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun selectedFallBackOccurrencePersistsAndReloadsAsTheSameInstant() =
+        runBlocking {
+            val context = composeTestRule.activity
+            clearActiveSession(context)
+            val suffix = System.nanoTime().toString()
+            val execution =
+                completedSequence(
+                    context,
+                    "$suffix-dst-review",
+                    Instant.parse("2025-10-26T00:20:00Z"),
+                    listOf(600),
+                    zoneId = ZoneId.of("Europe/Berlin"),
+                )
+            val history = HistoryReadRepository.create(context)
+            val controller = LifeTracingRuntimeGraph.from(context).createSequenceHistoryDetailController(execution)
+            val before = controller.awaitDetail()
+            val target = SequenceHistoryTimestampTarget.RootEndedAt
+            controller.dispatch(SequenceHistoryMutationAction.BeginTiming)
+            val draft = requireNotNull(controller.state.value.timingDraft).timestamps.getValue(target)
+
+            assertEquals(Instant.parse("2025-10-26T00:30:00Z"), before.root.completedAt)
+            assertEquals(listOf(ZoneOffset.ofHours(2), ZoneOffset.ofHours(1)), draft.validOffsets)
+            controller.dispatch(
+                SequenceHistoryMutationAction.SelectTimestampOffset(target, ZoneOffset.ofHours(1)),
+            )
+            controller.dispatch(SequenceHistoryMutationAction.ReviewTiming)
+            assertEquals(
+                Instant.parse("2025-10-26T01:30:00Z"),
+                controller.state.value.timingProposal
+                    ?.correction
+                    ?.endedAt,
+            )
+            controller.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
+            val after =
+                try {
+                    controller.awaitRefresh()
+                } catch (failure: Exception) {
+                    controller.close()
+                    throw AssertionError("Correction did not reload: ${controller.state.value}", failure)
+                }
+
+            assertEquals(Instant.parse("2025-10-26T01:30:00Z"), after.root.completedAt)
+            assertEquals(after, history.getSequenceDetail(execution))
+            controller.close()
+        }
+
+    @Test
     fun productionControllerPersistsAndCanonicallyReloadsEverySequenceHistoryTransition() =
         runBlocking {
             val context = composeTestRule.activity
@@ -578,8 +625,15 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
 
     private fun openSequence(id: com.alexandr5476.lifetracing.domain.SequenceExecutionId) {
         val tag = "history-sequence-${id.value}"
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        val loadMoreLabel = composeTestRule.activity.getString(R.string.manual_history_load_more)
+        while (composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isEmpty()) {
+            val loadMore = composeTestRule.onAllNodesWithText(loadMoreLabel).fetchSemanticsNodes()
+            check(loadMore.isNotEmpty()) { "History entry ${id.value} is not in the current browse window" }
+            composeTestRule.onNodeWithText(loadMoreLabel).performScrollTo().performClick()
+            composeTestRule.waitUntil(5_000) {
+                composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() ||
+                    composeTestRule.onAllNodesWithText(loadMoreLabel).fetchSemanticsNodes().isEmpty()
+            }
         }
         composeTestRule.onNodeWithTag(tag, useUnmergedTree = true).performScrollTo().performClick()
         composeTestRule.waitUntil(5_000) {
@@ -641,6 +695,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         timeTrackingMode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         nodeCount: Int = stepSeconds.size,
         endEarly: Boolean = false,
+        zoneId: ZoneId = ZoneOffset.UTC,
     ): com.alexandr5476.lifetracing.domain.SequenceExecutionId {
         val authoring = TemplateAuthoringRepository.create(context)
         val activity =
@@ -674,7 +729,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                     sequence.id,
                     startedAt,
                     startedAt,
-                    ZoneOffset.UTC,
+                    zoneId,
                     sequence.revision,
                 )
         var at = startedAt
