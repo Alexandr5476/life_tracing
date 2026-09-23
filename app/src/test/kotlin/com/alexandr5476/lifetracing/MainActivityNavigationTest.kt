@@ -2,18 +2,41 @@ package com.alexandr5476.lifetracing
 
 import androidx.navigation3.runtime.NavKey
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
+import com.alexandr5476.lifetracing.history.HistoryDetailLoad
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationAction
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationController
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationRouteSessionOwner
+import com.alexandr5476.lifetracing.history.SequenceHistoryTimestampTarget
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 
 class MainActivityNavigationTest {
     @Test
@@ -93,6 +116,80 @@ class MainActivityNavigationTest {
         backStack.removeHistory()
         assertEquals(listOf(DailyRoot), backStack)
     }
+
+    @Test
+    fun sequenceHistoryBackConsumesTransientThenReleasesIdleSessionAndReopensFresh() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val detail = sequenceDetail()
+            val owner = SequenceHistoryMutationRouteSessionOwner()
+            val executionId = detail.root.executionId
+            var created = 0
+
+            fun acquire() =
+                owner.acquire(executionId) {
+                    created++
+                    sequenceController(scope, detail)
+                }
+            val first = acquire()
+            withTimeout(2_000) { first.controller.state.first { it.load is HistoryDetailLoad.Content } }
+            val backStack: MutableList<NavKey> =
+                mutableListOf(DailyRoot, HistoryRoot, SequenceHistoryDetailRoot(executionId.value))
+
+            first.controller.dispatch(SequenceHistoryMutationAction.BeginTiming)
+            backStack.handleSequenceHistoryDetailBack(executionId.value, owner)
+            assertEquals(3, backStack.size)
+            assertTrue(owner.activeSession === first)
+            assertNull(first.controller.state.value.timingDraft)
+
+            backStack.handleSequenceHistoryDetailBack(executionId.value, owner)
+            assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+            assertNull(owner.activeSession)
+            backStack.handleSequenceHistoryDetailBack(executionId.value, owner)
+            assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+            assertNull(owner.activeSession)
+            backStack.openSequenceHistoryDetail(executionId.value)
+            val reopened = acquire()
+            assertFalse(reopened === first)
+            assertEquals(2, created)
+            owner.release(reopened)
+            scope.cancel()
+        }
+
+    @Test
+    fun sequenceHistoryBackDoesNotPopOrReleaseWhileMutationIsInFlight() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val detail = sequenceDetail()
+            val gate = CompletableDeferred<Unit>()
+            val owner = SequenceHistoryMutationRouteSessionOwner()
+            val session =
+                owner.acquire(detail.root.executionId) {
+                    sequenceController(scope, detail) { gate.await() }
+                }
+            withTimeout(2_000) { session.controller.state.first { it.load is HistoryDetailLoad.Content } }
+            val backStack: MutableList<NavKey> =
+                mutableListOf(DailyRoot, HistoryRoot, SequenceHistoryDetailRoot(detail.root.executionId.value))
+            session.controller.dispatch(SequenceHistoryMutationAction.BeginTiming)
+            session.controller.dispatch(
+                SequenceHistoryMutationAction.EditTimestamp(
+                    SequenceHistoryTimestampTarget.RootEndedAt,
+                    "2026-01-01T00:11:00",
+                ),
+            )
+            session.controller.dispatch(SequenceHistoryMutationAction.ReviewTiming)
+            session.controller.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
+            assertTrue(session.controller.state.value.isMutating)
+
+            backStack.handleSequenceHistoryDetailBack(detail.root.executionId.value, owner)
+
+            assertEquals(3, backStack.size)
+            assertTrue(owner.activeSession === session)
+            gate.complete(Unit)
+            withTimeout(2_000) { session.controller.state.first { !it.isMutating } }
+            owner.release(session)
+            scope.cancel()
+        }
 
     @Test
     fun manualHistoryRouteBackRestoreAndSuccessfulDeliveryAreExactlyOnce() {
@@ -258,5 +355,52 @@ class MainActivityNavigationTest {
             PlanEntryStatus.PLANNED,
             1,
             Instant.parse("2026-09-15T10:00:00Z"),
+        )
+
+    private fun sequenceController(
+        scope: CoroutineScope,
+        detail: SequenceHistoryDetail,
+        correctTiming: suspend () -> Unit = {},
+    ) = SequenceHistoryMutationController(
+        scope,
+        detail.root.executionId,
+        { detail },
+        { _, _, _ -> correctTiming() },
+        { _, _, _ -> error("unexpected") },
+        { _, _, _ -> error("unexpected") },
+    )
+
+    private fun sequenceDetail() =
+        SequenceHistoryDetail(
+            CompletedSequenceHistoryRoot(
+                SequenceExecutionId("sequence-history"),
+                SequenceSnapshotId("snapshot"),
+                LocalDate.parse("2026-01-01"),
+                Instant.parse("2026-01-01T00:10:00Z"),
+                Instant.parse("2026-01-01T00:00:00Z"),
+                SequenceExecutionStatus.COMPLETED,
+                Duration.ofMinutes(10),
+                Duration.ZERO,
+                Duration.ofMinutes(10),
+                null,
+                "Sequence",
+                null,
+            ),
+            Instant.parse("2026-01-01T01:00:00Z"),
+            ZoneOffset.UTC,
+            SequenceSnapshotSettings(
+                true,
+                Duration.ZERO,
+                Duration.ZERO,
+                true,
+                true,
+                false,
+                true,
+                true,
+                NoLiveTimeAccounting.ACTIVE,
+            ),
+            emptyList(),
+            emptyList(),
+            emptyList(),
         )
 }

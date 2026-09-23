@@ -79,6 +79,15 @@ data class SequenceHistoryOccurrence(
     val completionReason: OccurrenceCompletionReason?,
     val activity: SequenceHistoryOccurrenceActivity,
     val child: SequenceHistoryChildActivity?,
+    val childMutationFacts: SequenceHistoryChildMutationFacts? = null,
+)
+
+/** Durable, non-display facts required to mutate a performed occurrence. */
+data class SequenceHistoryChildMutationFacts(
+    val executionId: ActivityExecutionId,
+    val startedAt: Instant?,
+    val completedAt: Instant,
+    val pauses: List<ActivityExecutionPause>,
 )
 
 data class SequenceHistoryOccurrenceActivity(

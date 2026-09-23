@@ -7,6 +7,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
@@ -17,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
@@ -38,9 +40,11 @@ import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildMutationFacts
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrenceActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
@@ -50,6 +54,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,9 +65,11 @@ import org.junit.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import java.util.ConcurrentModificationException
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -191,13 +198,17 @@ class HistoryScreenPresentationTest {
         val performed = hasAnyAncestor(hasTestTag("history-occurrence-performed"))
         composeTestRule.onNode(hasText(text(R.string.history_occurrence_performed)) and performed).performScrollTo()
         composeTestRule.onNode(hasText(text(R.string.history_source_step)) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_repeat_iteration, 2)) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_runtime_added)) and performed).assertExists()
         composeTestRule.onNode(hasText(text(R.string.history_timer_target, "00:30")) and performed).assertExists()
         composeTestRule.onNode(hasText(text(R.string.history_actual_duration, "01:00")) and performed).assertExists()
         composeTestRule
             .onNode(hasText(text(R.string.history_field_value, "Reps", "7 reps")) and performed)
             .assertExists()
+
+        val repeated = hasAnyAncestor(hasTestTag("history-occurrence-skipped"))
+        composeTestRule.onNode(hasText(text(R.string.history_source_step)) and repeated).assertExists()
+        composeTestRule.onNode(hasText(text(R.string.history_repeat_iteration, 2)) and repeated).assertExists()
+        val runtimeAdded = hasAnyAncestor(hasTestTag("history-occurrence-not-started"))
+        composeTestRule.onNode(hasText(text(R.string.history_runtime_added)) and runtimeAdded).assertExists()
 
         composeTestRule.onNodeWithTag("history-occurrence-skipped").performScrollTo()
         composeTestRule
@@ -252,8 +263,339 @@ class HistoryScreenPresentationTest {
     @Test
     fun completedSequenceStatusIsPresented() {
         val completed = sequenceDetail(SequenceExecutionStatus.COMPLETED, ZoneId.of("UTC"))
-        setDetail { SequenceDetail(completed) }
+        setSequenceMutationDetail(completed)
         composeTestRule.onNodeWithText(text(R.string.history_completed)).assertIsDisplayed()
+    }
+
+    @Test
+    fun endedEarlySequenceUsesMutationAwareRoute() {
+        setSequenceMutationDetail(
+            sequenceMutationDetail().copy(
+                root = sequenceMutationDetail().root.copy(status = SequenceExecutionStatus.ENDED_EARLY),
+            ),
+        )
+        composeTestRule.onNodeWithText(text(R.string.history_ended_early)).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun sequenceTimingCorrectionUsesControllerDraftAndCancelWritesNothing() {
+        var timingCommands = 0
+        val detail = sequenceMutationDetail()
+        setSequenceMutationDetail(detail, correct = { _, _, _ -> timingCommands++ })
+
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_active_duration, "10:00")).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().assertIsDisplayed()
+        assertEquals(0, timingCommands)
+    }
+
+    @Test
+    fun timingEditorPresentsSyntaxDstNoChangeAndExplicitOffsetStates() {
+        val detail = sequenceMutationDetail().copy(originalZoneId = ZoneId.of("Europe/Berlin"))
+        setSequenceMutationDetail(detail, correct = { _, _, _ -> error("unexpected") })
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        val end = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended")
+
+        end.performScrollTo().performTextReplacement("not-a-date")
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_invalid_datetime)).assertIsDisplayed()
+
+        end.performScrollTo().performTextReplacement("2026-03-29T02:30:00")
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_nonexistent_time)).assertIsDisplayed()
+
+        end.performScrollTo().performTextReplacement("2026-10-25T02:30:00")
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule
+            .onAllNodesWithText(text(R.string.manual_history_ambiguous_time))[0]
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.manual_history_second_occurrence, "UTC+01:00"))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_timing_review)).assertIsDisplayed()
+
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_no_timing_changes)).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertDoesNotExist()
+    }
+
+    @Test
+    fun ambiguousTimingReviewKeepsSelectedOffsetVisibleAndInProposal() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val earlierOccurrence = Instant.parse("2026-10-25T00:30:00Z")
+        var committed: SequenceHistoryTimingCorrection? = null
+        val detail =
+            sequenceMutationDetail().copy(
+                originalZoneId = berlin,
+                root = sequenceMutationDetail().root.copy(completedAt = earlierOccurrence),
+            )
+        val controller = setSequenceMutationDetail(detail, correct = { _, correction, _ -> committed = correction })
+
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.manual_history_first_occurrence, "UTC+02:00"), substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(text(R.string.manual_history_second_occurrence, "UTC+01:00"), substring = true)
+            .performScrollTo()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+
+        val proposal = requireNotNull(controller.state.value.timingProposal).correction
+        assertEquals(earlierOccurrence, detail.root.completedAt)
+        assertEquals(Instant.parse("2026-10-25T01:30:00Z"), proposal.endedAt)
+        composeTestRule
+            .onNodeWithText(
+                mutationPreviewTime(earlierOccurrence, berlin),
+                substring = true,
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                mutationPreviewTime(Instant.parse("2026-10-25T01:30:00Z"), berlin),
+                substring = true,
+            ).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) { committed != null }
+        assertEquals(Instant.parse("2026-10-25T01:30:00Z"), committed?.endedAt)
+    }
+
+    @Test
+    fun timingValidationGenericAndStaleFailuresRemainVisibleInReview() {
+        var failure: Exception = IllegalArgumentException("validation")
+        val controller =
+            setSequenceMutationDetail(
+                sequenceMutationDetail(),
+                correct = { _, _, _ -> throw failure },
+            )
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        val draft =
+            requireNotNull(controller.state.value.timingDraft)
+                .timestamps
+                .getValue(SequenceHistoryTimestampTarget.RootEndedAt)
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .performTextReplacement(LocalDateTime.parse(draft.text).plusSeconds(1).toString())
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+
+        fun confirmFailure(
+            expectedIssue: SequenceHistoryMutationIssue,
+            expectedMessage: Int,
+        ) {
+            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+            composeTestRule.waitUntil(2_000) { controller.state.value.issue == expectedIssue }
+            composeTestRule.onNodeWithText(text(expectedMessage)).performScrollTo().assertIsDisplayed()
+        }
+
+        confirmFailure(SequenceHistoryMutationIssue.INVALID_PROPOSAL, R.string.sequence_history_invalid_proposal)
+        failure = IllegalStateException("persistence")
+        confirmFailure(SequenceHistoryMutationIssue.TIMING_FAILURE, R.string.sequence_history_timing_failure)
+        failure = ConcurrentModificationException("stale")
+        confirmFailure(SequenceHistoryMutationIssue.STALE, R.string.history_changed_review)
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertDoesNotExist()
+    }
+
+    @Test
+    fun destructiveSurfacesIdentifyOccurrenceAndCloseGapReviewHidesDeletedChildFacts() {
+        val detail = structuralMutationDetail()
+        var deletions = 0
+        setSequenceMutationDetail(
+            detail,
+            delete = { _, _, _ -> deletions++ },
+        )
+        val targetText = text(R.string.history_occurrence, 1, "Performed")
+
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performClick()
+        assertEquals(0, deletions)
+
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_interval,
+                    text(R.string.history_interval_explicit_pause),
+                    "ownerless",
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNode(
+                hasTestTag("sequence-history-ownerless-ownerless-fixed") and
+                    hasText(
+                        text(
+                            R.string.sequence_history_ownerless_fixed_choice,
+                            mutationPreviewInterval(
+                                START.plusSeconds(300),
+                                START.plusSeconds(310),
+                                detail.originalZoneId,
+                            ),
+                        ),
+                    ),
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNode(
+                hasTestTag("sequence-history-ownerless-ownerless-translated") and
+                    hasText(
+                        text(
+                            R.string.sequence_history_ownerless_translated_choice,
+                            mutationPreviewInterval(
+                                START.plusSeconds(240),
+                                START.plusSeconds(250),
+                                detail.originalZoneId,
+                            ),
+                        ),
+                    ),
+            ).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithTag("sequence-history-ownerless-ownerless-fixed")
+            .performScrollTo()
+            .performClick()
+        composeTestRule
+            .onNodeWithTag("sequence-history-ownerless-ownerless-2-translated")
+            .performScrollTo()
+            .performClick()
+
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_structural_review)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
+        composeTestRule.onNodeWithText("pause-retained", substring = true).performScrollTo().assertIsDisplayed()
+        val deletedTarget = text(R.string.history_occurrence, 2, "Deleted later")
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_history_child_started, deletedTarget))
+            .assertDoesNotExist()
+        composeTestRule
+            .onNodeWithText(text(R.string.sequence_history_child_completed, deletedTarget))
+            .assertDoesNotExist()
+        composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_selection,
+                    text(R.string.history_interval_explicit_pause),
+                    "ownerless",
+                    text(R.string.sequence_history_fixed),
+                    mutationPreviewInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_ownerless_selection,
+                    text(R.string.history_interval_implicit_idle),
+                    "ownerless-2",
+                    text(R.string.sequence_history_translated),
+                    mutationPreviewInterval(START.plusSeconds(270), START.plusSeconds(280), detail.originalZoneId),
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun leaveGapReviewShowsEveryTargetOwnedIntervalRemovalBeforeConfirmation() {
+        val detail = structuralMutationDetail()
+        setSequenceMutationDetail(detail)
+
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
+
+        composeTestRule
+            .onNodeWithText(
+                text(
+                    R.string.sequence_history_removed_interval,
+                    text(R.string.history_interval_active_step),
+                    "performed",
+                    mutationPreviewInterval(START.plusSeconds(10), START.plusSeconds(70), detail.originalZoneId),
+                ),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed()
+    }
+
+    @Test
+    fun readDeletionAndStructuralFailuresHaveDistinctActiveSurfaceMessages() {
+        val detail = structuralMutationDetail()
+        var readFails = true
+        val controller =
+            SequenceHistoryMutationController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                detail.root.executionId,
+                { if (readFails) error("read") else detail },
+                { _, _, _ -> },
+                { _, _, _ -> error("delete") },
+                { _, _, _ -> error("structural") },
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                SequenceHistoryDetailRoute(
+                    SequenceHistoryMutationRouteSession(detail.root.executionId, controller),
+                    {},
+                    {},
+                )
+            }
+        }
+        composeTestRule.waitUntil(2_000) { controller.state.value.issue == SequenceHistoryMutationIssue.READ_FAILURE }
+        composeTestRule.onNodeWithText(text(R.string.history_read_failure)).assertIsDisplayed()
+        readFails = false
+        controller.dispatch(SequenceHistoryMutationAction.Retry)
+        composeTestRule.waitUntil(2_000) { controller.state.value.load is HistoryDetailLoad.Content }
+
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) {
+            controller.state.value.issue == SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE
+        }
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_child_deletion_failure)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) {
+            controller.state.value.issue == SequenceHistoryMutationIssue.STRUCTURAL_FAILURE
+        }
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_structural_failure)).assertIsDisplayed()
+    }
+
+    @Test
+    fun inFlightConfirmationIsDisabledUntilRepositoryReturns() {
+        val gate = CompletableDeferred<Unit>()
+        val controller =
+            setSequenceMutationDetail(
+                sequenceMutationDetail(),
+                correct = { _, _, _ -> gate.await() },
+            )
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        val target = SequenceHistoryTimestampTarget.RootEndedAt
+        val draft = requireNotNull(controller.state.value.timingDraft).timestamps.getValue(target)
+        composeTestRule
+            .onNodeWithTag("sequence-history-timestamp-root-ended")
+            .performScrollTo()
+            .performTextReplacement(LocalDateTime.parse(draft.text).plusSeconds(1).toString())
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) { controller.state.value.isMutating }
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsNotEnabled()
+        gate.complete(Unit)
     }
 
     @Test
@@ -320,6 +662,47 @@ class HistoryScreenPresentationTest {
         return controller
     }
 
+    private fun setSequenceMutationDetail(
+        detail: SequenceHistoryDetail,
+        correct: suspend (
+            SequenceExecutionId,
+            SequenceHistoryTimingCorrection,
+            Instant,
+        ) -> Unit = { _, _, _ -> },
+        delete: suspend (
+            SequenceExecutionId,
+            com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand,
+            Instant,
+        ) -> Unit = { _, _, _ -> },
+        remove: suspend (
+            SequenceExecutionId,
+            com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand,
+            Instant,
+        ) -> Unit = { _, _, _ -> },
+    ): SequenceHistoryMutationController {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                detail.root.executionId,
+                { detail },
+                correct,
+                delete,
+                remove,
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                SequenceHistoryDetailRoute(
+                    SequenceHistoryMutationRouteSession(detail.root.executionId, controller),
+                    onBack = {},
+                    onRefresh = {},
+                )
+            }
+        }
+        composeTestRule.waitUntil(2_000) { controller.state.value.load is HistoryDetailLoad.Content }
+        return controller
+    }
+
     private fun text(
         id: Int,
         vararg arguments: Any,
@@ -333,6 +716,22 @@ class HistoryScreenPresentationTest {
             .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
             .withLocale(composeTestRule.activity.resources.configuration.locales[0])
             .format(instant.atZone(zoneId))
+
+    private fun mutationPreviewTime(
+        instant: Instant,
+        zoneId: ZoneId,
+    ): String =
+        mutationPreviewInstantText(
+            instant,
+            zoneId,
+            composeTestRule.activity.resources.configuration.locales[0],
+        )
+
+    private fun mutationPreviewInterval(
+        startedAt: Instant,
+        endedAt: Instant,
+        zoneId: ZoneId,
+    ): String = "${mutationPreviewTime(startedAt, zoneId)} – ${mutationPreviewTime(endedAt, zoneId)}"
 
     private fun localDate(date: LocalDate): String =
         DateTimeFormatter
@@ -427,9 +826,9 @@ class HistoryScreenPresentationTest {
                     0,
                     performedActivity.snapshotId,
                     SequenceSnapshotNodeId("source-step"),
-                    SequenceSnapshotNodeId("repeat"),
-                    2,
-                    true,
+                    null,
+                    null,
+                    false,
                     false,
                     RuntimeOccurrenceStatus.COMPLETED,
                     START.plusSeconds(10),
@@ -447,8 +846,21 @@ class HistoryScreenPresentationTest {
                         listOf(childField),
                     ),
                 ),
-                occurrence("skipped", 1, RuntimeOccurrenceStatus.SKIPPED),
-                occurrence("not-started", 2, RuntimeOccurrenceStatus.NOT_STARTED),
+                occurrence(
+                    "skipped",
+                    1,
+                    RuntimeOccurrenceStatus.SKIPPED,
+                    sourceNodeId = "source-repeat-step",
+                    repeatParentNodeId = "repeat",
+                    repeatIteration = 2,
+                ),
+                occurrence(
+                    "not-started",
+                    2,
+                    RuntimeOccurrenceStatus.NOT_STARTED,
+                    sourceNodeId = null,
+                    isRuntimeAdded = true,
+                ),
                 occurrence("tombstone", 3, RuntimeOccurrenceStatus.DELETED_EXECUTION),
             )
         val intervals =
@@ -495,18 +907,158 @@ class HistoryScreenPresentationTest {
         )
     }
 
+    private fun sequenceMutationDetail(): SequenceHistoryDetail {
+        val base = sequenceDetail(SequenceExecutionStatus.COMPLETED, ZoneId.of("America/Los_Angeles"))
+        return base.copy(
+            occurrences =
+                base.occurrences.map { occurrence ->
+                    occurrence.takeIf { it.occurrenceId.value == "performed" }?.let {
+                        val child = requireNotNull(it.child)
+                        it.copy(
+                            childMutationFacts =
+                                SequenceHistoryChildMutationFacts(
+                                    child.executionId,
+                                    child.startedAt,
+                                    requireNotNull(child.completedAt),
+                                    emptyList(),
+                                ),
+                        )
+                    } ?: occurrence
+                },
+        )
+    }
+
+    private fun structuralMutationDetail(): SequenceHistoryDetail {
+        val base = sequenceMutationDetail()
+        val performed =
+            base.occurrences
+                .first()
+                .copy(
+                    repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("repeat"),
+                    repeatIteration = 2,
+                )
+
+        fun performedOccurrence(
+            id: String,
+            position: Int,
+            title: String,
+            start: Instant,
+            end: Instant,
+            deleted: Boolean,
+        ): SequenceHistoryOccurrence {
+            val activity = occurrenceActivity(title)
+            val childId = ActivityExecutionId("child-$id")
+            return SequenceHistoryOccurrence(
+                SequenceOccurrenceId(id),
+                position,
+                activity.snapshotId,
+                SequenceSnapshotNodeId("source-$id"),
+                null,
+                null,
+                false,
+                false,
+                if (deleted) RuntimeOccurrenceStatus.DELETED_EXECUTION else RuntimeOccurrenceStatus.COMPLETED,
+                start,
+                end,
+                null,
+                activity,
+                if (deleted) {
+                    null
+                } else {
+                    SequenceHistoryChildActivity(
+                        childId,
+                        ActivityExecutionStatus.COMPLETED,
+                        start,
+                        end,
+                        Duration.between(start, end),
+                        emptyList(),
+                    )
+                },
+                SequenceHistoryChildMutationFacts(
+                    childId,
+                    start,
+                    end,
+                    listOf(
+                        com.alexandr5476.lifetracing.domain.ActivityExecutionPause(
+                            com.alexandr5476.lifetracing.domain
+                                .ActivityExecutionPauseId("pause-$id"),
+                            start.plusSeconds(10),
+                            start.plusSeconds(20),
+                        ),
+                    ),
+                ),
+            )
+        }
+        val deleted =
+            performedOccurrence(
+                "deleted-later",
+                1,
+                "Deleted later",
+                START.plusSeconds(70),
+                START.plusSeconds(130),
+                true,
+            )
+        val retained =
+            performedOccurrence("retained", 2, "Retained later", START.plusSeconds(130), START.plusSeconds(190), false)
+        return base.copy(
+            occurrences = listOf(performed, deleted, retained),
+            intervals =
+                listOf(
+                    SequenceInterval(
+                        SequenceIntervalId("performed"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        START.plusSeconds(10),
+                        START.plusSeconds(70),
+                        performed.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("deleted-later"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        START.plusSeconds(70),
+                        START.plusSeconds(130),
+                        deleted.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("retained"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        START.plusSeconds(130),
+                        START.plusSeconds(190),
+                        retained.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("ownerless"),
+                        SequenceIntervalKind.EXPLICIT_PAUSE,
+                        START.plusSeconds(300),
+                        START.plusSeconds(310),
+                        null,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("ownerless-2"),
+                        SequenceIntervalKind.IMPLICIT_IDLE,
+                        START.plusSeconds(330),
+                        START.plusSeconds(340),
+                        null,
+                    ),
+                ),
+        )
+    }
+
     private fun occurrence(
         id: String,
         position: Int,
         status: RuntimeOccurrenceStatus,
+        sourceNodeId: String? = "source-$id",
+        repeatParentNodeId: String? = null,
+        repeatIteration: Int? = null,
+        isRuntimeAdded: Boolean = false,
     ) = SequenceHistoryOccurrence(
         SequenceOccurrenceId(id),
         position,
         ActivitySnapshotId("snapshot-$id"),
-        null,
-        null,
-        null,
-        false,
+        sourceNodeId?.let(::SequenceSnapshotNodeId),
+        repeatParentNodeId?.let(::SequenceSnapshotNodeId),
+        repeatIteration,
+        isRuntimeAdded,
         false,
         status,
         null,

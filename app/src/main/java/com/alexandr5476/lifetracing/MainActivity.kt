@@ -41,6 +41,7 @@ import com.alexandr5476.lifetracing.history.ManualActivityEntryRoute
 import com.alexandr5476.lifetracing.history.ManualActivityEntryRouteSessionOwner
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
 import com.alexandr5476.lifetracing.history.SequenceHistoryDetailRoute
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationRouteSessionOwner
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
@@ -88,6 +89,9 @@ class MainActivity : AppCompatActivity() {
     internal val activityHistoryMutationRouteSessions by lazy {
         ViewModelProvider(this)[ActivityHistoryMutationRouteSessionOwner::class.java]
     }
+    internal val sequenceHistoryMutationRouteSessions by lazy {
+        ViewModelProvider(this)[SequenceHistoryMutationRouteSessionOwner::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,6 +109,7 @@ class MainActivity : AppCompatActivity() {
                 historyControllerOwner = historyControllerOwner,
                 manualActivityEntryRouteSessions = manualActivityEntryRouteSessions,
                 activityHistoryMutationRouteSessions = activityHistoryMutationRouteSessions,
+                sequenceHistoryMutationRouteSessions = sequenceHistoryMutationRouteSessions,
             )
         }
     }
@@ -178,6 +183,7 @@ internal fun LifeTracingApp(
     historyControllerOwner: HistoryControllerOwner? = null,
     manualActivityEntryRouteSessions: ManualActivityEntryRouteSessionOwner? = null,
     activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
+    sequenceHistoryMutationRouteSessions: SequenceHistoryMutationRouteSessionOwner? = null,
 ) {
     LifeTracingTheme(
         themeMode = appearance.themeMode,
@@ -209,6 +215,8 @@ internal fun LifeTracingApp(
                 manualActivityEntryRouteSessions ?: remember { ManualActivityEntryRouteSessionOwner() }
             val activityHistorySessions =
                 activityHistoryMutationRouteSessions ?: remember { ActivityHistoryMutationRouteSessionOwner() }
+            val sequenceHistorySessions =
+                sequenceHistoryMutationRouteSessions ?: remember { SequenceHistoryMutationRouteSessionOwner() }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -335,6 +343,10 @@ internal fun LifeTracingApp(
                                     (backStack.last() as ActivityHistoryDetailRoot).executionId,
                                 )
                             }
+                        }
+                        backStack.lastOrNull() is SequenceHistoryDetailRoot -> {
+                            val route = backStack.last() as SequenceHistoryDetailRoot
+                            backStack.handleSequenceHistoryDetailBack(route.executionId, sequenceHistorySessions)
                         }
                         else -> backStack.removeLastOrNull()
                     }
@@ -526,16 +538,29 @@ internal fun LifeTracingApp(
                             }
                         }
                         entry<SequenceHistoryDetailRoot> { route ->
-                            val controller =
-                                remember(route.executionId) {
+                            val executionId =
+                                com.alexandr5476.lifetracing.domain
+                                    .SequenceExecutionId(route.executionId)
+                            val session =
+                                sequenceHistorySessions.acquire(executionId) {
                                     runtimeGraph.createSequenceHistoryDetailController(
-                                        com.alexandr5476.lifetracing.domain
-                                            .SequenceExecutionId(route.executionId),
+                                        executionId,
                                     )
                                 }
                             SequenceHistoryDetailRoute(
-                                controller,
-                                onBack = { backStack.removeSequenceHistoryDetail(route.executionId) },
+                                session,
+                                onBack = {
+                                    backStack.handleSequenceHistoryDetailBack(
+                                        route.executionId,
+                                        sequenceHistorySessions,
+                                    )
+                                },
+                                onRefresh = {
+                                    historyOwner
+                                        .get(runtimeGraph::createHistoryController)
+                                        .dispatch(HistoryAction.Refresh)
+                                    controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                                },
                             )
                         }
                         entry<PlanExecutionRoot> { route ->
@@ -729,6 +754,17 @@ internal fun MutableList<NavKey>.openSequenceHistoryDetail(executionId: String) 
 
 internal fun MutableList<NavKey>.removeSequenceHistoryDetail(expectedExecutionId: String) {
     if ((lastOrNull() as? SequenceHistoryDetailRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.handleSequenceHistoryDetailBack(
+    expectedExecutionId: String,
+    sessions: SequenceHistoryMutationRouteSessionOwner,
+) {
+    if ((lastOrNull() as? SequenceHistoryDetailRoot)?.executionId != expectedExecutionId) return
+    val session = sessions.activeSession
+    if (session?.executionId?.value == expectedExecutionId && session.controller.handleBack()) return
+    if (session?.executionId?.value == expectedExecutionId) sessions.release(session)
+    removeSequenceHistoryDetail(expectedExecutionId)
 }
 
 internal fun MutableList<NavKey>.openPlanExecution(

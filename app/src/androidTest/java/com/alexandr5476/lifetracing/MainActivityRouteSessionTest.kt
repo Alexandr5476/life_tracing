@@ -898,6 +898,9 @@ class MainActivityRouteSessionTest {
             composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
         }
         composeTestRule.onNodeWithText(planLabel).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(rescheduleLabel).fetchSemanticsNodes().size == 1
+        }
         composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
 
         composeTestRule.onNodeWithText(cancelledLabel).performClick()
@@ -908,6 +911,9 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithText(planLabel).performClick()
 
         composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithText(rescheduleLabel).fetchSemanticsNodes().size == 1
+        }
         composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
         composeTestRule.onAllNodesWithText(cancelledLabel).assertCountEquals(1)
         composeTestRule.onAllNodesWithText(planTitle).assertCountEquals(1)

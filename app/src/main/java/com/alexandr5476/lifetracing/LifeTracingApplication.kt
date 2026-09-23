@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.SequenceHistoryCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
@@ -30,8 +31,8 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorController
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.history.ActivityHistoryMutationController
 import com.alexandr5476.lifetracing.history.HistoryController
-import com.alexandr5476.lifetracing.history.HistoryDetailController
 import com.alexandr5476.lifetracing.history.ManualActivityEntryController
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationController
 import com.alexandr5476.lifetracing.launcher.CoroutinePreflightScheduler
 import com.alexandr5476.lifetracing.launcher.LauncherCommit
 import com.alexandr5476.lifetracing.launcher.LauncherDurableCommand
@@ -128,7 +129,7 @@ class LifeTracingRuntimeGraph internal constructor(
     },
     private val sequenceHistoryDetailControllerFactory: (
         com.alexandr5476.lifetracing.domain.SequenceExecutionId,
-    ) -> HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> = {
+    ) -> SequenceHistoryMutationController = {
         error("Sequence History is unavailable")
     },
 ) {
@@ -167,8 +168,7 @@ class LifeTracingRuntimeGraph internal constructor(
 
     fun createSequenceHistoryDetailController(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
-    ): HistoryDetailController<com.alexandr5476.lifetracing.domain.SequenceHistoryDetail> =
-        sequenceHistoryDetailControllerFactory(executionId)
+    ): SequenceHistoryMutationController = sequenceHistoryDetailControllerFactory(executionId)
 
     companion object {
         @Volatile
@@ -205,6 +205,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val planReadRepository = PlanReadRepository.create(context)
             val planRepository = PlanRepository.create(context)
             val historyReadRepository = HistoryReadRepository.create(context)
+            val sequenceHistoryCommandRepository = SequenceHistoryCommandRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -671,11 +672,31 @@ class LifeTracingRuntimeGraph internal constructor(
                     )
                 },
                 { executionId ->
-                    HistoryDetailController(uiScope) {
-                        withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            historyReadRepository.getSequenceDetail(executionId)
-                        }
-                    }
+                    SequenceHistoryMutationController(
+                        uiScope,
+                        executionId,
+                        { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                historyReadRepository.getSequenceDetail(id)
+                            }
+                        },
+                        { id, correction, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                sequenceHistoryCommandRepository.correctTiming(id, correction, at)
+                            }
+                        },
+                        { id, command, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                sequenceHistoryCommandRepository.deleteChildHistory(id, command, at)
+                            }
+                        },
+                        { id, command, at ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                sequenceHistoryCommandRepository.removeOccurrenceHistory(id, command, at)
+                            }
+                        },
+                        java.time.Instant::now,
+                    )
                 },
             )
         }

@@ -453,12 +453,20 @@ class SequenceHistoryCommandRepositoryTest {
             ),
             second(40),
         )
+        val canonicalTombstone =
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+                .occurrences
+                .single { it.occurrenceId == SequenceOccurrenceId("a") }
+        assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, canonicalTombstone.status)
+        assertNull(canonicalTombstone.child)
+        val childMutationFacts = requireNotNull(canonicalTombstone.childMutationFacts)
+        assertEquals(ActivityExecutionId("child-a"), childMutationFacts.executionId)
         repository.removeOccurrenceHistory(
             SEQUENCE_ID,
             SequenceHistoryStructuralRemovalCommand(
                 detailToken(),
-                SequenceOccurrenceId("a"),
-                ActivityExecutionId("child-a"),
+                canonicalTombstone.occurrenceId,
+                childMutationFacts.executionId,
                 SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
                 second(30),
                 listOf(interval("b", 20, 30, SequenceOccurrenceId("b"))),
@@ -472,6 +480,11 @@ class SequenceHistoryCommandRepositoryTest {
         val root = requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(SEQUENCE_ID.value))
         assertTrue(root.occurrences.single { it.id == "a" }.isDeletedFromHistory)
         assertEquals(50_000L, root.execution.updatedAtMs)
+        assertTrue(
+            requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
+                .occurrences
+                .none { it.occurrenceId == canonicalTombstone.occurrenceId },
+        )
     }
 
     @Test
@@ -948,6 +961,10 @@ class SequenceHistoryCommandRepositoryTest {
         val tombstone = detail.occurrences.single { it.occurrenceId.value == "a" }
         assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, tombstone.status)
         assertNull(tombstone.child)
+        assertEquals(ActivityExecutionId("child-a"), tombstone.childMutationFacts?.executionId)
+        assertEquals(beforeChild.toDomain().startedAt, tombstone.childMutationFacts?.startedAt)
+        assertEquals(beforeChild.toDomain().completedAt, tombstone.childMutationFacts?.completedAt)
+        assertEquals(beforeChild.toDomain().pauses, tombstone.childMutationFacts?.pauses)
         assertEquals(beforeDetail.occurrences.first().activity, tombstone.activity)
         assertTrue(detail.occurrences.single { it.occurrenceId.value == "b" }.child != null)
         assertEquals(beforeDetail.intervals, detail.intervals)
@@ -1012,6 +1029,10 @@ class SequenceHistoryCommandRepositoryTest {
         assertEquals(beforeChild.pauses, afterChild.pauses)
         assertEquals(beforeChild.values, afterChild.values)
         assertEquals(40_000L, afterChild.execution.deletedAtMs)
+        val detail = requireNotNull(HistoryReadRepository(database).getSequenceDetail(PAUSED_SEQUENCE_ID))
+        val tombstone = detail.occurrences.single { it.occurrenceId.value == "paused-a" }
+        assertNull(tombstone.child)
+        assertEquals(beforeChild.toDomain().pauses, tombstone.childMutationFacts?.pauses)
     }
 
     @Test
@@ -1500,32 +1521,35 @@ class SequenceHistoryCommandRepositoryTest {
     }
 
     @Test
-    fun overlappingIntervalsPersistWithUnionCacheAndChildPausesRemainCoherent() {
+    fun mixedKindOverlappingIntervalsPersistWithUnionCacheAndChildPausesRemainCoherent() {
         val overlapping =
             listOf(
                 interval("a-overlap", 10, 20, SequenceOccurrenceId("a")),
-                interval("b-overlap", 15, 30, SequenceOccurrenceId("b")),
+                interval("b-overlap", 20, 30, SequenceOccurrenceId("b")),
+                SequenceInterval(
+                    SequenceIntervalId("ownerless-explicit-pause"),
+                    SequenceIntervalKind.EXPLICIT_PAUSE,
+                    second(15),
+                    second(25),
+                    null,
+                ),
             )
         repository.correctTiming(
             SEQUENCE_ID,
             SequenceHistoryTimingCorrection(
                 detailToken(),
-                occurrenceTimings =
-                    listOf(SequenceOccurrenceTimingCorrection(SequenceOccurrenceId("b"), second(15), second(30))),
                 finalIntervals = overlapping,
-                childTimings =
-                    listOf(
-                        SequenceChildTimingCorrection(
-                            ActivityExecutionId("child-b"),
-                            ActivityHistoryTimeCorrection.Timed(second(15), second(30)),
-                        ),
-                    ),
             ),
             second(40),
         )
         val overlapReloaded = requireNotNull(HistoryReadRepository(database).getSequenceDetail(SEQUENCE_ID))
         assertEquals(Duration.ofSeconds(20), overlapReloaded.root.activeDuration)
-        assertEquals(overlapping, overlapReloaded.intervals)
+        assertEquals(Duration.ZERO, overlapReloaded.root.pauseDuration)
+        assertEquals(Duration.ofSeconds(20), overlapReloaded.root.wallDuration)
+        assertEquals(
+            overlapping.sortedWith(compareBy<SequenceInterval> { it.startedAt }.thenBy { it.id.value }),
+            overlapReloaded.intervals,
+        )
 
         seedPausedGraph()
         repository.correctTiming(

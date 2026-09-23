@@ -28,6 +28,7 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryCategoryOption
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildExecution
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildMutationFacts
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
@@ -236,6 +237,7 @@ class HistoryReadRepository internal constructor(
                                 children[occurrence.id]
                                     ?.takeIf { it.deletedAt == null }
                                     ?.toHistoryChild(activity),
+                                children[occurrence.id]?.toHistoryMutationFacts(),
                             )
                         },
                 intervals = execution.intervals,
@@ -278,6 +280,14 @@ class HistoryReadRepository internal constructor(
             completedAt,
             activeDuration,
             snapshot.toHistoryFields(values),
+        )
+
+    private fun ActivityExecution.toHistoryMutationFacts() =
+        SequenceHistoryChildMutationFacts(
+            id,
+            startedAt,
+            requireNotNull(completedAt),
+            pauses,
         )
 
     private fun ActivityConfigSnapshot.toHistoryMainValue(): ActivityHistoryField? =
