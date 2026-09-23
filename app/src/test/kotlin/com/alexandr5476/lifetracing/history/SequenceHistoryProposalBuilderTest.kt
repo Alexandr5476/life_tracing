@@ -158,6 +158,114 @@ class SequenceHistoryProposalBuilderTest {
     }
 
     @Test
+    fun mutationPreviewPreservesSecondAndMillisecondPrecision() {
+        val detail = detail()
+        val target = SequenceHistoryTimestampTarget.RootEndedAt
+        val timingDraft = SequenceHistoryProposalBuilder.timingDraft(detail)
+        val oldValue = requireNotNull(timingDraft.timestamps[target])
+        val oneSecondLater = LocalDateTime.parse(oldValue.text).plusSeconds(1)
+        val timingResult =
+            SequenceHistoryProposalBuilder.timing(
+                detail,
+                timingDraft.copy(
+                    timestamps =
+                        timingDraft.timestamps +
+                            (target to oldValue.copy(text = oneSecondLater.toString())),
+                ),
+            )
+        val timingProposal = (timingResult as SequenceHistoryTimingBuildResult.Ready).proposal
+        val timingChange =
+            timingProposal.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.Timestamp>()
+                .single { it.target == target }
+
+        assertFalse(
+            mutationPreviewInstantText(timingChange.before, ZoneOffset.UTC, Locale.US) ==
+                mutationPreviewInstantText(timingChange.after, ZoneOffset.UTC, Locale.US),
+        )
+
+        val base = Instant.parse("2026-01-01T10:00:10.000Z")
+        val oneMillisecondLater = base.plusMillis(1)
+
+        assertFalse(
+            mutationPreviewInstantText(base, ZoneOffset.UTC, Locale.US) ==
+                mutationPreviewInstantText(oneMillisecondLater, ZoneOffset.UTC, Locale.US),
+        )
+    }
+
+    @Test
+    fun closeGapSubMinuteTranslationShowsMovedFactsInReview() {
+        val base = detail()
+        val closeGapDetail =
+            base.copy(
+                occurrences =
+                    base.occurrences.map { occurrence ->
+                        if (occurrence.occurrenceId != TARGET) return@map occurrence
+                        val start = minute(0)
+                        val end = start.plusSeconds(10)
+                        val child =
+                            requireNotNull(occurrence.child).copy(
+                                startedAt = start,
+                                completedAt = end,
+                                activeDuration = Duration.ofSeconds(9),
+                            )
+                        val facts =
+                            requireNotNull(occurrence.childMutationFacts).copy(
+                                startedAt = start,
+                                completedAt = end,
+                                pauses =
+                                    listOf(
+                                        ActivityExecutionPause(
+                                            ActivityExecutionPauseId("pause-target"),
+                                            start.plusSeconds(2),
+                                            start.plusSeconds(3),
+                                        ),
+                                    ),
+                            )
+                        occurrence.copy(
+                            enteredAt = start,
+                            completedAt = end,
+                            child = child,
+                            childMutationFacts = facts,
+                        )
+                    },
+                intervals =
+                    base.intervals.map { interval ->
+                        if (interval.id == TARGET_INTERVAL) {
+                            interval.copy(startedAt = minute(0), endedAt = minute(0).plusSeconds(10))
+                        } else {
+                            interval
+                        }
+                    },
+                root =
+                    base.root.copy(
+                        activeDuration = Duration.ofMinutes(20).plusSeconds(10),
+                        pauseDuration = Duration.ofMinutes(29).plusSeconds(50),
+                    ),
+            )
+
+        val proposal =
+            requireNotNull(
+                SequenceHistoryProposalBuilder.structural(
+                    closeGapDetail,
+                    TARGET,
+                    SequenceHistoryStructuralRemovalMode.CLOSE_GAP,
+                    mapOf(OWNERLESS to OwnerlessIntervalPlacement.FIXED),
+                ),
+            )
+        val laterMove =
+            proposal.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.Timestamp>()
+                .first { it.target == SequenceHistoryTimestampTarget.OccurrenceEnteredAt(LATER) }
+
+        assertEquals(Duration.ofSeconds(10), Duration.between(laterMove.after, laterMove.before))
+        assertFalse(
+            mutationPreviewInstantText(laterMove.before, ZoneOffset.UTC, Locale.US) ==
+                mutationPreviewInstantText(laterMove.after, ZoneOffset.UTC, Locale.US),
+        )
+    }
+
+    @Test
     fun closeGapDstSuffixPreviewShowsDifferentOffsetsForEqualWallTimes() {
         val zone = ZoneId.of("Europe/Berlin")
         val rootStart = Instant.parse("2026-10-25T00:00:00Z")

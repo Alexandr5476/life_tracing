@@ -362,12 +362,12 @@ class HistoryScreenPresentationTest {
         assertEquals(Instant.parse("2026-10-25T01:30:00Z"), proposal.endedAt)
         composeTestRule
             .onNodeWithText(
-                historicalTime(earlierOccurrence, berlin) + " +02:00",
+                mutationPreviewTime(earlierOccurrence, berlin),
                 substring = true,
             ).assertIsDisplayed()
         composeTestRule
             .onNodeWithText(
-                historicalTime(Instant.parse("2026-10-25T01:30:00Z"), berlin) + " +01:00",
+                mutationPreviewTime(Instant.parse("2026-10-25T01:30:00Z"), berlin),
                 substring = true,
             ).assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
@@ -445,7 +445,11 @@ class HistoryScreenPresentationTest {
                     hasText(
                         text(
                             R.string.sequence_history_ownerless_fixed_choice,
-                            historicalInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
+                            mutationPreviewInterval(
+                                START.plusSeconds(300),
+                                START.plusSeconds(310),
+                                detail.originalZoneId,
+                            ),
                         ),
                     ),
             ).assertIsDisplayed()
@@ -455,7 +459,11 @@ class HistoryScreenPresentationTest {
                     hasText(
                         text(
                             R.string.sequence_history_ownerless_translated_choice,
-                            historicalInterval(START.plusSeconds(240), START.plusSeconds(250), detail.originalZoneId),
+                            mutationPreviewInterval(
+                                START.plusSeconds(240),
+                                START.plusSeconds(250),
+                                detail.originalZoneId,
+                            ),
                         ),
                     ),
             ).assertIsDisplayed()
@@ -485,7 +493,7 @@ class HistoryScreenPresentationTest {
                     text(R.string.history_interval_explicit_pause),
                     "ownerless",
                     text(R.string.sequence_history_fixed),
-                    historicalInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
+                    mutationPreviewInterval(START.plusSeconds(300), START.plusSeconds(310), detail.originalZoneId),
                 ),
             ).performScrollTo()
             .assertIsDisplayed()
@@ -496,7 +504,7 @@ class HistoryScreenPresentationTest {
                     text(R.string.history_interval_implicit_idle),
                     "ownerless-2",
                     text(R.string.sequence_history_translated),
-                    historicalInterval(START.plusSeconds(270), START.plusSeconds(280), detail.originalZoneId),
+                    mutationPreviewInterval(START.plusSeconds(270), START.plusSeconds(280), detail.originalZoneId),
                 ),
             ).performScrollTo()
             .assertIsDisplayed()
@@ -516,7 +524,7 @@ class HistoryScreenPresentationTest {
                     R.string.sequence_history_removed_interval,
                     text(R.string.history_interval_active_step),
                     "performed",
-                    historicalInterval(START.plusSeconds(10), START.plusSeconds(70), detail.originalZoneId),
+                    mutationPreviewInterval(START.plusSeconds(10), START.plusSeconds(70), detail.originalZoneId),
                 ),
             ).performScrollTo()
             .assertIsDisplayed()
@@ -709,11 +717,21 @@ class HistoryScreenPresentationTest {
             .withLocale(composeTestRule.activity.resources.configuration.locales[0])
             .format(instant.atZone(zoneId))
 
-    private fun historicalInterval(
+    private fun mutationPreviewTime(
+        instant: Instant,
+        zoneId: ZoneId,
+    ): String =
+        mutationPreviewInstantText(
+            instant,
+            zoneId,
+            composeTestRule.activity.resources.configuration.locales[0],
+        )
+
+    private fun mutationPreviewInterval(
         startedAt: Instant,
         endedAt: Instant,
         zoneId: ZoneId,
-    ): String = "${historicalTime(startedAt, zoneId)} – ${historicalTime(endedAt, zoneId)}"
+    ): String = "${mutationPreviewTime(startedAt, zoneId)} – ${mutationPreviewTime(endedAt, zoneId)}"
 
     private fun localDate(date: LocalDate): String =
         DateTimeFormatter

@@ -70,7 +70,9 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
 import java.time.format.FormatStyle
+import java.time.temporal.ChronoField
 
 @Composable
 fun HistoryRoute(
@@ -1334,9 +1336,10 @@ internal fun mutationPreviewInstantText(
 ): String {
     val zoned = instant.atZone(zoneId)
     val formatted =
-        DateTimeFormatter
-            .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-            .withLocale(locale)
+        DateTimeFormatterBuilder()
+            .appendLocalized(FormatStyle.MEDIUM, FormatStyle.MEDIUM)
+            .appendFraction(ChronoField.MILLI_OF_SECOND, 3, 3, true)
+            .toFormatter(locale)
             .format(zoned)
     return if (zoneId.rules.getValidOffsets(zoned.toLocalDateTime()).size > 1) {
         "$formatted ${zoned.offset.id}"

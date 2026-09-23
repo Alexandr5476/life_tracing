@@ -132,7 +132,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             timingController.dispatch(SequenceHistoryMutationAction.BeginTiming)
             val endTarget = SequenceHistoryTimestampTarget.RootEndedAt
             val endDraft = requireNotNull(timingController.state.value.timingDraft).timestamps.getValue(endTarget)
-            val editedEnd = LocalDateTime.parse(endDraft.text).plusSeconds(1)
+            val editedEnd = LocalDateTime.parse(endDraft.text).plusNanos(1_000_000)
             timingController.dispatch(
                 SequenceHistoryMutationAction.EditTimestamp(
                     endTarget,
@@ -142,7 +142,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             timingController.dispatch(SequenceHistoryMutationAction.ReviewTiming)
             timingController.dispatch(SequenceHistoryMutationAction.ConfirmTiming)
             val timingAfter = timingController.awaitRefresh()
-            assertEquals(timingBefore.root.completedAt.plusSeconds(1), timingAfter.root.completedAt)
+            assertEquals(timingBefore.root.completedAt.plusMillis(1), timingAfter.root.completedAt)
             assertEquals(timingAfter, history.getSequenceDetail(timing))
             timingController.close()
 
