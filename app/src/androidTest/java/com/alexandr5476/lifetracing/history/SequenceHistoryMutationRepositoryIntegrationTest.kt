@@ -621,6 +621,12 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             composeTestRule.onAllNodesWithText(label).fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.onNodeWithText(label).performClick()
+        val activity = composeTestRule.activity
+        val controller =
+            activity.historyControllerOwner.get {
+                LifeTracingRuntimeGraph.from(activity).createHistoryController()
+            }
+        composeTestRule.waitUntil(5_000) { controller.state.value.load !is HistoryRootsLoad.Loading }
     }
 
     private fun openSequence(id: com.alexandr5476.lifetracing.domain.SequenceExecutionId) {
