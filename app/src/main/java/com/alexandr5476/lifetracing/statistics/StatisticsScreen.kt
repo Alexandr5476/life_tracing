@@ -5,6 +5,7 @@
     "MaxLineLength",
     "CyclomaticComplexMethod",
     "TooManyFunctions",
+    "LongParameterList",
 )
 
 package com.alexandr5476.lifetracing.statistics
@@ -37,6 +38,7 @@ import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.StatisticsOverview
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
@@ -57,11 +59,12 @@ import java.time.temporal.TemporalAdjusters
 @Composable
 fun StatisticsRoute(
     controller: StatisticsController,
+    onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit = { _, _ -> },
     onBack: () -> Unit,
 ) {
     val state by controller.state.collectAsState()
     BackHandler(onBack = onBack)
-    StatisticsScreen(state, controller::selectPeriod, controller::retry, onBack)
+    StatisticsScreen(state, controller::selectPeriod, controller::retry, onBack, controller::refresh, onOpenSeries)
 }
 
 @Composable
@@ -70,6 +73,8 @@ internal fun StatisticsScreen(
     onSelectPeriod: (StatisticsPeriod) -> Unit,
     onRetry: () -> Unit,
     onBack: () -> Unit = {},
+    onRefresh: () -> Unit = onRetry,
+    onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit = { _, _ -> },
 ) {
     var kind by remember { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
     var day by remember(state.selectedPeriod) {
@@ -123,7 +128,12 @@ internal fun StatisticsScreen(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.statistics_title), style = MaterialTheme.typography.headlineSmall)
-                TextButton(onClick = onBack) { Text(stringResource(R.string.statistics_back)) }
+                Row {
+                    TextButton(onClick = onRefresh, modifier = Modifier.testTag("statistics-refresh")) {
+                        Text(stringResource(R.string.statistics_refresh))
+                    }
+                    TextButton(onClick = onBack) { Text(stringResource(R.string.statistics_back)) }
+                }
             }
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
@@ -254,15 +264,15 @@ internal fun StatisticsScreen(
                 }
                 is StatisticsLoadState.Empty -> {
                     Text(stringResource(R.string.statistics_empty), modifier = Modifier.testTag("statistics-empty"))
-                    OverviewContent(load.overview)
+                    OverviewContent(load.overview, state.selectedPeriod, onOpenSeries)
                 }
-                is StatisticsLoadState.Content -> OverviewContent(load.overview)
+                is StatisticsLoadState.Content -> OverviewContent(load.overview, state.selectedPeriod, onOpenSeries)
             }
         }
     }
 }
 
-private enum class StatisticsPeriodKind(
+internal enum class StatisticsPeriodKind(
     val label: Int,
 ) {
     DAY(R.string.statistics_period_day),
@@ -306,7 +316,7 @@ private enum class StatisticsPeriodKind(
 
 @Composable
 @Suppress("LongParameterList")
-private fun PeriodField(
+internal fun PeriodField(
     value: String,
     onValue: (String) -> Unit,
     label: Int,
@@ -330,7 +340,11 @@ private fun PeriodField(
 }
 
 @Composable
-private fun OverviewContent(overview: StatisticsOverview) {
+private fun OverviewContent(
+    overview: StatisticsOverview,
+    period: StatisticsPeriod,
+    onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit,
+) {
     val global = overview.global
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -347,15 +361,20 @@ private fun OverviewContent(overview: StatisticsOverview) {
             )
             Metric(R.string.statistics_sequence_pause_idle, duration(global.totalSequencePauseIdleDuration))
             Text(stringResource(R.string.statistics_series_title), style = MaterialTheme.typography.titleMedium)
-            overview.series.forEach { SeriesRow(it) }
+            overview.series.forEach { SeriesRow(it, period, onOpenSeries) }
         }
     }
 }
 
 @Composable
-private fun SeriesRow(summary: StatisticsSeriesPeriodSummary) {
+private fun SeriesRow(
+    summary: StatisticsSeriesPeriodSummary,
+    period: StatisticsPeriod,
+    onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit,
+) {
     val series = summary.series
-    Card(Modifier.fillMaxWidth().testTag("statistics-series-${series.id.value}")) {
+    val drillable = series.kind == StatisticsSeriesKind.ACTIVITY || series.kind == StatisticsSeriesKind.SEQUENCE
+    val content: @Composable () -> Unit = {
         Column(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
@@ -396,6 +415,14 @@ private fun SeriesRow(summary: StatisticsSeriesPeriodSummary) {
             Metric(R.string.statistics_active_days, summary.activeDayCount.toString())
         }
     }
+    if (drillable) {
+        Card(
+            onClick = { onOpenSeries(series.id, period) },
+            modifier = Modifier.fillMaxWidth().testTag("statistics-series-${series.id.value}"),
+        ) { content() }
+    } else {
+        Card(Modifier.fillMaxWidth().testTag("statistics-series-${series.id.value}")) { content() }
+    }
 }
 
 private fun sourceLabel(state: StatisticsSeriesSourceState) =
@@ -413,7 +440,7 @@ private fun sourceLabel(state: StatisticsSeriesSourceState) =
     Text(stringResource(label, value))
 }
 
-private fun navigate(
+internal fun navigate(
     period: StatisticsPeriod,
     amount: Long,
 ): StatisticsPeriod? =
@@ -429,7 +456,7 @@ private fun navigate(
         null
     }
 
-private fun parseDate(value: String): LocalDate? =
+internal fun parseDate(value: String): LocalDate? =
     runCatching {
         LocalDate.parse(value, DateTimeFormatter.ISO_LOCAL_DATE)
     }.getOrNull()

@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.statistics
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -66,6 +67,29 @@ class StatisticsScreenPresentationTest {
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_archived)).assertIsDisplayed()
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_missing)).assertIsDisplayed()
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_system)).assertIsDisplayed()
+    }
+
+    @Test
+    fun activityAndSequenceRowsPassStableIdsAndSelectedPeriodButOneOffHasNoAction() {
+        val period = StatisticsPeriod.Custom(LocalDate.parse("2026-08-03"), LocalDate.parse("2026-08-09"))
+        val state =
+            mutableStateOf(StatisticsPresentationState(period, StatisticsLoadState.Content(overview(seriesRows))))
+        val opened = mutableListOf<Pair<StatisticsSeriesId, StatisticsPeriod>>()
+        var refreshed = 0
+        compose.setContent {
+            LifeTracingTheme {
+                StatisticsScreen(state.value, {}, {}, onRefresh = { refreshed++ }, onOpenSeries = { id, selected ->
+                    opened +=
+                        id to selected
+                })
+            }
+        }
+        compose.onNodeWithTag("statistics-series-activity").performClick()
+        compose.onNodeWithTag("statistics-series-sequence").performClick()
+        compose.onNodeWithTag("statistics-series-system").assertHasNoClickAction()
+        compose.onNodeWithTag("statistics-refresh").performClick()
+        assertEquals(listOf(StatisticsSeriesId("activity") to period, StatisticsSeriesId("sequence") to period), opened)
+        assertEquals(1, refreshed)
     }
 
     @Test

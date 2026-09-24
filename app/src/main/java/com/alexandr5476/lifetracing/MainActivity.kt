@@ -26,6 +26,7 @@ import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRouteSessionOwner
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
@@ -57,6 +58,8 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
 import com.alexandr5476.lifetracing.statistics.StatisticsRoute
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRoute
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -86,6 +89,9 @@ class MainActivity : AppCompatActivity() {
     }
     internal val historyControllerOwner by lazy { ViewModelProvider(this)[HistoryControllerOwner::class.java] }
     internal val statisticsControllerOwner by lazy { ViewModelProvider(this)[StatisticsControllerOwner::class.java] }
+    internal val statisticsSeriesDetailRouteSessions by lazy {
+        ViewModelProvider(this)[StatisticsSeriesDetailRouteSessionOwner::class.java]
+    }
     internal val manualActivityEntryRouteSessions by lazy {
         ViewModelProvider(this)[ManualActivityEntryRouteSessionOwner::class.java]
     }
@@ -111,6 +117,7 @@ class MainActivity : AppCompatActivity() {
                 planExecutionRouteSessions = planExecutionRouteSessions,
                 historyControllerOwner = historyControllerOwner,
                 statisticsControllerOwner = statisticsControllerOwner,
+                statisticsSeriesDetailRouteSessions = statisticsSeriesDetailRouteSessions,
                 manualActivityEntryRouteSessions = manualActivityEntryRouteSessions,
                 activityHistoryMutationRouteSessions = activityHistoryMutationRouteSessions,
                 sequenceHistoryMutationRouteSessions = sequenceHistoryMutationRouteSessions,
@@ -137,6 +144,10 @@ data object PlanRoot : NavKey
 @Serializable data object HistoryRoot : NavKey
 
 @Serializable data object StatisticsRoot : NavKey
+
+@Serializable data class StatisticsSeriesDetailRoot(
+    val seriesId: String,
+) : NavKey
 
 @Serializable data object ManualActivityEntryRoot : NavKey
 
@@ -188,6 +199,7 @@ internal fun LifeTracingApp(
     planExecutionRouteSessions: PlanExecutionRouteSessionOwner? = null,
     historyControllerOwner: HistoryControllerOwner? = null,
     statisticsControllerOwner: StatisticsControllerOwner? = null,
+    statisticsSeriesDetailRouteSessions: StatisticsSeriesDetailRouteSessionOwner? = null,
     manualActivityEntryRouteSessions: ManualActivityEntryRouteSessionOwner? = null,
     activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
     sequenceHistoryMutationRouteSessions: SequenceHistoryMutationRouteSessionOwner? = null,
@@ -219,6 +231,8 @@ internal fun LifeTracingApp(
                 planExecutionRouteSessions ?: remember { PlanExecutionRouteSessionOwner() }
             val historyOwner = historyControllerOwner ?: remember { HistoryControllerOwner() }
             val statisticsOwner = statisticsControllerOwner ?: remember { StatisticsControllerOwner() }
+            val statisticsDetailSessions =
+                statisticsSeriesDetailRouteSessions ?: remember { StatisticsSeriesDetailRouteSessionOwner() }
             val manualEntrySessions =
                 manualActivityEntryRouteSessions ?: remember { ManualActivityEntryRouteSessionOwner() }
             val activityHistorySessions =
@@ -346,6 +360,10 @@ internal fun LifeTracingApp(
                         backStack.lastOrNull() is StatisticsRoot -> {
                             statisticsOwner.onRouteExited()
                             backStack.removeStatistics()
+                        }
+                        backStack.lastOrNull() is StatisticsSeriesDetailRoot -> {
+                            val route = backStack.last() as StatisticsSeriesDetailRoot
+                            backStack.handleStatisticsSeriesDetailBack(route.seriesId, statisticsDetailSessions)
                         }
                         backStack.lastOrNull() is ActivityHistoryDetailRoot -> {
                             val session = activityHistorySessions.activeSession
@@ -498,9 +516,37 @@ internal fun LifeTracingApp(
                         }
                         entry<StatisticsRoot> {
                             val statisticsController = statisticsOwner.get(runtimeGraph::createStatisticsController)
-                            StatisticsRoute(statisticsController) {
-                                statisticsOwner.onRouteExited()
-                                backStack.removeStatistics()
+                            StatisticsRoute(
+                                controller = statisticsController,
+                                onOpenSeries = { seriesId, initialPeriod ->
+                                    val session =
+                                        statisticsDetailSessions.acquire(
+                                            seriesId,
+                                            initialPeriod,
+                                            runtimeGraph::createStatisticsSeriesDetailController,
+                                        )
+                                    backStack.openStatisticsSeriesDetail(session.expectedSeriesId.value)
+                                },
+                                onBack = {
+                                    statisticsOwner.onRouteExited()
+                                    backStack.removeStatistics()
+                                },
+                            )
+                        }
+                        entry<StatisticsSeriesDetailRoot> { route ->
+                            val seriesId =
+                                com.alexandr5476.lifetracing.domain
+                                    .StatisticsSeriesId(route.seriesId)
+                            val session = statisticsDetailSessions.sessionFor(seriesId)
+                            if (session == null) {
+                                LaunchedEffect(route.seriesId) {
+                                    statisticsDetailSessions.activeSession?.let(statisticsDetailSessions::release)
+                                    backStack.normalizeRestoredStatisticsSeriesDetail()
+                                }
+                            } else {
+                                StatisticsSeriesDetailRoute(session.controller) {
+                                    backStack.handleStatisticsSeriesDetailBack(route.seriesId, statisticsDetailSessions)
+                                }
                             }
                         }
                         entry<ActivityHistoryDetailRoot> { route ->
@@ -749,6 +795,30 @@ internal fun MutableList<NavKey>.openStatistics() {
 
 internal fun MutableList<NavKey>.removeStatistics() {
     if (lastOrNull() is StatisticsRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openStatisticsSeriesDetail(seriesId: String) {
+    val current = lastOrNull() as? StatisticsSeriesDetailRoot
+    if (current?.seriesId == seriesId) return
+    if (current != null) removeAt(lastIndex)
+    if (lastOrNull() is StatisticsRoot) add(StatisticsSeriesDetailRoot(seriesId))
+}
+
+internal fun MutableList<NavKey>.removeStatisticsSeriesDetail(expectedSeriesId: String) {
+    if ((lastOrNull() as? StatisticsSeriesDetailRoot)?.seriesId == expectedSeriesId) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.normalizeRestoredStatisticsSeriesDetail() {
+    if (lastOrNull() is StatisticsSeriesDetailRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.handleStatisticsSeriesDetailBack(
+    expectedSeriesId: String,
+    sessions: StatisticsSeriesDetailRouteSessionOwner,
+) {
+    if ((lastOrNull() as? StatisticsSeriesDetailRoot)?.seriesId != expectedSeriesId) return
+    sessions.sessionFor(StatisticsSeriesId(expectedSeriesId))?.let(sessions::release)
+    removeStatisticsSeriesDetail(expectedSeriesId)
 }
 
 internal fun MutableList<NavKey>.openManualActivityEntry() {
