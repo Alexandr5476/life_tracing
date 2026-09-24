@@ -50,22 +50,41 @@ class StatisticsControllerTest {
     fun emptyAndFailureAreDistinctAndRetryRecovers() =
         runBlocking {
             var reads = 0
+            val emptyOverview = overview(0)
             val fixture =
                 controller(StatisticsPeriod.AllTime) {
                     when (reads++) {
-                        0 -> overview(0)
+                        0 -> emptyOverview
                         1 -> error("offline")
                         else -> overview(1)
                     }
                 }
             val controller = fixture.controller
             try {
-                assertInstanceOf(
-                    StatisticsLoadState.Empty::class.java,
-                    controller
-                        .awaitState {
-                            it.load is StatisticsLoadState.Empty
-                        }.load,
+                val empty =
+                    assertInstanceOf(
+                        StatisticsLoadState.Empty::class.java,
+                        controller
+                            .awaitState {
+                                it.load is StatisticsLoadState.Empty
+                            }.load,
+                    )
+                assertSame(emptyOverview, empty.overview)
+                assertEquals(emptyOverview.series, empty.overview.series)
+                assertEquals(
+                    listOf(
+                        Triple(
+                            StatisticsSeriesId("one-off"),
+                            StatisticsSeriesKind.ONE_OFF_BUCKET,
+                            StatisticsSeriesSourceState.SYSTEM_ONE_OFF,
+                        ),
+                        Triple(
+                            StatisticsSeriesId("archived-activity"),
+                            StatisticsSeriesKind.ACTIVITY,
+                            StatisticsSeriesSourceState.ARCHIVED_SOURCE,
+                        ),
+                    ),
+                    empty.overview.series.map { Triple(it.series.id, it.series.kind, it.series.sourceState) },
                 )
                 controller.refresh()
                 assertInstanceOf(

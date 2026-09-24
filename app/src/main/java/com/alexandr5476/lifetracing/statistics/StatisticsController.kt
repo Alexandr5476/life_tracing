@@ -17,7 +17,9 @@ sealed interface StatisticsLoadState {
         val overview: StatisticsOverview,
     ) : StatisticsLoadState
 
-    data object Empty : StatisticsLoadState
+    data class Empty(
+        val overview: StatisticsOverview,
+    ) : StatisticsLoadState
 
     data object Failure : StatisticsLoadState
 }
@@ -60,7 +62,7 @@ class StatisticsController internal constructor(
                         it.copy(
                             load =
                                 if (overview.isEmpty) {
-                                    StatisticsLoadState.Empty
+                                    StatisticsLoadState.Empty(overview)
                                 } else {
                                     StatisticsLoadState.Content(
                                         overview,
