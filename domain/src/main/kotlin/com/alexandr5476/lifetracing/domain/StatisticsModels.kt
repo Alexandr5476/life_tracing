@@ -328,3 +328,37 @@ data class CategoryFieldStatistics(
     val coverage: CountRatio,
     val values: List<CategoryValueStatistics>,
 )
+
+sealed interface StatisticsFieldDetail {
+    val field: StatisticsFieldDescriptor
+
+    data class Number(
+        val statistics: NumberFieldStatistics,
+    ) : StatisticsFieldDetail {
+        override val field: StatisticsFieldDescriptor = statistics.field
+    }
+
+    data class Category(
+        val statistics: CategoryFieldStatistics,
+    ) : StatisticsFieldDetail {
+        override val field: StatisticsFieldDescriptor = statistics.field
+    }
+
+    data class Text(
+        override val field: StatisticsFieldDescriptor,
+    ) : StatisticsFieldDetail
+}
+
+sealed interface StatisticsSeriesDetail {
+    val fields: List<StatisticsFieldDetail>
+
+    data class Activity(
+        val statistics: ActivitySeriesStatistics,
+        override val fields: List<StatisticsFieldDetail>,
+    ) : StatisticsSeriesDetail
+
+    data class Sequence(
+        val statistics: SequenceSeriesStatistics,
+        override val fields: List<StatisticsFieldDetail>,
+    ) : StatisticsSeriesDetail
+}

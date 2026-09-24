@@ -19,8 +19,11 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
+import com.alexandr5476.lifetracing.domain.StatisticsFieldDetail
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
@@ -92,6 +95,27 @@ class StatisticsRepositoryTest {
         assertEquals(4L, all.topLevelExecutionCount)
         assertEquals(2L, all.activeDayCount)
         assertEquals(Duration.ofMinutes(15), all.totalSequencePauseIdleDuration)
+        val activityDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(
+            repository.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime),
+            activityDetail.statistics,
+        )
+        assertEquals(3L, activityDetail.statistics.executionCount)
+        assertEquals(Duration.ofMinutes(210), activityDetail.statistics.durations.total)
+        val sequenceDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(
+            repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+            sequenceDetail.statistics,
+        )
+        assertEquals(Duration.ofMinutes(15), sequenceDetail.statistics.totalPauseIdleDuration)
         assertEquals(1L, all.oneOffActivityExecutionCount)
         assertNull(all.calendarDayCount)
         assertNull(all.averageTrackedMillisecondsPerCalendarDay)
@@ -323,11 +347,29 @@ class StatisticsRepositoryTest {
         )
         val catalog = repository.fieldCatalog(StatisticsSeriesId("activity-series"))
         assertEquals(
-            setOf("number-source", "category-source", "calories-source"),
+            setOf("number-source", "category-source", "calories-source", "text-source"),
             catalog.mapTo(hashSetOf()) { it.id.value },
         )
         assertEquals("Distance", catalog.single { it.id.value == "number-source" }.displayName)
         assertEquals("kcal", catalog.single { it.id.value == "calories-source" }.unit)
+        val bundled =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(detail, bundled.statistics)
+        assertEquals(catalog.map { it.id }, bundled.fields.map { it.field.id })
+        assertEquals(
+            4,
+            bundled.fields
+                .map { it.field.id }
+                .toSet()
+                .size,
+        )
+        assertEquals(
+            catalog.single { it.id.value == "text-source" },
+            (bundled.fields.single { it.field.id.value == "text-source" } as StatisticsFieldDetail.Text).field,
+        )
 
         val number =
             repository.numberFieldStatistics(
@@ -341,6 +383,20 @@ class StatisticsRepositoryTest {
         assertEquals(0L, number.values.totalScaled.longValueExact())
         assertEquals(ExactValue.of(0, 1), number.values.averageScaled)
         assertEquals(0L, number.values.minimumScaled)
+        assertEquals(
+            number,
+            (
+                bundled.fields.single {
+                    it.field.id.value == "number-source"
+                } as StatisticsFieldDetail.Number
+            ).statistics,
+        )
+        val zeroRecorded =
+            (bundled.fields.single { it.field.id.value == "calories-source" } as StatisticsFieldDetail.Number)
+                .statistics
+        assertEquals(0L, zeroRecorded.recordedCount)
+        assertEquals(4L, zeroRecorded.missingCount)
+        assertNull(zeroRecorded.values.averageScaled)
 
         val category =
             repository.categoryFieldStatistics(
@@ -353,6 +409,20 @@ class StatisticsRepositoryTest {
         assertEquals(2L, category.missingCount)
         assertEquals("Tempo", category.values.single().displayLabel)
         assertEquals(2L, category.values.single().count)
+        assertEquals(
+            category,
+            (
+                bundled.fields.single {
+                    it.field.id.value == "category-source"
+                } as StatisticsFieldDetail.Category
+            ).statistics,
+        )
+        assertEquals(
+            "tempo-source",
+            category.values
+                .single()
+                .id.value,
+        )
         assertEquals(
             ExactValue.of(1, 1),
             category.values
@@ -385,6 +455,26 @@ class StatisticsRepositoryTest {
         assertEquals(3L, editedCategory.missingCount)
         assertEquals(1L, editedCategory.values.single().count)
 
+        val emptyPeriod =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.Day(LocalDate.parse("2026-08-22")),
+            ) as StatisticsSeriesDetail.Activity
+        val emptyNumber =
+            (emptyPeriod.fields.single { it.field.id.value == "number-source" } as StatisticsFieldDetail.Number)
+                .statistics
+        val emptyCategory =
+            (emptyPeriod.fields.single { it.field.id.value == "category-source" } as StatisticsFieldDetail.Category)
+                .statistics
+        assertEquals(0L, emptyNumber.relevantExecutionCount)
+        assertEquals(0L, emptyNumber.recordedCount)
+        assertNull(emptyNumber.coverage.exactValue)
+        assertNull(emptyNumber.values.averageScaled)
+        assertEquals(0L, emptyCategory.relevantExecutionCount)
+        assertEquals(0L, emptyCategory.recordedCount)
+        assertNull(emptyCategory.coverage.exactValue)
+        assertTrue(emptyCategory.values.all { it.recordedShare.exactValue == null })
+
         activitySnapshot("local-one-off", null, fields = true, sourceLinked = false)
         completedActivity(
             "local-one-off-execution",
@@ -395,6 +485,9 @@ class StatisticsRepositoryTest {
             values = listOf(numberValue("local-one-off-execution", "local-one-off-number", 99)),
         )
         assertTrue(repository.fieldCatalog(StatisticsSeriesId(ONE_OFF)).isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.seriesDetail(StatisticsSeriesId(ONE_OFF), StatisticsPeriod.AllTime)
+        }
         val oneOffSummary =
             repository.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id.value == ONE_OFF }
         assertEquals(1L, oneOffSummary.executionCount)
@@ -453,6 +546,67 @@ class StatisticsRepositoryTest {
         assertEquals(1L, statistics.recordedCount)
         assertEquals(1L, statistics.missingCount)
         assertEquals(7L, statistics.values.totalScaled.longValueExact())
+        val detail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(
+            repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+            detail.statistics,
+        )
+        assertEquals(statistics, (detail.fields.single() as StatisticsFieldDetail.Number).statistics)
+    }
+
+    @Test
+    fun bundledCategoryKeepsSourceAndSnapshotFallbackIdentitiesDespiteEqualLabels() {
+        series("activity-series", "ACTIVITY", "Workout")
+        activityTemplateWithFields()
+        activitySnapshot("source", "activity-series", fields = true)
+        activitySnapshot("fallback", "activity-series", fields = true)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_snapshot_category_options SET source_option_id = NULL WHERE id = 'fallback-tempo'",
+        )
+        completedActivity(
+            "source-execution",
+            "source",
+            "activity-series",
+            MINUTE,
+            AUG_20,
+            values = listOf(categoryValue("source-execution", "source-category", "source-tempo")),
+        )
+        completedActivity(
+            "fallback-execution",
+            "fallback",
+            "activity-series",
+            MINUTE,
+            AUG_20,
+            values = listOf(categoryValue("fallback-execution", "fallback-category", "fallback-tempo")),
+        )
+
+        val canonical =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
+                StatisticsPeriod.AllTime,
+            )
+        val detail =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        val projected =
+            (detail.fields.single { it.field.id.value == "category-source" } as StatisticsFieldDetail.Category)
+                .statistics
+        assertEquals(canonical, projected)
+        assertEquals(2, projected.values.size)
+        assertEquals(setOf("tempo-source", "fallback-tempo"), projected.values.map { it.id.value }.toSet())
+        assertTrue(projected.values.any { it.id is StatisticsCategoryOptionId.SnapshotFallback })
+        assertEquals(listOf(1L, 1L), projected.values.map { it.count })
+        assertEquals(
+            listOf(ExactValue.of(1, 2), ExactValue.of(1, 2)),
+            projected.values.map { it.recordedShare.exactValue },
+        )
     }
 
     @Test
@@ -472,6 +626,20 @@ class StatisticsRepositoryTest {
         assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, states["archived-series"])
         assertEquals(StatisticsSeriesSourceState.NO_CURRENT_SOURCE, states["sourceless-series"])
         assertEquals(StatisticsSeriesSourceState.SYSTEM_ONE_OFF, states[ONE_OFF])
+        val archivedDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("archived-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(StatisticsSeriesId("archived-series"), archivedDetail.statistics.series.id)
+        assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, archivedDetail.statistics.series.sourceState)
+        val sourcelessDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sourceless-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(StatisticsSeriesSourceState.NO_CURRENT_SOURCE, sourcelessDetail.statistics.series.sourceState)
+        assertEquals(1L, sourcelessDetail.statistics.executionCount)
         val summaries = repository.seriesSummaries(StatisticsPeriod.AllTime).associateBy { it.series.id.value }
         assertEquals(1L, summaries.getValue("sourceless-series").executionCount)
         assertEquals(Duration.ofMinutes(1), summaries.getValue("sourceless-series").totalDuration)
@@ -1037,6 +1205,22 @@ class StatisticsRepositoryTest {
                     2,
                     "Type",
                     "CATEGORY",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    false,
+                    0,
+                    0,
+                    null,
+                ),
+                ActivityTemplateFieldEntity(
+                    "text-source",
+                    "activity",
+                    3,
+                    "Notes",
+                    "TEXT",
                     null,
                     null,
                     null,

@@ -26,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -60,6 +61,7 @@ import com.alexandr5476.lifetracing.runtime.AndroidWallClock
 import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
 import com.alexandr5476.lifetracing.statistics.StatisticsController
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailController
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
@@ -138,6 +140,10 @@ class LifeTracingRuntimeGraph internal constructor(
     private val statisticsControllerFactory: (StatisticsPeriod) -> StatisticsController = {
         error("Statistics is unavailable")
     },
+    private val statisticsSeriesDetailControllerFactory: (
+        StatisticsSeriesId,
+        StatisticsPeriod,
+    ) -> StatisticsSeriesDetailController = { _, _ -> error("Statistics detail is unavailable") },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -178,6 +184,11 @@ class LifeTracingRuntimeGraph internal constructor(
 
     fun createStatisticsController(initialPeriod: StatisticsPeriod): StatisticsController =
         statisticsControllerFactory(initialPeriod)
+
+    fun createStatisticsSeriesDetailController(
+        seriesId: StatisticsSeriesId,
+        initialPeriod: StatisticsPeriod,
+    ): StatisticsSeriesDetailController = statisticsSeriesDetailControllerFactory(seriesId, initialPeriod)
 
     companion object {
         @Volatile
@@ -716,6 +727,11 @@ class LifeTracingRuntimeGraph internal constructor(
                             withContext(kotlinx.coroutines.Dispatchers.IO) { statisticsRepository.overview(period) }
                         },
                     )
+                },
+                { seriesId, initialPeriod ->
+                    StatisticsSeriesDetailController(uiScope, seriesId, initialPeriod) { id, period ->
+                        withContext(kotlinx.coroutines.Dispatchers.IO) { statisticsRepository.seriesDetail(id, period) }
+                    }
                 },
             )
         }
