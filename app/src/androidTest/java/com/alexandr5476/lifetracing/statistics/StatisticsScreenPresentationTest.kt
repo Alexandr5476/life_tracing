@@ -4,10 +4,12 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ExactValue
@@ -44,8 +46,8 @@ class StatisticsScreenPresentationTest {
         assertEquals(1, retries)
         state.value = state.value.copy(load = StatisticsLoadState.Empty(overview(zeroSeries)))
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_empty)).assertIsDisplayed()
-        compose.onNodeWithTag("statistics-series-zero-activity").assertIsDisplayed()
-        compose.onNodeWithTag("statistics-series-zero-one-off").assertIsDisplayed()
+        compose.onNodeWithTag("statistics-series-zero-activity").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("statistics-series-zero-one-off").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -59,14 +61,34 @@ class StatisticsScreenPresentationTest {
             )
         compose.setContent { LifeTracingTheme { StatisticsScreen(state.value, {}, {}) } }
         listOf("activity", "sequence", "archived", "missing", "system", "unsampled", "sampled-zero").forEach {
-            compose.onNodeWithTag("statistics-series-$it").assertIsDisplayed()
+            compose.onNodeWithTag("statistics-series-$it").performScrollTo().assertIsDisplayed()
         }
-        compose.onNodeWithText("Display activity").assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_no_duration_samples)).assertIsDisplayed()
-        compose.onNodeWithText("0:00:00").assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_archived)).assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_missing)).assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_system)).assertIsDisplayed()
+        compose.onNodeWithText("Display activity").performScrollTo().assertIsDisplayed()
+        compose
+            .onNodeWithTag("statistics-series-archived")
+            .performScrollTo()
+            .assertTextContains(
+                compose.activity.getString(
+                    R.string.statistics_duration_total,
+                    compose.activity.getString(R.string.statistics_no_duration_samples),
+                ),
+            )
+        compose
+            .onNodeWithTag("statistics-series-sampled-zero")
+            .performScrollTo()
+            .assertTextContains(compose.activity.getString(R.string.statistics_duration_total, "0:00:00"))
+        compose
+            .onNodeWithTag("statistics-series-archived")
+            .performScrollTo()
+            .assertTextContains(compose.activity.getString(R.string.statistics_source_archived))
+        compose
+            .onNodeWithTag("statistics-series-missing")
+            .performScrollTo()
+            .assertTextContains(compose.activity.getString(R.string.statistics_source_missing))
+        compose
+            .onNodeWithText(compose.activity.getString(R.string.statistics_source_system))
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     @Test
@@ -84,10 +106,10 @@ class StatisticsScreenPresentationTest {
                 })
             }
         }
-        compose.onNodeWithTag("statistics-series-activity").performClick()
-        compose.onNodeWithTag("statistics-series-sequence").performClick()
+        compose.onNodeWithTag("statistics-series-activity").performScrollTo().performClick()
+        compose.onNodeWithTag("statistics-series-sequence").performScrollTo().performClick()
         compose.onNodeWithTag("statistics-series-system").assertHasNoClickAction()
-        compose.onNodeWithTag("statistics-refresh").performClick()
+        compose.onNodeWithTag("statistics-refresh").performScrollTo().performClick()
         assertEquals(listOf(StatisticsSeriesId("activity") to period, StatisticsSeriesId("sequence") to period), opened)
         assertEquals(1, refreshed)
     }
