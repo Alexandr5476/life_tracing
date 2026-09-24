@@ -8,6 +8,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -75,6 +76,7 @@ fun DailyRoute(
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
     onHistory: () -> Unit = {},
+    onStatistics: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -92,6 +94,7 @@ fun DailyRoute(
         onLibrary = onLibrary,
         onPlan = onPlan,
         onHistory = onHistory,
+        onStatistics = onStatistics,
         onExpandSequence = onExpandSequence,
         onExecutePlan = onExecutePlan,
     )
@@ -106,6 +109,7 @@ internal fun DailyScreen(
     onLibrary: () -> Unit = {},
     onPlan: () -> Unit = {},
     onHistory: () -> Unit = {},
+    onStatistics: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -119,7 +123,16 @@ internal fun DailyScreen(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            DateHeader(state.selectedDate, state.dateRelation, onAction, onStartActivity, onLibrary, onPlan, onHistory)
+            DateHeader(
+                state.selectedDate,
+                state.dateRelation,
+                onAction,
+                onStartActivity,
+                onLibrary,
+                onPlan,
+                onHistory,
+                onStatistics,
+            )
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
                 DailyLoadState.Loading -> LoadingContent()
@@ -142,6 +155,7 @@ private fun DateHeader(
     onLibrary: () -> Unit,
     onPlan: () -> Unit,
     onHistory: () -> Unit,
+    onStatistics: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -171,7 +185,10 @@ private fun DateHeader(
                     Text(stringResource(R.string.daily_start_activity))
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            FlowRow(
+                modifier = Modifier.testTag("daily-shell-actions"),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+            ) {
                 LifeTracingSecondaryButton(onClick = onLibrary) {
                     Text(stringResource(R.string.daily_library))
                 }
@@ -180,6 +197,9 @@ private fun DateHeader(
                 }
                 LifeTracingSecondaryButton(onClick = onHistory) {
                     Text(stringResource(R.string.daily_history))
+                }
+                LifeTracingSecondaryButton(onClick = onStatistics) {
+                    Text(stringResource(R.string.daily_statistics))
                 }
             }
         }

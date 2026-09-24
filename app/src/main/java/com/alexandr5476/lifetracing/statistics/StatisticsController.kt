@@ -35,6 +35,8 @@ class StatisticsController internal constructor(
     private val readOverview: suspend (StatisticsPeriod) -> StatisticsOverview,
 ) {
     private val generation = AtomicLong()
+
+    @Volatile private var closed = false
     private val mutableState = MutableStateFlow(StatisticsPresentationState(initialPeriod))
     val state: StateFlow<StatisticsPresentationState> = mutableState
 
@@ -43,15 +45,24 @@ class StatisticsController internal constructor(
     }
 
     fun selectPeriod(period: StatisticsPeriod) {
+        if (closed) return
         if (period == mutableState.value.selectedPeriod) return
         reload(period)
     }
 
-    fun refresh() = reload(mutableState.value.selectedPeriod)
+    fun refresh() {
+        if (!closed) reload(mutableState.value.selectedPeriod)
+    }
 
     fun retry() = refresh()
 
+    fun close() {
+        closed = true
+        generation.incrementAndGet()
+    }
+
     private fun reload(period: StatisticsPeriod) {
+        if (closed) return
         val request = generation.incrementAndGet()
         mutableState.update { it.copy(selectedPeriod = period, load = StatisticsLoadState.Loading) }
         scope.launch {

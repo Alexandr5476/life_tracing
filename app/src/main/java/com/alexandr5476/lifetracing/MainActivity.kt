@@ -55,6 +55,8 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionRoute
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSession
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanRoute
+import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
+import com.alexandr5476.lifetracing.statistics.StatisticsRoute
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
@@ -83,6 +85,7 @@ class MainActivity : AppCompatActivity() {
         ViewModelProvider(this)[PlanExecutionRouteSessionOwner::class.java]
     }
     internal val historyControllerOwner by lazy { ViewModelProvider(this)[HistoryControllerOwner::class.java] }
+    internal val statisticsControllerOwner by lazy { ViewModelProvider(this)[StatisticsControllerOwner::class.java] }
     internal val manualActivityEntryRouteSessions by lazy {
         ViewModelProvider(this)[ManualActivityEntryRouteSessionOwner::class.java]
     }
@@ -107,6 +110,7 @@ class MainActivity : AppCompatActivity() {
                 planControllerOwner = planControllerOwner,
                 planExecutionRouteSessions = planExecutionRouteSessions,
                 historyControllerOwner = historyControllerOwner,
+                statisticsControllerOwner = statisticsControllerOwner,
                 manualActivityEntryRouteSessions = manualActivityEntryRouteSessions,
                 activityHistoryMutationRouteSessions = activityHistoryMutationRouteSessions,
                 sequenceHistoryMutationRouteSessions = sequenceHistoryMutationRouteSessions,
@@ -131,6 +135,8 @@ data object LibraryRoot : NavKey
 data object PlanRoot : NavKey
 
 @Serializable data object HistoryRoot : NavKey
+
+@Serializable data object StatisticsRoot : NavKey
 
 @Serializable data object ManualActivityEntryRoot : NavKey
 
@@ -181,6 +187,7 @@ internal fun LifeTracingApp(
     planControllerOwner: PlanControllerOwner? = null,
     planExecutionRouteSessions: PlanExecutionRouteSessionOwner? = null,
     historyControllerOwner: HistoryControllerOwner? = null,
+    statisticsControllerOwner: StatisticsControllerOwner? = null,
     manualActivityEntryRouteSessions: ManualActivityEntryRouteSessionOwner? = null,
     activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
     sequenceHistoryMutationRouteSessions: SequenceHistoryMutationRouteSessionOwner? = null,
@@ -211,6 +218,7 @@ internal fun LifeTracingApp(
             val planExecutionSessions =
                 planExecutionRouteSessions ?: remember { PlanExecutionRouteSessionOwner() }
             val historyOwner = historyControllerOwner ?: remember { HistoryControllerOwner() }
+            val statisticsOwner = statisticsControllerOwner ?: remember { StatisticsControllerOwner() }
             val manualEntrySessions =
                 manualActivityEntryRouteSessions ?: remember { ManualActivityEntryRouteSessionOwner() }
             val activityHistorySessions =
@@ -335,6 +343,10 @@ internal fun LifeTracingApp(
                             historyOwner.onRouteExited()
                             backStack.removeHistory()
                         }
+                        backStack.lastOrNull() is StatisticsRoot -> {
+                            statisticsOwner.onRouteExited()
+                            backStack.removeStatistics()
+                        }
                         backStack.lastOrNull() is ActivityHistoryDetailRoot -> {
                             val session = activityHistorySessions.activeSession
                             if (session?.controller?.handleBack() != true) {
@@ -365,6 +377,7 @@ internal fun LifeTracingApp(
                                 onLibrary = { backStack.openLibrary() },
                                 onPlan = { backStack.openPlan() },
                                 onHistory = { backStack.openHistory() },
+                                onStatistics = { backStack.openStatistics() },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
@@ -482,6 +495,13 @@ internal fun LifeTracingApp(
                                     backStack.openSequenceHistoryDetail(root.executionId.value)
                                 },
                             )
+                        }
+                        entry<StatisticsRoot> {
+                            val statisticsController = statisticsOwner.get(runtimeGraph::createStatisticsController)
+                            StatisticsRoute(statisticsController) {
+                                statisticsOwner.onRouteExited()
+                                backStack.removeStatistics()
+                            }
                         }
                         entry<ActivityHistoryDetailRoot> { route ->
                             val executionId =
@@ -721,6 +741,14 @@ internal fun MutableList<NavKey>.openHistory() {
 
 internal fun MutableList<NavKey>.removeHistory() {
     if (lastOrNull() is HistoryRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openStatistics() {
+    if (lastOrNull() !is StatisticsRoot) add(StatisticsRoot)
+}
+
+internal fun MutableList<NavKey>.removeStatistics() {
+    if (lastOrNull() is StatisticsRoot) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openManualActivityEntry() {

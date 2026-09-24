@@ -118,6 +118,28 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun statisticsUsesDailyStackOpenIsIdempotentAndBackRemovesOnlyStatistics() {
+        val backStack = dailyInitialBackStack.toMutableList()
+        backStack.openLibrary()
+        backStack.openStatistics()
+        backStack.openStatistics()
+        assertEquals(listOf(DailyRoot, LibraryRoot, StatisticsRoot), backStack)
+
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.removeLibrary()
+        backStack.openPlan()
+        backStack.openStatistics()
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, PlanRoot), backStack)
+        backStack.removePlan()
+        backStack.openHistory()
+        backStack.openStatistics()
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+    }
+
+    @Test
     fun sequenceHistoryBackConsumesTransientThenReleasesIdleSessionAndReopensFresh() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)

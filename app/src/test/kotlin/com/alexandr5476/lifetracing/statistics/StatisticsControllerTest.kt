@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -25,6 +26,42 @@ import java.time.Year
 import java.time.YearMonth
 
 class StatisticsControllerTest {
+    @Test
+    fun routeOwnerStartsAtCurrentLocalMonthAndCreatesFreshControllerAfterExit() {
+        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        val owner = StatisticsControllerOwner()
+        val createdPeriods = mutableListOf<StatisticsPeriod>()
+        var reads = 0
+        val first =
+            owner.get { period ->
+                createdPeriods += period
+                StatisticsController(scope, period) {
+                    reads++
+                    overview(1)
+                }
+            }
+        assertEquals(StatisticsPeriod.Month(YearMonth.now()), createdPeriods.single())
+        assertEquals(1, reads)
+
+        owner.onRouteExited()
+        val second =
+            owner.get { period ->
+                createdPeriods += period
+                StatisticsController(scope, period) {
+                    reads++
+                    overview(2)
+                }
+            }
+        assertNotSame(first, second)
+        assertEquals(2, reads)
+        assertEquals(
+            listOf(StatisticsPeriod.Month(YearMonth.now()), StatisticsPeriod.Month(YearMonth.now())),
+            createdPeriods,
+        )
+        owner.onRouteExited()
+        scope.cancel()
+    }
+
     @Test
     fun initialReadPublishesContentAndPassesCanonicalSeriesThrough() =
         runBlocking {
@@ -191,6 +228,18 @@ class StatisticsControllerTest {
         val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
         return ControllerFixture(scope, StatisticsController(scope, initial, reader))
     }
+
+    @Test
+    fun closingControllerInvalidatesAnInFlightRead() =
+        runBlocking {
+            val pending = CompletableDeferred<StatisticsOverview>()
+            val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+            val controller = StatisticsController(scope, StatisticsPeriod.AllTime) { pending.await() }
+            controller.close()
+            pending.complete(overview(9))
+            assertEquals(StatisticsLoadState.Loading, controller.state.value.load)
+            scope.cancel()
+        }
 
     private suspend fun StatisticsController.awaitState(
         predicate: (StatisticsPresentationState) -> Boolean,
