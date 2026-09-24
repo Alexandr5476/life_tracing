@@ -22,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -498,6 +499,41 @@ class StatisticsRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) { repository.seriesCatalog() }
         database.openHelper.writableDatabase.execSQL(
             "UPDATE statistics_series SET kind = 'SEQUENCE' WHERE id = 'sourceless-series'",
+        )
+    }
+
+    @Test
+    fun overviewMatchesCanonicalReadersAndPreservesEveryCatalogSeries() {
+        series("active-series", "ACTIVITY", "Active")
+        series("archived-series", "ACTIVITY", "Archived")
+        series("sourceless-series", "SEQUENCE", "Old sequence", archivedAt = 50)
+        activityTemplate("active", "Active", "active-series")
+        activityTemplate("archived", "Archived", "archived-series", deletedAt = 10)
+        activitySnapshot("active-history", "active-series")
+        completedActivity("active-execution", "active-history", "active-series", MINUTE, AUG_20)
+        activitySnapshot("source-free", null)
+        completedSequence("old-sequence", "sourceless-series", "source-free", MINUTE, 0, AUG_20)
+
+        val period = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        val overview = repository.overview(period)
+
+        assertEquals(repository.global(period), overview.global)
+        assertEquals(repository.seriesSummaries(period), overview.series)
+        assertEquals(
+            mapOf(
+                "active-series" to StatisticsSeriesSourceState.ACTIVE_SOURCE,
+                "archived-series" to StatisticsSeriesSourceState.ARCHIVED_SOURCE,
+                "sourceless-series" to StatisticsSeriesSourceState.NO_CURRENT_SOURCE,
+                ONE_OFF to StatisticsSeriesSourceState.SYSTEM_ONE_OFF,
+            ),
+            overview.series.associate { it.series.id.value to it.series.sourceState },
+        )
+        assertEquals(0L, overview.series.single { it.series.id.value == "archived-series" }.executionCount)
+        assertEquals(
+            StatisticsSeriesKind.ONE_OFF_BUCKET,
+            overview.series
+                .single { it.series.id.value == ONE_OFF }
+                .series.kind,
         )
     }
 

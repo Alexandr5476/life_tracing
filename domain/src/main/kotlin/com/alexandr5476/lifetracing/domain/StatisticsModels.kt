@@ -230,6 +230,14 @@ data class StatisticsSeriesPeriodSummary(
     val activeDayCount: Long,
 )
 
+data class StatisticsOverview(
+    val global: GlobalStatistics,
+    val series: List<StatisticsSeriesPeriodSummary>,
+) {
+    val isEmpty: Boolean
+        get() = global.topLevelExecutionCount == 0L && series.all { it.executionCount == 0L }
+}
+
 data class ActivitySeriesStatistics(
     val series: StatisticsSeriesSummary,
     val executionCount: Long,

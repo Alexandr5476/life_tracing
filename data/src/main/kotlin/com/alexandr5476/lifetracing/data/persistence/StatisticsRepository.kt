@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
 import com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
 import com.alexandr5476.lifetracing.domain.StatisticsFieldDescriptor
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
+import com.alexandr5476.lifetracing.domain.StatisticsOverview
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeries
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -41,65 +42,71 @@ class StatisticsRepository internal constructor(
     private val database: LifeTracingDatabase,
     private val nextStatisticsSeriesId: () -> StatisticsSeriesId,
 ) {
-    fun global(period: StatisticsPeriod): GlobalStatistics =
-        transaction {
-            val range = period.dateRangeOrNull()
-            val row =
-                database.statisticsDao().global(
-                    range?.startDate?.toString(),
-                    range?.endDateInclusive?.toString(),
-                    ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
-                )
-            GlobalStatistics(
-                totalTrackedDuration = Duration.ofMillis(row.totalTrackedMs),
-                topLevelExecutionCount = row.executionCount,
-                activeDayCount = row.activeDayCount,
-                averageTrackedMillisecondsPerActiveDay = average(row.totalTrackedMs, row.activeDayCount),
-                averageTopLevelExecutionsPerActiveDay = average(row.executionCount, row.activeDayCount),
-                totalSequencePauseIdleDuration = Duration.ofMillis(row.sequencePauseMs),
-                oneOffActivityExecutionCount = row.oneOffCount,
-                oneOffActivityTrackedDuration = Duration.ofMillis(row.oneOffTrackedMs),
-                firstPrimaryDate = row.firstPrimaryDate?.let(LocalDate::parse),
-                lastPrimaryDate = row.lastPrimaryDate?.let(LocalDate::parse),
-                calendarDayCount = range?.calendarDayCount,
-                averageTrackedMillisecondsPerCalendarDay =
-                    range?.let { average(row.totalTrackedMs, it.calendarDayCount) },
+    fun global(period: StatisticsPeriod): GlobalStatistics = transaction { globalLocked(period) }
+
+    fun overview(period: StatisticsPeriod): StatisticsOverview =
+        transaction { StatisticsOverview(globalLocked(period), seriesSummariesLocked(period)) }
+
+    private fun globalLocked(period: StatisticsPeriod): GlobalStatistics {
+        val range = period.dateRangeOrNull()
+        val row =
+            database.statisticsDao().global(
+                range?.startDate?.toString(),
+                range?.endDateInclusive?.toString(),
+                ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
             )
-        }
+        return GlobalStatistics(
+            totalTrackedDuration = Duration.ofMillis(row.totalTrackedMs),
+            topLevelExecutionCount = row.executionCount,
+            activeDayCount = row.activeDayCount,
+            averageTrackedMillisecondsPerActiveDay = average(row.totalTrackedMs, row.activeDayCount),
+            averageTopLevelExecutionsPerActiveDay = average(row.executionCount, row.activeDayCount),
+            totalSequencePauseIdleDuration = Duration.ofMillis(row.sequencePauseMs),
+            oneOffActivityExecutionCount = row.oneOffCount,
+            oneOffActivityTrackedDuration = Duration.ofMillis(row.oneOffTrackedMs),
+            firstPrimaryDate = row.firstPrimaryDate?.let(LocalDate::parse),
+            lastPrimaryDate = row.lastPrimaryDate?.let(LocalDate::parse),
+            calendarDayCount = range?.calendarDayCount,
+            averageTrackedMillisecondsPerCalendarDay =
+                range?.let { average(row.totalTrackedMs, it.calendarDayCount) },
+        )
+    }
 
     fun seriesCatalog(): List<StatisticsSeriesSummary> = transaction(::seriesCatalogLocked)
 
     fun seriesSummaries(period: StatisticsPeriod): List<StatisticsSeriesPeriodSummary> =
-        transaction {
-            val range = period.dateRangeOrNull()
-            val start = range?.startDate?.toString()
-            val end = range?.endDateInclusive?.toString()
-            val rows =
-                (
-                    database.statisticsDao().activitySeriesAggregates(null, start, end) +
-                        database.statisticsDao().sequenceSeriesAggregates(null, start, end) +
-                        listOfNotNull(
-                            database.statisticsDao().oneOffAggregate(
-                                ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
-                                start,
-                                end,
-                            ),
-                        )
-                ).associateBy(StatisticsSeriesAggregateRow::seriesId)
-            seriesCatalogLocked().map { series ->
-                val row = rows[series.id.value]
-                val samples = row?.durationSampleCount ?: 0
-                val total = row?.totalDurationMs ?: 0
-                StatisticsSeriesPeriodSummary(
-                    series,
-                    row?.executionCount ?: 0,
-                    samples,
-                    Duration.ofMillis(total),
-                    average(total, samples),
-                    row?.activeDayCount ?: 0,
-                )
-            }
+        transaction { seriesSummariesLocked(period) }
+
+    private fun seriesSummariesLocked(period: StatisticsPeriod): List<StatisticsSeriesPeriodSummary> {
+        val range = period.dateRangeOrNull()
+        val start = range?.startDate?.toString()
+        val end = range?.endDateInclusive?.toString()
+        val rows =
+            (
+                database.statisticsDao().activitySeriesAggregates(null, start, end) +
+                    database.statisticsDao().sequenceSeriesAggregates(null, start, end) +
+                    listOfNotNull(
+                        database.statisticsDao().oneOffAggregate(
+                            ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
+                            start,
+                            end,
+                        ),
+                    )
+            ).associateBy(StatisticsSeriesAggregateRow::seriesId)
+        return seriesCatalogLocked().map { series ->
+            val row = rows[series.id.value]
+            val samples = row?.durationSampleCount ?: 0
+            val total = row?.totalDurationMs ?: 0
+            StatisticsSeriesPeriodSummary(
+                series,
+                row?.executionCount ?: 0,
+                samples,
+                Duration.ofMillis(total),
+                average(total, samples),
+                row?.activeDayCount ?: 0,
+            )
         }
+    }
 
     fun activitySeries(
         seriesId: StatisticsSeriesId,
