@@ -1057,6 +1057,103 @@ class StartActivityControllerTest {
             controller.close()
         }
 
+    @Test
+    fun oneOffDraftIsNonDurableAndNoLiveCommitsWithoutCoordination() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Quick note"))
+            controller.dispatch(StartActivityAction.EditOneOffComment("Now"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.NO_LIVE_TRACKING))
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitCommitted()
+            val command = harness.commands.single() as LauncherDurableCommand.OneOff
+            assertEquals("Quick note", command.draft.name)
+            assertEquals("Now", command.draft.shortComment)
+            assertEquals(TimeTrackingMode.NO_LIVE_TRACKING, command.draft.timeTrackingMode)
+            assertEquals(command.at, harness.wall.now())
+            assertEquals(0, harness.coordinationCalls)
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffTimerValidationConflictRetryAndCoordinationFailureKeepSingleWriter() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Quick timer"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("0"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("7"))
+            harness.writerFailure = LiveSessionConflictException()
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitConflict()
+            assertEquals(
+                "Quick timer",
+                controller.state.value.oneOff
+                    ?.name,
+            )
+            harness.writerFailure = null
+            harness.coordinationFailure = IllegalStateException("coordination")
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            controller.awaitCoordinationFailure()
+            assertEquals(2, harness.commands.size)
+            assertEquals(
+                Duration.ofMinutes(7),
+                (harness.commands.last() as LauncherDurableCommand.OneOff).draft.timerTarget,
+            )
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            assertEquals(2, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffAdmissionSurvivesBackAndDuplicateAction() =
+        runBlocking {
+            val harness = Harness()
+            val writerGate = CompletableDeferred<Unit>()
+            harness.writerGate = writerGate
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Retained"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
+            assertEquals(LauncherRouteExitDecision.WAIT_FOR_COMMIT, controller.arbitrateRouteExit())
+            controller.dispatch(StartActivityAction.CloseOneOff)
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            writerGate.complete(Unit)
+            controller.awaitCommitted()
+            assertEquals(LauncherRouteExitDecision.DELIVER_COMMIT, controller.arbitrateRouteExit())
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffBackBeforeAdmissionDropsDraftWithoutWriter() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Draft"))
+            controller.dispatch(StartActivityAction.CloseOneOff)
+            assertNull(controller.state.value.oneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.close()
+        }
+
     private class Harness {
         val wall = MutableWallClock(NOW)
         val scheduler = FakePreflightScheduler()
@@ -1099,6 +1196,7 @@ class StartActivityControllerTest {
             target
         }
 
+        @Suppress("LongMethod") // The launcher harness supplies every dependency explicitly.
         fun controller(scope: CoroutineScope) =
             StartActivityController(
                 scope,
@@ -1132,6 +1230,11 @@ class StartActivityControllerTest {
                             LauncherCommit.Activity(ActivityExecutionId("activity-execution"), true)
                         is LauncherDurableCommand.CompleteNoLive ->
                             LauncherCommit.Activity(ActivityExecutionId("no-live-execution"), false)
+                        is LauncherDurableCommand.OneOff ->
+                            LauncherCommit.Activity(
+                                ActivityExecutionId("one-off-execution"),
+                                command.draft.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING,
+                            )
                         is LauncherDurableCommand.StartSequence ->
                             LauncherCommit.Sequence(SequenceExecutionId("sequence-execution"))
                         is LauncherDurableCommand.StartOptionsLive ->

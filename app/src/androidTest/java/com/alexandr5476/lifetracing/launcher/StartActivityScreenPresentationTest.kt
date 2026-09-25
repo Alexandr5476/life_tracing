@@ -50,6 +50,29 @@ class StartActivityScreenPresentationTest {
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun oneOffAffordanceAndTimerValidationUseSeparateLauncherForm() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        var state by mutableStateOf(homeState(recent = listOf(trackable("Sequence", sequence = true))))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+
+        composeTestRule.onNodeWithTag("launcher-new-one-off").performScrollTo().performClick()
+        assertEquals(StartActivityAction.OpenOneOff, actions.last())
+        state = state.copy(oneOff = OneOffDraft())
+        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsNotEnabled()
+        state = state.copy(oneOff = OneOffDraft(name = "Run", mode = TimeTrackingMode.TIMER))
+        composeTestRule.onNodeWithTag("launcher-one-off-timer").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsNotEnabled()
+        state = state.copy(oneOff = OneOffDraft(name = "Run", mode = TimeTrackingMode.TIMER, timerMinutes = "5"))
+        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsEnabled()
+        composeTestRule.onNodeWithTag("launcher-one-off-execute").performClick()
+        assertEquals(StartActivityAction.ExecuteOneOff, actions.last())
+        state = state.copy(command = LauncherCommandState.Conflict("active"))
+        composeTestRule.onNodeWithTag("launcher-one-off-execute").performClick()
+        assertEquals(StartActivityAction.RetryLaunch, actions.last())
+    }
+
+    @Test
     fun immediateSelectionUsesOneSelectThenLaunchWithoutConfirmation() {
         val actions = mutableListOf<StartActivityAction>()
         val interaction = StartActivityRouteInteraction()

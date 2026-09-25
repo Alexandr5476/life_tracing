@@ -554,4 +554,13 @@
     <string name="launcher_options_future_start">Choose a start before the current time.</string>
     <string name="launcher_options_expired_finish">This FINISH timer has reached its deadline. Add an end time to save completed history, or choose a later start.</string>
     <string name="launcher_options_zone_changed">Device time zone changed. Review the entered times.</string>
+    <string name="launcher_new_one_off">New one-off activity</string>
+    <string name="launcher_one_off_name">Activity name</string>
+    <string name="launcher_one_off_comment">Short comment (optional)</string>
+    <string name="launcher_one_off_stopwatch">Stopwatch</string>
+    <string name="launcher_one_off_timer">Timer</string>
+    <string name="launcher_one_off_no_live">No live tracking</string>
+    <string name="launcher_one_off_timer_minutes">Timer target (minutes)</string>
+    <string name="launcher_one_off_invalid">Enter a name and a positive Timer target when using Timer.</string>
+    <string name="launcher_one_off_start">Start</string>
 </resources>

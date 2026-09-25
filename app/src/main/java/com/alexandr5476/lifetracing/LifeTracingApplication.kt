@@ -27,6 +27,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -933,7 +934,19 @@ internal fun executeLauncherCommand(
                 )
             LauncherCommit.Activity(execution.id, false)
         }
-        is LauncherDurableCommand.StartSequence -> {
+        is LauncherDurableCommand.OneOff -> {
+            val source = ActivityEntrySource.OneOff(command.draft)
+            val execution =
+                if (command.draft.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                    activityCommandRepository.completeOneOffNoLiveNow(command.draft, command.at, command.zoneId)
+                } else {
+                    activityCommandRepository.startLive(source, command.at, command.at, command.zoneId)
+                }
+            LauncherCommit.Activity(
+                execution.id,
+                command.draft.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING,
+            )
+        } is LauncherDurableCommand.StartSequence -> {
             val state =
                 libraryRepository.startSequenceFromTemplate(
                     command.templateId,

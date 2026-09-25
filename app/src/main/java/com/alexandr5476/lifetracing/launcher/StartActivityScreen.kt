@@ -78,7 +78,13 @@ internal fun StartActivityRoute(
         exitPolicy.requestExit(controller::arbitrateRouteExit, onBack, onCommitted)
     }
     BackHandler(enabled = true) {
-        if (state.options != LauncherLoad.Idle &&
+        if (state.oneOff != null &&
+            state.command !is LauncherCommandState.Committing &&
+            state.command !is LauncherCommandState.Committed &&
+            state.command !is LauncherCommandState.CommittedCoordinationFailure
+        ) {
+            controller.dispatch(StartActivityAction.CloseOneOff)
+        } else if (state.options != LauncherLoad.Idle &&
             state.command !is LauncherCommandState.Committing &&
             state.command !is LauncherCommandState.Committed &&
             state.command !is LauncherCommandState.CommittedCoordinationFailure
@@ -94,6 +100,7 @@ internal fun StartActivityRoute(
     StartActivityScreen(state, controller::dispatch, session.interaction, exitRoute)
 }
 
+@Suppress("CyclomaticComplexMethod") // Launcher sections remain in their product order.
 @Composable
 internal fun StartActivityScreen(
     state: StartActivityState,
@@ -114,6 +121,7 @@ internal fun StartActivityScreen(
         onAction(StartActivityAction.Select(id))
     }
     LaunchedEffect(selected, interaction.pendingSelectionId) {
+        if (state.oneOff != null) return@LaunchedEffect
         val target = (selected as? LauncherLoad.Content)?.value ?: return@LaunchedEffect
         interaction.resolveSelection(target)?.let(onAction)
     }
@@ -127,21 +135,21 @@ internal fun StartActivityScreen(
         ) {
             item {
                 LauncherHeader(onBack = {
-                    if (interaction.browsePath.isEmpty()) {
-                        if (state.options !=
-                            LauncherLoad.Idle
-                        ) {
-                            onAction(StartActivityAction.CloseOptions)
-                        } else {
-                            onRouteBack()
-                        }
-                    } else {
-                        onAction(StartActivityAction.Browse(interaction.browseBack()))
+                    when {
+                        state.command is LauncherCommandState.Committing ||
+                            state.command is LauncherCommandState.Committed ||
+                            state.command is LauncherCommandState.CommittedCoordinationFailure -> onRouteBack()
+                        state.oneOff != null -> onAction(StartActivityAction.CloseOneOff)
+                        state.options != LauncherLoad.Idle -> onAction(StartActivityAction.CloseOptions)
+                        interaction.browsePath.isNotEmpty() ->
+                            onAction(StartActivityAction.Browse(interaction.browseBack()))
+                        else -> onRouteBack()
                     }
                 })
             }
             item { CommandPresentation(state.command, (selected as? LauncherLoad.Content)?.value?.name, onAction) }
             if (state.options != LauncherLoad.Idle) item { StartOptionsPanel(state.options, state.command, onAction) }
+            state.oneOff?.let { draft -> item { OneOffPanel(draft, state.command, onAction) } }
             item { OrganizationFailure(state.organizationFailure) }
             item { TargetLoading(selected, onAction) }
             quickTarget?.let { target ->
@@ -212,6 +220,17 @@ internal fun StartActivityScreen(
                     onRetry = { onAction(StartActivityAction.Retry) },
                 )
             }
+            if (state.oneOff == null) {
+                item {
+                    LauncherCard {
+                        LifeTracingSecondaryButton(
+                            onClick = { onAction(StartActivityAction.OpenOneOff) },
+                            enabled = state.canSelect(quickEditor != null),
+                            modifier = Modifier.testTag("launcher-new-one-off"),
+                        ) { Text(stringResource(R.string.launcher_new_one_off)) }
+                    }
+                }
+            }
         }
     }
 }
@@ -220,8 +239,92 @@ private fun StartActivityState.canSelect(quickEditorOpen: Boolean): Boolean =
     !organizationInFlight &&
         !quickEditorOpen &&
         options == LauncherLoad.Idle &&
+        oneOff == null &&
         selected !is LauncherLoad.Loading &&
         command == LauncherCommandState.Idle
+
+@Composable
+private fun OneOffPanel(
+    draft: OneOffDraft,
+    command: LauncherCommandState,
+    onAction: (StartActivityAction) -> Unit,
+) {
+    val enabled =
+        command == LauncherCommandState.Idle ||
+            command is LauncherCommandState.Conflict ||
+            command is LauncherCommandState.Rejected
+    val valid = runCatching { draft.configuration() }.isSuccess
+    LauncherCard {
+        Text(stringResource(R.string.launcher_new_one_off), style = MaterialTheme.typography.titleLarge)
+        LifeTracingOutlinedTextField(
+            value = draft.name,
+            onValueChange = { onAction(StartActivityAction.EditOneOffName(it)) },
+            modifier = Modifier.fillMaxWidth().testTag("launcher-one-off-name"),
+            enabled = enabled,
+            label = { Text(stringResource(R.string.launcher_one_off_name)) },
+        )
+        LifeTracingOutlinedTextField(
+            value = draft.shortComment,
+            onValueChange = { onAction(StartActivityAction.EditOneOffComment(it)) },
+            modifier = Modifier.fillMaxWidth().testTag("launcher-one-off-comment"),
+            enabled = enabled,
+            label = { Text(stringResource(R.string.launcher_one_off_comment)) },
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            listOf(
+                TimeTrackingMode.STOPWATCH to R.string.launcher_one_off_stopwatch,
+                TimeTrackingMode.TIMER to R.string.launcher_one_off_timer,
+                TimeTrackingMode.NO_LIVE_TRACKING to R.string.launcher_one_off_no_live,
+            ).forEach { (mode, label) ->
+                LifeTracingSecondaryButton(
+                    onClick = { onAction(StartActivityAction.EditOneOffMode(mode)) },
+                    enabled = enabled,
+                ) {
+                    Text(stringResource(label) + if (draft.mode == mode) " \u2713" else "")
+                }
+            }
+        }
+        if (draft.mode == TimeTrackingMode.TIMER) {
+            LifeTracingOutlinedTextField(
+                value = draft.timerMinutes,
+                onValueChange = { onAction(StartActivityAction.EditOneOffTimerMinutes(it)) },
+                modifier = Modifier.fillMaxWidth().testTag("launcher-one-off-timer"),
+                enabled = enabled,
+                label = { Text(stringResource(R.string.launcher_one_off_timer_minutes)) },
+            )
+        }
+        if (!valid) Text(stringResource(R.string.launcher_one_off_invalid), color = MaterialTheme.colorScheme.error)
+        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            LifeTracingSecondaryButton(
+                onClick = { onAction(StartActivityAction.CloseOneOff) },
+                enabled = enabled,
+            ) { Text(stringResource(R.string.launcher_cancel)) }
+            LifeTracingPrimaryButton(
+                onClick = {
+                    onAction(
+                        if (command == LauncherCommandState.Idle) {
+                            StartActivityAction.ExecuteOneOff
+                        } else {
+                            StartActivityAction.RetryLaunch
+                        },
+                    )
+                },
+                enabled = enabled && valid,
+                modifier = Modifier.testTag("launcher-one-off-execute"),
+            ) {
+                Text(
+                    stringResource(
+                        if (draft.mode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                            R.string.launcher_complete
+                        } else {
+                            R.string.launcher_one_off_start
+                        },
+                    ),
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun LauncherHeader(onBack: () -> Unit) {

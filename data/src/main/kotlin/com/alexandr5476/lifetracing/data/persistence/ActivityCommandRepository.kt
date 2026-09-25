@@ -22,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrectionPolicy
 import com.alexandr5476.lifetracing.domain.ActivityHistoryItem
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
@@ -160,6 +161,33 @@ class ActivityCommandRepository internal constructor(
                     prepared.plan?.id,
                 )
             persistManual(prepared, generated, valueOverrides, createdAt)
+        }
+
+    /** Current one-off completion owns only its frozen execution graph and never acquires the live slot. */
+    fun completeOneOffNoLiveNow(
+        draft: ActivitySnapshotDraft,
+        completedAt: Instant,
+        eventZoneId: ZoneId,
+        valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
+    ): ActivityExecution =
+        transaction {
+            val prepared = prepare(ActivityEntrySource.OneOff(draft), completedAt)
+            require(prepared.snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                "Current one-off completion requires NO_LIVE_TRACKING"
+            }
+            val execution =
+                ActivityExecutionValuePolicy.apply(
+                    executionFactory.completeNoLiveNow(
+                        prepared.snapshot,
+                        completedAt,
+                        eventZoneId,
+                        createdAt = completedAt,
+                    ),
+                    prepared.snapshot,
+                    resolveValueOverrides(prepared, valueOverrides),
+                )
+            database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
+            execution
         }
 
     fun overlapsCompletedHistory(

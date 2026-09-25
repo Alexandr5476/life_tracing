@@ -900,6 +900,165 @@ class ActivityCommandRepositoryTest {
     }
 
     @Test
+    fun currentOneOffTimerReloadsAuthoredTargetAndCanonicalDeadline() {
+        val repository = repository("one-off-timer")
+        // The required one-off bucket already exists in statistics_series for this database.
+        val statisticsSeriesCount = count("statistics_series")
+        val at = instant(100)
+        val execution =
+            repository.startLive(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.TIMER).copy(fields = emptyList())),
+                at,
+                at,
+                ZoneOffset.UTC,
+            )
+        val runtime = liveRepository("one-off-timer-reload").getActiveRuntime() as ActiveActivityRuntime
+        val snapshot = requireNotNull(repository.getHistory(execution.id)).snapshot
+        assertEquals(Duration.ofMinutes(10), snapshot.timerTarget)
+        assertEquals(TimeTrackingMode.TIMER, snapshot.timeTrackingMode)
+        assertEquals(at.plus(Duration.ofMinutes(10)), NextRuntimeDeadlineResolver.resolve(runtime)?.at)
+        assertEquals(execution.id, database.activeSessionDao().get()?.activityExecutionId)
+        val daily =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(execution.primaryLocalDate, at, 10))
+        assertEquals(execution.id, (daily.active as DailyActive.Activity).runtime.execution.id)
+        liveRepository("one-off-timer-finish").completeActiveActivity(at.plusSeconds(30))
+        val global = StatisticsRepository(database) { StatisticsSeriesId("unused") }.global(StatisticsPeriod.AllTime)
+        assertEquals(1L, global.oneOffActivityExecutionCount)
+        assertEquals(Duration.ofSeconds(30), global.oneOffActivityTrackedDuration)
+        assertEquals(0, count("activity_templates"))
+        assertEquals(statisticsSeriesCount, count("statistics_series"))
+    }
+
+    @Test
+    fun currentOneOffNoLiveCompletesBesideLiveSessionWithoutManualReasonOrLibraryWrites() {
+        val repository = repository("current-one-off")
+        // The required one-off bucket already exists in statistics_series for this database.
+        val statisticsSeriesCount = count("statistics_series")
+        val live =
+            repository.startLive(
+                ActivityEntrySource.OneOff(oneOff(TimeTrackingMode.STOPWATCH).copy(fields = emptyList())),
+                instant(100),
+                instant(100),
+                ZoneOffset.UTC,
+            )
+        val activeBefore = database.activeSessionDao().get()
+        val completed =
+            repository.completeOneOffNoLiveNow(
+                oneOff(TimeTrackingMode.NO_LIVE_TRACKING),
+                instant(120),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.OneOff("number"),
+                        ActivityEntryValue.Number(0),
+                    ),
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.OneOff("category"),
+                        ActivityEntryValue.Category(ActivityEntryOptionReference.OneOff("option-b")),
+                    ),
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.OneOff("text"),
+                        ActivityEntryValue.Missing,
+                    ),
+                ),
+            )
+        assertEquals(activeBefore, database.activeSessionDao().get())
+        assertEquals(live.id, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(ActivityExecutionStatus.COMPLETED, completed.status)
+        assertNull(completed.startedAt)
+        assertNull(completed.activeDuration)
+        assertNull(completed.completionReason)
+        assertEquals(ActivityExecutionStatistics.ONE_OFF_BUCKET_ID, completed.statisticsSeriesId)
+        val reloaded = requireNotNull(repository.getHistory(completed.id))
+        assertNull(reloaded.snapshot.sourceTemplateId)
+        assertNull(reloaded.snapshot.sourceRevision)
+        assertNull(reloaded.snapshot.statisticsSeriesId)
+        assertTrue(reloaded.snapshot.fields.all { it.sourceFieldId == null })
+        assertTrue(
+            reloaded.snapshot.fields
+                .flatMap { it.categoryOptions }
+                .all { it.sourceOptionId == null },
+        )
+        assertTrue(reloaded.execution.values.any { it is NumberExecutionValue && it.scaledValue == 0L })
+        assertTrue(reloaded.execution.values.any { it is CategoryExecutionValue })
+        assertFalse(reloaded.execution.values.any { it is TextExecutionValue })
+        val history = HistoryReadRepository(database)
+        assertTrue(
+            history
+                .getCompletedRoots(
+                    CompletedHistoryQuery(
+                        HistoryDateRange(completed.primaryLocalDate, completed.primaryLocalDate),
+                        10,
+                    ),
+                ).any { it is CompletedActivityHistoryRoot && it.executionId == completed.id },
+        )
+        val daily =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(completed.primaryLocalDate, instant(120), 10))
+        assertTrue(daily.completedHistory.any { it is CompletedActivityHistoryRoot && it.executionId == completed.id })
+        val global = StatisticsRepository(database) { StatisticsSeriesId("unused") }.global(StatisticsPeriod.AllTime)
+        assertEquals(1L, global.oneOffActivityExecutionCount)
+        assertEquals(Duration.ZERO, global.oneOffActivityTrackedDuration)
+        assertEquals(0, count("activity_templates"))
+        assertEquals(0, count("activity_template_user_state"))
+        assertEquals(statisticsSeriesCount, count("statistics_series"))
+    }
+
+    @Test
+    fun currentOneOffNoLivePreservesPausedSequenceRuntime() {
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.seedSeries()
+        fixtures.activity("one-off-child-stopwatch", "STOPWATCH")
+        fixtures.sequence("one-off-parent", listOf("one-off-child-stopwatch"))
+        val live = liveRepository("one-off-sequence")
+        val sequence =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("one-off-parent"),
+                instant(100),
+                instant(100),
+                ZoneOffset.UTC,
+            )
+        live.pauseActiveSequence(sequence.execution.id, instant(110))
+        val sessionBefore = live.getActiveSession()
+        val runtimeBefore = live.getActiveRuntime()
+
+        val completed =
+            repository("beside-paused-sequence").completeOneOffNoLiveNow(
+                oneOff(TimeTrackingMode.NO_LIVE_TRACKING).copy(fields = emptyList()),
+                instant(120),
+                ZoneOffset.UTC,
+            )
+        assertNull(completed.completionReason)
+        assertEquals(sessionBefore, live.getActiveSession())
+        assertEquals(runtimeBefore, live.getActiveRuntime())
+    }
+
+    @Test
+    fun currentOneOffNoLiveInvalidOptionRollsBackSnapshotAndValues() {
+        val repository = repository("invalid-current-one-off")
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.completeOneOffNoLiveNow(
+                oneOff(TimeTrackingMode.NO_LIVE_TRACKING),
+                instant(120),
+                ZoneOffset.UTC,
+                listOf(
+                    ActivityEntryValueOverride(
+                        ActivityEntryFieldReference.OneOff("number"),
+                        ActivityEntryValue.Category(ActivityEntryOptionReference.OneOff("option-b")),
+                    ),
+                ),
+            )
+        }
+        assertEquals(0, count("activity_snapshots"))
+        assertEquals(0, count("activity_snapshot_fields"))
+        assertEquals(0, count("activity_snapshot_category_options"))
+        assertEquals(0, count("activity_executions"))
+        assertEquals(0, count("activity_execution_field_values"))
+        assertNull(database.activeSessionDao().get())
+    }
+
+    @Test
     fun planUsesFrozenSnapshotNoAutoMatchAndHistoryDeleteStaysExplicit() {
         template("planned", TimeTrackingMode.STOPWATCH, fields = true, shortComment = "old")
         val plans = planRepository()

@@ -13,9 +13,11 @@ package com.alexandr5476.lifetracing.launcher
 
 import com.alexandr5476.lifetracing.domain.ActivityEntryValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateValidator
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.FolderId
@@ -141,6 +143,31 @@ internal enum class LauncherReadChannel {
     SELECTED,
 }
 
+private const val MILLIS_PER_MINUTE = 60_000L
+
+data class OneOffDraft(
+    val name: String = "",
+    val shortComment: String = "",
+    val mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+    val timerMinutes: String = "",
+) {
+    fun configuration(): ActivitySnapshotDraft {
+        require(name.isNotBlank()) { "Activity name is required" }
+        val target =
+            if (mode == TimeTrackingMode.TIMER) {
+                val minutes = timerMinutes.toLongOrNull()
+                require(minutes != null && minutes > 0 && minutes <= Long.MAX_VALUE / MILLIS_PER_MINUTE) {
+                    "Timer target must be positive and representable in milliseconds"
+                }
+                Duration.ofMinutes(minutes)
+            } else {
+                null
+            }
+        ActivityTemplateValidator.requireValidTracking(mode, target)
+        return ActivitySnapshotDraft(name.trim(), shortComment.trim().ifBlank { null }, mode, target)
+    }
+}
+
 data class StartActivityState(
     val home: LauncherLoad<LauncherHome> = LauncherLoad.Loading,
     val searchQuery: String = "",
@@ -150,6 +177,7 @@ data class StartActivityState(
     val selected: LauncherLoad<LibraryLaunchTarget> = LauncherLoad.Idle,
     val command: LauncherCommandState = LauncherCommandState.Idle,
     val options: LauncherLoad<StartOptionsDraft> = LauncherLoad.Idle,
+    val oneOff: OneOffDraft? = null,
     val organizationInFlight: Boolean = false,
     val organizationFailure: String? = null,
 )
@@ -176,6 +204,28 @@ sealed interface StartActivityAction {
     data class Launch(
         val mainValueOverride: QuickMainValueOverride? = null,
     ) : StartActivityAction
+
+    data object OpenOneOff : StartActivityAction
+
+    data object CloseOneOff : StartActivityAction
+
+    data class EditOneOffName(
+        val value: String,
+    ) : StartActivityAction
+
+    data class EditOneOffComment(
+        val value: String,
+    ) : StartActivityAction
+
+    data class EditOneOffMode(
+        val value: TimeTrackingMode,
+    ) : StartActivityAction
+
+    data class EditOneOffTimerMinutes(
+        val value: String,
+    ) : StartActivityAction
+
+    data object ExecuteOneOff : StartActivityAction
 
     data object RetryLaunch : StartActivityAction
 
@@ -276,6 +326,12 @@ internal sealed interface LauncherDurableCommand {
         override val zoneId: ZoneId = proposal.zoneId
     }
 
+    data class OneOff(
+        val draft: ActivitySnapshotDraft,
+        override val at: Instant,
+        override val zoneId: ZoneId,
+    ) : LauncherDurableCommand
+
     data class StartSequence(
         val templateId: com.alexandr5476.lifetracing.domain.SequenceTemplateId,
         val expectedRevision: Long,
@@ -371,6 +427,13 @@ class StartActivityController internal constructor(
             is StartActivityAction.ReorderPinned -> reorder(action.completeOrderedIds)
             is StartActivityAction.Launch -> launch(action.mainValueOverride)
             StartActivityAction.RetryLaunch -> retryLaunch()
+            StartActivityAction.OpenOneOff -> openOneOff()
+            StartActivityAction.CloseOneOff -> closeOneOff()
+            is StartActivityAction.EditOneOffName -> editOneOff { it.copy(name = action.value) }
+            is StartActivityAction.EditOneOffComment -> editOneOff { it.copy(shortComment = action.value) }
+            is StartActivityAction.EditOneOffMode -> editOneOff { it.copy(mode = action.value) }
+            is StartActivityAction.EditOneOffTimerMinutes -> editOneOff { it.copy(timerMinutes = action.value) }
+            StartActivityAction.ExecuteOneOff -> executeOneOff()
             is StartActivityAction.OpenOptions -> openOptions(action.id)
             StartActivityAction.CloseOptions -> closeOptions()
             is StartActivityAction.EditOptionStart ->
@@ -577,6 +640,7 @@ class StartActivityController internal constructor(
     }
 
     private fun selectLocked(id: LibraryTemplateId): Long? {
+        if (mutableState.value.oneOff != null) return null
         when (mutableState.value.command) {
             is LauncherCommandState.Committing,
             is LauncherCommandState.Committed,
@@ -629,6 +693,105 @@ class StartActivityController internal constructor(
                 }
             }
         }
+    }
+
+    private fun openOneOff() {
+        synchronized(lifecycleLock) {
+            if (closed ||
+                !visible ||
+                mutableState.value.command != LauncherCommandState.Idle ||
+                mutableState.value.options != LauncherLoad.Idle ||
+                mutableState.value.oneOff != null
+            ) {
+                return
+            }
+            synchronized(readPublicationLock) {
+                selectedTargetId = null
+                targetGeneration.incrementAndGet()
+                mutableState.update { it.copy(oneOff = OneOffDraft(), selected = LauncherLoad.Idle) }
+            }
+        }
+    }
+
+    private fun closeOneOff() {
+        synchronized(lifecycleLock) {
+            if (mutableState.value.command is LauncherCommandState.Committing ||
+                mutableState.value.command is LauncherCommandState.Committed ||
+                mutableState.value.command is LauncherCommandState.CommittedCoordinationFailure
+            ) {
+                return
+            }
+            cancelPendingLaunchLocked()
+            mutableState.update { it.copy(oneOff = null, command = LauncherCommandState.Idle) }
+        }
+    }
+
+    private fun editOneOff(transform: (OneOffDraft) -> OneOffDraft) {
+        synchronized(lifecycleLock) {
+            val command = mutableState.value.command
+            if (command != LauncherCommandState.Idle &&
+                command !is LauncherCommandState.Conflict &&
+                command !is LauncherCommandState.Rejected
+            ) {
+                return
+            }
+            mutableState.update { state ->
+                state.oneOff?.let { state.copy(oneOff = transform(it), command = LauncherCommandState.Idle) } ?: state
+            }
+        }
+    }
+
+    private fun executeOneOff() {
+        synchronized(lifecycleLock) {
+            if (closed || !visible || mutableState.value.command != LauncherCommandState.Idle) return
+            val draft = mutableState.value.oneOff ?: return
+            val configuration =
+                try {
+                    draft.configuration()
+                } catch (_: IllegalArgumentException) {
+                    mutableState.update {
+                        it.copy(command = LauncherCommandState.Rejected("Invalid one-off configuration"))
+                    }
+                    return
+                }
+            val attempt = attemptGeneration.incrementAndGet()
+            mutableState.update { it.copy(command = LauncherCommandState.Committing(attempt)) }
+            pendingLaunchJob = scope.launch { commitOneOff(attempt, configuration) }
+        }
+    }
+
+    private suspend fun commitOneOff(
+        attempt: Long,
+        draft: ActivitySnapshotDraft,
+    ) {
+        val committed =
+            try {
+                val admission =
+                    mutationGate.admit {
+                        LauncherDurableCommand.OneOff(draft, wallClock.now(), zoneId())
+                    }
+                requireNotNull(admission).turn.run { execute(admission.command) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (conflict: LiveSessionConflictException) {
+                publishCommitResult(attempt, LauncherCommandState.Conflict(conflict.message()))
+                return
+            } catch (failure: Exception) {
+                publishCommitResult(attempt, LauncherCommandState.Rejected(failure.message()))
+                return
+            }
+        if (committed.isLive) {
+            try {
+                coordinateRuntimeStateChanged()
+            } catch (failure: Exception) {
+                publishCommitResult(
+                    attempt,
+                    LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()),
+                )
+                return
+            }
+        }
+        publishCommitResult(attempt, LauncherCommandState.Committed(committed))
     }
 
     private fun openOptions(
@@ -928,7 +1091,8 @@ class StartActivityController internal constructor(
             if (closed ||
                 !visible ||
                 mutableState.value.command != LauncherCommandState.Idle ||
-                mutableState.value.options != LauncherLoad.Idle
+                mutableState.value.options != LauncherLoad.Idle ||
+                mutableState.value.oneOff != null
             ) {
                 return
             }
@@ -1123,7 +1287,7 @@ class StartActivityController internal constructor(
             return
         }
         mutableState.update { it.copy(command = LauncherCommandState.Idle) }
-        launch(lastOverride)
+        if (mutableState.value.oneOff != null) executeOneOff() else launch(lastOverride)
     }
 
     private fun abandonPendingLaunch() {
