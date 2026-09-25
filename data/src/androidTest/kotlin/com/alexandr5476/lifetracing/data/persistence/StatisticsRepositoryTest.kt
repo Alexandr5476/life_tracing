@@ -35,6 +35,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -252,6 +253,307 @@ class StatisticsRepositoryTest {
                 .map {
                     it.id.value
                 }.toSet(),
+        )
+    }
+
+    @Test
+    fun sequenceSeriesDetailBatchesMixedFieldHistoryReadsAndMatchesCanonicalReaders() {
+        fun fixture(
+            prefix: String,
+            fieldCount: Int,
+        ) {
+            series(prefix, "SEQUENCE", prefix)
+            val fields =
+                (0 until fieldCount).map { index ->
+                    SequenceTemplateFieldEntity(
+                        "$prefix-field-$index",
+                        prefix,
+                        index,
+                        "Field $index",
+                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
+                        if (index % 2 == 0) "points" else null,
+                        if (index % 2 == 0) 0 else null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    )
+                }
+            val options =
+                fields.filter { it.fieldType == "CATEGORY" }.map {
+                    SequenceTemplateCategoryOptionEntity("${it.id}-source-option", it.id, 0, "Renamed ${it.id}")
+                }
+            sequenceTemplate(prefix, prefix, prefix, fields, options)
+            activitySnapshot("$prefix-child", null)
+            repeat(2) { execution ->
+                val snapshot = "$prefix-execution-$execution-snapshot"
+                val snapshotFields =
+                    fields.mapIndexed { index, field ->
+                        SequenceSnapshotFieldEntity(
+                            "$snapshot-field-$index",
+                            snapshot,
+                            field.id,
+                            index,
+                            field.name,
+                            null,
+                            field.fieldType,
+                            field.unit,
+                            field.displayPrecision,
+                            null,
+                            null,
+                            null,
+                            false,
+                        )
+                    }
+                val snapshotOptions =
+                    fields
+                        .mapIndexedNotNull { index, field ->
+                            if (field.fieldType != "CATEGORY") {
+                                null
+                            } else {
+                                (0..1).map { option ->
+                                    SequenceSnapshotCategoryOptionEntity(
+                                        "$snapshot-option-$index-$option",
+                                        "$snapshot-field-$index",
+                                        if (option == 0) "${field.id}-source-option" else null,
+                                        option,
+                                        if (option == 0) "Old source" else "Fallback ${field.id}",
+                                        null,
+                                    )
+                                }
+                            }
+                        }.flatten()
+                val start = if (execution == 0) START_2330 else millis("2026-08-21T23:30:00Z")
+                val end = start + MINUTE
+                database.sequenceSnapshotDao().insertAggregate(
+                    SequenceSnapshotAggregateEntity(
+                        SequenceSnapshotEntity(snapshot, "$prefix-execution-$execution", null, null, null, prefix, 0),
+                        sequenceSettings(snapshot),
+                        snapshotFields,
+                        snapshotOptions,
+                    ),
+                )
+                val values =
+                    fields.mapIndexedNotNull { index, field ->
+                        when {
+                            field.fieldType == "NUMBER" && (index == 0 || execution == 0) ->
+                                SequenceExecutionFieldValueEntity(
+                                    "$prefix-execution-$execution",
+                                    "$snapshot-field-$index",
+                                    if (index == 0) execution * 20L else index.toLong(),
+                                    null,
+                                    null,
+                                )
+                            field.fieldType == "CATEGORY" && (execution == 0 || index == 1) ->
+                                SequenceExecutionFieldValueEntity(
+                                    "$prefix-execution-$execution",
+                                    "$snapshot-field-$index",
+                                    null,
+                                    "$snapshot-option-$index-$execution",
+                                    null,
+                                )
+                            else -> null
+                        }
+                    }
+                database.sequenceExecutionDao().insertAggregate(
+                    SequenceExecutionAggregateEntity(
+                        SequenceExecutionEntity(
+                            "$prefix-execution-$execution",
+                            snapshot,
+                            null,
+                            prefix,
+                            if (execution == 0) "COMPLETED" else "ENDED_EARLY",
+                            start,
+                            end,
+                            MINUTE,
+                            0,
+                            MINUTE,
+                            "UTC",
+                            0,
+                            if (execution == 0) AUG_20 else AUG_21,
+                            null,
+                            start,
+                            end,
+                        ),
+                        occurrences =
+                            listOf(
+                                SequenceOccurrenceEntity(
+                                    "$prefix-occurrence-$execution",
+                                    "$prefix-execution-$execution",
+                                    null,
+                                    "$prefix-child",
+                                    0,
+                                    null,
+                                    null,
+                                    "COMPLETED",
+                                    start,
+                                    end,
+                                    "SEQUENCE_ENDED_EARLY",
+                                    true,
+                                    false,
+                                ),
+                            ),
+                        intervals =
+                            listOf(
+                                SequenceIntervalEntity(
+                                    "$prefix-interval-$execution",
+                                    "$prefix-execution-$execution",
+                                    "ACTIVE_STEP",
+                                    start,
+                                    end,
+                                    "$prefix-occurrence-$execution",
+                                ),
+                            ),
+                        values = values,
+                    ),
+                )
+            }
+        }
+        fixture("sequence-small", 2)
+        fixture("sequence-large", 40)
+        val period = StatisticsPeriod.Custom(LocalDate.parse(AUG_20), LocalDate.parse(AUG_21))
+
+        fun read(id: String): Pair<StatisticsSeriesDetail.Sequence, Int> {
+            observedSql.clear()
+            val detail =
+                repository.seriesDetail(StatisticsSeriesId(id), period) as StatisticsSeriesDetail.Sequence
+            val reads =
+                synchronized(observedSql) {
+                    observedSql.count { it.contains("FROM sequence_executions", ignoreCase = true) }
+                }
+            return detail to reads
+        }
+        val (small, smallReads) = read("sequence-small")
+        val (large, largeReads) = read("sequence-large")
+        assertEquals(2, small.fields.size)
+        assertEquals(40, large.fields.size)
+        assertTrue(smallReads > 0)
+        assertEquals(smallReads, largeReads)
+        assertTrue(largeReads <= 6)
+        assertEquals(2L, large.statistics.executionCount)
+        large.fields.forEach { detail ->
+            val expected =
+                when (detail) {
+                    is StatisticsFieldDetail.Number ->
+                        repository.numberFieldStatistics(StatisticsSeriesId("sequence-large"), detail.field.id, period)
+                    is StatisticsFieldDetail.Category ->
+                        repository.categoryFieldStatistics(
+                            StatisticsSeriesId("sequence-large"),
+                            detail.field.id,
+                            period,
+                        )
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                }
+            assertEquals(
+                expected,
+                when (detail) {
+                    is StatisticsFieldDetail.Number -> detail.statistics
+                    is StatisticsFieldDetail.Category -> detail.statistics
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                },
+            )
+        }
+        val number =
+            (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
+                .statistics
+        assertEquals(2L, number.recordedCount)
+        assertEquals(0L, number.missingCount)
+        assertEquals(BigInteger.valueOf(20), number.values.totalScaled)
+        assertEquals(ExactValue.of(10, 1), number.values.averageScaled)
+        assertEquals(ExactValue.of(10, 1), number.values.medianScaled)
+        assertEquals(0L, number.values.minimumScaled)
+        assertEquals(20L, number.values.maximumScaled)
+        val partlyMissingNumber =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .first { it.field.id.value == "sequence-large-field-2" }
+                .statistics
+        assertEquals(1L, partlyMissingNumber.recordedCount)
+        assertEquals(1L, partlyMissingNumber.missingCount)
+        val category =
+            (
+                large.fields.first {
+                    it is StatisticsFieldDetail.Category
+                } as StatisticsFieldDetail.Category
+            ).statistics
+        assertEquals(2L, category.recordedCount)
+        assertEquals(0L, category.missingCount)
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 1L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 1L,
+            ),
+            category.values.associate { it.id.value to it.count },
+        )
+        assertEquals(2L, category.values.sumOf { it.count })
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to ExactValue.of(1, 2),
+                "sequence-large-execution-0-snapshot-option-1-1" to ExactValue.of(0, 1),
+                "sequence-large-execution-1-snapshot-option-1-1" to ExactValue.of(1, 2),
+            ),
+            category.values.associate { it.id.value to it.recordedShare.exactValue },
+        )
+        val partlyMissingCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-3" }
+                .statistics
+        assertEquals(1L, partlyMissingCategory.recordedCount)
+        assertEquals(1L, partlyMissingCategory.missingCount)
+        val firstDayPeriod = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        val day =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-large"),
+                firstDayPeriod,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(1L, day.statistics.executionCount)
+        assertTrue(
+            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all { it.statistics.recordedCount == 1L },
+        )
+        val firstDayCategory =
+            day.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-1" }
+                .statistics
+        assertEquals(
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("sequence-large"),
+                firstDayCategory.field.id,
+                firstDayPeriod,
+            ),
+            firstDayCategory,
+        )
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 1L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 0L,
+            ),
+            firstDayCategory.values.associate { it.id.value to it.count },
+        )
+        val secondDay =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-large"),
+                StatisticsPeriod.Day(LocalDate.parse(AUG_21)),
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(1L, secondDay.statistics.executionCount)
+        val secondDayCategory =
+            secondDay.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-1" }
+                .statistics
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 0L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 1L,
+            ),
+            secondDayCategory.values.associate { it.id.value to it.count },
         )
     }
 
