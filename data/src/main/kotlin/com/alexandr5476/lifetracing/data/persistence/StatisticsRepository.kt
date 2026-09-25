@@ -130,6 +130,7 @@ class StatisticsRepository internal constructor(
             sequenceSeriesLocked(series, start, end)
         }
 
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     fun seriesDetail(
         seriesId: StatisticsSeriesId,
         period: StatisticsPeriod,
@@ -150,16 +151,69 @@ class StatisticsRepository internal constructor(
                     is SequenceSeriesStatistics -> statistics.executionCount
                     else -> error("Unsupported Series statistics")
                 }
+            val catalog = fieldCatalogLocked(series, seriesId)
+            val dao = database.statisticsDao()
+            val numberSamples =
+                if (catalog.any { it.type == CustomFieldType.NUMBER }) {
+                    when (series.kind) {
+                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSamples(seriesId.value, start, end)
+                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSamples(seriesId.value, start, end)
+                        StatisticsSeriesKind.ONE_OFF_BUCKET -> emptyList()
+                    }.groupBy(StatisticsNumberSampleRow::sourceFieldId)
+                } else {
+                    emptyMap()
+                }
+            val (optionMetadata, categoryCounts) =
+                if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
+                    when (series.kind) {
+                        StatisticsSeriesKind.ACTIVITY ->
+                            dao.activityFieldOptionMetadata(seriesId.value) to
+                                dao.activityFieldCategoryCounts(seriesId.value, start, end)
+                        StatisticsSeriesKind.SEQUENCE ->
+                            dao.sequenceFieldOptionMetadata(seriesId.value) to
+                                dao.sequenceFieldCategoryCounts(seriesId.value, start, end)
+                        StatisticsSeriesKind.ONE_OFF_BUCKET ->
+                            emptyList<StatisticsFieldOptionMetadataRow>() to
+                                emptyList()
+                    }
+                } else {
+                    emptyList<StatisticsFieldOptionMetadataRow>() to emptyList()
+                }
+            val metadataByField = optionMetadata.groupBy(StatisticsFieldOptionMetadataRow::sourceFieldId)
+            val countsByField = categoryCounts.groupBy(StatisticsFieldCategoryCountRow::sourceFieldId)
             val fields =
-                fieldCatalogLocked(series, seriesId).map { field ->
+                catalog.map { field ->
                     when (field.type) {
                         CustomFieldType.NUMBER ->
                             StatisticsFieldDetail.Number(
-                                numberFieldStatisticsLocked(series, field, relevant, start, end),
+                                numberStatistics(
+                                    field,
+                                    relevant,
+                                    numberSamples[field.id.value].orEmpty().map(
+                                        StatisticsNumberSampleRow::numberScaled,
+                                    ),
+                                ),
                             )
                         CustomFieldType.CATEGORY ->
                             StatisticsFieldDetail.Category(
-                                categoryFieldStatisticsLocked(series, field, relevant, start, end),
+                                categoryStatistics(
+                                    series.kind,
+                                    field,
+                                    relevant,
+                                    optionMetadataRows(
+                                        metadataByField[field.id.value].orEmpty().map {
+                                            StatisticsOptionMetadataRow(
+                                                it.sourceOptionId,
+                                                it.snapshotOptionId,
+                                                it.currentLabel,
+                                                it.fallbackLabel,
+                                            )
+                                        },
+                                    ),
+                                    countsByField[field.id.value].orEmpty().map {
+                                        StatisticsCategoryCountRow(it.sourceOptionId, it.snapshotOptionId, it.count)
+                                    },
+                                ),
                             )
                         CustomFieldType.TEXT -> StatisticsFieldDetail.Text(field)
                     }
@@ -262,6 +316,14 @@ class StatisticsRepository internal constructor(
                 is StatisticsFieldId.Sequence ->
                     database.statisticsDao().sequenceNumberValues(series.id.value, field.id.value, start, end)
             }
+        return numberStatistics(field, relevant, values)
+    }
+
+    private fun numberStatistics(
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        values: List<Long>,
+    ): NumberFieldStatistics {
         val distribution = StatisticsDistributionCalculator.numbers(values)
         require(distribution.sampleCount <= relevant) { "Recorded Number values exceed relevant executions" }
         return NumberFieldStatistics(
@@ -280,9 +342,23 @@ class StatisticsRepository internal constructor(
         relevant: Long,
         start: String?,
         end: String?,
+    ): CategoryFieldStatistics =
+        categoryStatistics(
+            series.kind,
+            field,
+            relevant,
+            optionMetadata(series.kind, series.id, field.id),
+            categoryCounts(series.kind, series.id, field.id, start, end),
+        )
+
+    private fun categoryStatistics(
+        kind: StatisticsSeriesKind,
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        metadata: Map<OptionKey, String>,
+        countRows: List<StatisticsCategoryCountRow>,
     ): CategoryFieldStatistics {
-        val metadata = optionMetadata(series.kind, series.id, field.id)
-        val counts = categoryCounts(series.kind, series.id, field.id, start, end).associateBy(::optionKey)
+        val counts = countRows.associateBy(::optionKey)
         val recorded = counts.values.sumOf(StatisticsCategoryCountRow::count)
         require(recorded <= relevant) { "Recorded Category values exceed relevant executions" }
         val values =
@@ -291,7 +367,7 @@ class StatisticsRepository internal constructor(
                 .map { key ->
                     val count = counts[key]?.count ?: 0
                     CategoryValueStatistics(
-                        optionIdentity(series.kind, key),
+                        optionIdentity(kind, key),
                         metadata[key] ?: key.fallbackId ?: key.sourceId.orEmpty(),
                         count,
                         CountRatio(count, recorded),
@@ -518,13 +594,16 @@ class StatisticsRepository internal constructor(
                     database.statisticsDao().sequenceOptionMetadata(seriesId.value, fieldId.value)
                 StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off reusable Field Statistics are not supported")
             }
-        return rows.groupBy(::optionKey).mapValues { (key, candidates) ->
+        return optionMetadataRows(rows)
+    }
+
+    private fun optionMetadataRows(rows: List<StatisticsOptionMetadataRow>): Map<OptionKey, String> =
+        rows.groupBy(::optionKey).mapValues { (key, candidates) ->
             candidates.mapNotNull(StatisticsOptionMetadataRow::currentLabel).minOrNull()
                 ?: candidates.mapNotNull(StatisticsOptionMetadataRow::fallbackLabel).minOrNull()
                 ?: key.fallbackId
                 ?: key.sourceId.orEmpty()
         }
-    }
 
     private fun categoryCounts(
         kind: StatisticsSeriesKind,

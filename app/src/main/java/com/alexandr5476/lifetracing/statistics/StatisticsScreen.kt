@@ -76,7 +76,7 @@ internal fun StatisticsScreen(
     onRefresh: () -> Unit = onRetry,
     onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit = { _, _ -> },
 ) {
-    var kind by remember { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
+    var kind by remember(state.selectedPeriod) { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
     var day by remember(state.selectedPeriod) {
         mutableStateOf(
             state.selectedPeriod
@@ -113,8 +113,12 @@ internal fun StatisticsScreen(
             ).toString(),
         )
     }
-    var customStart by remember { mutableStateOf("") }
-    var customEnd by remember { mutableStateOf("") }
+    var customStart by remember(state.selectedPeriod) {
+        mutableStateOf((state.selectedPeriod as? StatisticsPeriod.Custom)?.startDate?.toString() ?: "")
+    }
+    var customEnd by remember(state.selectedPeriod) {
+        mutableStateOf((state.selectedPeriod as? StatisticsPeriod.Custom)?.endDateInclusive?.toString() ?: "")
+    }
     var invalidCustom by remember { mutableStateOf(false) }
     val select: (StatisticsPeriodKind) -> Unit = { selected ->
         kind = selected
@@ -379,7 +383,14 @@ private fun SeriesRow(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
-            Text(series.displayName, style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (series.kind == StatisticsSeriesKind.ONE_OFF_BUCKET) {
+                    stringResource(R.string.statistics_kind_one_off)
+                } else {
+                    series.displayName
+                },
+                style = MaterialTheme.typography.titleSmall,
+            )
             Text(
                 stringResource(
                     if (series.kind ==

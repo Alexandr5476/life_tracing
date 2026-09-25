@@ -1,11 +1,17 @@
 package com.alexandr5476.lifetracing.statistics
 
+import android.content.res.Configuration
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -30,9 +36,61 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
+import java.util.Locale
 
 class StatisticsScreenPresentationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun existingCustomRangeIsVisibleAndCanBeReapplied() {
+        val period = StatisticsPeriod.Custom(LocalDate.parse("2026-08-03"), LocalDate.parse("2026-08-10"))
+        val selected = mutableListOf<StatisticsPeriod>()
+        compose.setContent {
+            LifeTracingTheme { StatisticsScreen(StatisticsPresentationState(period), { selected += it }, {}) }
+        }
+        compose.onNodeWithTag("statistics-custom-start").assertTextContains("2026-08-03")
+        compose.onNodeWithTag("statistics-custom-end").assertTextContains("2026-08-10")
+        compose.onNodeWithTag("statistics-custom-apply").performClick()
+        assertEquals(listOf(period), selected)
+    }
+
+    @Test
+    fun systemOneOffHeadingUsesRussianResourceInsteadOfPersistedEnglishName() {
+        val configuration =
+            Configuration(compose.activity.resources.configuration).apply {
+                setLocale(Locale.forLanguageTag("ru"))
+            }
+        val russianContext = compose.activity.createConfigurationContext(configuration)
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides russianContext, LocalConfiguration provides configuration) {
+                LifeTracingTheme {
+                    StatisticsScreen(
+                        StatisticsPresentationState(
+                            StatisticsPeriod.AllTime,
+                            StatisticsLoadState.Content(
+                                overview(
+                                    listOf(
+                                        summary(
+                                            "system",
+                                            StatisticsSeriesKind.ONE_OFF_BUCKET,
+                                            StatisticsSeriesSourceState.SYSTEM_ONE_OFF,
+                                            1,
+                                            0,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                        {},
+                        {},
+                    )
+                }
+            }
+        }
+        compose.onNodeWithTag("statistics-series-system").performScrollTo().assertIsDisplayed()
+        compose.onAllNodesWithText(russianContext.getString(R.string.statistics_kind_one_off)).assertCountEquals(2)
+        compose.onAllNodesWithText("One-off activities").assertCountEquals(0)
+    }
 
     @Test
     fun loading_failure_retry_empty_and_zero_count_series_are_presented() {
@@ -227,7 +285,7 @@ class StatisticsScreenPresentationTest {
         StatisticsSeriesSummary(
             StatisticsSeriesId(id),
             kind,
-            "Display $id",
+            if (kind == StatisticsSeriesKind.ONE_OFF_BUCKET) "One-off activities" else "Display $id",
             if (source ==
                 StatisticsSeriesSourceState.ARCHIVED_SOURCE
             ) {

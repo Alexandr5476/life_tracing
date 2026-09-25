@@ -62,9 +62,135 @@ internal data class StatisticsCategoryCountRow(
     val count: Long,
 )
 
+internal data class StatisticsNumberSampleRow(
+    @ColumnInfo(name = "source_field_id") val sourceFieldId: String,
+    @ColumnInfo(name = "number_scaled") val numberScaled: Long,
+)
+
+internal data class StatisticsFieldOptionMetadataRow(
+    @ColumnInfo(name = "source_field_id") val sourceFieldId: String,
+    @ColumnInfo(name = "source_option_id") val sourceOptionId: String?,
+    @ColumnInfo(name = "snapshot_option_id") val snapshotOptionId: String?,
+    @ColumnInfo(name = "current_label") val currentLabel: String?,
+    @ColumnInfo(name = "fallback_label") val fallbackLabel: String?,
+)
+
+internal data class StatisticsFieldCategoryCountRow(
+    @ColumnInfo(name = "source_field_id") val sourceFieldId: String,
+    @ColumnInfo(name = "source_option_id") val sourceOptionId: String?,
+    @ColumnInfo(name = "snapshot_option_id") val snapshotOptionId: String?,
+    val count: Long,
+)
+
 @Dao
 @Suppress("TooManyFunctions", "MaxLineLength")
 internal interface StatisticsDao {
+    @Query(
+        "SELECT fields.source_field_id, recorded_values.number_scaled FROM activity_executions AS executions " +
+            "INNER JOIN activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND executions.status = 'COMPLETED' " +
+            "AND executions.deleted_at_ms IS NULL AND fields.source_field_id IS NOT NULL " +
+            "AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
+            "ORDER BY fields.source_field_id, recorded_values.number_scaled",
+    )
+    fun activityNumberSamples(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): List<StatisticsNumberSampleRow>
+
+    @Query(
+        "SELECT fields.source_field_id, recorded_values.number_scaled FROM sequence_executions AS executions " +
+            "INNER JOIN sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND executions.status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND fields.source_field_id IS NOT NULL AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
+            "ORDER BY fields.source_field_id, recorded_values.number_scaled",
+    )
+    fun sequenceNumberSamples(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): List<StatisticsNumberSampleRow>
+
+    @Query(
+        "SELECT source_fields.id AS source_field_id, options.id AS source_option_id, NULL AS snapshot_option_id, " +
+            "options.label AS current_label, NULL AS fallback_label " +
+            "FROM activity_template_category_options AS options INNER JOIN activity_template_fields AS source_fields " +
+            "ON source_fields.id = options.activity_template_field_id INNER JOIN activity_templates AS templates " +
+            "ON templates.id = source_fields.activity_template_id WHERE templates.statistics_series_id = :seriesId " +
+            "UNION ALL SELECT snapshot_fields.source_field_id, snapshot_options.source_option_id, " +
+            "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END, " +
+            "source_options.label, MIN(COALESCE(snapshot_options.local_label_override, snapshot_options.label_at_creation)) " +
+            "FROM activity_executions AS executions INNER JOIN activity_snapshot_fields AS snapshot_fields " +
+            "ON snapshot_fields.snapshot_id = executions.snapshot_id INNER JOIN activity_snapshot_category_options AS snapshot_options " +
+            "ON snapshot_options.snapshot_field_id = snapshot_fields.id LEFT JOIN activity_template_category_options AS source_options " +
+            "ON source_options.id = snapshot_options.source_option_id WHERE executions.statistics_series_id = :seriesId " +
+            "AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
+            "AND snapshot_fields.source_field_id IS NOT NULL " +
+            "GROUP BY snapshot_fields.source_field_id, snapshot_options.source_option_id, " +
+            "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END, source_options.label",
+    )
+    fun activityFieldOptionMetadata(seriesId: String): List<StatisticsFieldOptionMetadataRow>
+
+    @Query(
+        "SELECT source_fields.id AS source_field_id, options.id AS source_option_id, NULL AS snapshot_option_id, " +
+            "options.label AS current_label, NULL AS fallback_label " +
+            "FROM sequence_template_category_options AS options INNER JOIN sequence_template_fields AS source_fields " +
+            "ON source_fields.id = options.sequence_template_field_id INNER JOIN sequence_templates AS templates " +
+            "ON templates.id = source_fields.sequence_template_id WHERE templates.statistics_series_id = :seriesId " +
+            "UNION ALL SELECT snapshot_fields.source_field_id, snapshot_options.source_option_id, " +
+            "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END, " +
+            "source_options.label, MIN(COALESCE(snapshot_options.local_label_override, snapshot_options.label_at_creation)) " +
+            "FROM sequence_executions AS executions INNER JOIN sequence_snapshot_fields AS snapshot_fields " +
+            "ON snapshot_fields.sequence_snapshot_id = executions.snapshot_id INNER JOIN sequence_snapshot_category_options AS snapshot_options " +
+            "ON snapshot_options.sequence_snapshot_field_id = snapshot_fields.id LEFT JOIN sequence_template_category_options AS source_options " +
+            "ON source_options.id = snapshot_options.source_option_id WHERE executions.statistics_series_id = :seriesId " +
+            "AND executions.status IN ('COMPLETED', 'ENDED_EARLY') AND snapshot_fields.source_field_id IS NOT NULL " +
+            "GROUP BY snapshot_fields.source_field_id, snapshot_options.source_option_id, " +
+            "CASE WHEN snapshot_options.source_option_id IS NULL THEN snapshot_options.id ELSE NULL END, source_options.label",
+    )
+    fun sequenceFieldOptionMetadata(seriesId: String): List<StatisticsFieldOptionMetadataRow>
+
+    @Query(
+        "SELECT fields.source_field_id, options.source_option_id, " +
+            "CASE WHEN options.source_option_id IS NULL THEN options.id ELSE NULL END AS snapshot_option_id, COUNT(*) AS count " +
+            "FROM activity_executions AS executions INNER JOIN activity_execution_field_values AS recorded_values " +
+            "ON recorded_values.activity_execution_id = executions.id INNER JOIN activity_snapshot_fields AS fields " +
+            "ON fields.id = recorded_values.snapshot_field_id INNER JOIN activity_snapshot_category_options AS options " +
+            "ON options.id = recorded_values.category_option_id WHERE executions.statistics_series_id = :seriesId " +
+            "AND fields.source_field_id IS NOT NULL AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
+            "GROUP BY fields.source_field_id, options.source_option_id, " +
+            "CASE WHEN options.source_option_id IS NULL THEN options.id ELSE NULL END",
+    )
+    fun activityFieldCategoryCounts(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): List<StatisticsFieldCategoryCountRow>
+
+    @Query(
+        "SELECT fields.source_field_id, options.source_option_id, " +
+            "CASE WHEN options.source_option_id IS NULL THEN options.id ELSE NULL END AS snapshot_option_id, COUNT(*) AS count " +
+            "FROM sequence_executions AS executions INNER JOIN sequence_execution_field_values AS recorded_values " +
+            "ON recorded_values.sequence_execution_id = executions.id INNER JOIN sequence_snapshot_fields AS fields " +
+            "ON fields.id = recorded_values.snapshot_field_id INNER JOIN sequence_snapshot_category_options AS options " +
+            "ON options.id = recorded_values.category_option_id WHERE executions.statistics_series_id = :seriesId " +
+            "AND fields.source_field_id IS NOT NULL AND executions.status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
+            "GROUP BY fields.source_field_id, options.source_option_id, " +
+            "CASE WHEN options.source_option_id IS NULL THEN options.id ELSE NULL END",
+    )
+    fun sequenceFieldCategoryCounts(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): List<StatisticsFieldCategoryCountRow>
+
     @Query(
         "SELECT COALESCE(SUM(COALESCE(duration_ms, 0)), 0) AS total_tracked_ms, " +
             "COUNT(*) AS execution_count, COUNT(DISTINCT primary_local_date) AS active_day_count, " +
