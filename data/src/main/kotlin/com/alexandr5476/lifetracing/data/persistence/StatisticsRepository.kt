@@ -22,9 +22,12 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
 import com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
 import com.alexandr5476.lifetracing.domain.StatisticsFieldDescriptor
+import com.alexandr5476.lifetracing.domain.StatisticsFieldDetail
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
+import com.alexandr5476.lifetracing.domain.StatisticsOverview
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeries
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
@@ -41,65 +44,71 @@ class StatisticsRepository internal constructor(
     private val database: LifeTracingDatabase,
     private val nextStatisticsSeriesId: () -> StatisticsSeriesId,
 ) {
-    fun global(period: StatisticsPeriod): GlobalStatistics =
-        transaction {
-            val range = period.dateRangeOrNull()
-            val row =
-                database.statisticsDao().global(
-                    range?.startDate?.toString(),
-                    range?.endDateInclusive?.toString(),
-                    ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
-                )
-            GlobalStatistics(
-                totalTrackedDuration = Duration.ofMillis(row.totalTrackedMs),
-                topLevelExecutionCount = row.executionCount,
-                activeDayCount = row.activeDayCount,
-                averageTrackedMillisecondsPerActiveDay = average(row.totalTrackedMs, row.activeDayCount),
-                averageTopLevelExecutionsPerActiveDay = average(row.executionCount, row.activeDayCount),
-                totalSequencePauseIdleDuration = Duration.ofMillis(row.sequencePauseMs),
-                oneOffActivityExecutionCount = row.oneOffCount,
-                oneOffActivityTrackedDuration = Duration.ofMillis(row.oneOffTrackedMs),
-                firstPrimaryDate = row.firstPrimaryDate?.let(LocalDate::parse),
-                lastPrimaryDate = row.lastPrimaryDate?.let(LocalDate::parse),
-                calendarDayCount = range?.calendarDayCount,
-                averageTrackedMillisecondsPerCalendarDay =
-                    range?.let { average(row.totalTrackedMs, it.calendarDayCount) },
+    fun global(period: StatisticsPeriod): GlobalStatistics = transaction { globalLocked(period) }
+
+    fun overview(period: StatisticsPeriod): StatisticsOverview =
+        transaction { StatisticsOverview(globalLocked(period), seriesSummariesLocked(period)) }
+
+    private fun globalLocked(period: StatisticsPeriod): GlobalStatistics {
+        val range = period.dateRangeOrNull()
+        val row =
+            database.statisticsDao().global(
+                range?.startDate?.toString(),
+                range?.endDateInclusive?.toString(),
+                ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
             )
-        }
+        return GlobalStatistics(
+            totalTrackedDuration = Duration.ofMillis(row.totalTrackedMs),
+            topLevelExecutionCount = row.executionCount,
+            activeDayCount = row.activeDayCount,
+            averageTrackedMillisecondsPerActiveDay = average(row.totalTrackedMs, row.activeDayCount),
+            averageTopLevelExecutionsPerActiveDay = average(row.executionCount, row.activeDayCount),
+            totalSequencePauseIdleDuration = Duration.ofMillis(row.sequencePauseMs),
+            oneOffActivityExecutionCount = row.oneOffCount,
+            oneOffActivityTrackedDuration = Duration.ofMillis(row.oneOffTrackedMs),
+            firstPrimaryDate = row.firstPrimaryDate?.let(LocalDate::parse),
+            lastPrimaryDate = row.lastPrimaryDate?.let(LocalDate::parse),
+            calendarDayCount = range?.calendarDayCount,
+            averageTrackedMillisecondsPerCalendarDay =
+                range?.let { average(row.totalTrackedMs, it.calendarDayCount) },
+        )
+    }
 
     fun seriesCatalog(): List<StatisticsSeriesSummary> = transaction(::seriesCatalogLocked)
 
     fun seriesSummaries(period: StatisticsPeriod): List<StatisticsSeriesPeriodSummary> =
-        transaction {
-            val range = period.dateRangeOrNull()
-            val start = range?.startDate?.toString()
-            val end = range?.endDateInclusive?.toString()
-            val rows =
-                (
-                    database.statisticsDao().activitySeriesAggregates(null, start, end) +
-                        database.statisticsDao().sequenceSeriesAggregates(null, start, end) +
-                        listOfNotNull(
-                            database.statisticsDao().oneOffAggregate(
-                                ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
-                                start,
-                                end,
-                            ),
-                        )
-                ).associateBy(StatisticsSeriesAggregateRow::seriesId)
-            seriesCatalogLocked().map { series ->
-                val row = rows[series.id.value]
-                val samples = row?.durationSampleCount ?: 0
-                val total = row?.totalDurationMs ?: 0
-                StatisticsSeriesPeriodSummary(
-                    series,
-                    row?.executionCount ?: 0,
-                    samples,
-                    Duration.ofMillis(total),
-                    average(total, samples),
-                    row?.activeDayCount ?: 0,
-                )
-            }
+        transaction { seriesSummariesLocked(period) }
+
+    private fun seriesSummariesLocked(period: StatisticsPeriod): List<StatisticsSeriesPeriodSummary> {
+        val range = period.dateRangeOrNull()
+        val start = range?.startDate?.toString()
+        val end = range?.endDateInclusive?.toString()
+        val rows =
+            (
+                database.statisticsDao().activitySeriesAggregates(null, start, end) +
+                    database.statisticsDao().sequenceSeriesAggregates(null, start, end) +
+                    listOfNotNull(
+                        database.statisticsDao().oneOffAggregate(
+                            ActivityExecutionStatistics.ONE_OFF_BUCKET_ID.value,
+                            start,
+                            end,
+                        ),
+                    )
+            ).associateBy(StatisticsSeriesAggregateRow::seriesId)
+        return seriesCatalogLocked().map { series ->
+            val row = rows[series.id.value]
+            val samples = row?.durationSampleCount ?: 0
+            val total = row?.totalDurationMs ?: 0
+            StatisticsSeriesPeriodSummary(
+                series,
+                row?.executionCount ?: 0,
+                samples,
+                Duration.ofMillis(total),
+                average(total, samples),
+                row?.activeDayCount ?: 0,
+            )
         }
+    }
 
     fun activitySeries(
         seriesId: StatisticsSeriesId,
@@ -108,21 +117,7 @@ class StatisticsRepository internal constructor(
         transaction {
             val series = requireSeries(seriesId, StatisticsSeriesKind.ACTIVITY)
             val (start, end) = period.bounds()
-            val row = database.statisticsDao().activitySeriesAggregates(seriesId.value, start, end).singleOrNull()
-            val values = database.statisticsDao().activityDurationValues(seriesId.value, start, end)
-            val distribution = StatisticsDistributionCalculator.durations(values)
-            require(row == null || row.durationSampleCount == distribution.sampleCount) {
-                "Activity duration aggregate disagrees with its scalar samples"
-            }
-            ActivitySeriesStatistics(
-                series,
-                row?.executionCount ?: 0,
-                distribution,
-                row?.activeDayCount ?: 0,
-                average(row?.executionCount ?: 0, row?.activeDayCount ?: 0),
-                row?.firstPerformedAtMs?.let(Instant::ofEpochMilli),
-                row?.lastPerformedAtMs?.let(Instant::ofEpochMilli),
-            )
+            activitySeriesLocked(series, start, end)
         }
 
     fun sequenceSeries(
@@ -132,26 +127,151 @@ class StatisticsRepository internal constructor(
         transaction {
             val series = requireSeries(seriesId, StatisticsSeriesKind.SEQUENCE)
             val (start, end) = period.bounds()
-            val row = database.statisticsDao().sequenceSeriesAggregates(seriesId.value, start, end).singleOrNull()
-            val values = database.statisticsDao().sequenceDurationValues(seriesId.value, start, end)
-            val distribution = StatisticsDistributionCalculator.durations(values)
-            require(row == null || row.durationSampleCount == distribution.sampleCount) {
-                "Sequence duration aggregate disagrees with its scalar samples"
-            }
-            val count = row?.executionCount ?: 0
-            val pause = row?.totalPauseMs ?: 0
-            SequenceSeriesStatistics(
-                series,
-                count,
-                distribution,
-                Duration.ofMillis(pause),
-                average(pause, count),
-                row?.activeDayCount ?: 0,
-                average(count, row?.activeDayCount ?: 0),
-                row?.firstPerformedAtMs?.let(Instant::ofEpochMilli),
-                row?.lastPerformedAtMs?.let(Instant::ofEpochMilli),
-            )
+            sequenceSeriesLocked(series, start, end)
         }
+
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
+    fun seriesDetail(
+        seriesId: StatisticsSeriesId,
+        period: StatisticsPeriod,
+    ): StatisticsSeriesDetail =
+        transaction {
+            val series = requireSeries(seriesId)
+            require(series.kind != StatisticsSeriesKind.ONE_OFF_BUCKET) { "One-off Series has no reusable detail" }
+            val (start, end) = period.bounds()
+            val statistics =
+                when (series.kind) {
+                    StatisticsSeriesKind.ACTIVITY -> activitySeriesLocked(series, start, end)
+                    StatisticsSeriesKind.SEQUENCE -> sequenceSeriesLocked(series, start, end)
+                    StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable detail")
+                }
+            val relevant =
+                when (statistics) {
+                    is ActivitySeriesStatistics -> statistics.executionCount
+                    is SequenceSeriesStatistics -> statistics.executionCount
+                    else -> error("Unsupported Series statistics")
+                }
+            val catalog = fieldCatalogLocked(series, seriesId)
+            val dao = database.statisticsDao()
+            val numberSamples =
+                if (catalog.any { it.type == CustomFieldType.NUMBER }) {
+                    when (series.kind) {
+                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSamples(seriesId.value, start, end)
+                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSamples(seriesId.value, start, end)
+                        StatisticsSeriesKind.ONE_OFF_BUCKET -> emptyList()
+                    }.groupBy(StatisticsNumberSampleRow::sourceFieldId)
+                } else {
+                    emptyMap()
+                }
+            val (optionMetadata, categoryCounts) =
+                if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
+                    when (series.kind) {
+                        StatisticsSeriesKind.ACTIVITY ->
+                            dao.activityFieldOptionMetadata(seriesId.value) to
+                                dao.activityFieldCategoryCounts(seriesId.value, start, end)
+                        StatisticsSeriesKind.SEQUENCE ->
+                            dao.sequenceFieldOptionMetadata(seriesId.value) to
+                                dao.sequenceFieldCategoryCounts(seriesId.value, start, end)
+                        StatisticsSeriesKind.ONE_OFF_BUCKET ->
+                            emptyList<StatisticsFieldOptionMetadataRow>() to
+                                emptyList()
+                    }
+                } else {
+                    emptyList<StatisticsFieldOptionMetadataRow>() to emptyList()
+                }
+            val metadataByField = optionMetadata.groupBy(StatisticsFieldOptionMetadataRow::sourceFieldId)
+            val countsByField = categoryCounts.groupBy(StatisticsFieldCategoryCountRow::sourceFieldId)
+            val fields =
+                catalog.map { field ->
+                    when (field.type) {
+                        CustomFieldType.NUMBER ->
+                            StatisticsFieldDetail.Number(
+                                numberStatistics(
+                                    field,
+                                    relevant,
+                                    numberSamples[field.id.value].orEmpty().map(
+                                        StatisticsNumberSampleRow::numberScaled,
+                                    ),
+                                ),
+                            )
+                        CustomFieldType.CATEGORY ->
+                            StatisticsFieldDetail.Category(
+                                categoryStatistics(
+                                    series.kind,
+                                    field,
+                                    relevant,
+                                    optionMetadataRows(
+                                        metadataByField[field.id.value].orEmpty().map {
+                                            StatisticsOptionMetadataRow(
+                                                it.sourceOptionId,
+                                                it.snapshotOptionId,
+                                                it.currentLabel,
+                                                it.fallbackLabel,
+                                            )
+                                        },
+                                    ),
+                                    countsByField[field.id.value].orEmpty().map {
+                                        StatisticsCategoryCountRow(it.sourceOptionId, it.snapshotOptionId, it.count)
+                                    },
+                                ),
+                            )
+                        CustomFieldType.TEXT -> StatisticsFieldDetail.Text(field)
+                    }
+                }
+            when (statistics) {
+                is ActivitySeriesStatistics -> StatisticsSeriesDetail.Activity(statistics, fields)
+                is SequenceSeriesStatistics -> StatisticsSeriesDetail.Sequence(statistics, fields)
+                else -> error("Unsupported Series statistics")
+            }
+        }
+
+    private fun activitySeriesLocked(
+        series: StatisticsSeriesSummary,
+        start: String?,
+        end: String?,
+    ): ActivitySeriesStatistics {
+        val row = database.statisticsDao().activitySeriesAggregates(series.id.value, start, end).singleOrNull()
+        val values = database.statisticsDao().activityDurationValues(series.id.value, start, end)
+        val distribution = StatisticsDistributionCalculator.durations(values)
+        require(row == null || row.durationSampleCount == distribution.sampleCount) {
+            "Activity duration aggregate disagrees with its scalar samples"
+        }
+        return ActivitySeriesStatistics(
+            series,
+            row?.executionCount ?: 0,
+            distribution,
+            row?.activeDayCount ?: 0,
+            average(row?.executionCount ?: 0, row?.activeDayCount ?: 0),
+            row?.firstPerformedAtMs?.let(Instant::ofEpochMilli),
+            row?.lastPerformedAtMs?.let(Instant::ofEpochMilli),
+        )
+    }
+
+    private fun sequenceSeriesLocked(
+        series: StatisticsSeriesSummary,
+        start: String?,
+        end: String?,
+    ): SequenceSeriesStatistics {
+        val row = database.statisticsDao().sequenceSeriesAggregates(series.id.value, start, end).singleOrNull()
+        val values = database.statisticsDao().sequenceDurationValues(series.id.value, start, end)
+        val distribution = StatisticsDistributionCalculator.durations(values)
+        require(row == null || row.durationSampleCount == distribution.sampleCount) {
+            "Sequence duration aggregate disagrees with its scalar samples"
+        }
+        val count = row?.executionCount ?: 0
+        val pause = row?.totalPauseMs ?: 0
+        return SequenceSeriesStatistics(
+            series,
+            count,
+            distribution,
+            Duration.ofMillis(pause),
+            average(pause, count),
+            row?.activeDayCount ?: 0,
+            average(count, row?.activeDayCount ?: 0),
+            row?.firstPerformedAtMs?.let(Instant::ofEpochMilli),
+            row?.lastPerformedAtMs?.let(Instant::ofEpochMilli),
+        )
+    }
 
     fun fieldCatalog(seriesId: StatisticsSeriesId): List<StatisticsFieldDescriptor> =
         transaction { fieldCatalogLocked(requireSeries(seriesId), seriesId) }
@@ -166,23 +286,7 @@ class StatisticsRepository internal constructor(
             val field = requireField(series, seriesId, fieldId, CustomFieldType.NUMBER)
             val (start, end) = period.bounds()
             val relevant = executionCount(series.kind, seriesId, start, end)
-            val values =
-                when (fieldId) {
-                    is StatisticsFieldId.Activity ->
-                        database.statisticsDao().activityNumberValues(seriesId.value, fieldId.value, start, end)
-                    is StatisticsFieldId.Sequence ->
-                        database.statisticsDao().sequenceNumberValues(seriesId.value, fieldId.value, start, end)
-                }
-            val distribution = StatisticsDistributionCalculator.numbers(values)
-            require(distribution.sampleCount <= relevant) { "Recorded Number values exceed relevant executions" }
-            NumberFieldStatistics(
-                field,
-                relevant,
-                distribution.sampleCount,
-                relevant - distribution.sampleCount,
-                CountRatio(distribution.sampleCount, relevant),
-                distribution,
-            )
+            numberFieldStatisticsLocked(series, field, relevant, start, end)
         }
 
     fun categoryFieldStatistics(
@@ -195,31 +299,89 @@ class StatisticsRepository internal constructor(
             val field = requireField(series, seriesId, fieldId, CustomFieldType.CATEGORY)
             val (start, end) = period.bounds()
             val relevant = executionCount(series.kind, seriesId, start, end)
-            val metadata = optionMetadata(series.kind, seriesId, fieldId)
-            val counts = categoryCounts(series.kind, seriesId, fieldId, start, end).associateBy(::optionKey)
-            val recorded = counts.values.sumOf(StatisticsCategoryCountRow::count)
-            require(recorded <= relevant) { "Recorded Category values exceed relevant executions" }
-            val values =
-                (metadata.keys + counts.keys)
-                    .distinct()
-                    .map { key ->
-                        val count = counts[key]?.count ?: 0
-                        CategoryValueStatistics(
-                            optionIdentity(series.kind, key),
-                            metadata[key] ?: key.fallbackId ?: key.sourceId.orEmpty(),
-                            count,
-                            CountRatio(count, recorded),
-                        )
-                    }.sortedWith(categoryValueComparator)
-            CategoryFieldStatistics(
-                field,
-                relevant,
-                recorded,
-                relevant - recorded,
-                CountRatio(recorded, relevant),
-                values,
-            )
+            categoryFieldStatisticsLocked(series, field, relevant, start, end)
         }
+
+    private fun numberFieldStatisticsLocked(
+        series: StatisticsSeriesSummary,
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        start: String?,
+        end: String?,
+    ): NumberFieldStatistics {
+        val values =
+            when (field.id) {
+                is StatisticsFieldId.Activity ->
+                    database.statisticsDao().activityNumberValues(series.id.value, field.id.value, start, end)
+                is StatisticsFieldId.Sequence ->
+                    database.statisticsDao().sequenceNumberValues(series.id.value, field.id.value, start, end)
+            }
+        return numberStatistics(field, relevant, values)
+    }
+
+    private fun numberStatistics(
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        values: List<Long>,
+    ): NumberFieldStatistics {
+        val distribution = StatisticsDistributionCalculator.numbers(values)
+        require(distribution.sampleCount <= relevant) { "Recorded Number values exceed relevant executions" }
+        return NumberFieldStatistics(
+            field,
+            relevant,
+            distribution.sampleCount,
+            relevant - distribution.sampleCount,
+            CountRatio(distribution.sampleCount, relevant),
+            distribution,
+        )
+    }
+
+    private fun categoryFieldStatisticsLocked(
+        series: StatisticsSeriesSummary,
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        start: String?,
+        end: String?,
+    ): CategoryFieldStatistics =
+        categoryStatistics(
+            series.kind,
+            field,
+            relevant,
+            optionMetadata(series.kind, series.id, field.id),
+            categoryCounts(series.kind, series.id, field.id, start, end),
+        )
+
+    private fun categoryStatistics(
+        kind: StatisticsSeriesKind,
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        metadata: Map<OptionKey, String>,
+        countRows: List<StatisticsCategoryCountRow>,
+    ): CategoryFieldStatistics {
+        val counts = countRows.associateBy(::optionKey)
+        val recorded = counts.values.sumOf(StatisticsCategoryCountRow::count)
+        require(recorded <= relevant) { "Recorded Category values exceed relevant executions" }
+        val values =
+            (metadata.keys + counts.keys)
+                .distinct()
+                .map { key ->
+                    val count = counts[key]?.count ?: 0
+                    CategoryValueStatistics(
+                        optionIdentity(kind, key),
+                        metadata[key] ?: key.fallbackId ?: key.sourceId.orEmpty(),
+                        count,
+                        CountRatio(count, recorded),
+                    )
+                }.sortedWith(categoryValueComparator)
+        return CategoryFieldStatistics(
+            field,
+            relevant,
+            recorded,
+            relevant - recorded,
+            CountRatio(recorded, relevant),
+            values,
+        )
+    }
 
     fun startNewActivityStatisticsSeries(
         templateId: ActivityTemplateId,
@@ -432,13 +594,16 @@ class StatisticsRepository internal constructor(
                     database.statisticsDao().sequenceOptionMetadata(seriesId.value, fieldId.value)
                 StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off reusable Field Statistics are not supported")
             }
-        return rows.groupBy(::optionKey).mapValues { (key, candidates) ->
+        return optionMetadataRows(rows)
+    }
+
+    private fun optionMetadataRows(rows: List<StatisticsOptionMetadataRow>): Map<OptionKey, String> =
+        rows.groupBy(::optionKey).mapValues { (key, candidates) ->
             candidates.mapNotNull(StatisticsOptionMetadataRow::currentLabel).minOrNull()
                 ?: candidates.mapNotNull(StatisticsOptionMetadataRow::fallbackLabel).minOrNull()
                 ?: key.fallbackId
                 ?: key.sourceId.orEmpty()
         }
-    }
 
     private fun categoryCounts(
         kind: StatisticsSeriesKind,

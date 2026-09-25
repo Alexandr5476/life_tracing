@@ -118,6 +118,47 @@ class MainActivityNavigationTest {
     }
 
     @Test
+    fun statisticsUsesDailyStackOpenIsIdempotentAndBackRemovesOnlyStatistics() {
+        val backStack = dailyInitialBackStack.toMutableList()
+        backStack.openLibrary()
+        backStack.openStatistics()
+        backStack.openStatistics()
+        assertEquals(listOf(DailyRoot, LibraryRoot, StatisticsRoot), backStack)
+
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, LibraryRoot), backStack)
+        backStack.removeLibrary()
+        backStack.openPlan()
+        backStack.openStatistics()
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, PlanRoot), backStack)
+        backStack.removePlan()
+        backStack.openHistory()
+        backStack.openStatistics()
+        backStack.removeStatistics()
+        assertEquals(listOf(DailyRoot, HistoryRoot), backStack)
+    }
+
+    @Test
+    fun statisticsSeriesDetailAddsOneIdRouteAndBackKeepsOverview() {
+        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot)
+        stack.openStatisticsSeriesDetail("series-a")
+        stack.openStatisticsSeriesDetail("series-a")
+        assertEquals(listOf(DailyRoot, StatisticsRoot, StatisticsSeriesDetailRoot("series-a")), stack)
+        stack.removeStatisticsSeriesDetail("stale")
+        assertEquals(3, stack.size)
+        stack.removeStatisticsSeriesDetail("series-a")
+        assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
+    }
+
+    @Test
+    fun restoredStatisticsSeriesDetailWithoutSessionReturnsToOverview() {
+        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot, StatisticsSeriesDetailRoot("series"))
+        stack.normalizeRestoredStatisticsSeriesDetail()
+        assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
+    }
+
+    @Test
     fun sequenceHistoryBackConsumesTransientThenReleasesIdleSessionAndReopensFresh() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)

@@ -19,9 +19,13 @@ import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
+import com.alexandr5476.lifetracing.domain.StatisticsFieldDetail
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -31,17 +35,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.Year
 import java.time.YearMonth
 import java.time.ZoneOffset
+import java.util.Collections
+import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
 class StatisticsRepositoryTest {
     private lateinit var database: LifeTracingDatabase
     private lateinit var repository: StatisticsRepository
+    private val observedSql = Collections.synchronizedList(mutableListOf<String>())
 
     @Before
     fun setUp() {
@@ -49,12 +57,505 @@ class StatisticsRepositoryTest {
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
                 .allowMainThreadQueries()
+                .setQueryCallback({ sql, _ -> observedSql.add(sql) }, Executor { it.run() })
                 .build()
         repository = StatisticsRepository(database) { StatisticsSeriesId("generated-series") }
     }
 
     @After
     fun tearDown() = database.close()
+
+    @Test
+    fun seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults() {
+        fun fixture(
+            prefix: String,
+            fieldCount: Int,
+        ) {
+            series(prefix, "ACTIVITY", prefix)
+            val fields =
+                (0 until fieldCount).map { index ->
+                    ActivityTemplateFieldEntity(
+                        "$prefix-field-$index",
+                        prefix,
+                        index,
+                        "Field $index",
+                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    )
+                }
+            val options =
+                fields.filterIndexed { index, _ -> index % 2 == 1 }.map {
+                    ActivityTemplateCategoryOptionEntity("${it.id}-source-option", it.id, 0, "Renamed ${it.id}")
+                }
+            activityTemplate(prefix, prefix, prefix, fields = fields, options = options)
+            val snapshotId = "$prefix-snapshot"
+            database.activitySnapshotDao().insertAggregate(
+                ActivitySnapshotAggregateEntity(
+                    ActivitySnapshotEntity(
+                        snapshotId,
+                        snapshotId,
+                        null,
+                        "STOPWATCH",
+                        null,
+                        prefix,
+                        1,
+                        prefix,
+                        false,
+                        0,
+                    ),
+                    ActivitySnapshotSettingsEntity(snapshotId),
+                    fields.mapIndexed { index, field ->
+                        ActivitySnapshotFieldEntity(
+                            "$snapshotId-field-$index",
+                            snapshotId,
+                            field.id,
+                            index,
+                            field.name,
+                            null,
+                            field.fieldType,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            false,
+                        )
+                    },
+                    fields.filterIndexed { index, _ -> index % 2 == 1 }.flatMap { field ->
+                        listOf(
+                            ActivitySnapshotCategoryOptionEntity(
+                                "$snapshotId-${field.id}-source",
+                                "$snapshotId-field-${fields.indexOf(field)}",
+                                "${field.id}-source-option",
+                                0,
+                                "Old source",
+                                null,
+                            ),
+                            ActivitySnapshotCategoryOptionEntity(
+                                "$snapshotId-${field.id}-fallback",
+                                "$snapshotId-field-${fields.indexOf(field)}",
+                                null,
+                                1,
+                                "Fallback ${field.id}",
+                                null,
+                            ),
+                        )
+                    },
+                ),
+            )
+            repeat(80) { execution ->
+                val values =
+                    fields.mapIndexedNotNull { index, field ->
+                        val snapshotField = "$snapshotId-field-$index"
+                        if (index % 2 == 0 && execution % 2 == 0) {
+                            numberValue(
+                                "$prefix-execution-$execution",
+                                snapshotField,
+                                if (execution ==
+                                    0
+                                ) {
+                                    0
+                                } else {
+                                    execution.toLong()
+                                },
+                            )
+                        } else if (index % 2 == 1 && execution % 3 != 2) {
+                            categoryValue(
+                                "$prefix-execution-$execution",
+                                snapshotField,
+                                "$snapshotId-${field.id}-${if (execution % 3 == 0) "source" else "fallback"}",
+                            )
+                        } else {
+                            null
+                        }
+                    }
+                completedActivity("$prefix-execution-$execution", snapshotId, prefix, MINUTE, AUG_20, values = values)
+            }
+        }
+
+        fixture("small", 2)
+        fixture("large", 40)
+
+        fun read(prefix: String): Pair<StatisticsSeriesDetail.Activity, Int> {
+            observedSql.clear()
+            val detail =
+                repository.seriesDetail(
+                    StatisticsSeriesId(prefix),
+                    StatisticsPeriod.AllTime,
+                ) as StatisticsSeriesDetail.Activity
+            val historyReads =
+                synchronized(observedSql) {
+                    observedSql.count { it.contains("FROM activity_executions", ignoreCase = true) }
+                }
+            return detail to historyReads
+        }
+        val (small, smallReads) = read("small")
+        val (large, largeReads) = read("large")
+        assertEquals(2, small.fields.size)
+        assertEquals(40, large.fields.size)
+        assertTrue(smallReads > 0)
+        assertEquals(smallReads, largeReads)
+        assertTrue(largeReads <= 6)
+        large.fields.forEach { detail ->
+            val expected =
+                when (detail) {
+                    is StatisticsFieldDetail.Number ->
+                        repository.numberFieldStatistics(
+                            StatisticsSeriesId("large"),
+                            detail.field.id,
+                            StatisticsPeriod.AllTime,
+                        )
+                    is StatisticsFieldDetail.Category ->
+                        repository.categoryFieldStatistics(
+                            StatisticsSeriesId("large"),
+                            detail.field.id,
+                            StatisticsPeriod.AllTime,
+                        )
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                }
+            assertEquals(
+                expected,
+                when (detail) {
+                    is StatisticsFieldDetail.Number -> detail.statistics
+                    is StatisticsFieldDetail.Category -> detail.statistics
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                },
+            )
+        }
+        val number =
+            (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
+                .statistics
+        assertEquals(40L, number.recordedCount)
+        assertEquals(40L, number.missingCount)
+        assertEquals(ExactValue.of(39, 1), number.values.medianScaled)
+        val category =
+            (
+                large.fields.first {
+                    it is StatisticsFieldDetail.Category
+                } as StatisticsFieldDetail.Category
+            ).statistics
+        assertEquals(54L, category.recordedCount)
+        assertEquals(26L, category.missingCount)
+        assertEquals(
+            setOf(
+                "large-field-1-source-option",
+                "large-snapshot-large-field-1-fallback",
+            ),
+            category.values
+                .map {
+                    it.id.value
+                }.toSet(),
+        )
+    }
+
+    @Test
+    fun sequenceSeriesDetailBatchesMixedFieldHistoryReadsAndMatchesCanonicalReaders() {
+        fun fixture(
+            prefix: String,
+            fieldCount: Int,
+        ) {
+            series(prefix, "SEQUENCE", prefix)
+            val fields =
+                (0 until fieldCount).map { index ->
+                    SequenceTemplateFieldEntity(
+                        "$prefix-field-$index",
+                        prefix,
+                        index,
+                        "Field $index",
+                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
+                        if (index % 2 == 0) "points" else null,
+                        if (index % 2 == 0) 0 else null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        0,
+                        0,
+                        null,
+                    )
+                }
+            val options =
+                fields.filter { it.fieldType == "CATEGORY" }.map {
+                    SequenceTemplateCategoryOptionEntity("${it.id}-source-option", it.id, 0, "Renamed ${it.id}")
+                }
+            sequenceTemplate(prefix, prefix, prefix, fields, options)
+            activitySnapshot("$prefix-child", null)
+            repeat(2) { execution ->
+                val snapshot = "$prefix-execution-$execution-snapshot"
+                val snapshotFields =
+                    fields.mapIndexed { index, field ->
+                        SequenceSnapshotFieldEntity(
+                            "$snapshot-field-$index",
+                            snapshot,
+                            field.id,
+                            index,
+                            field.name,
+                            null,
+                            field.fieldType,
+                            field.unit,
+                            field.displayPrecision,
+                            null,
+                            null,
+                            null,
+                            false,
+                        )
+                    }
+                val snapshotOptions =
+                    fields
+                        .mapIndexedNotNull { index, field ->
+                            if (field.fieldType != "CATEGORY") {
+                                null
+                            } else {
+                                (0..1).map { option ->
+                                    SequenceSnapshotCategoryOptionEntity(
+                                        "$snapshot-option-$index-$option",
+                                        "$snapshot-field-$index",
+                                        if (option == 0) "${field.id}-source-option" else null,
+                                        option,
+                                        if (option == 0) "Old source" else "Fallback ${field.id}",
+                                        null,
+                                    )
+                                }
+                            }
+                        }.flatten()
+                val start = if (execution == 0) START_2330 else millis("2026-08-21T23:30:00Z")
+                val end = start + MINUTE
+                database.sequenceSnapshotDao().insertAggregate(
+                    SequenceSnapshotAggregateEntity(
+                        SequenceSnapshotEntity(snapshot, "$prefix-execution-$execution", null, null, null, prefix, 0),
+                        sequenceSettings(snapshot),
+                        snapshotFields,
+                        snapshotOptions,
+                    ),
+                )
+                val values =
+                    fields.mapIndexedNotNull { index, field ->
+                        when {
+                            field.fieldType == "NUMBER" && (index == 0 || execution == 0) ->
+                                SequenceExecutionFieldValueEntity(
+                                    "$prefix-execution-$execution",
+                                    "$snapshot-field-$index",
+                                    if (index == 0) execution * 20L else index.toLong(),
+                                    null,
+                                    null,
+                                )
+                            field.fieldType == "CATEGORY" && (execution == 0 || index == 1) ->
+                                SequenceExecutionFieldValueEntity(
+                                    "$prefix-execution-$execution",
+                                    "$snapshot-field-$index",
+                                    null,
+                                    "$snapshot-option-$index-$execution",
+                                    null,
+                                )
+                            else -> null
+                        }
+                    }
+                database.sequenceExecutionDao().insertAggregate(
+                    SequenceExecutionAggregateEntity(
+                        SequenceExecutionEntity(
+                            "$prefix-execution-$execution",
+                            snapshot,
+                            null,
+                            prefix,
+                            if (execution == 0) "COMPLETED" else "ENDED_EARLY",
+                            start,
+                            end,
+                            MINUTE,
+                            0,
+                            MINUTE,
+                            "UTC",
+                            0,
+                            if (execution == 0) AUG_20 else AUG_21,
+                            null,
+                            start,
+                            end,
+                        ),
+                        occurrences =
+                            listOf(
+                                SequenceOccurrenceEntity(
+                                    "$prefix-occurrence-$execution",
+                                    "$prefix-execution-$execution",
+                                    null,
+                                    "$prefix-child",
+                                    0,
+                                    null,
+                                    null,
+                                    "COMPLETED",
+                                    start,
+                                    end,
+                                    "SEQUENCE_ENDED_EARLY",
+                                    true,
+                                    false,
+                                ),
+                            ),
+                        intervals =
+                            listOf(
+                                SequenceIntervalEntity(
+                                    "$prefix-interval-$execution",
+                                    "$prefix-execution-$execution",
+                                    "ACTIVE_STEP",
+                                    start,
+                                    end,
+                                    "$prefix-occurrence-$execution",
+                                ),
+                            ),
+                        values = values,
+                    ),
+                )
+            }
+        }
+        fixture("sequence-small", 2)
+        fixture("sequence-large", 40)
+        val period = StatisticsPeriod.Custom(LocalDate.parse(AUG_20), LocalDate.parse(AUG_21))
+
+        fun read(id: String): Pair<StatisticsSeriesDetail.Sequence, Int> {
+            observedSql.clear()
+            val detail =
+                repository.seriesDetail(StatisticsSeriesId(id), period) as StatisticsSeriesDetail.Sequence
+            val reads =
+                synchronized(observedSql) {
+                    observedSql.count { it.contains("FROM sequence_executions", ignoreCase = true) }
+                }
+            return detail to reads
+        }
+        val (small, smallReads) = read("sequence-small")
+        val (large, largeReads) = read("sequence-large")
+        assertEquals(2, small.fields.size)
+        assertEquals(40, large.fields.size)
+        assertTrue(smallReads > 0)
+        assertEquals(smallReads, largeReads)
+        assertTrue(largeReads <= 6)
+        assertEquals(2L, large.statistics.executionCount)
+        large.fields.forEach { detail ->
+            val expected =
+                when (detail) {
+                    is StatisticsFieldDetail.Number ->
+                        repository.numberFieldStatistics(StatisticsSeriesId("sequence-large"), detail.field.id, period)
+                    is StatisticsFieldDetail.Category ->
+                        repository.categoryFieldStatistics(
+                            StatisticsSeriesId("sequence-large"),
+                            detail.field.id,
+                            period,
+                        )
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                }
+            assertEquals(
+                expected,
+                when (detail) {
+                    is StatisticsFieldDetail.Number -> detail.statistics
+                    is StatisticsFieldDetail.Category -> detail.statistics
+                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                },
+            )
+        }
+        val number =
+            (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
+                .statistics
+        assertEquals(2L, number.recordedCount)
+        assertEquals(0L, number.missingCount)
+        assertEquals(BigInteger.valueOf(20), number.values.totalScaled)
+        assertEquals(ExactValue.of(10, 1), number.values.averageScaled)
+        assertEquals(ExactValue.of(10, 1), number.values.medianScaled)
+        assertEquals(0L, number.values.minimumScaled)
+        assertEquals(20L, number.values.maximumScaled)
+        val partlyMissingNumber =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .first { it.field.id.value == "sequence-large-field-2" }
+                .statistics
+        assertEquals(1L, partlyMissingNumber.recordedCount)
+        assertEquals(1L, partlyMissingNumber.missingCount)
+        val category =
+            (
+                large.fields.first {
+                    it is StatisticsFieldDetail.Category
+                } as StatisticsFieldDetail.Category
+            ).statistics
+        assertEquals(2L, category.recordedCount)
+        assertEquals(0L, category.missingCount)
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 1L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 1L,
+            ),
+            category.values.associate { it.id.value to it.count },
+        )
+        assertEquals(2L, category.values.sumOf { it.count })
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to ExactValue.of(1, 2),
+                "sequence-large-execution-0-snapshot-option-1-1" to ExactValue.of(0, 1),
+                "sequence-large-execution-1-snapshot-option-1-1" to ExactValue.of(1, 2),
+            ),
+            category.values.associate { it.id.value to it.recordedShare.exactValue },
+        )
+        val partlyMissingCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-3" }
+                .statistics
+        assertEquals(1L, partlyMissingCategory.recordedCount)
+        assertEquals(1L, partlyMissingCategory.missingCount)
+        val firstDayPeriod = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        val day =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-large"),
+                firstDayPeriod,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(1L, day.statistics.executionCount)
+        assertTrue(
+            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all { it.statistics.recordedCount == 1L },
+        )
+        val firstDayCategory =
+            day.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-1" }
+                .statistics
+        assertEquals(
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("sequence-large"),
+                firstDayCategory.field.id,
+                firstDayPeriod,
+            ),
+            firstDayCategory,
+        )
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 1L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 0L,
+            ),
+            firstDayCategory.values.associate { it.id.value to it.count },
+        )
+        val secondDay =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-large"),
+                StatisticsPeriod.Day(LocalDate.parse(AUG_21)),
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(1L, secondDay.statistics.executionCount)
+        val secondDayCategory =
+            secondDay.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .first { it.field.id.value == "sequence-large-field-1" }
+                .statistics
+        assertEquals(
+            mapOf(
+                "sequence-large-field-1-source-option" to 0L,
+                "sequence-large-execution-0-snapshot-option-1-1" to 0L,
+                "sequence-large-execution-1-snapshot-option-1-1" to 1L,
+            ),
+            secondDayCategory.values.associate { it.id.value to it.count },
+        )
+    }
 
     @Test
     fun globalAccountingUsesOnlyTopLevelTerminalRowsAndPrimaryDate() {
@@ -91,6 +592,27 @@ class StatisticsRepositoryTest {
         assertEquals(4L, all.topLevelExecutionCount)
         assertEquals(2L, all.activeDayCount)
         assertEquals(Duration.ofMinutes(15), all.totalSequencePauseIdleDuration)
+        val activityDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(
+            repository.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime),
+            activityDetail.statistics,
+        )
+        assertEquals(3L, activityDetail.statistics.executionCount)
+        assertEquals(Duration.ofMinutes(210), activityDetail.statistics.durations.total)
+        val sequenceDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(
+            repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+            sequenceDetail.statistics,
+        )
+        assertEquals(Duration.ofMinutes(15), sequenceDetail.statistics.totalPauseIdleDuration)
         assertEquals(1L, all.oneOffActivityExecutionCount)
         assertNull(all.calendarDayCount)
         assertNull(all.averageTrackedMillisecondsPerCalendarDay)
@@ -322,11 +844,29 @@ class StatisticsRepositoryTest {
         )
         val catalog = repository.fieldCatalog(StatisticsSeriesId("activity-series"))
         assertEquals(
-            setOf("number-source", "category-source", "calories-source"),
+            setOf("number-source", "category-source", "calories-source", "text-source"),
             catalog.mapTo(hashSetOf()) { it.id.value },
         )
         assertEquals("Distance", catalog.single { it.id.value == "number-source" }.displayName)
         assertEquals("kcal", catalog.single { it.id.value == "calories-source" }.unit)
+        val bundled =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(detail, bundled.statistics)
+        assertEquals(catalog.map { it.id }, bundled.fields.map { it.field.id })
+        assertEquals(
+            4,
+            bundled.fields
+                .map { it.field.id }
+                .toSet()
+                .size,
+        )
+        assertEquals(
+            catalog.single { it.id.value == "text-source" },
+            (bundled.fields.single { it.field.id.value == "text-source" } as StatisticsFieldDetail.Text).field,
+        )
 
         val number =
             repository.numberFieldStatistics(
@@ -340,6 +880,20 @@ class StatisticsRepositoryTest {
         assertEquals(0L, number.values.totalScaled.longValueExact())
         assertEquals(ExactValue.of(0, 1), number.values.averageScaled)
         assertEquals(0L, number.values.minimumScaled)
+        assertEquals(
+            number,
+            (
+                bundled.fields.single {
+                    it.field.id.value == "number-source"
+                } as StatisticsFieldDetail.Number
+            ).statistics,
+        )
+        val zeroRecorded =
+            (bundled.fields.single { it.field.id.value == "calories-source" } as StatisticsFieldDetail.Number)
+                .statistics
+        assertEquals(0L, zeroRecorded.recordedCount)
+        assertEquals(4L, zeroRecorded.missingCount)
+        assertNull(zeroRecorded.values.averageScaled)
 
         val category =
             repository.categoryFieldStatistics(
@@ -352,6 +906,20 @@ class StatisticsRepositoryTest {
         assertEquals(2L, category.missingCount)
         assertEquals("Tempo", category.values.single().displayLabel)
         assertEquals(2L, category.values.single().count)
+        assertEquals(
+            category,
+            (
+                bundled.fields.single {
+                    it.field.id.value == "category-source"
+                } as StatisticsFieldDetail.Category
+            ).statistics,
+        )
+        assertEquals(
+            "tempo-source",
+            category.values
+                .single()
+                .id.value,
+        )
         assertEquals(
             ExactValue.of(1, 1),
             category.values
@@ -384,6 +952,26 @@ class StatisticsRepositoryTest {
         assertEquals(3L, editedCategory.missingCount)
         assertEquals(1L, editedCategory.values.single().count)
 
+        val emptyPeriod =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.Day(LocalDate.parse("2026-08-22")),
+            ) as StatisticsSeriesDetail.Activity
+        val emptyNumber =
+            (emptyPeriod.fields.single { it.field.id.value == "number-source" } as StatisticsFieldDetail.Number)
+                .statistics
+        val emptyCategory =
+            (emptyPeriod.fields.single { it.field.id.value == "category-source" } as StatisticsFieldDetail.Category)
+                .statistics
+        assertEquals(0L, emptyNumber.relevantExecutionCount)
+        assertEquals(0L, emptyNumber.recordedCount)
+        assertNull(emptyNumber.coverage.exactValue)
+        assertNull(emptyNumber.values.averageScaled)
+        assertEquals(0L, emptyCategory.relevantExecutionCount)
+        assertEquals(0L, emptyCategory.recordedCount)
+        assertNull(emptyCategory.coverage.exactValue)
+        assertTrue(emptyCategory.values.all { it.recordedShare.exactValue == null })
+
         activitySnapshot("local-one-off", null, fields = true, sourceLinked = false)
         completedActivity(
             "local-one-off-execution",
@@ -394,6 +982,9 @@ class StatisticsRepositoryTest {
             values = listOf(numberValue("local-one-off-execution", "local-one-off-number", 99)),
         )
         assertTrue(repository.fieldCatalog(StatisticsSeriesId(ONE_OFF)).isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.seriesDetail(StatisticsSeriesId(ONE_OFF), StatisticsPeriod.AllTime)
+        }
         val oneOffSummary =
             repository.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id.value == ONE_OFF }
         assertEquals(1L, oneOffSummary.executionCount)
@@ -452,6 +1043,67 @@ class StatisticsRepositoryTest {
         assertEquals(1L, statistics.recordedCount)
         assertEquals(1L, statistics.missingCount)
         assertEquals(7L, statistics.values.totalScaled.longValueExact())
+        val detail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sequence-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(
+            repository.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+            detail.statistics,
+        )
+        assertEquals(statistics, (detail.fields.single() as StatisticsFieldDetail.Number).statistics)
+    }
+
+    @Test
+    fun bundledCategoryKeepsSourceAndSnapshotFallbackIdentitiesDespiteEqualLabels() {
+        series("activity-series", "ACTIVITY", "Workout")
+        activityTemplateWithFields()
+        activitySnapshot("source", "activity-series", fields = true)
+        activitySnapshot("fallback", "activity-series", fields = true)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_snapshot_category_options SET source_option_id = NULL WHERE id = 'fallback-tempo'",
+        )
+        completedActivity(
+            "source-execution",
+            "source",
+            "activity-series",
+            MINUTE,
+            AUG_20,
+            values = listOf(categoryValue("source-execution", "source-category", "source-tempo")),
+        )
+        completedActivity(
+            "fallback-execution",
+            "fallback",
+            "activity-series",
+            MINUTE,
+            AUG_20,
+            values = listOf(categoryValue("fallback-execution", "fallback-category", "fallback-tempo")),
+        )
+
+        val canonical =
+            repository.categoryFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
+                StatisticsPeriod.AllTime,
+            )
+        val detail =
+            repository.seriesDetail(
+                StatisticsSeriesId("activity-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        val projected =
+            (detail.fields.single { it.field.id.value == "category-source" } as StatisticsFieldDetail.Category)
+                .statistics
+        assertEquals(canonical, projected)
+        assertEquals(2, projected.values.size)
+        assertEquals(setOf("tempo-source", "fallback-tempo"), projected.values.map { it.id.value }.toSet())
+        assertTrue(projected.values.any { it.id is StatisticsCategoryOptionId.SnapshotFallback })
+        assertEquals(listOf(1L, 1L), projected.values.map { it.count })
+        assertEquals(
+            listOf(ExactValue.of(1, 2), ExactValue.of(1, 2)),
+            projected.values.map { it.recordedShare.exactValue },
+        )
     }
 
     @Test
@@ -471,6 +1123,20 @@ class StatisticsRepositoryTest {
         assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, states["archived-series"])
         assertEquals(StatisticsSeriesSourceState.NO_CURRENT_SOURCE, states["sourceless-series"])
         assertEquals(StatisticsSeriesSourceState.SYSTEM_ONE_OFF, states[ONE_OFF])
+        val archivedDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("archived-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(StatisticsSeriesId("archived-series"), archivedDetail.statistics.series.id)
+        assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, archivedDetail.statistics.series.sourceState)
+        val sourcelessDetail =
+            repository.seriesDetail(
+                StatisticsSeriesId("sourceless-series"),
+                StatisticsPeriod.AllTime,
+            ) as StatisticsSeriesDetail.Sequence
+        assertEquals(StatisticsSeriesSourceState.NO_CURRENT_SOURCE, sourcelessDetail.statistics.series.sourceState)
+        assertEquals(1L, sourcelessDetail.statistics.executionCount)
         val summaries = repository.seriesSummaries(StatisticsPeriod.AllTime).associateBy { it.series.id.value }
         assertEquals(1L, summaries.getValue("sourceless-series").executionCount)
         assertEquals(Duration.ofMinutes(1), summaries.getValue("sourceless-series").totalDuration)
@@ -498,6 +1164,41 @@ class StatisticsRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) { repository.seriesCatalog() }
         database.openHelper.writableDatabase.execSQL(
             "UPDATE statistics_series SET kind = 'SEQUENCE' WHERE id = 'sourceless-series'",
+        )
+    }
+
+    @Test
+    fun overviewMatchesCanonicalReadersAndPreservesEveryCatalogSeries() {
+        series("active-series", "ACTIVITY", "Active")
+        series("archived-series", "ACTIVITY", "Archived")
+        series("sourceless-series", "SEQUENCE", "Old sequence", archivedAt = 50)
+        activityTemplate("active", "Active", "active-series")
+        activityTemplate("archived", "Archived", "archived-series", deletedAt = 10)
+        activitySnapshot("active-history", "active-series")
+        completedActivity("active-execution", "active-history", "active-series", MINUTE, AUG_20)
+        activitySnapshot("source-free", null)
+        completedSequence("old-sequence", "sourceless-series", "source-free", MINUTE, 0, AUG_20)
+
+        val period = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        val overview = repository.overview(period)
+
+        assertEquals(repository.global(period), overview.global)
+        assertEquals(repository.seriesSummaries(period), overview.series)
+        assertEquals(
+            mapOf(
+                "active-series" to StatisticsSeriesSourceState.ACTIVE_SOURCE,
+                "archived-series" to StatisticsSeriesSourceState.ARCHIVED_SOURCE,
+                "sourceless-series" to StatisticsSeriesSourceState.NO_CURRENT_SOURCE,
+                ONE_OFF to StatisticsSeriesSourceState.SYSTEM_ONE_OFF,
+            ),
+            overview.series.associate { it.series.id.value to it.series.sourceState },
+        )
+        assertEquals(0L, overview.series.single { it.series.id.value == "archived-series" }.executionCount)
+        assertEquals(
+            StatisticsSeriesKind.ONE_OFF_BUCKET,
+            overview.series
+                .single { it.series.id.value == ONE_OFF }
+                .series.kind,
         )
     }
 
@@ -1001,6 +1702,22 @@ class StatisticsRepositoryTest {
                     2,
                     "Type",
                     "CATEGORY",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    false,
+                    0,
+                    0,
+                    null,
+                ),
+                ActivityTemplateFieldEntity(
+                    "text-source",
+                    "activity",
+                    3,
+                    "Notes",
+                    "TEXT",
                     null,
                     null,
                     null,

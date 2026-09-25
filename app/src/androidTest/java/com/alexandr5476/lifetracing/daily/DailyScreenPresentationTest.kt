@@ -168,6 +168,23 @@ class DailyScreenPresentationTest {
     }
 
     @Test
+    fun dailyShellExposesStatisticsActionInAdaptiveActionLayout() {
+        var opened = false
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                DailyScreen(
+                    presentation(LocalDate.parse("2026-08-20"), DailyDateRelation.TODAY, DailyLoadState.Loading),
+                    {},
+                    onStatistics = { opened = true },
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("daily-shell-actions").assertIsDisplayed()
+        composeTestRule.onNodeWithText(string(R.string.daily_statistics)).assertIsDisplayed().performClick()
+        assertTrue(opened)
+    }
+
+    @Test
     fun plans_keep_original_context_lifecycle_source_and_absent_comment_semantics() {
         val overdueDay = plan("Past day plan", overdue = true)
         val overdueWeek =
@@ -564,6 +581,7 @@ class DailyScreenPresentationTest {
         tick: Long? = null,
         expanded: MutableList<SequenceExecutionId> = mutableListOf(),
         planExecutions: MutableList<PlanActionIdentity> = mutableListOf(),
+        onStatistics: () -> Unit = {},
     ): ScreenHarness {
         val stateHolder = mutableStateOf(state)
         val tickHolder = mutableLongStateOf(tick ?: 0)
@@ -575,6 +593,7 @@ class DailyScreenPresentationTest {
                     tickHolder.value.takeIf { tick != null },
                     onExpandSequence = expanded::add,
                     onExecutePlan = planExecutions::add,
+                    onStatistics = onStatistics,
                 )
             }
         }

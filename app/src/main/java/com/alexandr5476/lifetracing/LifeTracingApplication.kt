@@ -18,12 +18,15 @@ import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
 import com.alexandr5476.lifetracing.data.persistence.SequenceHistoryCommandRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -57,6 +60,8 @@ import com.alexandr5476.lifetracing.runtime.AndroidRuntimeVibrator
 import com.alexandr5476.lifetracing.runtime.AndroidWallClock
 import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
+import com.alexandr5476.lifetracing.statistics.StatisticsController
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailController
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
@@ -132,6 +137,13 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> SequenceHistoryMutationController = {
         error("Sequence History is unavailable")
     },
+    private val statisticsControllerFactory: (StatisticsPeriod) -> StatisticsController = {
+        error("Statistics is unavailable")
+    },
+    private val statisticsSeriesDetailControllerFactory: (
+        StatisticsSeriesId,
+        StatisticsPeriod,
+    ) -> StatisticsSeriesDetailController = { _, _ -> error("Statistics detail is unavailable") },
 ) {
     val dailyController: DailyController
         get() = dailyControllerOwner.get()
@@ -170,6 +182,14 @@ class LifeTracingRuntimeGraph internal constructor(
         executionId: com.alexandr5476.lifetracing.domain.SequenceExecutionId,
     ): SequenceHistoryMutationController = sequenceHistoryDetailControllerFactory(executionId)
 
+    fun createStatisticsController(initialPeriod: StatisticsPeriod): StatisticsController =
+        statisticsControllerFactory(initialPeriod)
+
+    fun createStatisticsSeriesDetailController(
+        seriesId: StatisticsSeriesId,
+        initialPeriod: StatisticsPeriod,
+    ): StatisticsSeriesDetailController = statisticsSeriesDetailControllerFactory(seriesId, initialPeriod)
+
     companion object {
         @Volatile
         private var instance: LifeTracingRuntimeGraph? = null
@@ -206,6 +226,7 @@ class LifeTracingRuntimeGraph internal constructor(
             val planRepository = PlanRepository.create(context)
             val historyReadRepository = HistoryReadRepository.create(context)
             val sequenceHistoryCommandRepository = SequenceHistoryCommandRepository.create(context)
+            val statisticsRepository = StatisticsRepository.create(context)
             val coordinator =
                 AndroidRuntimeCoordinator(
                     repository,
@@ -697,6 +718,20 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         java.time.Instant::now,
                     )
+                },
+                { initialPeriod ->
+                    StatisticsController(
+                        uiScope,
+                        initialPeriod,
+                        { period ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) { statisticsRepository.overview(period) }
+                        },
+                    )
+                },
+                { seriesId, initialPeriod ->
+                    StatisticsSeriesDetailController(uiScope, seriesId, initialPeriod) { id, period ->
+                        withContext(kotlinx.coroutines.Dispatchers.IO) { statisticsRepository.seriesDetail(id, period) }
+                    }
                 },
             )
         }
