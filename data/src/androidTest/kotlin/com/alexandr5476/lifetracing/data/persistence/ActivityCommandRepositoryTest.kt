@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.data.persistence
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntryOptionReference
@@ -36,9 +37,10 @@ import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
-import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerDecisionRequiredException
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -114,6 +116,13 @@ class ActivityCommandRepositoryTest {
         assertEquals("1970-01-01", execution.primaryLocalDate.toString())
         assertEquals(execution.id, database.activeSessionDao().get()?.activityExecutionId)
         assertEquals(1_200_000L, database.activityTemplateDao().getUserState("stopwatch")?.lastUsedAtMs)
+        val reloadedRuntime = liveRepository("reload-backdated").getActiveRuntime() as ActiveActivityRuntime
+        assertEquals(instant(0), reloadedRuntime.execution.startedAt)
+        assertEquals(execution.id, reloadedRuntime.execution.id)
+        val daily =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneId.of("Europe/Moscow") })
+                .getDaily(DailyQuery(execution.primaryLocalDate, instant(1_200), 10))
+        assertEquals(instant(0), (daily.active as DailyActive.Activity).runtime.execution.startedAt)
 
         val snapshotCount = count("activity_snapshots")
         assertThrows(IllegalArgumentException::class.java) {
@@ -196,7 +205,7 @@ class ActivityCommandRepositoryTest {
         template("overtime", TimeTrackingMode.TIMER, 600_000, "OVERTIME")
         val repository = repository("timer")
 
-        assertThrows(ExpiredFinishTimerDecisionRequiredException::class.java) {
+        assertThrows(ExpiredFinishTimerStartException::class.java) {
             repository.startLive(
                 ActivityEntrySource.Template(ActivityTemplateId("finish")),
                 instant(0),
@@ -218,6 +227,46 @@ class ActivityCommandRepositoryTest {
             )
         assertEquals(ActivityExecutionStatus.RUNNING, overtime.status)
         assertEquals(ActivityExecutionStatus.RUNNING, repository.getHistory(overtime.id)?.execution?.status)
+    }
+
+    @Test
+    fun finishDeadlineExactlyAtCommandIsRejectedWithoutDurableResidue() {
+        template("finish-exact", TimeTrackingMode.TIMER, 600_000, "FINISH")
+        val repository = repository("finish-exact")
+
+        assertThrows(ExpiredFinishTimerStartException::class.java) {
+            repository.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("finish-exact")),
+                instant(0),
+                instant(600),
+                ZoneOffset.UTC,
+            )
+        }
+        assertEquals(0, count("activity_snapshots"))
+        assertEquals(0, count("activity_executions"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("finish-exact")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun finishDeadlineAfterCommandAllowsBackdatedLiveStart() {
+        template("finish-valid", TimeTrackingMode.TIMER, 600_000, "FINISH")
+        val repository = repository("finish-valid")
+
+        val execution =
+            repository.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("finish-valid")),
+                instant(0),
+                instant(599),
+                ZoneOffset.UTC,
+            )
+        assertEquals(instant(0), execution.startedAt)
+        assertEquals(ActivityExecutionStatus.RUNNING, execution.status)
+        assertEquals(execution.id, database.activeSessionDao().get()?.activityExecutionId)
+        assertEquals(
+            instant(599).toEpochMilli(),
+            database.activityTemplateDao().getUserState("finish-valid")?.lastUsedAtMs,
+        )
     }
 
     @Test
@@ -342,6 +391,29 @@ class ActivityCommandRepositoryTest {
             )
         assertEquals(2L, repository.getHistory(matched.id)?.snapshot?.sourceRevision)
         assertEquals(unrelated.id, database.activeSessionDao().get()?.activityExecutionId)
+    }
+
+    @Test
+    fun liveTemplateMissingOrArchivedAfterReviewIsStaleWithoutResidue() {
+        template("archived-live", TimeTrackingMode.STOPWATCH, fields = true)
+        database.activityTemplateDao().archive("archived-live", 2_000)
+        val repository = repository("stale-live")
+        listOf("archived-live", "missing-live").forEach { id ->
+            assertThrows(StaleLauncherTargetException::class.java) {
+                repository.startLive(
+                    ActivityEntrySource.Template(ActivityTemplateId(id)),
+                    instant(100),
+                    instant(3_000),
+                    ZoneOffset.UTC,
+                    expectedTemplateRevision = 1,
+                )
+            }
+        }
+        assertEquals(0, count("activity_snapshots"))
+        assertEquals(0, count("activity_executions"))
+        assertEquals(0, count("activity_execution_field_values"))
+        assertNull(database.activeSessionDao().get())
+        assertNull(database.activityTemplateDao().getUserState("archived-live")?.lastUsedAtMs)
     }
 
     @Test

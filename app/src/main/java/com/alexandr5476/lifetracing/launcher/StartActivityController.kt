@@ -1,10 +1,23 @@
-@file:Suppress("ComplexCondition", "ReturnCount", "TooGenericExceptionCaught")
+@file:Suppress(
+    "ComplexCondition",
+    "ReturnCount",
+    "TooGenericExceptionCaught",
+    "LargeClass",
+    "CyclomaticComplexMethod",
+    "MaxLineLength",
+    "SwallowedException",
+    "ThrowsCount",
+)
 
 package com.alexandr5476.lifetracing.launcher
 
 import com.alexandr5476.lifetracing.domain.ActivityEntryValue
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
@@ -15,6 +28,7 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
+import com.alexandr5476.lifetracing.history.ManualEntryFieldDraft
 import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +41,7 @@ import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicLong
 
 sealed interface LauncherLoad<out T> {
@@ -134,6 +149,7 @@ data class StartActivityState(
     val browse: LauncherLoad<LibraryContents> = LauncherLoad.Idle,
     val selected: LauncherLoad<LibraryLaunchTarget> = LauncherLoad.Idle,
     val command: LauncherCommandState = LauncherCommandState.Idle,
+    val options: LauncherLoad<StartOptionsDraft> = LauncherLoad.Idle,
     val organizationInFlight: Boolean = false,
     val organizationFailure: String? = null,
 )
@@ -163,6 +179,56 @@ sealed interface StartActivityAction {
 
     data object RetryLaunch : StartActivityAction
 
+    data class OpenOptions(
+        val id: ActivityTemplateId,
+    ) : StartActivityAction
+
+    data object CloseOptions : StartActivityAction
+
+    data class EditOptionStart(
+        val text: String,
+    ) : StartActivityAction
+
+    data class EditOptionEnd(
+        val text: String,
+    ) : StartActivityAction
+
+    data class ChooseOptionStartOffset(
+        val offset: ZoneOffset,
+    ) : StartActivityAction
+
+    data class ChooseOptionEndOffset(
+        val offset: ZoneOffset,
+    ) : StartActivityAction
+
+    data class EditOptionNumber(
+        val fieldId: ActivityTemplateFieldId,
+        val text: String,
+    ) : StartActivityAction
+
+    data class EditOptionText(
+        val fieldId: ActivityTemplateFieldId,
+        val text: String,
+    ) : StartActivityAction
+
+    data class ChooseOptionCategory(
+        val fieldId: ActivityTemplateFieldId,
+        val optionId: CategoryOptionId,
+    ) : StartActivityAction
+
+    data class SetOptionMissing(
+        val fieldId: ActivityTemplateFieldId,
+        val missing: Boolean,
+    ) : StartActivityAction
+
+    data object SaveOptions : StartActivityAction
+
+    data object ConfirmOptionsOverlap : StartActivityAction
+
+    data object CancelOptionsOverlap : StartActivityAction
+
+    data object ReviewOptionsTemplate : StartActivityAction
+
     data object CancelPreflight : StartActivityAction
 
     data object Visible : StartActivityAction
@@ -188,6 +254,27 @@ internal sealed interface LauncherDurableCommand {
         override val at: Instant,
         override val zoneId: ZoneId,
     ) : LauncherDurableCommand
+
+    data class StartOptionsLive(
+        val proposal: StartOptionsProposal,
+    ) : LauncherDurableCommand {
+        override val at: Instant = proposal.commandAt
+        override val zoneId: ZoneId = proposal.zoneId
+    }
+
+    data class StartOptionsTimed(
+        val proposal: StartOptionsProposal,
+    ) : LauncherDurableCommand {
+        override val at: Instant = proposal.commandAt
+        override val zoneId: ZoneId = proposal.zoneId
+    }
+
+    data class StartOptionsNoLive(
+        val proposal: StartOptionsProposal,
+    ) : LauncherDurableCommand {
+        override val at: Instant = proposal.commandAt
+        override val zoneId: ZoneId = proposal.zoneId
+    }
 
     data class StartSequence(
         val templateId: com.alexandr5476.lifetracing.domain.SequenceTemplateId,
@@ -246,12 +333,15 @@ class StartActivityController internal constructor(
     private val onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {},
     private val onPinnedOrderCommitted: () -> Unit = {},
     private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
+    private val readActivityTemplate: suspend (ActivityTemplateId) -> ActivityTemplate? = { null },
+    private val overlapsCompletedHistory: suspend (Instant, Instant) -> Boolean = { _, _ -> false },
 ) {
     private val homeGeneration = AtomicLong()
     private val searchGeneration = AtomicLong()
     private val browseGeneration = AtomicLong()
     private val targetGeneration = AtomicLong()
     private val attemptGeneration = AtomicLong()
+    private val optionsGeneration = AtomicLong()
     private val lifecycleLock = Any()
     private val readPublicationLock = Any()
     private val mutableState = MutableStateFlow(StartActivityState())
@@ -281,6 +371,38 @@ class StartActivityController internal constructor(
             is StartActivityAction.ReorderPinned -> reorder(action.completeOrderedIds)
             is StartActivityAction.Launch -> launch(action.mainValueOverride)
             StartActivityAction.RetryLaunch -> retryLaunch()
+            is StartActivityAction.OpenOptions -> openOptions(action.id)
+            StartActivityAction.CloseOptions -> closeOptions()
+            is StartActivityAction.EditOptionStart ->
+                editOptions {
+                    it.copy(startedText = action.text, startedOffset = null, startedOffsets = emptyList())
+                }
+            is StartActivityAction.EditOptionEnd ->
+                editOptions {
+                    it.copy(completedText = action.text, completedOffset = null, completedOffsets = emptyList())
+                }
+            is StartActivityAction.ChooseOptionStartOffset -> editOptions { it.copy(startedOffset = action.offset) }
+            is StartActivityAction.ChooseOptionEndOffset -> editOptions { it.copy(completedOffset = action.offset) }
+            is StartActivityAction.EditOptionNumber ->
+                editOptionValue(action.fieldId) {
+                    it.copy(numberText = action.text, missing = false)
+                }
+            is StartActivityAction.EditOptionText ->
+                editOptionValue(action.fieldId) {
+                    it.copy(text = action.text, missing = false)
+                }
+            is StartActivityAction.ChooseOptionCategory ->
+                editOptionValue(action.fieldId) {
+                    it.copy(selectedOptionId = action.optionId, missing = false)
+                }
+            is StartActivityAction.SetOptionMissing ->
+                editOptionValue(
+                    action.fieldId,
+                ) { it.copy(missing = action.missing) }
+            StartActivityAction.SaveOptions -> submitOptions(false)
+            StartActivityAction.ConfirmOptionsOverlap -> submitOptions(true)
+            StartActivityAction.CancelOptionsOverlap -> editOptions { it }
+            StartActivityAction.ReviewOptionsTemplate -> reviewOptionsTemplate()
             StartActivityAction.CancelPreflight -> abandonPendingLaunch()
             StartActivityAction.Visible -> onVisible()
             StartActivityAction.Hidden -> onHidden()
@@ -305,6 +427,7 @@ class StartActivityController internal constructor(
             searchGeneration.incrementAndGet()
             browseGeneration.incrementAndGet()
             targetGeneration.incrementAndGet()
+            optionsGeneration.incrementAndGet()
         }
         visible = false
         abandonPendingLaunch()
@@ -508,10 +631,307 @@ class StartActivityController internal constructor(
         }
     }
 
+    private fun openOptions(
+        id: ActivityTemplateId,
+        retained: StartOptionsDraft? = null,
+    ) {
+        val generation =
+            synchronized(lifecycleLock) {
+                if (closed ||
+                    !visible ||
+                    mutableState.value.command != LauncherCommandState.Idle ||
+                    mutableState.value.options != LauncherLoad.Idle
+                ) {
+                    return
+                }
+                optionsGeneration.incrementAndGet().also { next ->
+                    mutableState.update { it.copy(options = LauncherLoad.Loading) }
+                }
+            }
+        scope.launch {
+            try {
+                val template = readActivityTemplate(id)
+                synchronized(lifecycleLock) {
+                    if (closed || optionsGeneration.get() != generation) return@launch
+                    mutableState.update { state ->
+                        state.copy(
+                            options =
+                                if (template == null || template.deletedAt != null) {
+                                    LauncherLoad.Failure("Activity is unavailable")
+                                } else {
+                                    val current = template.initialStartOptions(wallClock.now(), zoneId())
+                                    LauncherLoad.Content(
+                                        if (retained == null) {
+                                            current
+                                        } else {
+                                            current.copy(
+                                                startedText = retained.startedText,
+                                                completedText = retained.completedText,
+                                                startedOffset = retained.startedOffset,
+                                                completedOffset = retained.completedOffset,
+                                            )
+                                        },
+                                    )
+                                },
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                synchronized(lifecycleLock) {
+                    if (!closed && optionsGeneration.get() == generation) {
+                        mutableState.update { it.copy(options = LauncherLoad.Failure(failure.message())) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun closeOptions() {
+        synchronized(lifecycleLock) {
+            if (mutableState.value.command is LauncherCommandState.Committing ||
+                mutableState.value.command is LauncherCommandState.Committed ||
+                mutableState.value.command is LauncherCommandState.CommittedCoordinationFailure
+            ) {
+                return
+            }
+            optionsGeneration.incrementAndGet()
+            cancelPendingLaunchLocked()
+            mutableState.update { it.copy(options = LauncherLoad.Idle, command = LauncherCommandState.Idle) }
+        }
+    }
+
+    private fun editOptions(transform: (StartOptionsDraft) -> StartOptionsDraft) {
+        synchronized(lifecycleLock) {
+            if (mutableState.value.command != LauncherCommandState.Idle) return
+            mutableState.update { state ->
+                val draft = (state.options as? LauncherLoad.Content)?.value ?: return@update state
+                state.copy(
+                    options =
+                        LauncherLoad.Content(
+                            transform(draft).copy(
+                                issue = null,
+                                overlap = null,
+                                draftVersion = draft.draftVersion + 1,
+                            ),
+                        ),
+                )
+            }
+        }
+    }
+
+    private fun editOptionValue(
+        id: ActivityTemplateFieldId,
+        transform: (ManualEntryFieldDraft) -> ManualEntryFieldDraft,
+    ) = editOptions { draft ->
+        draft.copy(
+            values =
+                draft.values[id]?.let { draft.values + (id to transform(it)) } ?: draft.values,
+        )
+    }
+
+    private fun reviewOptionsTemplate() {
+        val id =
+            synchronized(lifecycleLock) {
+                val draft = (mutableState.value.options as? LauncherLoad.Content)?.value ?: return
+                if (mutableState.value.command != LauncherCommandState.Idle || !draft.stale) return
+                mutableState.update { it.copy(options = LauncherLoad.Idle) }
+                draft.template.id
+            }
+        openOptions(id)
+    }
+
+    private fun submitOptions(approvedOverlap: Boolean) {
+        val draft = (mutableState.value.options as? LauncherLoad.Content)?.value ?: return
+        val approved = draft.overlap.takeIf { approvedOverlap }
+        synchronized(lifecycleLock) {
+            if (closed || !visible || mutableState.value.command != LauncherCommandState.Idle || draft.stale) return
+            val attempt = attemptGeneration.incrementAndGet()
+            mutableState.update { it.copy(command = LauncherCommandState.Checking(attempt)) }
+            pendingLaunchJob = scope.launch { prepareOptions(attempt, draft, approved) }
+        }
+    }
+
+    private suspend fun prepareOptions(
+        attempt: Long,
+        draft: StartOptionsDraft,
+        approved: StartOptionsProposal?,
+    ) {
+        try {
+            val zone = zoneId()
+            val first =
+                when (val validation = draft.validate(wallClock.now(), zone)) {
+                    is StartOptionsValidation.Valid -> validation.proposal
+                    is StartOptionsValidation.Invalid -> {
+                        optionIssue(attempt, validation)
+                        return
+                    }
+                }
+            if (first.isLive && hasLiveSession()) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.LIVE_CONFLICT))
+                return
+            }
+            val interval = first.interval
+            if (interval != null &&
+                (approved == null || approved.interval != interval || approved.draftVersion != draft.draftVersion) &&
+                overlapsCompletedHistory(interval.first, interval.second)
+            ) {
+                synchronized(lifecycleLock) {
+                    if (optionAttemptCurrent(attempt, draft)) {
+                        mutableState.update { state ->
+                            state.copy(
+                                options = LauncherLoad.Content(draft.copy(overlap = first, issue = null)),
+                                command = LauncherCommandState.Idle,
+                            )
+                        }
+                    }
+                }
+                return
+            }
+            if (zoneId() != zone) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.ZONE_CHANGED))
+                return
+            }
+            synchronized(lifecycleLock) {
+                if (!optionAttemptCurrent(attempt, draft)) return
+                mutableState.update { it.copy(command = LauncherCommandState.Committing(attempt)) }
+            }
+            commitOptions(attempt, draft, zone)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.SAVE_FAILURE))
+        }
+    }
+
+    private fun optionAttemptCurrent(
+        attempt: Long,
+        draft: StartOptionsDraft,
+    ): Boolean {
+        val current = (mutableState.value.options as? LauncherLoad.Content)?.value
+        return attemptGeneration.get() == attempt &&
+            current?.draftVersion == draft.draftVersion &&
+            current.template.id == draft.template.id &&
+            mutableState.value.command is LauncherCommandState.Checking
+    }
+
+    private fun optionIssue(
+        attempt: Long,
+        invalid: StartOptionsValidation.Invalid,
+    ) {
+        synchronized(lifecycleLock) {
+            if (attemptGeneration.get() != attempt) return
+            val command = mutableState.value.command
+            if (command !is LauncherCommandState.Checking && command !is LauncherCommandState.Committing) return
+            mutableState.update { state ->
+                val draft = (state.options as? LauncherLoad.Content)?.value ?: return@update state
+                state.copy(
+                    options =
+                        LauncherLoad.Content(
+                            draft.copy(
+                                issue = invalid.issue,
+                                stale = draft.stale || invalid.issue == StartOptionsIssue.STALE_TEMPLATE,
+                                startedOffsets =
+                                    if (invalid.issue ==
+                                        StartOptionsIssue.AMBIGUOUS_START
+                                    ) {
+                                        invalid.offsets
+                                    } else {
+                                        draft.startedOffsets
+                                    },
+                                completedOffsets =
+                                    if (invalid.issue ==
+                                        StartOptionsIssue.AMBIGUOUS_END
+                                    ) {
+                                        invalid.offsets
+                                    } else {
+                                        draft.completedOffsets
+                                    },
+                            ),
+                        ),
+                    command = LauncherCommandState.Idle,
+                )
+            }
+        }
+    }
+
+    private suspend fun commitOptions(
+        attempt: Long,
+        draft: StartOptionsDraft,
+        zone: ZoneId,
+    ) {
+        val committed =
+            try {
+                val admission =
+                    mutationGate.admit {
+                        if (zoneId() != zone) {
+                            throw StartOptionsValidationException(
+                                StartOptionsValidation.Invalid(StartOptionsIssue.ZONE_CHANGED),
+                            )
+                        }
+                        when (val validated = draft.validate(wallClock.now(), zone)) {
+                            is StartOptionsValidation.Valid -> {
+                                val proposal = validated.proposal
+                                when {
+                                    proposal.isLive -> LauncherDurableCommand.StartOptionsLive(proposal)
+                                    proposal.startedAt == null -> LauncherDurableCommand.StartOptionsNoLive(proposal)
+                                    else -> LauncherDurableCommand.StartOptionsTimed(proposal)
+                                }
+                            }
+                            is StartOptionsValidation.Invalid -> throw StartOptionsValidationException(validated)
+                        }
+                    }
+                requireNotNull(admission).turn.run { execute(admission.command) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (invalid: StartOptionsValidationException) {
+                optionIssue(attempt, invalid.validation)
+                return
+            } catch (_: ExpiredFinishTimerStartException) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.EXPIRED_FINISH))
+                return
+            } catch (_: LiveSessionConflictException) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.LIVE_CONFLICT))
+                return
+            } catch (_: StaleLauncherTargetException) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.STALE_TEMPLATE))
+                return
+            } catch (_: Exception) {
+                optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.SAVE_FAILURE))
+                return
+            }
+        if (!committed.isLive) {
+            publishCommitResult(attempt, LauncherCommandState.Committed(committed))
+            return
+        }
+        try {
+            coordinateRuntimeStateChanged()
+            publishCommitResult(attempt, LauncherCommandState.Committed(committed))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            publishCommitResult(
+                attempt,
+                LauncherCommandState.CommittedCoordinationFailure(committed, failure.message()),
+            )
+        }
+    }
+
+    private class StartOptionsValidationException(
+        val validation: StartOptionsValidation.Invalid,
+    ) : IllegalArgumentException()
+
     private fun launch(override: QuickMainValueOverride?) {
         val target = (mutableState.value.selected as? LauncherLoad.Content)?.value ?: return
         synchronized(lifecycleLock) {
-            if (closed || !visible || mutableState.value.command != LauncherCommandState.Idle) return
+            if (closed ||
+                !visible ||
+                mutableState.value.command != LauncherCommandState.Idle ||
+                mutableState.value.options != LauncherLoad.Idle
+            ) {
+                return
+            }
             lastOverride = override
             validateOverride(target, override)?.let { rejection ->
                 mutableState.update { it.copy(command = LauncherCommandState.Rejected(rejection)) }

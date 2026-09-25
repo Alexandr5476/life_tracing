@@ -549,4 +549,9 @@
     <string name="sequence_history_timing_failure">The timing correction could not be saved.</string>
     <string name="sequence_history_child_deletion_failure">The child execution could not be deleted.</string>
     <string name="sequence_history_structural_failure">The occurrence could not be removed.</string>
+    <string name="launcher_start_options">Start options</string>
+    <string name="launcher_optional_end">Optional end date and time</string>
+    <string name="launcher_options_future_start">Choose a start before the current time.</string>
+    <string name="launcher_options_expired_finish">This FINISH timer has reached its deadline. Add an end time to save completed history, or choose a later start.</string>
+    <string name="launcher_options_zone_changed">Device time zone changed. Review the entered times.</string>
 </resources>

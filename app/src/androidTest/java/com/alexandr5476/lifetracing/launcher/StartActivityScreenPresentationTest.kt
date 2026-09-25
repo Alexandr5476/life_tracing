@@ -16,6 +16,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -23,6 +24,7 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
+import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.Folder
@@ -32,6 +34,7 @@ import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
@@ -40,6 +43,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneOffset
 
 class StartActivityScreenPresentationTest {
     @get:Rule
@@ -150,7 +154,8 @@ class StartActivityScreenPresentationTest {
         composeTestRule
             .onNodeWithText(
                 text(com.alexandr5476.lifetracing.R.string.launcher_browse_loading),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
 
         state = state.copy(search = LauncherLoad.Content(listOf(trackable("Search result"))))
         composeTestRule.onNodeWithText("Search result").assertIsDisplayed()
@@ -431,6 +436,70 @@ class StartActivityScreenPresentationTest {
             listOf(StartActivityAction.ReorderPinned(listOf(activity.id, third.id, sequence.id))),
             actions,
         )
+    }
+
+    @Test
+    fun secondaryStartOptionsOpensWithoutChangingOneActionPrimarySelection() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        val activity = trackable("Options activity")
+        val sequence = trackable("Sequence", sequence = true)
+        var state by mutableStateOf(homeState(recent = listOf(activity, sequence)))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+
+        composeTestRule.onNodeWithTag("launcher-options-${activity.id.value}").performClick()
+        assertEquals(listOf(StartActivityAction.OpenOptions(ActivityTemplateId(activity.id.value))), actions)
+        assertFalse(actions.any { it is StartActivityAction.Launch })
+        composeTestRule.onNodeWithTag("launcher-options-${sequence.id.value}").assertDoesNotExist()
+
+        val template =
+            ActivityTemplate(
+                ActivityTemplateId(activity.id.value),
+                activity.name,
+                null,
+                TimeTrackingMode.STOPWATCH,
+                null,
+                StatisticsSeriesId("series"),
+                1,
+                Instant.parse("2026-08-20T10:00:00Z"),
+                Instant.parse("2026-08-20T10:00:00Z"),
+            )
+        val draft = template.initialStartOptions(Instant.parse("2026-08-20T10:00:00Z"), ZoneOffset.UTC)
+        state = state.copy(options = LauncherLoad.Content(draft.copy(issue = StartOptionsIssue.EXPIRED_FINISH)))
+        composeTestRule.onNodeWithTag("launcher-options-save").assertIsDisplayed().assertIsEnabled()
+        state =
+            state.copy(
+                options = LauncherLoad.Content(draft.copy(issue = StartOptionsIssue.STALE_TEMPLATE, stale = true)),
+            )
+        composeTestRule.onNodeWithTag("launcher-options-save").assertDoesNotExist()
+        composeTestRule
+            .onNodeWithText(text(com.alexandr5476.lifetracing.R.string.manual_history_review_current))
+            .assertIsDisplayed()
+        state =
+            state.copy(
+                options =
+                    LauncherLoad.Content(
+                        draft.copy(
+                            overlap =
+                                StartOptionsProposal(
+                                    com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                                        .Template(template.id),
+                                    template.revision,
+                                    Instant.parse("2026-08-20T08:00:00Z"),
+                                    Instant.parse("2026-08-20T09:00:00Z"),
+                                    Instant.parse("2026-08-20T10:00:00Z"),
+                                    ZoneOffset.UTC,
+                                    emptyList(),
+                                    0,
+                                ),
+                        ),
+                    ),
+            )
+        composeTestRule.onNodeWithTag("launcher-options-save").assertDoesNotExist()
+        state = state.copy(command = LauncherCommandState.Committing(1))
+        composeTestRule
+            .onNodeWithText(text(com.alexandr5476.lifetracing.R.string.manual_history_proceed))
+            .assertIsNotEnabled()
     }
 
     private fun homeState(

@@ -342,6 +342,16 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         onPinnedOrderCommitted = onPinnedOrderCommitted,
                         mutationGate = coordinator.mutationGate,
+                        readActivityTemplate = { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        overlapsCompletedHistory = { started, completed ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(started, completed)
+                            }
+                        },
                     )
                 },
                 {
@@ -842,6 +852,8 @@ internal fun executeExpandedSequenceCommand(
     }
 }
 
+// Keep each canonical repository call visible at the composition boundary.
+@Suppress("LongMethod")
 internal fun executeLauncherCommand(
     command: LauncherDurableCommand,
     activityCommandRepository: ActivityCommandRepository,
@@ -878,6 +890,46 @@ internal fun executeLauncherCommand(
                     command.zoneId,
                     overrides,
                     command.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.StartOptionsLive -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.startLive(
+                    proposal.source,
+                    requireNotNull(proposal.startedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, true)
+        }
+        is LauncherDurableCommand.StartOptionsTimed -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.addManualTimed(
+                    proposal.source,
+                    requireNotNull(proposal.startedAt),
+                    requireNotNull(proposal.completedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.StartOptionsNoLive -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.addManualNoLive(
+                    proposal.source,
+                    requireNotNull(proposal.completedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
                 )
             LauncherCommit.Activity(execution.id, false)
         }

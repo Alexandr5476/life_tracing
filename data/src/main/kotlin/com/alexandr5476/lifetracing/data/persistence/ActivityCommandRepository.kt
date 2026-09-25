@@ -26,7 +26,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
-import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerDecisionRequiredException
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -61,7 +61,13 @@ class ActivityCommandRepository internal constructor(
         expectedTemplateRevision: Long? = null,
     ): ActivityExecution =
         transaction {
-            val prepared = prepare(source, createdAt, expectedTemplateRevision)
+            val prepared =
+                prepare(
+                    source,
+                    createdAt,
+                    expectedTemplateRevision,
+                    staleOnUnavailableTemplate = expectedTemplateRevision != null,
+                )
             require(prepared.snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "NO_LIVE_TRACKING Activity cannot start live"
             }
@@ -404,7 +410,7 @@ class ActivityCommandRepository internal constructor(
             snapshot.settings.timerZeroBehavior == TimerZeroBehavior.FINISH &&
             Math.addExact(startedAtMs, requireNotNull(snapshot.timerTarget).toMillis()) <= createdAtMs
         ) {
-            throw ExpiredFinishTimerDecisionRequiredException()
+            throw ExpiredFinishTimerStartException()
         }
     }
 

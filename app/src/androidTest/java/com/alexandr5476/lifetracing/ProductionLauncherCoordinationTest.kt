@@ -424,8 +424,12 @@ class ProductionLauncherCoordinationTest {
                     executeLibraryMutation(LibraryMutation.ArchiveTemplate(id, now.plusMillis(index.toLong())), library)
 
                     controller.dispatch(StartActivityAction.Launch())
-                    withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Rejected } }
-
+                    withTimeout(5_000) {
+                        controller.state.first {
+                            it.command is LauncherCommandState.Rejected ||
+                                (it.command == LauncherCommandState.Idle && it.selected is LauncherLoad.Failure)
+                        }
+                    }
                     assertEquals(1, writers)
                     assertNull(live.getActiveSession())
                     assertTrue(library.getRecent(100).none { it.id == id })
