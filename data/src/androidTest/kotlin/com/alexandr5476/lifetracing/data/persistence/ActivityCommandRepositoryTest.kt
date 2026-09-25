@@ -42,6 +42,7 @@ import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.HistoryDateRange
+import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -267,6 +268,43 @@ class ActivityCommandRepositoryTest {
             instant(599).toEpochMilli(),
             database.activityTemplateDao().getUserState("finish-valid")?.lastUsedAtMs,
         )
+    }
+
+    @Test
+    fun backdatedFinishReconcilesAtPersistedStartPlusTargetRatherThanCommandPlusTarget() {
+        template("finish-runtime", TimeTrackingMode.TIMER, 600_000, "FINISH")
+        val repository = repository("finish-runtime")
+        val startedAt = instant(0)
+        val commandAt = instant(300)
+        val historicalDeadline = instant(600)
+        val commandAnchoredDeadline = instant(900)
+        val execution =
+            repository.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("finish-runtime")),
+                startedAt,
+                commandAt,
+                ZoneOffset.UTC,
+            )
+
+        val reloaded = liveRepository("finish-runtime-reload")
+        val runtime = reloaded.getActiveRuntime() as ActiveActivityRuntime
+        assertEquals(startedAt, runtime.execution.startedAt)
+        assertEquals(historicalDeadline, NextRuntimeDeadlineResolver.resolve(runtime)?.at)
+        assertEquals(execution.id, reloaded.getActiveSession()?.activityExecutionId)
+        assertEquals(
+            emptyList<com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback>(),
+            reloaded.reconcileActiveSession(historicalDeadline.minusMillis(1)).appliedEvents,
+        )
+        val reached = reloaded.reconcileActiveSession(historicalDeadline)
+        assertEquals(
+            historicalDeadline,
+            reached.appliedEvents
+                .single()
+                .deadline.at,
+        )
+        assertNull(reloaded.getActiveSession())
+        assertEquals(historicalDeadline, repository.getHistory(execution.id)?.execution?.completedAt)
+        assertTrue(historicalDeadline < commandAnchoredDeadline)
     }
 
     @Test

@@ -5,27 +5,34 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
+import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.LibraryContents
 import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
@@ -71,6 +78,8 @@ import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
@@ -1061,6 +1070,383 @@ class ProductionLauncherCoordinationTest {
             }
         }
 
+    @Test
+    fun productionStartOptionsLiveReloadsHistoricalStartAndFinishDeadline() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val stopwatch =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S1C1 stopwatch ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        settings = ActivityTemplateSettings(startCountdown = Duration.ofSeconds(5)),
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val finish =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S1C1 finish ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.TIMER,
+                        Duration.ofMinutes(20),
+                        settings = ActivityTemplateSettings(startCountdown = Duration.ofSeconds(5)),
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val written = mutableListOf<LauncherDurableCommand>()
+            var preflightSchedules = 0
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        written += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    scheduler =
+                        PreflightScheduler { _, _ ->
+                            preflightSchedules++
+                            PreflightHandle {}
+                        },
+                    authoring = authoring,
+                    commandRepository = commands,
+                )
+            try {
+                val stopwatchStart = commandAt.minusSeconds(600)
+                controller.dispatch(StartActivityAction.OpenOptions(stopwatch.id))
+                withTimeout(5_000) { controller.state.first { it.options is LauncherLoad.Content } }
+                assertTrue(written.isEmpty())
+                controller.dispatch(StartActivityAction.EditOptionStart(localTime(stopwatchStart)))
+                controller.dispatch(StartActivityAction.SaveOptions)
+                val stopwatchCommit = awaitOptionsCommit(controller) as LauncherCommit.Activity
+                assertTrue(stopwatchCommit.isLive)
+                assertEquals(0, preflightSchedules)
+                assertEquals(listOf(LauncherDurableCommand.StartOptionsLive::class), written.map { it::class })
+                val reloaded = LiveSessionRepository.create(context)
+                val active = reloaded.getActiveRuntime() as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+                assertEquals(stopwatchStart, active.execution.startedAt)
+                assertEquals(commandAt, active.execution.createdAt)
+                assertEquals(stopwatchCommit.executionId, reloaded.getActiveSession()?.activityExecutionId)
+                assertEquals(
+                    stopwatchStart,
+                    (
+                        DailyReadRepository
+                            .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                            .getDaily(DailyQuery(commandAt.atZone(ZoneOffset.UTC).toLocalDate(), commandAt, 100))
+                            .active as DailyActive.Activity
+                    ).runtime.execution.startedAt,
+                )
+                assertEquals(stopwatch.revision, active.snapshot.sourceRevision)
+                assertEquals(stopwatch.statisticsSeriesId, active.snapshot.statisticsSeriesId)
+                assertEquals(
+                    commandAt,
+                    library.getRecent(100).single { it.id == LibraryTemplateId.Activity(stopwatch.id) }.lastUsedAt,
+                )
+                clearLiveSession(live, commandAt.plusSeconds(1))
+                controller.close()
+
+                val finishController =
+                    controller(
+                        scope,
+                        library,
+                        live,
+                        FixedWallClock(commandAt),
+                        execute = { command ->
+                            written += command
+                            executeLauncherCommand(command, commands, library)
+                        },
+                        scheduler =
+                            PreflightScheduler { _, _ ->
+                                preflightSchedules++
+                                PreflightHandle {}
+                            },
+                        authoring = authoring,
+                        commandRepository = commands,
+                    )
+                try {
+                    val finishStart = commandAt.minusSeconds(300)
+                    finishController.dispatch(StartActivityAction.OpenOptions(finish.id))
+                    withTimeout(5_000) { finishController.state.first { it.options is LauncherLoad.Content } }
+                    finishController.dispatch(StartActivityAction.EditOptionStart(localTime(finishStart)))
+                    finishController.dispatch(StartActivityAction.SaveOptions)
+                    val finishCommit = awaitOptionsCommit(finishController) as LauncherCommit.Activity
+                    assertTrue(finishCommit.isLive)
+                    val timer = LiveSessionRepository.create(context)
+                    val runtime = timer.getActiveRuntime() as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+                    val historicalDeadline = finishStart.plus(Duration.ofMinutes(20))
+                    assertEquals(finishStart, runtime.execution.startedAt)
+                    assertEquals(historicalDeadline, NextRuntimeDeadlineResolver.resolve(runtime)?.at)
+                    assertEquals(
+                        emptyList<com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback>(),
+                        timer.reconcileActiveSession(historicalDeadline.minusMillis(1)).appliedEvents,
+                    )
+                    assertEquals(
+                        historicalDeadline,
+                        timer
+                            .reconcileActiveSession(historicalDeadline)
+                            .appliedEvents
+                            .single()
+                            .deadline.at,
+                    )
+                    assertNull(timer.getActiveSession())
+                    assertEquals(
+                        historicalDeadline,
+                        commands.getHistory(finishCommit.executionId)?.execution?.completedAt,
+                    )
+                    assertEquals(0, preflightSchedules)
+                    assertEquals(2, written.size)
+                } finally {
+                    finishController.close()
+                }
+            } finally {
+                controller.close()
+                clearLiveSession(live, commandAt.plus(Duration.ofMinutes(20)))
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun productionStartOptionsTimedHistoryReloadsThroughHistoryDailyStatisticsAndKeepsPlan() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val template =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S1C1 timed ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.TIMER,
+                        Duration.ofMinutes(10),
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val planRepository = PlanRepository.create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+            val plan =
+                planRepository.createActivityPlanFromTemplate(
+                    template.id,
+                    PlanSchedule.FloatingDay(commandAt.atZone(ZoneOffset.UTC).toLocalDate().plusDays(1)),
+                    commandAt,
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val written = mutableListOf<LauncherDurableCommand>()
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        written += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    authoring = authoring,
+                    commandRepository = commands,
+                )
+            try {
+                val start = commandAt.minusSeconds(3600)
+                val end = start.plusSeconds(840)
+                controller.dispatch(StartActivityAction.OpenOptions(template.id))
+                withTimeout(5_000) { controller.state.first { it.options is LauncherLoad.Content } }
+                controller.dispatch(StartActivityAction.EditOptionStart(localTime(start)))
+                controller.dispatch(StartActivityAction.EditOptionEnd(localTime(end)))
+                controller.dispatch(StartActivityAction.SaveOptions)
+                val commit = awaitOptionsCommit(controller) as LauncherCommit.Activity
+                assertFalse(commit.isLive)
+                assertEquals(listOf(LauncherDurableCommand.StartOptionsTimed::class), written.map { it::class })
+                assertNull(LiveSessionRepository.create(context).getActiveSession())
+                val saved = requireNotNull(commands.getHistory(commit.executionId))
+                assertEquals(start, saved.execution.startedAt)
+                assertEquals(end, saved.execution.completedAt)
+                assertEquals(Duration.ofMinutes(14), saved.execution.activeDuration)
+                assertEquals(Duration.ofMinutes(10), saved.snapshot.timerTarget)
+                assertEquals(template.revision, saved.snapshot.sourceRevision)
+                assertEquals(template.statisticsSeriesId, saved.snapshot.statisticsSeriesId)
+                assertNull(saved.execution.planEntryId)
+                val date = saved.execution.primaryLocalDate
+                val roots =
+                    HistoryReadRepository.create(context).getCompletedRoots(
+                        CompletedHistoryQuery(HistoryDateRange(date, date), 100),
+                    )
+                assertEquals(
+                    Duration.ofMinutes(14),
+                    roots
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single { it.executionId == commit.executionId }
+                        .activeDuration,
+                )
+                val daily =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(date, commandAt, 100))
+                assertEquals(
+                    Duration.ofMinutes(14),
+                    daily.completedHistory
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single { it.executionId == commit.executionId }
+                        .activeDuration,
+                )
+                val statistics =
+                    StatisticsRepository
+                        .create(
+                            context,
+                        ).activitySeries(template.statisticsSeriesId, StatisticsPeriod.AllTime)
+                assertEquals(1L, statistics.executionCount)
+                assertEquals(Duration.ofMinutes(14), statistics.durations.total)
+                assertEquals(
+                    plan,
+                    PlanRepository.create(context, CurrentZoneIdProvider { ZoneOffset.UTC }).getPlan(plan.id),
+                )
+                assertEquals(
+                    commandAt,
+                    library.getRecent(100).single { it.id == LibraryTemplateId.Activity(template.id) }.lastUsedAt,
+                )
+            } finally {
+                controller.close()
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun productionStartOptionsNoLiveKeepsUnrelatedLiveSessionAndMissingDuration() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val running =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S1C1 running ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = commandAt.minusSeconds(2),
+                )
+            val noLive =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S1C1 no live ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.NO_LIVE_TRACKING,
+                        null,
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            commands.startLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(running.id),
+                commandAt,
+                commandAt,
+                ZoneOffset.UTC,
+            )
+            val before = requireNotNull(live.getActiveRuntime())
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val written = mutableListOf<LauncherDurableCommand>()
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        written += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    authoring = authoring,
+                    commandRepository = commands,
+                )
+            try {
+                val completedAt = commandAt.minusSeconds(1800)
+                controller.dispatch(StartActivityAction.OpenOptions(noLive.id))
+                withTimeout(5_000) { controller.state.first { it.options is LauncherLoad.Content } }
+                controller.dispatch(StartActivityAction.EditOptionEnd(localTime(completedAt)))
+                controller.dispatch(StartActivityAction.SaveOptions)
+                val commit = awaitOptionsCommit(controller) as LauncherCommit.Activity
+                assertFalse(commit.isLive)
+                assertEquals(listOf(LauncherDurableCommand.StartOptionsNoLive::class), written.map { it::class })
+                assertEquals(before, LiveSessionRepository.create(context).getActiveRuntime())
+                val saved = requireNotNull(commands.getHistory(commit.executionId))
+                assertNull(saved.execution.startedAt)
+                assertNull(saved.execution.activeDuration)
+                assertEquals(completedAt, saved.execution.completedAt)
+                assertEquals(noLive.revision, saved.snapshot.sourceRevision)
+                assertEquals(noLive.statisticsSeriesId, saved.snapshot.statisticsSeriesId)
+                val date = saved.execution.primaryLocalDate
+                val root =
+                    HistoryReadRepository
+                        .create(context)
+                        .getCompletedRoots(
+                            CompletedHistoryQuery(HistoryDateRange(date, date), 100),
+                        ).filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single { it.executionId == commit.executionId }
+                assertNull(root.startedAt)
+                assertNull(root.activeDuration)
+                val daily =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(date, commandAt, 100))
+                assertNull(
+                    daily.completedHistory
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single { it.executionId == commit.executionId }
+                        .activeDuration,
+                )
+                val statistics =
+                    StatisticsRepository
+                        .create(
+                            context,
+                        ).activitySeries(noLive.statisticsSeriesId, StatisticsPeriod.AllTime)
+                assertEquals(1L, statistics.executionCount)
+                assertEquals(0L, statistics.durations.sampleCount)
+                assertEquals(
+                    commandAt,
+                    library.getRecent(100).single { it.id == LibraryTemplateId.Activity(noLive.id) }.lastUsedAt,
+                )
+            } finally {
+                controller.close()
+                clearLiveSession(live, commandAt.plusSeconds(1))
+                scope.cancel()
+            }
+        }
+
+    private fun localTime(at: Instant): String = DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(at.atZone(ZoneOffset.UTC))
+
+    private suspend fun awaitOptionsCommit(controller: StartActivityController): LauncherCommit {
+        val state =
+            withTimeout(5_000) {
+                controller.state.first {
+                    it.command is LauncherCommandState.Committed ||
+                        (it.options as? LauncherLoad.Content)?.value?.overlap != null
+                }
+            }
+        if (state.command is LauncherCommandState.Committed) return state.command.result
+        assertTrue(state.command == LauncherCommandState.Idle)
+        controller.dispatch(StartActivityAction.ConfirmOptionsOverlap)
+        return withTimeout(5_000) { controller.state.first { it.command is LauncherCommandState.Committed } }
+            .let { (it.command as LauncherCommandState.Committed).result }
+    }
+
     private suspend fun resolvePrimedLibraryRoute(
         session: StartActivityRouteSession,
         id: LibraryTemplateId,
@@ -1091,6 +1477,8 @@ class ProductionLauncherCoordinationTest {
         scheduler: PreflightScheduler = PreflightScheduler { _, _ -> PreflightHandle {} },
         onSelectObserved: (LauncherCommandState) -> Unit = {},
         initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null,
+        authoring: TemplateAuthoringRepository? = null,
+        commandRepository: ActivityCommandRepository? = null,
     ) = StartActivityController(
         scope,
         { emptyList() },
@@ -1108,6 +1496,10 @@ class ProductionLauncherCoordinationTest {
         initialLiveConflict =
             initialLiveConflict ?: { target -> library.hasLiveLaunchConflict(target.id, target.revision) },
         onSelectObserved = onSelectObserved,
+        readActivityTemplate = { id -> authoring?.getActivityTemplate(id) },
+        overlapsCompletedHistory = { started, completed ->
+            commandRepository?.overlapsCompletedHistory(started, completed) ?: false
+        },
     )
 
     private fun failingCoordinator(
