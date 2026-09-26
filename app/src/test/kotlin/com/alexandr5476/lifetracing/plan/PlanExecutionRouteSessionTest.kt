@@ -42,6 +42,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.concurrent.atomic.AtomicInteger
 
 class PlanExecutionRouteSessionTest {
     @Test
@@ -86,6 +87,59 @@ class PlanExecutionRouteSessionTest {
             changing.reviewDeviceZone()
             assertEquals(zone, changing.timeDraft?.zoneId)
             assertEquals("2026-09-14T10:00", changing.timeDraft?.completedText)
+            controller.close()
+        }
+
+    @Test
+    fun zoneChangeAtMutationAdmissionRetainsDraftAndRequiresDstReview() =
+        runBlocking {
+            val frozen = snapshot(emptyList())
+            val action = focused(frozen)
+            val calls = AtomicInteger()
+            var deviceZone: ZoneId = ZoneOffset.UTC
+            val commands = mutableListOf<PlanExecutionDurableCommand>()
+            val controller =
+                controller(
+                    this,
+                    action,
+                    execute = { command ->
+                        commands += command
+                        PlanExecutionCommit.Activity(ActivityExecutionId("historical"), false)
+                    },
+                    zoneId = {
+                        if (calls.incrementAndGet() == 3) deviceZone = ZoneId.of("Europe/Berlin")
+                        deviceZone
+                    },
+                )
+            val session =
+                PlanExecutionRouteSession(
+                    action.identity,
+                    PlanExecutionOrigin.PLAN,
+                    controller,
+                    now = { NOW },
+                    deviceZone = { deviceZone },
+                )
+            withTimeout(2_000) { controller.state.first { it.prepared is PlanExecutionLoad.Content } }
+            session.openTimeEntry(frozen)
+            session.editCompleted("2025-10-26T02:30")
+            session.submitTimeEntry(frozen)
+            withTimeout(2_000) { controller.state.first { it.command == PlanExecutionCommandState.ZoneChanged } }
+            assertTrue(commands.isEmpty())
+            assertEquals("2025-10-26T02:30", session.timeDraft?.completedText)
+            assertEquals(ZoneOffset.UTC, session.timeDraft?.zoneId)
+            assertEquals(ZoneId.of("Europe/Berlin"), deviceZone)
+
+            session.reviewDeviceZone()
+            assertEquals(ZoneId.of("Europe/Berlin"), session.timeDraft?.zoneId)
+            session.submitTimeEntry(frozen)
+            assertEquals(PlanTimeEntryIssue.AMBIGUOUS_END, session.timeDraft?.issue)
+            assertTrue(commands.isEmpty())
+            session.selectCompletedOffset(ZoneOffset.ofHours(2))
+            session.submitTimeEntry(frozen)
+            withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Committed } }
+            assertEquals(1, commands.size)
+            assertEquals(ZoneId.of("Europe/Berlin"), commands.single().zoneId)
+            assertEquals(ZoneId.of("Europe/Berlin"), commands.single().timeEntry?.zoneId)
             controller.close()
         }
 
@@ -309,6 +363,7 @@ class PlanExecutionRouteSessionTest {
     private fun controller(
         scope: CoroutineScope,
         action: FocusedPlanAction,
+        zoneId: () -> ZoneId = { ZoneOffset.UTC },
         execute: suspend (PlanExecutionDurableCommand) -> PlanExecutionCommit = { error("not launched") },
     ) = PlanExecutionController(
         scope,
@@ -318,7 +373,7 @@ class PlanExecutionRouteSessionTest {
         execute,
         {},
         WallClock { NOW },
-        { ZoneOffset.UTC },
+        zoneId,
         object : PreflightScheduler {
             override fun schedule(
                 duration: Duration,

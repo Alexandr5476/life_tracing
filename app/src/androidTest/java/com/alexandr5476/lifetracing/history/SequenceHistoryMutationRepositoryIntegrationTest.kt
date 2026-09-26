@@ -502,8 +502,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val beforeStructural = requireNotNull(history.getSequenceDetail(execution))
         val target = beforeStructural.occurrences.first()
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
+            .onNodeWithTag("history-occurrence-${target.occurrenceId.value}")
             .performScrollTo()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -516,8 +518,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         assertEquals(beforeStructural.updatedAt, history.getSequenceDetail(execution)?.updatedAt)
 
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
+            .onNodeWithTag("history-occurrence-${target.occurrenceId.value}")
             .performScrollTo()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()

@@ -29,6 +29,7 @@ import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.domain.firstEffectiveStep
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
+import com.alexandr5476.lifetracing.runtime.RuntimeMutationAdmission
 import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -89,6 +90,8 @@ sealed interface PlanExecutionCommandState {
     ) : PlanExecutionCommandState
 
     data object ExpiredFinish : PlanExecutionCommandState
+
+    data object ZoneChanged : PlanExecutionCommandState
 
     data class Rejected(
         val message: String,
@@ -194,7 +197,8 @@ class PlanExecutionController internal constructor(
             } else if (previous != PlanExecutionCommandState.Idle &&
                 previous !is PlanExecutionCommandState.Rejected &&
                 previous !is PlanExecutionCommandState.Conflict &&
-                previous != PlanExecutionCommandState.ExpiredFinish
+                previous != PlanExecutionCommandState.ExpiredFinish &&
+                previous != PlanExecutionCommandState.ZoneChanged
             ) {
                 return
             }
@@ -211,6 +215,7 @@ class PlanExecutionController internal constructor(
                 is PlanExecutionCommandState.Conflict,
                 is PlanExecutionCommandState.Rejected,
                 PlanExecutionCommandState.ExpiredFinish,
+                PlanExecutionCommandState.ZoneChanged,
                 -> mutableState.update { it.copy(command = PlanExecutionCommandState.Idle) }
                 else -> Unit
             }
@@ -416,19 +421,11 @@ class PlanExecutionController internal constructor(
         values: List<ActivityExecutionValueOverride>,
         timeEntry: PlanTimeEntryRequest? = null,
     ) {
-        val admission =
-            requireNotNull(
-                mutationGate.admit {
-                    PlanExecutionDurableCommand(
-                        target.action.identity,
-                        !target.isLive,
-                        values,
-                        wallClock.now(),
-                        timeEntry?.zoneId ?: zoneId(),
-                        timeEntry,
-                    )
-                },
-            )
+        val admission = admitPlanCommand(target, values, timeEntry)
+        if (admission == null) {
+            publishCommit(attempt, PlanExecutionCommandState.ZoneChanged)
+            return
+        }
         val committed =
             try {
                 admission.turn.run { execute(admission.command) }
@@ -469,6 +466,26 @@ class PlanExecutionController internal constructor(
             )
         }
     }
+
+    private fun admitPlanCommand(
+        target: PreparedPlanExecution,
+        values: List<ActivityExecutionValueOverride>,
+        timeEntry: PlanTimeEntryRequest?,
+    ): RuntimeMutationAdmission<PlanExecutionDurableCommand>? =
+        mutationGate.admit {
+            if (timeEntry != null && timeEntry.zoneId != zoneId()) {
+                null
+            } else {
+                PlanExecutionDurableCommand(
+                    target.action.identity,
+                    !target.isLive,
+                    values,
+                    wallClock.now(),
+                    timeEntry?.zoneId ?: zoneId(),
+                    timeEntry,
+                )
+            }
+        }
 
     private fun publish(
         attempt: Long,

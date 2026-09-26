@@ -221,7 +221,8 @@ private fun TimeEntryEditor(
             command is PlanExecutionCommandState.Overlap ||
             command is PlanExecutionCommandState.Rejected ||
             command is PlanExecutionCommandState.Conflict ||
-            command == PlanExecutionCommandState.ExpiredFinish
+            command == PlanExecutionCommandState.ExpiredFinish ||
+            command == PlanExecutionCommandState.ZoneChanged
     Text(stringResource(R.string.plan_time_entry_title), style = MaterialTheme.typography.titleMedium)
     Text(stringResource(R.string.plan_time_entry_zone, draft.zoneId.id))
     if (snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
@@ -256,15 +257,7 @@ private fun TimeEntryEditor(
     if (draft.completedText.isNotBlank()) {
         TimeOffsetChoices(draft.completedText, draft.zoneId, draft.completedOffset, editable, false, session)
     }
-    draft.issue?.let { issue ->
-        Text(stringResource(issue.label()), color = MaterialTheme.colorScheme.error)
-        if (issue == PlanTimeEntryIssue.ZONE_CHANGED) {
-            LifeTracingSecondaryButton(
-                onClick = session::reviewDeviceZone,
-                enabled = editable,
-            ) { Text(stringResource(R.string.plan_time_entry_review_zone)) }
-        }
-    }
+    TimeEntryIssueMessage(draft, command, session, editable)
     session.quickDraft?.let { PlanValuesEditor(snapshot, it, session, editable) }
     if (command is PlanExecutionCommandState.Overlap) {
         Text(stringResource(R.string.plan_time_entry_overlap), color = MaterialTheme.colorScheme.error)
@@ -322,6 +315,26 @@ private fun TimeOffsetChoices(
                     offsetLabel
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun TimeEntryIssueMessage(
+    draft: PlanTimeEntryDraft,
+    command: PlanExecutionCommandState,
+    session: PlanExecutionRouteSession,
+    editable: Boolean,
+) {
+    val issue =
+        draft.issue ?: if (command == PlanExecutionCommandState.ZoneChanged) PlanTimeEntryIssue.ZONE_CHANGED else null
+    issue?.let {
+        Text(stringResource(it.label()), color = MaterialTheme.colorScheme.error)
+        if (it == PlanTimeEntryIssue.ZONE_CHANGED) {
+            LifeTracingSecondaryButton(
+                onClick = session::reviewDeviceZone,
+                enabled = editable,
+            ) { Text(stringResource(R.string.plan_time_entry_review_zone)) }
         }
     }
 }
@@ -391,6 +404,7 @@ private fun CommandContent(
         is PlanExecutionCommandState.Conflict -> FailureCard(R.string.plan_execution_conflict, action = retry)
         is PlanExecutionCommandState.Rejected -> FailureCard(R.string.plan_execution_rejected, action = retry)
         PlanExecutionCommandState.ExpiredFinish -> MessageCard(R.string.plan_time_entry_expired_finish)
+        PlanExecutionCommandState.ZoneChanged -> Unit
         is PlanExecutionCommandState.Committed -> MessageCard(R.string.plan_execution_committed)
         is PlanExecutionCommandState.CommittedCoordinationFailure ->
             MessageCard(R.string.plan_execution_committed_coordination)

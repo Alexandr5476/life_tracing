@@ -133,6 +133,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     ActiveSessionSchemaV8.create(db)
                     PlanEntrySchemaV9.migrate(db)
                     HistoryDiscoveryIndexSchemaV10.create(db)
+                    PlanEntrySchemaV11.rebuild(db)
                 }
             }
     }

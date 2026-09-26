@@ -13,26 +13,6 @@ internal val MIGRATION_8_9 =
     }
 
 internal object PlanEntrySchemaV9 {
-    fun allowHistoricalFulfillmentBeforePlanCreation(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TEMP TABLE v11_activity_plan_links AS SELECT id, plan_entry_id FROM activity_executions")
-        db.execSQL("CREATE TEMP TABLE v11_sequence_plan_links AS SELECT id, plan_entry_id FROM sequence_executions")
-        db.execSQL(planStatements.first().replace("`plan_entries`", "`plan_entries_v11`"))
-        db.execSQL("INSERT INTO `plan_entries_v11` SELECT * FROM `plan_entries`")
-        db.execSQL("DROP TABLE `plan_entries`")
-        db.execSQL("ALTER TABLE `plan_entries_v11` RENAME TO `plan_entries`")
-        planStatements.drop(1).forEach(db::execSQL)
-        db.execSQL(
-            "UPDATE activity_executions SET plan_entry_id = " +
-                "(SELECT plan_entry_id FROM v11_activity_plan_links WHERE v11_activity_plan_links.id = activity_executions.id)",
-        )
-        db.execSQL(
-            "UPDATE sequence_executions SET plan_entry_id = " +
-                "(SELECT plan_entry_id FROM v11_sequence_plan_links WHERE v11_sequence_plan_links.id = sequence_executions.id)",
-        )
-        db.execSQL("DROP TABLE v11_activity_plan_links")
-        db.execSQL("DROP TABLE v11_sequence_plan_links")
-    }
-
     fun dropPlan(db: SupportSQLiteDatabase) {
         db.execSQL("DROP TABLE IF EXISTS `plan_entries`")
     }
@@ -144,6 +124,7 @@ internal object PlanEntrySchemaV9 {
                         AND `fulfilled_activity_execution_id` IS NULL AND `fulfilled_sequence_execution_id` IS NULL)
                     OR (`status` = 'FULFILLED' AND `fulfilled_at_ms` IS NOT NULL AND `cancelled_at_ms` IS NULL)),
                 CHECK (`fulfilled_activity_execution_id` IS NULL OR `fulfilled_sequence_execution_id` IS NULL),
+                CHECK (`fulfilled_at_ms` IS NULL OR `fulfilled_at_ms` >= `created_at_ms`),
                 CHECK (`updated_at_ms` >= `created_at_ms`),
                 CHECK (`cancelled_at_ms` IS NULL OR `cancelled_at_ms` >= `created_at_ms`)
             )
