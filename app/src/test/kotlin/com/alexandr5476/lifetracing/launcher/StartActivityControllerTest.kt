@@ -1154,6 +1154,95 @@ class StartActivityControllerTest {
             controller.close()
         }
 
+    @Test
+    fun timedOneOffCoordinationFailureCannotRetryCommittedWriter() =
+        runBlocking {
+            val harness = Harness().apply { coordinationFailure = IllegalStateException("scheduler failed") }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Committed timer"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("4"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitCoordinationFailure()
+
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            kotlinx.coroutines.yield()
+
+            assertEquals(1, harness.commands.size)
+            assertTrue(harness.commands.single() is LauncherDurableCommand.OneOff)
+            assertTrue(controller.state.value.command is LauncherCommandState.CommittedCoordinationFailure)
+            controller.close()
+        }
+
+    @Test
+    fun routeSessionRetainsOneOffDraftAcrossHostReacquisition() =
+        runBlocking {
+            val harness = Harness()
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.dispatch(StartActivityAction.OpenOneOff)
+            first.controller.dispatch(StartActivityAction.EditOneOffName("Retained one-off"))
+            first.controller.dispatch(StartActivityAction.EditOneOffComment("draft comment"))
+            first.controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            first.controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("9"))
+            val draft = requireNotNull(first.controller.state.value.oneOff)
+
+            first.controller.dispatch(StartActivityAction.Select(activityId("ignored while authoring")))
+            val recreated = owner.acquire { error("Reacquisition must retain the route controller") }
+
+            assertSame(first, recreated)
+            assertSame(first.controller, recreated.controller)
+            assertEquals(draft, recreated.controller.state.value.oneOff)
+            assertTrue(recreated.controller.state.value.selected !is LauncherLoad.Content)
+            assertTrue(harness.commands.isEmpty())
+
+            recreated.controller.dispatch(StartActivityAction.CloseOneOff)
+            assertNull(recreated.controller.state.value.oneOff)
+            assertTrue(harness.commands.isEmpty())
+            owner.release(recreated)
+            assertNull(owner.activeSession)
+        }
+
+    @Test
+    fun routeSessionRetainsOneOffWriterAdmissionAndDeliversTerminalOnce() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val harness = Harness().apply { writerGate = gate }
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.dispatch(StartActivityAction.OpenOneOff)
+            first.controller.dispatch(StartActivityAction.EditOneOffName("Admitted one-off"))
+            first.controller.dispatch(StartActivityAction.ExecuteOneOff)
+            withTimeout(2_000) {
+                first.controller.state.first { it.command is LauncherCommandState.Committing }
+            }
+
+            val recreated = owner.acquire { error("Admitted writer must keep its original controller") }
+            assertSame(first, recreated)
+            assertSame(first.controller, recreated.controller)
+            recreated.controller.dispatch(StartActivityAction.ExecuteOneOff)
+            recreated.controller.dispatch(StartActivityAction.Select(activityId("ignored during commit")))
+            gate.complete(Unit)
+            recreated.controller.awaitCommitted()
+
+            var deliveries = 0
+            recreated.exitPolicy.onCommand(recreated.controller.state.value.command) { deliveries++ }
+            owner
+                .acquire { error("Committed route remains retained until release") }
+                .exitPolicy
+                .onCommand(recreated.controller.state.value.command) { deliveries++ }
+            assertEquals(1, harness.commands.size)
+            assertEquals(1, deliveries)
+
+            owner.release(recreated)
+            assertNull(owner.activeSession)
+        }
+
     private class Harness {
         val wall = MutableWallClock(NOW)
         val scheduler = FakePreflightScheduler()

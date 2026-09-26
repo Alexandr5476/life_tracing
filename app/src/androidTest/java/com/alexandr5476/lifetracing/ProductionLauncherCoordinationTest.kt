@@ -1430,6 +1430,307 @@ class ProductionLauncherCoordinationTest {
             }
         }
 
+    @Test
+    fun productionTimedOneOffPersistsSourceLessTimerRuntimeAndUsesOnlySystemBucket() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val uniqueName = "S2C1 timer ${commandAt.toEpochMilli()}"
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val library = LibraryRepository.create(context)
+            val commands = ActivityCommandRepository.create(context)
+            val statistics = StatisticsRepository.create(context)
+            val bucketId = com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics.ONE_OFF_BUCKET_ID
+            val seriesBefore = statistics.seriesCatalog().map { it.id }.toSet()
+            val summaryBefore = statistics.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id == bucketId }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val writers = mutableListOf<LauncherDurableCommand>()
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        writers += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    coordinate = {},
+                    commandRepository = commands,
+                )
+            try {
+                withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                controller.dispatch(StartActivityAction.OpenOneOff)
+                controller.dispatch(StartActivityAction.EditOneOffName(uniqueName))
+                controller.dispatch(StartActivityAction.EditOneOffComment("frozen timer comment"))
+                controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+                controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("11"))
+                controller.dispatch(StartActivityAction.ExecuteOneOff)
+                val committed =
+                    withTimeout(5_000) {
+                        controller.state.first { it.command is LauncherCommandState.Committed }
+                    }.command as LauncherCommandState.Committed
+                val executionId = (committed.result as LauncherCommit.Activity).executionId
+
+                assertEquals(1, writers.size)
+                assertTrue(writers.single() is LauncherDurableCommand.OneOff)
+                val runtime =
+                    requireNotNull(LiveSessionRepository.create(context).getActiveRuntime())
+                        as com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
+                val history = requireNotNull(commands.getHistory(executionId))
+                val target = Duration.ofMinutes(11)
+                assertEquals(uniqueName, history.snapshot.name)
+                assertEquals("frozen timer comment", history.snapshot.shortComment)
+                assertEquals(TimeTrackingMode.TIMER, history.snapshot.timeTrackingMode)
+                assertEquals(target, history.snapshot.timerTarget)
+                assertNull(history.snapshot.sourceTemplateId)
+                assertNull(history.snapshot.sourceRevision)
+                assertNull(history.snapshot.statisticsSeriesId)
+                assertEquals(history.snapshot, runtime.snapshot)
+                assertEquals(commandAt, runtime.execution.startedAt)
+                assertEquals(commandAt.plus(target), NextRuntimeDeadlineResolver.resolve(runtime)?.at)
+                assertEquals(history.execution, runtime.execution)
+
+                val dailyActive =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(commandAt.atZone(ZoneOffset.UTC).toLocalDate(), commandAt, 100))
+                        .active as DailyActive.Activity
+                assertEquals(executionId, dailyActive.runtime.execution.id)
+                assertNull(library.search(uniqueName).firstOrNull())
+                assertNull(library.getRecent(100).firstOrNull { it.name == uniqueName })
+
+                live.completeActiveActivity(commandAt.plus(target))
+                val completed = requireNotNull(commands.getHistory(executionId))
+                assertNull(completed.execution.completionReason)
+                val summaryAfter =
+                    statistics.seriesSummaries(StatisticsPeriod.AllTime).single {
+                        it.series.id ==
+                            bucketId
+                    }
+                assertEquals(summaryBefore.executionCount + 1, summaryAfter.executionCount)
+                assertEquals(summaryBefore.durationSampleCount + 1, summaryAfter.durationSampleCount)
+                assertEquals(seriesBefore, statistics.seriesCatalog().map { it.id }.toSet())
+                assertNull(library.search(uniqueName).firstOrNull())
+                assertNull(library.getRecent(100).firstOrNull { it.name == uniqueName })
+            } finally {
+                controller.close()
+                clearLiveSession(live, commandAt.plus(Duration.ofMinutes(12)))
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun productionNoLiveOneOffCompletesBesideUnrelatedLiveRuntimeWithoutDurationSample() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val uniqueName = "S2C1 no-live ${commandAt.toEpochMilli()}"
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val unrelated =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S2C1 unrelated ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val commands = ActivityCommandRepository.create(context)
+            val library = LibraryRepository.create(context)
+            commands.startLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(unrelated.id),
+                commandAt,
+                commandAt,
+                ZoneOffset.UTC,
+            )
+            val before = requireNotNull(live.getActiveRuntime())
+            val stats = StatisticsRepository.create(context)
+            val bucketId = com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics.ONE_OFF_BUCKET_ID
+            val beforeStats =
+                stats.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id == bucketId }
+            val seriesBefore = stats.seriesCatalog().map { it.id }.toSet()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val writers = mutableListOf<LauncherDurableCommand>()
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        writers += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    commandRepository = commands,
+                )
+            try {
+                withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                controller.dispatch(StartActivityAction.OpenOneOff)
+                controller.dispatch(StartActivityAction.EditOneOffName(uniqueName))
+                controller.dispatch(StartActivityAction.EditOneOffComment("instant fact"))
+                controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.NO_LIVE_TRACKING))
+                controller.dispatch(StartActivityAction.ExecuteOneOff)
+                val result =
+                    withTimeout(5_000) {
+                        controller.state.first { it.command is LauncherCommandState.Committed }
+                    }.command as LauncherCommandState.Committed
+                val executionId = (result.result as LauncherCommit.Activity).executionId
+                val history = requireNotNull(commands.getHistory(executionId))
+
+                assertEquals(1, writers.size)
+                assertTrue(writers.single() is LauncherDurableCommand.OneOff)
+                assertFalse((result.result as LauncherCommit.Activity).isLive)
+                assertEquals(before, LiveSessionRepository.create(context).getActiveRuntime())
+                assertNull(history.execution.startedAt)
+                assertNull(history.execution.activeDuration)
+                assertNull(history.execution.completionReason)
+                assertNull(history.snapshot.sourceTemplateId)
+                assertNull(history.snapshot.sourceRevision)
+                assertNull(history.snapshot.statisticsSeriesId)
+                assertEquals(bucketId, history.execution.statisticsSeriesId)
+
+                val date = history.execution.primaryLocalDate
+                val roots =
+                    HistoryReadRepository
+                        .create(context)
+                        .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(date, date), 100))
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                assertEquals(executionId, roots.single { it.executionId == executionId }.executionId)
+                val daily =
+                    DailyReadRepository
+                        .create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+                        .getDaily(DailyQuery(date, commandAt, 100))
+                assertEquals(
+                    executionId,
+                    daily.completedHistory
+                        .filterIsInstance<CompletedActivityHistoryRoot>()
+                        .single {
+                            it.executionId ==
+                                executionId
+                        }.executionId,
+                )
+                val afterStats =
+                    stats.seriesSummaries(StatisticsPeriod.AllTime).single { it.series.id == bucketId }
+                assertEquals(beforeStats.executionCount + 1, afterStats.executionCount)
+                assertEquals(beforeStats.durationSampleCount, afterStats.durationSampleCount)
+                assertEquals(seriesBefore, stats.seriesCatalog().map { it.id }.toSet())
+                assertNull(library.search(uniqueName).firstOrNull())
+                assertNull(library.getRecent(100).firstOrNull { it.name == uniqueName })
+            } finally {
+                controller.close()
+                clearLiveSession(live, commandAt.plusSeconds(1))
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun productionTimedOneOffConflictRetainsDraftAndLeavesNoPartialRows() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val commandAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+            val live = LiveSessionRepository.create(context)
+            clearLiveSession(live, commandAt)
+            val authoring = TemplateAuthoringRepository.create(context)
+            val unrelated =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S2C1 conflict live ${commandAt.toEpochMilli()}",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = commandAt.minusSeconds(1),
+                )
+            val commands = ActivityCommandRepository.create(context)
+            val library = LibraryRepository.create(context)
+            commands.startLive(
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(unrelated.id),
+                commandAt,
+                commandAt,
+                ZoneOffset.UTC,
+            )
+            val snapshotsBefore = tableCount("activity_snapshots")
+            val executionsBefore = tableCount("activity_executions")
+            val valuesBefore = tableCount("activity_execution_field_values")
+            val bucketId = com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics.ONE_OFF_BUCKET_ID
+            val seriesBefore =
+                StatisticsRepository
+                    .create(context)
+                    .seriesCatalog()
+                    .map { it.id }
+                    .toSet()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val writers = mutableListOf<LauncherDurableCommand>()
+            val controller =
+                controller(
+                    scope,
+                    library,
+                    live,
+                    FixedWallClock(commandAt),
+                    execute = { command ->
+                        writers += command
+                        executeLauncherCommand(command, commands, library)
+                    },
+                    commandRepository = commands,
+                )
+            try {
+                withTimeout(5_000) { controller.state.first { it.home !is LauncherLoad.Loading } }
+                controller.dispatch(StartActivityAction.OpenOneOff)
+                controller.dispatch(StartActivityAction.EditOneOffName("S2C1 rejected ${commandAt.toEpochMilli()}"))
+                controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+                controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("5"))
+                controller.dispatch(StartActivityAction.ExecuteOneOff)
+                val state =
+                    withTimeout(5_000) {
+                        controller.state.first { it.command is LauncherCommandState.Conflict }
+                    }
+                assertEquals("S2C1 rejected ${commandAt.toEpochMilli()}", state.oneOff?.name)
+                assertEquals("5", state.oneOff?.timerMinutes)
+                assertTrue(writers.single() is LauncherDurableCommand.OneOff)
+                assertEquals(snapshotsBefore, tableCount("activity_snapshots"))
+                assertEquals(executionsBefore, tableCount("activity_executions"))
+                assertEquals(valuesBefore, tableCount("activity_execution_field_values"))
+                assertEquals(
+                    seriesBefore,
+                    StatisticsRepository
+                        .create(context)
+                        .seriesCatalog()
+                        .map { it.id }
+                        .toSet(),
+                )
+                assertEquals(1, seriesBefore.count { it == bucketId })
+                assertNull(library.search("S2C1 rejected ${commandAt.toEpochMilli()}").firstOrNull())
+            } finally {
+                controller.close()
+                clearLiveSession(live, commandAt.plusSeconds(1))
+                scope.cancel()
+            }
+        }
+
+    private fun tableCount(table: String): Int {
+        require(table in setOf("activity_snapshots", "activity_executions", "activity_execution_field_values"))
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database =
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                context.getDatabasePath("lifetracing.db").path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+            )
+        return database.use { db ->
+            db.rawQuery("SELECT COUNT(*) FROM $table", null).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getInt(0)
+            }
+        }
+    }
+
     private fun localTime(at: Instant): String = DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(at.atZone(ZoneOffset.UTC))
 
     private suspend fun awaitOptionsCommit(controller: StartActivityController): LauncherCommit {
