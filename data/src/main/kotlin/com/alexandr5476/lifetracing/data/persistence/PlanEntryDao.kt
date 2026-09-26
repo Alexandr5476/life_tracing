@@ -244,6 +244,22 @@ internal abstract class PlanEntryDao {
     ): Int
 
     @Query(
+        "UPDATE plan_entries SET status = 'FULFILLED', fulfilled_activity_execution_id = :executionId, " +
+            "fulfilled_sequence_execution_id = NULL, fulfilled_at_ms = :completedAtMs, cancelled_at_ms = NULL, " +
+            "updated_at_ms = :commandAtMs WHERE id = :id AND status = 'PLANNED' " +
+            "AND trackable_kind = 'ACTIVITY' AND activity_snapshot_id = :snapshotId " +
+            "AND updated_at_ms = :expectedUpdatedAtMs",
+    )
+    abstract fun fulfillHistoricalActivity(
+        id: String,
+        snapshotId: String,
+        executionId: String,
+        expectedUpdatedAtMs: Long,
+        completedAtMs: Long,
+        commandAtMs: Long,
+    ): Int
+
+    @Query(
         "UPDATE plan_entries SET status = 'FULFILLED', fulfilled_sequence_execution_id = :executionId, fulfilled_activity_execution_id = NULL, fulfilled_at_ms = :atMs, cancelled_at_ms = NULL, updated_at_ms = :atMs WHERE id = :id AND status = 'PLANNED' AND trackable_kind = 'SEQUENCE' AND sequence_plan_snapshot_id = :snapshotId",
     )
     abstract fun fulfillSequence(

@@ -45,7 +45,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ActiveSessionEntity::class,
         PlanEntryEntity::class,
     ],
-    version = HISTORY_DISCOVERY_INDEX_SCHEMA_VERSION,
+    version = HISTORICAL_PLAN_FULFILLMENT_SCHEMA_VERSION,
     exportSchema = true,
 )
 @Suppress("TooManyFunctions")
@@ -91,6 +91,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     MIGRATION_7_8,
                     MIGRATION_8_9,
                     MIGRATION_9_10,
+                    MIGRATION_10_11,
                 )
 
         fun builder(
@@ -110,6 +111,7 @@ internal abstract class LifeTracingDatabase : RoomDatabase() {
                     MIGRATION_7_8,
                     MIGRATION_8_9,
                     MIGRATION_9_10,
+                    MIGRATION_10_11,
                 )
 
         private val FRESH_SCHEMA_CALLBACK =

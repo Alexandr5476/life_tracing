@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
@@ -557,7 +558,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         { command ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                executePlanCommand(command, repository)
+                                executePlanCommand(command, repository, activityCommandRepository)
                             }
                         },
                         {
@@ -569,6 +570,11 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         CoroutinePreflightScheduler(uiScope),
                         mutationGate = coordinator.mutationGate,
+                        overlapsCompletedHistory = { startedAt, completedAt ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(startedAt, completedAt)
+                            }
+                        },
                     )
                 },
                 {
@@ -790,34 +796,70 @@ internal fun executePlanMutation(
 internal fun executePlanCommand(
     command: PlanExecutionDurableCommand,
     repository: LiveSessionRepository,
+    activityCommands: ActivityCommandRepository? = null,
 ): PlanExecutionCommit =
     when (command.identity.kind) {
-        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY -> {
-            val execution =
-                if (command.noLive) {
-                    repository.completeNoLiveActivityFromPlan(
-                        command.identity,
-                        command.at,
-                        command.zoneId,
-                        valueOverrides = command.values,
-                    )
-                } else {
-                    repository.startActivityFromPlan(
-                        command.identity,
-                        command.at,
-                        command.at,
-                        command.zoneId,
-                        command.values,
-                    )
-                }
-            PlanExecutionCommit.Activity(execution.id, !command.noLive)
-        }
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY ->
+            executeActivityPlanCommand(command, repository, activityCommands)
         com.alexandr5476.lifetracing.domain.PlanTrackableKind.SEQUENCE -> {
-            require(!command.noLive && command.values.isEmpty()) { "Sequence start does not accept Activity values" }
+            require(command.timeEntry == null && !command.noLive && command.values.isEmpty()) {
+                "Sequence start does not accept Activity time entry or values"
+            }
             val state = repository.startSequenceFromPlan(command.identity, command.at, command.at, command.zoneId)
             PlanExecutionCommit.Sequence(state.execution.id)
         }
     }
+
+private fun executeActivityPlanCommand(
+    command: PlanExecutionDurableCommand,
+    repository: LiveSessionRepository,
+    activityCommands: ActivityCommandRepository?,
+): PlanExecutionCommit.Activity {
+    val execution =
+        when {
+            command.timeEntry != null -> executePlanTimeEntry(command, requireNotNull(activityCommands))
+            command.noLive ->
+                repository.completeNoLiveActivityFromPlan(
+                    command.identity,
+                    command.at,
+                    command.zoneId,
+                    valueOverrides = command.values,
+                )
+            else ->
+                repository.startActivityFromPlan(
+                    command.identity,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    command.values,
+                )
+        }
+    return PlanExecutionCommit.Activity(execution.id, command.timeEntry?.completedAt == null && !command.noLive)
+}
+
+private fun executePlanTimeEntry(
+    command: PlanExecutionDurableCommand,
+    writer: ActivityCommandRepository,
+): ActivityExecution {
+    val entry = requireNotNull(command.timeEntry)
+    return when {
+        entry.startedAt != null && entry.completedAt == null ->
+            writer.startLiveFromPlan(command.identity, entry.startedAt, command.at, entry.zoneId, entry.values)
+        entry.startedAt != null && entry.completedAt != null ->
+            writer.addManualTimedFromPlan(
+                command.identity,
+                entry.startedAt,
+                entry.completedAt,
+                command.at,
+                entry.zoneId,
+                entry.values,
+                entry.overlapApproved,
+            )
+        entry.startedAt == null && entry.completedAt != null ->
+            writer.addManualNoLiveFromPlan(command.identity, entry.completedAt, command.at, entry.zoneId, entry.values)
+        else -> error("Invalid Plan time entry")
+    }
+}
 
 internal fun executeExpandedSequenceCommand(
     command: ExpandedSequenceCommand,

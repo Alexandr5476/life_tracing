@@ -63,6 +63,8 @@ data class PlanActionIdentity(
 
 class StalePlanActionException : IllegalStateException("Plan action is stale")
 
+class PlanHistoricalOverlapException : IllegalStateException("Historical Plan interval overlaps completed History")
+
 fun PlanEntry.actionIdentity() =
     PlanActionIdentity(
         id,

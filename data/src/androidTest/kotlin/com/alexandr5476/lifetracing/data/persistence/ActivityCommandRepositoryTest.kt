@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityExecutionTransitions
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
@@ -46,6 +47,8 @@ import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
@@ -56,12 +59,14 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
+import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -98,6 +103,355 @@ class ActivityCommandRepositoryTest {
 
     @After
     fun tearDown() = database.close()
+
+    @Test
+    fun selectedPlanFailedValueWriteDoesNotFulfillOrLeaveExecution() {
+        template("invalid-value-plan", TimeTrackingMode.STOPWATCH, fields = true)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("invalid-value-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val foreignField = ActivitySnapshotFieldId("foreign-snapshot-field")
+        val before = count("activity_executions")
+        assertThrows(IllegalArgumentException::class.java) {
+            repository("invalid-value-plan").addManualTimedFromPlan(
+                plan.actionIdentity(),
+                instant(100),
+                instant(200),
+                instant(1_200),
+                ZoneOffset.UTC,
+                listOf(ActivityExecutionValueOverride(foreignField, NumberExecutionValue(foreignField, 0))),
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(PlanEntryStatus.PLANNED, requireNotNull(planRepository().getPlan(plan.id)).status)
+        assertNull(database.activityTemplateDao().getUserState("invalid-value-plan")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun selectedPlanHistoricalWriterRequiresApprovalForCurrentDatabaseOverlap() {
+        template("overlap-existing", TimeTrackingMode.STOPWATCH)
+        template("overlap-plan", TimeTrackingMode.STOPWATCH)
+        val writer = repository("overlap")
+        writer.addManualTimed(
+            ActivityEntrySource.Template(ActivityTemplateId("overlap-existing")),
+            instant(100),
+            instant(200),
+            instant(500),
+            ZoneOffset.UTC,
+        )
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("overlap-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val before = count("activity_executions")
+        assertThrows(PlanHistoricalOverlapException::class.java) {
+            writer.addManualTimedFromPlan(
+                plan.actionIdentity(),
+                instant(150),
+                instant(250),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(PlanEntryStatus.PLANNED, requireNotNull(planRepository().getPlan(plan.id)).status)
+        assertNull(database.activityTemplateDao().getUserState("overlap-plan")?.lastUsedAtMs)
+        val accepted =
+            writer.addManualTimedFromPlan(
+                plan.actionIdentity(),
+                instant(150),
+                instant(250),
+                instant(1_200),
+                ZoneOffset.UTC,
+                overlapApproved = true,
+            )
+        assertEquals(plan.id, accepted.planEntryId)
+        assertEquals(PlanEntryStatus.FULFILLED, requireNotNull(planRepository().getPlan(plan.id)).status)
+    }
+
+    @Test
+    fun selectedPlanHistoricalCompletionKeepsEventAndMutationTimesDistinct() {
+        template("selected-plan", TimeTrackingMode.STOPWATCH)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("selected-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val execution =
+            repository("selected-plan").addManualTimedFromPlan(
+                plan.actionIdentity(),
+                instant(100),
+                instant(200),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        val fulfilled = requireNotNull(database.planEntryDao().getById(plan.id.value)).toDomain()
+        assertEquals(plan.id, execution.planEntryId)
+        assertEquals(plan.activitySnapshotId, execution.snapshotId)
+        assertEquals(execution.id, fulfilled.fulfilledActivityExecutionId)
+        assertEquals(instant(200), fulfilled.fulfilledAt)
+        assertEquals(instant(1_200), fulfilled.updatedAt)
+        assertEquals(plan.target, fulfilled.target)
+        assertEquals(1_200_000L, database.activityTemplateDao().getUserState("selected-plan")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun selectedPlanManualWriterRejectsRescheduledIdentityWithoutResidue() {
+        template("stale-plan", TimeTrackingMode.STOPWATCH)
+        val plans = planRepository()
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("stale-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val expected = plan.actionIdentity()
+        plans.reschedulePlanEntry(
+            expected,
+            PlanSchedule.FloatingDay(LocalDate.of(2026, 8, 21)),
+            instant(1_100),
+        )
+        val before = count("activity_executions")
+        assertThrows(StalePlanActionException::class.java) {
+            repository("stale-plan").addManualTimedFromPlan(
+                expected,
+                instant(100),
+                instant(200),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(
+            PlanEntryStatus.PLANNED,
+            requireNotNull(database.planEntryDao().getById(plan.id.value)).toDomain().status,
+        )
+        assertNull(database.activityTemplateDao().getUserState("stale-plan")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun selectedPlanManualWriterRejectsSnapshotReplacementAndCancellationWithoutResidue() {
+        template("changed-plan", TimeTrackingMode.STOPWATCH)
+        val plans = planRepository()
+        val changed =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("changed-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val cancelled =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("changed-plan"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
+                instant(1_000),
+            )
+        val changedIdentity = changed.actionIdentity()
+        val cancelledIdentity = cancelled.actionIdentity()
+        plans.updatePlanFromTemplate(changedIdentity, instant(1_100))
+        plans.cancelPlan(cancelledIdentity, instant(1_100))
+        val before = count("activity_executions")
+        val writer = repository("changed-plan")
+        for (identity in listOf(changedIdentity, cancelledIdentity)) {
+            assertThrows(StalePlanActionException::class.java) {
+                writer.addManualTimedFromPlan(
+                    identity,
+                    instant(100),
+                    instant(200),
+                    instant(1_200),
+                    ZoneOffset.UTC,
+                )
+            }
+        }
+        assertEquals(before, count("activity_executions"))
+        assertNull(database.activityTemplateDao().getUserState("changed-plan")?.lastUsedAtMs)
+        assertEquals(PlanEntryStatus.PLANNED, requireNotNull(plans.getPlan(changed.id)).status)
+        assertEquals(PlanEntryStatus.CANCELLED, requireNotNull(plans.getPlan(cancelled.id)).status)
+    }
+
+    @Test
+    fun archivedPlanSourceDoesNotInvalidateFrozenTimeEntry() {
+        template("plan-archived", TimeTrackingMode.STOPWATCH)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-archived"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val identity = plan.actionIdentity()
+        database.activityTemplateDao().archive("plan-archived", 1_100_000)
+        val execution =
+            repository("plan-archived").addManualTimedFromPlan(
+                identity,
+                instant(100),
+                instant(200),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        assertEquals(plan.activitySnapshotId, execution.snapshotId)
+        assertEquals(plan.id, execution.planEntryId)
+        assertEquals(1_200_000L, database.activityTemplateDao().getUserState("plan-archived")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun selectedPlanBackdatedLiveUsesFrozenSnapshotAndNormalCompletionFulfillsIt() {
+        template("plan-live", TimeTrackingMode.STOPWATCH)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-live"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val execution =
+            repository("plan-live").startLiveFromPlan(
+                plan.actionIdentity(),
+                instant(100),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        val live = liveRepository("reload-live")
+        assertEquals(instant(100), execution.startedAt)
+        assertEquals(plan.id, execution.planEntryId)
+        assertEquals(plan.activitySnapshotId, execution.snapshotId)
+        assertEquals(execution.id, live.getActiveSession()?.activityExecutionId)
+        assertTrue(
+            PlanReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getFocusedAction(plan.id)
+                .engaged,
+        )
+        assertEquals(
+            PlanEntryStatus.PLANNED,
+            requireNotNull(database.planEntryDao().getById(plan.id.value)).toDomain().status,
+        )
+        val daily =
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(execution.primaryLocalDate, instant(1_200), 10))
+        assertEquals(execution.id, (daily.active as DailyActive.Activity).runtime.execution.id)
+        live.completeActiveActivity(instant(1_300))
+        val fulfilled = requireNotNull(database.planEntryDao().getById(plan.id.value)).toDomain()
+        assertEquals(PlanEntryStatus.FULFILLED, fulfilled.status)
+        assertEquals(execution.id, fulfilled.fulfilledActivityExecutionId)
+        assertEquals(instant(1_300), fulfilled.fulfilledAt)
+    }
+
+    @Test
+    fun selectedPlanFinishDeadlineRejectsAtAndAfterBoundaryWithoutResidue() {
+        template("plan-finish", TimeTrackingMode.TIMER, 600_000, "FINISH")
+        template("plan-overtime", TimeTrackingMode.TIMER, 600_000, "OVERTIME")
+        val plans = planRepository()
+        val finish =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-finish"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val overtime =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-overtime"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
+                instant(1_000),
+            )
+        val writer = repository("plan-timers")
+        val before = count("activity_executions")
+        for (commandAt in listOf(instant(1_600), instant(1_601))) {
+            assertThrows(ExpiredFinishTimerStartException::class.java) {
+                writer.startLiveFromPlan(finish.actionIdentity(), instant(1_000), commandAt, ZoneOffset.UTC)
+            }
+            assertEquals(before, count("activity_executions"))
+            assertNull(liveRepository("inspect-timer").getActiveSession())
+            assertNull(database.activityTemplateDao().getUserState("plan-finish")?.lastUsedAtMs)
+        }
+        val nonExpired =
+            writer.startLiveFromPlan(
+                finish.actionIdentity(),
+                instant(1_000),
+                instant(1_599),
+                ZoneOffset.UTC,
+            )
+        val live = liveRepository("timer-deadline")
+        assertEquals(
+            instant(1_600),
+            NextRuntimeDeadlineResolver.resolve(requireNotNull(live.getActiveRuntime()))?.at,
+        )
+        assertEquals(finish.id, nonExpired.planEntryId)
+        live.completeActiveActivity(instant(1_599))
+        val execution =
+            writer.startLiveFromPlan(
+                overtime.actionIdentity(),
+                instant(1_000),
+                instant(1_700),
+                ZoneOffset.UTC,
+            )
+        assertEquals(instant(1_000), execution.startedAt)
+        assertEquals(overtime.id, execution.planEntryId)
+        val historyPlan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-finish"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 22)),
+                instant(1_000),
+            )
+        val history =
+            writer.addManualTimedFromPlan(
+                historyPlan.actionIdentity(),
+                instant(100),
+                instant(940),
+                instant(1_700),
+                ZoneOffset.UTC,
+            )
+        assertEquals(Duration.ofSeconds(840), history.activeDuration)
+        assertEquals(execution.id, live.getActiveSession()?.activityExecutionId)
+    }
+
+    @Test
+    fun selectedPlanHistoricalNoLiveDoesNotReplaceUnrelatedActiveSession() {
+        template("plan-no-live", TimeTrackingMode.NO_LIVE_TRACKING)
+        template("unrelated-live", TimeTrackingMode.STOPWATCH)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("plan-no-live"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val writer = repository("plan-no-live")
+        val unrelated =
+            writer.startLive(
+                ActivityEntrySource.Template(ActivityTemplateId("unrelated-live")),
+                instant(1_100),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        val sessionBefore = liveRepository("inspect-no-live").getActiveSession()
+        val completed =
+            writer.addManualNoLiveFromPlan(
+                plan.actionIdentity(),
+                instant(200),
+                instant(1_300),
+                ZoneOffset.UTC,
+            )
+        assertNull(completed.startedAt)
+        assertNull(completed.activeDuration)
+        assertEquals(plan.id, completed.planEntryId)
+        assertEquals(instant(200), completed.completedAt)
+        assertEquals(sessionBefore, liveRepository("inspect-no-live").getActiveSession())
+        assertEquals(unrelated.id, sessionBefore?.activityExecutionId)
+        val fulfilled = requireNotNull(database.planEntryDao().getById(plan.id.value)).toDomain()
+        assertEquals(completed.id, fulfilled.fulfilledActivityExecutionId)
+        assertEquals(instant(200), fulfilled.fulfilledAt)
+        assertEquals(instant(1_300), fulfilled.updatedAt)
+        val series =
+            StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                .activitySeries(requireNotNull(completed.statisticsSeriesId), StatisticsPeriod.AllTime)
+        assertEquals(1L, series.executionCount)
+        assertEquals(0L, series.durations.sampleCount)
+        val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(completed.id))
+        assertNull(detail.root.activeDuration)
+        assertEquals(completed.id, detail.root.executionId)
+    }
 
     @Test
     fun backdatedTemplateStartUsesCanonicalLiveSlotRecentAndRollsBackSecondSnapshot() {

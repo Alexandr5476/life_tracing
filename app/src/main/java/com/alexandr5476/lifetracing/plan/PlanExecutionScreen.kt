@@ -1,4 +1,4 @@
-@file:Suppress("FunctionNaming", "LongMethod", "MagicNumber", "TooManyFunctions")
+@file:Suppress("FunctionNaming", "LongMethod", "LongParameterList", "MagicNumber", "MaxLineLength", "TooManyFunctions")
 
 package com.alexandr5476.lifetracing.plan
 
@@ -39,6 +39,9 @@ import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.history.HistoricalLocalDateTimeResolution
+import com.alexandr5476.lifetracing.history.resolveHistoricalLocalDateTime
 import com.alexandr5476.lifetracing.launcher.formatLauncherCountdown
 import com.alexandr5476.lifetracing.ui.components.LifeTracingLinearProgressIndicator
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
@@ -48,6 +51,7 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneOffset
 
 @Composable
 internal fun PlanExecutionRoute(
@@ -69,7 +73,7 @@ internal fun PlanExecutionRoute(
     val prepared = (state.prepared as? PlanExecutionLoad.Content)?.value
     LaunchedEffect(prepared) {
         val activity = (prepared?.action?.snapshot as? FocusedPlanAction.Snapshot.Activity)?.value
-        if (prepared?.isLive == false && activity != null) session.prepareQuickDraft(activity)
+        if (activity != null) session.prepareQuickDraft(activity)
     }
     PlanExecutionScreen(state, session, exit, onReloadOrigin)
 }
@@ -117,16 +121,25 @@ private fun PreparedContent(
         is FocusedPlanAction.Snapshot.Activity -> {
             Text(snapshot.value.name, style = MaterialTheme.typography.titleLarge)
             snapshot.value.shortComment?.let { Text(it) }
-            if (!prepared.isLive) {
-                NoLiveEditor(snapshot.value, session, idle)
+            if (session.timeDraft != null) {
+                TimeEntryEditor(snapshot.value, session, command)
             } else {
-                LifeTracingPrimaryButton(
-                    enabled = idle,
-                    onClick = session.controller::launch,
-                    modifier = Modifier.testTag("plan-execution-submit"),
-                ) {
-                    Text(stringResource(R.string.plan_start_action))
+                if (!prepared.isLive) {
+                    NoLiveEditor(snapshot.value, session, idle)
+                } else {
+                    LifeTracingPrimaryButton(
+                        enabled = idle,
+                        onClick = session.controller::launch,
+                        modifier = Modifier.testTag("plan-execution-submit"),
+                    ) {
+                        Text(stringResource(R.string.plan_start_action))
+                    }
                 }
+                LifeTracingSecondaryButton(
+                    onClick = { session.openTimeEntry(snapshot.value) },
+                    enabled = idle,
+                    modifier = Modifier.testTag("plan-execution-time-entry"),
+                ) { Text(stringResource(R.string.plan_time_entry_action)) }
             }
         }
         is FocusedPlanAction.Snapshot.Sequence -> {
@@ -150,6 +163,21 @@ private fun NoLiveEditor(
     enabled: Boolean,
 ) {
     val draft = session.quickDraft ?: return
+    PlanValuesEditor(snapshot, draft, session, enabled)
+    LifeTracingPrimaryButton(
+        enabled = enabled && draft.invalid.isEmpty(),
+        onClick = { session.controller.launch(draft.overrides(snapshot.fields)) },
+        modifier = Modifier.testTag("plan-execution-submit"),
+    ) { Text(stringResource(R.string.plan_complete_action)) }
+}
+
+@Composable
+private fun PlanValuesEditor(
+    snapshot: ActivityConfigSnapshot,
+    draft: PlanQuickCompletionDraft,
+    session: PlanExecutionRouteSession,
+    enabled: Boolean,
+) {
     snapshot.fields
         .sortedWith(compareByDescending<ActivitySnapshotField> { it.isMainValue }.thenBy { it.position })
         .forEach { field ->
@@ -179,12 +207,137 @@ private fun NoLiveEditor(
                 modifier = Modifier.testTag("plan-missing-${field.id.value}"),
             ) { Text(stringResource(R.string.plan_execution_set_missing)) }
         }
-    LifeTracingPrimaryButton(
-        enabled = enabled && draft.invalid.isEmpty(),
-        onClick = { session.controller.launch(draft.overrides(snapshot.fields)) },
-        modifier = Modifier.testTag("plan-execution-submit"),
-    ) { Text(stringResource(R.string.plan_complete_action)) }
 }
+
+@Composable
+private fun TimeEntryEditor(
+    snapshot: ActivityConfigSnapshot,
+    session: PlanExecutionRouteSession,
+    command: PlanExecutionCommandState,
+) {
+    val draft = session.timeDraft ?: return
+    val editable =
+        command is PlanExecutionCommandState.Idle ||
+            command is PlanExecutionCommandState.Overlap ||
+            command is PlanExecutionCommandState.Rejected ||
+            command is PlanExecutionCommandState.Conflict ||
+            command == PlanExecutionCommandState.ExpiredFinish
+    Text(stringResource(R.string.plan_time_entry_title), style = MaterialTheme.typography.titleMedium)
+    Text(stringResource(R.string.plan_time_entry_zone, draft.zoneId.id))
+    if (snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+        LifeTracingOutlinedTextField(
+            value = draft.startedText,
+            onValueChange = session::editStarted,
+            enabled = editable,
+            modifier = Modifier.fillMaxWidth().testTag("plan-time-start"),
+            label = { Text(stringResource(R.string.plan_time_entry_start)) },
+            supportingText = { Text(stringResource(R.string.manual_history_datetime_hint)) },
+        )
+        TimeOffsetChoices(draft.startedText, draft.zoneId, draft.startedOffset, editable, true, session)
+    }
+    LifeTracingOutlinedTextField(
+        value = draft.completedText,
+        onValueChange = session::editCompleted,
+        enabled = editable,
+        modifier = Modifier.fillMaxWidth().testTag("plan-time-end"),
+        label = {
+            Text(
+                stringResource(
+                    if (snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                        R.string.plan_time_entry_completion
+                    } else {
+                        R.string.plan_time_entry_optional_end
+                    },
+                ),
+            )
+        },
+        supportingText = { Text(stringResource(R.string.manual_history_datetime_hint)) },
+    )
+    if (draft.completedText.isNotBlank()) {
+        TimeOffsetChoices(draft.completedText, draft.zoneId, draft.completedOffset, editable, false, session)
+    }
+    draft.issue?.let { issue ->
+        Text(stringResource(issue.label()), color = MaterialTheme.colorScheme.error)
+        if (issue == PlanTimeEntryIssue.ZONE_CHANGED) {
+            LifeTracingSecondaryButton(
+                onClick = session::reviewDeviceZone,
+                enabled = editable,
+            ) { Text(stringResource(R.string.plan_time_entry_review_zone)) }
+        }
+    }
+    session.quickDraft?.let { PlanValuesEditor(snapshot, it, session, editable) }
+    if (command is PlanExecutionCommandState.Overlap) {
+        Text(stringResource(R.string.plan_time_entry_overlap), color = MaterialTheme.colorScheme.error)
+        LifeTracingPrimaryButton(
+            enabled = editable,
+            onClick = { session.submitTimeEntry(snapshot, true) },
+            modifier = Modifier.testTag("plan-time-confirm-overlap"),
+        ) { Text(stringResource(R.string.plan_time_entry_confirm)) }
+    } else {
+        LifeTracingPrimaryButton(
+            enabled = editable && session.quickDraft?.invalid?.isEmpty() == true,
+            onClick = { session.submitTimeEntry(snapshot) },
+            modifier = Modifier.testTag("plan-time-save"),
+        ) { Text(stringResource(R.string.plan_time_entry_save)) }
+    }
+    LifeTracingSecondaryButton(
+        enabled = editable,
+        onClick = session::closeTimeEntry,
+    ) { Text(stringResource(R.string.plan_time_entry_back)) }
+}
+
+@Composable
+private fun TimeOffsetChoices(
+    text: String,
+    zone: java.time.ZoneId,
+    selected: ZoneOffset?,
+    enabled: Boolean,
+    started: Boolean,
+    session: PlanExecutionRouteSession,
+) {
+    val resolution = resolveHistoricalLocalDateTime(text, zone, null)
+    val offsets = (resolution as? HistoricalLocalDateTimeResolution.Ambiguous)?.offsets ?: return
+    Text(stringResource(R.string.manual_history_ambiguous_choose))
+    offsets.forEachIndexed { index, offset ->
+        LifeTracingSecondaryButton(
+            enabled = enabled,
+            onClick = {
+                if (started) session.selectStartedOffset(offset) else session.selectCompletedOffset(offset)
+            },
+            modifier = Modifier.testTag("plan-time-" + (if (started) "start" else "end") + "-offset-" + index),
+        ) {
+            val label =
+                if (index ==
+                    0
+                ) {
+                    R.string.manual_history_first_occurrence
+                } else {
+                    R.string.manual_history_second_occurrence
+                }
+            val offsetLabel = stringResource(label, offset.id)
+            Text(
+                if (selected == offset) {
+                    stringResource(R.string.plan_time_entry_selected_offset, offsetLabel)
+                } else {
+                    offsetLabel
+                },
+            )
+        }
+    }
+}
+
+private fun PlanTimeEntryIssue.label(): Int =
+    when (this) {
+        PlanTimeEntryIssue.INVALID_TIME -> R.string.plan_time_entry_invalid
+        PlanTimeEntryIssue.NONEXISTENT_TIME -> R.string.plan_time_entry_nonexistent
+        PlanTimeEntryIssue.AMBIGUOUS_START, PlanTimeEntryIssue.AMBIGUOUS_END ->
+            R.string.manual_history_ambiguous_choose
+        PlanTimeEntryIssue.FUTURE -> R.string.plan_time_entry_future
+        PlanTimeEntryIssue.REVERSED -> R.string.plan_time_entry_reversed
+        PlanTimeEntryIssue.EXPIRED_FINISH -> R.string.plan_time_entry_expired_finish
+        PlanTimeEntryIssue.ZONE_CHANGED -> R.string.plan_time_entry_zone_changed
+        PlanTimeEntryIssue.INVALID_NUMBER -> R.string.plan_time_entry_invalid_number
+    }
 
 @Composable
 private fun CategoryEditor(
@@ -231,11 +384,13 @@ private fun CommandContent(
         PlanExecutionCommandState.Idle -> Unit
         is PlanExecutionCommandState.Checking -> MessageCard(R.string.plan_execution_checking)
         is PlanExecutionCommandState.Preflight -> PreflightCard(command, cancel)
+        is PlanExecutionCommandState.Overlap -> Unit
         is PlanExecutionCommandState.Committing -> MessageCard(R.string.plan_execution_committing)
         PlanExecutionCommandState.Stale ->
             FailureCard(R.string.plan_execution_stale, R.string.plan_execution_reload, reload)
         is PlanExecutionCommandState.Conflict -> FailureCard(R.string.plan_execution_conflict, action = retry)
         is PlanExecutionCommandState.Rejected -> FailureCard(R.string.plan_execution_rejected, action = retry)
+        PlanExecutionCommandState.ExpiredFinish -> MessageCard(R.string.plan_time_entry_expired_finish)
         is PlanExecutionCommandState.Committed -> MessageCard(R.string.plan_execution_committed)
         is PlanExecutionCommandState.CommittedCoordinationFailure ->
             MessageCard(R.string.plan_execution_committed_coordination)

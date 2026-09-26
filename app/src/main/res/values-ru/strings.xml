@@ -563,4 +563,23 @@
     <string name="launcher_one_off_timer_minutes">Длительность таймера (минуты)</string>
     <string name="launcher_one_off_invalid">Укажите название и положительную длительность таймера.</string>
     <string name="launcher_one_off_start">Начать</string>
+    <string name="plan_time_entry_action">Указать время</string>
+    <string name="plan_time_entry_title">Время выполнения плана</string>
+    <string name="plan_time_entry_zone">Часовой пояс: %1$s</string>
+    <string name="plan_time_entry_start">Дата и время начала</string>
+    <string name="plan_time_entry_optional_end">Дата и время окончания (необязательно)</string>
+    <string name="plan_time_entry_completion">Дата и время завершения</string>
+    <string name="plan_time_entry_save">Сохранить</string>
+    <string name="plan_time_entry_back">Назад к выполнению плана</string>
+    <string name="plan_time_entry_overlap">Этот интервал пересекается с завершённой историей. Всё равно сохранить?</string>
+    <string name="plan_time_entry_confirm">Сохранить с пересечением</string>
+    <string name="plan_time_entry_invalid">Укажите корректные местные дату и время.</string>
+    <string name="plan_time_entry_nonexistent">Такого местного времени нет в выбранном часовом поясе.</string>
+    <string name="plan_time_entry_future">Будущее время недопустимо.</string>
+    <string name="plan_time_entry_reversed">Окончание должно быть не раньше начала.</string>
+    <string name="plan_time_entry_expired_finish">Время завершения таймера уже прошло. Укажите окончание или более позднее начало.</string>
+    <string name="plan_time_entry_zone_changed">Часовой пояс устройства изменился. Проверьте введённое местное время.</string>
+    <string name="plan_time_entry_review_zone">Проверить в текущем часовом поясе</string>
+    <string name="plan_time_entry_invalid_number">Укажите корректное число.</string>
+    <string name="plan_time_entry_selected_offset">Выбрано: %1$s</string>
 </resources>

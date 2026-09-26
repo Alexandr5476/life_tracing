@@ -1,4 +1,4 @@
-@file:Suppress("ComplexCondition", "LongParameterList", "TooManyFunctions")
+@file:Suppress("ComplexCondition", "LongParameterList", "TooManyFunctions", "ThrowsCount")
 
 package com.alexandr5476.lifetracing.data.persistence
 
@@ -29,16 +29,21 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.PlanningPrecision
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
+import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import java.time.Instant
 import java.time.ZoneId
 import java.util.ConcurrentModificationException
@@ -162,6 +167,121 @@ class ActivityCommandRepository internal constructor(
                 )
             persistManual(prepared, generated, valueOverrides, createdAt)
         }
+
+    fun startLiveFromPlan(
+        expected: PlanActionIdentity,
+        startedAt: Instant,
+        commandAt: Instant,
+        eventZoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+    ): ActivityExecution =
+        liveSessions.startActivityFromPlan(expected, startedAt, commandAt, eventZoneId, valueOverrides)
+
+    /** Selected Plan history uses the frozen snapshot and checks the prepared identity in the write transaction. */
+    fun addManualTimedFromPlan(
+        expected: PlanActionIdentity,
+        startedAt: Instant,
+        completedAt: Instant,
+        commandAt: Instant,
+        eventZoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+        overlapApproved: Boolean = false,
+    ): ActivityExecution =
+        transaction {
+            val prepared = prepareSelectedPlan(expected, commandAt)
+            require(prepared.snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
+                "Timed history requires a timed Activity"
+            }
+            if (!overlapApproved && overlapsCompletedHistory(startedAt, completedAt)) {
+                throw PlanHistoricalOverlapException()
+            }
+            val generated =
+                executionFactory.createManualTimed(
+                    prepared.snapshot,
+                    startedAt,
+                    completedAt,
+                    commandAt,
+                    eventZoneId,
+                    expected.planEntryId,
+                )
+            persistSelectedPlanHistory(prepared, generated, valueOverrides, commandAt)
+        }
+
+    fun addManualNoLiveFromPlan(
+        expected: PlanActionIdentity,
+        completedAt: Instant,
+        commandAt: Instant,
+        eventZoneId: ZoneId,
+        valueOverrides: List<ActivityExecutionValueOverride> = emptyList(),
+    ): ActivityExecution =
+        transaction {
+            val prepared = prepareSelectedPlan(expected, commandAt)
+            require(prepared.snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                "No-live history requires a NO_LIVE_TRACKING Activity"
+            }
+            val generated =
+                executionFactory.createManualNoLiveHistory(
+                    prepared.snapshot,
+                    completedAt,
+                    commandAt,
+                    eventZoneId,
+                    expected.planEntryId,
+                )
+            persistSelectedPlanHistory(prepared, generated, valueOverrides, commandAt)
+        }
+
+    private fun prepareSelectedPlan(
+        expected: PlanActionIdentity,
+        commandAt: Instant,
+    ): PreparedSource {
+        val plan =
+            database.planEntryDao().getById(expected.planEntryId.value)?.toDomain()
+                ?: throw StalePlanActionException()
+        if (plan.actionIdentity() != expected ||
+            plan.status != PlanEntryStatus.PLANNED ||
+            plan.kind != PlanTrackableKind.ACTIVITY
+        ) {
+            throw StalePlanActionException()
+        }
+        require(plan.target.precision != PlanningPrecision.MONTH) { "Month Plan actions are deferred" }
+        require(commandAt >= plan.updatedAt) { "Plan command time is out of order" }
+        if (database.planEntryDao().hasLiveActivity(plan.id.value)) throw StalePlanActionException()
+        val snapshot = loadSnapshot(requireNotNull(plan.activitySnapshotId))
+        plan.requireSnapshotProvenance(
+            snapshot.sourceTemplateId?.value,
+            snapshot.sourceRevision,
+            "Activity snapshot",
+        )
+        return PreparedSource(snapshot, plan = plan)
+    }
+
+    private fun persistSelectedPlanHistory(
+        prepared: PreparedSource,
+        generated: ActivityExecution,
+        valueOverrides: List<ActivityExecutionValueOverride>,
+        commandAt: Instant,
+    ): ActivityExecution {
+        val plan = requireNotNull(prepared.plan)
+        val execution = ActivityExecutionValuePolicy.apply(generated, prepared.snapshot, valueOverrides)
+        database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
+        if (database.planEntryDao().fulfillHistoricalActivity(
+                plan.id.value,
+                prepared.snapshot.id.value,
+                execution.id.value,
+                plan.updatedAt.toEpochMilli(),
+                requireNotNull(execution.completedAt).toEpochMilli(),
+                commandAt.toEpochMilli(),
+            ) != 1
+        ) {
+            throw StalePlanActionException()
+        }
+        plan.sourceActivityTemplateId?.let {
+            check(database.planEntryDao().touchActivitySource(it.value, commandAt.toEpochMilli()) == 1) {
+                "Plan Activity source Recent update failed"
+            }
+        }
+        return execution
+    }
 
     /** Current one-off completion owns only its frozen execution graph and never acquires the live slot. */
     fun completeOneOffNoLiveNow(
@@ -298,11 +418,13 @@ class ActivityCommandRepository internal constructor(
         database.activityExecutionDao().insertAggregate(execution.toEntityAggregate())
         prepared.plan?.let { plan ->
             check(
-                database.planEntryDao().fulfillActivity(
+                database.planEntryDao().fulfillHistoricalActivity(
                     plan.id.value,
                     prepared.snapshot.id.value,
                     execution.id.value,
+                    plan.updatedAt.toEpochMilli(),
                     requireNotNull(execution.completedAt).toEpochMilli(),
+                    commandAt.toEpochMilli(),
                 ) == 1,
             ) { "Plan changed before manual completion" }
             plan.sourceActivityTemplateId?.let { sourceId ->

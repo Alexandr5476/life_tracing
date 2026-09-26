@@ -563,4 +563,23 @@
     <string name="launcher_one_off_timer_minutes">Timer target (minutes)</string>
     <string name="launcher_one_off_invalid">Enter a name and a positive Timer target when using Timer.</string>
     <string name="launcher_one_off_start">Start</string>
+    <string name="plan_time_entry_action">Enter time</string>
+    <string name="plan_time_entry_title">Plan time entry</string>
+    <string name="plan_time_entry_zone">Time zone: %1$s</string>
+    <string name="plan_time_entry_start">Start date and time</string>
+    <string name="plan_time_entry_optional_end">End date and time (optional)</string>
+    <string name="plan_time_entry_completion">Completion date and time</string>
+    <string name="plan_time_entry_save">Save time entry</string>
+    <string name="plan_time_entry_back">Back to Plan action</string>
+    <string name="plan_time_entry_overlap">This interval overlaps completed history. Save anyway?</string>
+    <string name="plan_time_entry_confirm">Save despite overlap</string>
+    <string name="plan_time_entry_invalid">Enter a valid local date and time.</string>
+    <string name="plan_time_entry_nonexistent">This local time does not exist in the selected time zone.</string>
+    <string name="plan_time_entry_future">Future times are not allowed.</string>
+    <string name="plan_time_entry_reversed">End must be at or after start.</string>
+    <string name="plan_time_entry_expired_finish">This Timer has passed its finish deadline. Enter an end time or choose a later start.</string>
+    <string name="plan_time_entry_zone_changed">Device time zone changed. Review the entered local times.</string>
+    <string name="plan_time_entry_review_zone">Review in current time zone</string>
+    <string name="plan_time_entry_invalid_number">Enter a valid number.</string>
+    <string name="plan_time_entry_selected_offset">Selected: %1$s</string>
 </resources>

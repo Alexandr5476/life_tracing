@@ -1,5 +1,7 @@
 @file:Suppress(
     "ComplexCondition",
+    "CyclomaticComplexMethod",
+    "MaxLineLength",
     "LongParameterList",
     "ReturnCount",
     "TooGenericExceptionCaught",
@@ -11,11 +13,13 @@ package com.alexandr5476.lifetracing.plan
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
@@ -70,6 +74,10 @@ sealed interface PlanExecutionCommandState {
         val endsAt: Instant,
     ) : PlanExecutionCommandState
 
+    data class Overlap(
+        val request: PlanTimeEntryRequest,
+    ) : PlanExecutionCommandState
+
     data class Committing(
         val attemptId: Long,
     ) : PlanExecutionCommandState
@@ -79,6 +87,8 @@ sealed interface PlanExecutionCommandState {
     data class Conflict(
         val message: String,
     ) : PlanExecutionCommandState
+
+    data object ExpiredFinish : PlanExecutionCommandState
 
     data class Rejected(
         val message: String,
@@ -114,12 +124,21 @@ sealed interface PlanExecutionCommit {
     }
 }
 
+data class PlanTimeEntryRequest(
+    val startedAt: Instant?,
+    val completedAt: Instant?,
+    val zoneId: ZoneId,
+    val values: List<ActivityExecutionValueOverride>,
+    val overlapApproved: Boolean = false,
+)
+
 internal data class PlanExecutionDurableCommand(
     val identity: PlanActionIdentity,
     val noLive: Boolean,
     val values: List<ActivityExecutionValueOverride>,
     val at: Instant,
     val zoneId: ZoneId,
+    val timeEntry: PlanTimeEntryRequest? = null,
 )
 
 class PlanExecutionController internal constructor(
@@ -133,6 +152,7 @@ class PlanExecutionController internal constructor(
     private val zoneId: () -> ZoneId,
     private val preflightScheduler: PreflightScheduler,
     private val mutationGate: RuntimeMutationGate = RuntimeMutationGate(),
+    private val overlapsCompletedHistory: suspend (Instant, Instant) -> Boolean = { _, _ -> false },
 ) {
     private val lock = Any()
     private val generation = AtomicLong()
@@ -157,6 +177,110 @@ class PlanExecutionController internal constructor(
             val attempt = generation.incrementAndGet()
             mutableState.update { it.copy(command = PlanExecutionCommandState.Checking(attempt)) }
             job = scope.launch { checkAndStart(attempt, target, values) }
+        }
+    }
+
+    fun launchTimeEntry(
+        request: PlanTimeEntryRequest,
+        confirmOverlap: Boolean = false,
+    ) {
+        val target = (mutableState.value.prepared as? PlanExecutionLoad.Content)?.value ?: return
+        if (target.action.snapshot !is FocusedPlanAction.Snapshot.Activity) return
+        synchronized(lock) {
+            if (closed || !visible) return
+            val previous = mutableState.value.command
+            if (confirmOverlap) {
+                if (previous !is PlanExecutionCommandState.Overlap || previous.request != request) return
+            } else if (previous != PlanExecutionCommandState.Idle &&
+                previous !is PlanExecutionCommandState.Rejected &&
+                previous !is PlanExecutionCommandState.Conflict &&
+                previous != PlanExecutionCommandState.ExpiredFinish
+            ) {
+                return
+            }
+            val attempt = generation.incrementAndGet()
+            mutableState.update { it.copy(command = PlanExecutionCommandState.Checking(attempt)) }
+            job = scope.launch { checkTimeEntry(attempt, target, request, confirmOverlap) }
+        }
+    }
+
+    fun resetTimeEntryIssue() {
+        synchronized(lock) {
+            when (mutableState.value.command) {
+                is PlanExecutionCommandState.Overlap,
+                is PlanExecutionCommandState.Conflict,
+                is PlanExecutionCommandState.Rejected,
+                PlanExecutionCommandState.ExpiredFinish,
+                -> mutableState.update { it.copy(command = PlanExecutionCommandState.Idle) }
+                else -> Unit
+            }
+        }
+    }
+
+    private suspend fun checkTimeEntry(
+        attempt: Long,
+        target: PreparedPlanExecution,
+        request: PlanTimeEntryRequest,
+        confirmed: Boolean,
+    ) {
+        try {
+            val snapshot = (target.action.snapshot as FocusedPlanAction.Snapshot.Activity).value
+            require(request.zoneId == zoneId()) { "Device time zone changed" }
+            require(
+                if (snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                    request.startedAt == null && request.completedAt != null
+                } else {
+                    request.startedAt != null
+                },
+            ) { "Invalid Plan time entry" }
+            require(request.completedAt == null || request.completedAt <= wallClock.now())
+            require(request.startedAt == null || request.startedAt <= wallClock.now())
+            require(
+                request.startedAt == null || request.completedAt == null || request.startedAt <= request.completedAt,
+            )
+            if (request.completedAt == null && hasLiveSession()) {
+                publish(attempt, PlanExecutionCommandState.Conflict("Another live session is already active"))
+                return
+            }
+            if (!confirmed &&
+                request.startedAt != null &&
+                request.completedAt != null &&
+                overlapsCompletedHistory(request.startedAt, request.completedAt)
+            ) {
+                publish(attempt, PlanExecutionCommandState.Overlap(request))
+                return
+            }
+            beginTimeEntryCommit(attempt, target, request.copy(overlapApproved = confirmed))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            publish(attempt, PlanExecutionCommandState.Rejected(failure.message()))
+        }
+    }
+
+    private fun beginTimeEntryCommit(
+        attempt: Long,
+        target: PreparedPlanExecution,
+        request: PlanTimeEntryRequest,
+    ) {
+        synchronized(lock) {
+            if (closed ||
+                !visible ||
+                generation.get() != attempt ||
+                mutableState.value.command !is PlanExecutionCommandState.Checking
+            ) {
+                return
+            }
+            if (request.zoneId != zoneId()) {
+                mutableState.update {
+                    it.copy(
+                        command = PlanExecutionCommandState.Rejected("Device time zone changed"),
+                    )
+                }
+                return
+            }
+            mutableState.update { it.copy(command = PlanExecutionCommandState.Committing(attempt)) }
+            job = scope.launch { commit(attempt, target, request.values, request) }
         }
     }
 
@@ -290,6 +414,7 @@ class PlanExecutionController internal constructor(
         attempt: Long,
         target: PreparedPlanExecution,
         values: List<ActivityExecutionValueOverride>,
+        timeEntry: PlanTimeEntryRequest? = null,
     ) {
         val admission =
             requireNotNull(
@@ -299,7 +424,8 @@ class PlanExecutionController internal constructor(
                         !target.isLive,
                         values,
                         wallClock.now(),
-                        zoneId(),
+                        timeEntry?.zoneId ?: zoneId(),
+                        timeEntry,
                     )
                 },
             )
@@ -313,6 +439,15 @@ class PlanExecutionController internal constructor(
                 return
             } catch (conflict: LiveSessionConflictException) {
                 publishCommit(attempt, PlanExecutionCommandState.Conflict(conflict.message()))
+                return
+            } catch (_: ExpiredFinishTimerStartException) {
+                publishCommit(attempt, PlanExecutionCommandState.ExpiredFinish)
+                return
+            } catch (_: PlanHistoricalOverlapException) {
+                publishCommit(
+                    attempt,
+                    PlanExecutionCommandState.Overlap(requireNotNull(timeEntry).copy(overlapApproved = false)),
+                )
                 return
             } catch (failure: Exception) {
                 publishCommit(attempt, PlanExecutionCommandState.Rejected(failure.message()))

@@ -40,9 +40,80 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 class PlanExecutionRouteSessionTest {
+    @Test
+    fun ownerReacquisitionRetainsTimeEntryDraftAndZoneChangeRequiresReview() =
+        runBlocking {
+            val frozen = snapshot(emptyList())
+            val action = focused(frozen)
+            val owner = PlanExecutionRouteSessionOwner()
+            val first =
+                requireNotNull(
+                    owner.acquire(action.identity, PlanExecutionOrigin.DAILY) {
+                        controller(this, action)
+                    },
+                )
+            first.openTimeEntry(frozen)
+            first.editCompleted("2026-09-14T10:00")
+            val repeated =
+                requireNotNull(
+                    owner.acquire(action.identity, PlanExecutionOrigin.DAILY) {
+                        error("A retained Plan route must reuse its session")
+                    },
+                )
+            assertSame(first, repeated)
+            assertEquals("2026-09-14T10:00", repeated.timeDraft?.completedText)
+            owner.release(first)
+
+            var zone: ZoneId = ZoneOffset.UTC
+            val controller = controller(this, action)
+            val changing =
+                PlanExecutionRouteSession(
+                    action.identity,
+                    PlanExecutionOrigin.DAILY,
+                    controller,
+                    now = { NOW },
+                    deviceZone = { zone },
+                )
+            changing.openTimeEntry(frozen)
+            changing.editCompleted("2026-09-14T10:00")
+            zone = ZoneOffset.ofHours(2)
+            changing.submitTimeEntry(frozen)
+            assertEquals(PlanTimeEntryIssue.ZONE_CHANGED, changing.timeDraft?.issue)
+            changing.reviewDeviceZone()
+            assertEquals(zone, changing.timeDraft?.zoneId)
+            assertEquals("2026-09-14T10:00", changing.timeDraft?.completedText)
+            controller.close()
+        }
+
+    @Test
+    fun planTimeEntryRejectsNonexistentAndRequiresOffsetForAmbiguousLocalTime() =
+        runBlocking {
+            val frozen = snapshot(emptyList())
+            val action = focused(frozen)
+            val controller = controller(this, action)
+            val session =
+                PlanExecutionRouteSession(
+                    action.identity,
+                    PlanExecutionOrigin.PLAN,
+                    controller,
+                    now = { NOW },
+                    deviceZone = { ZoneId.of("Europe/Berlin") },
+                )
+            session.openTimeEntry(frozen)
+            session.editCompleted("2026-03-29T02:30")
+            session.submitTimeEntry(frozen)
+            assertEquals(PlanTimeEntryIssue.NONEXISTENT_TIME, session.timeDraft?.issue)
+            session.editCompleted("2026-10-25T02:30")
+            session.submitTimeEntry(frozen)
+            assertEquals(PlanTimeEntryIssue.AMBIGUOUS_END, session.timeDraft?.issue)
+            assertEquals(PlanExecutionCommandState.Idle, controller.state.value.command)
+            controller.close()
+        }
+
     @Test
     fun frozenDefaultsMissingAndEditedOverridesKeepSnapshotIdentities() {
         val fields = fields()

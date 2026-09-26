@@ -8,6 +8,7 @@ import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
@@ -37,6 +38,95 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 
 class PlanExecutionControllerTest {
+    @Test
+    fun backdatedPlanLiveSkipsCountdownAndUsesSelectedStart() =
+        runBlocking {
+            val harness = Harness(activityAction(Duration.ofSeconds(3)))
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            val start = NOW.minusSeconds(120)
+            controller.launchTimeEntry(PlanTimeEntryRequest(start, null, ZoneOffset.UTC, emptyList()))
+            controller.awaitCommitted()
+            assertTrue(harness.scheduler.scheduled.isEmpty())
+            assertEquals(
+                start,
+                harness.commands
+                    .single()
+                    .timeEntry
+                    ?.startedAt,
+            )
+            assertEquals(harness.action.identity, harness.commands.single().identity)
+            assertEquals(1, harness.coordinations)
+        }
+
+    @Test
+    fun completedPlanOverlapNeedsExplicitConfirmationAndStaleWriterStaysTerminal() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val harness =
+                Harness(activityAction(Duration.ZERO)).apply {
+                    overlapResult = true
+                    beforeOverlap = { gate.await() }
+                    failure = StalePlanActionException()
+                }
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            val request = PlanTimeEntryRequest(NOW.minusSeconds(120), NOW.minusSeconds(60), ZoneOffset.UTC, emptyList())
+            controller.launchTimeEntry(request)
+            assertTrue(controller.state.value.command is PlanExecutionCommandState.Checking)
+            gate.complete(Unit)
+            withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Overlap } }
+            assertTrue(harness.commands.isEmpty())
+            controller.launchTimeEntry(request.copy(completedAt = NOW.minusSeconds(30)), confirmOverlap = true)
+            assertTrue(harness.commands.isEmpty())
+            controller.launchTimeEntry(request, confirmOverlap = true)
+            withTimeout(2_000) { controller.state.first { it.command == PlanExecutionCommandState.Stale } }
+            assertEquals(1, harness.commands.size)
+            assertTrue(harness.scheduler.scheduled.isEmpty())
+        }
+
+    @Test
+    fun overlapIntroducedAfterPreflightReturnsToConfirmation() =
+        runBlocking {
+            val harness =
+                Harness(activityAction(Duration.ZERO)).apply {
+                    failure = PlanHistoricalOverlapException()
+                }
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            val request = PlanTimeEntryRequest(NOW.minusSeconds(120), NOW.minusSeconds(60), ZoneOffset.UTC, emptyList())
+            controller.launchTimeEntry(request)
+            withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Overlap } }
+            assertEquals(1, harness.commands.size)
+            assertTrue(
+                !harness.commands
+                    .single()
+                    .timeEntry!!
+                    .overlapApproved,
+            )
+            harness.failure = null
+            controller.launchTimeEntry(request, confirmOverlap = true)
+            controller.awaitCommitted()
+            assertEquals(2, harness.commands.size)
+            assertTrue(
+                harness.commands
+                    .last()
+                    .timeEntry!!
+                    .overlapApproved,
+            )
+        }
+
+    @Test
+    fun sequenceCannotLaunchPlanTimeEntry() =
+        runBlocking {
+            val harness = Harness(sequenceAction(Duration.ZERO, Duration.ZERO))
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            controller.launchTimeEntry(PlanTimeEntryRequest(NOW.minusSeconds(60), null, ZoneOffset.UTC, emptyList()))
+            assertEquals(PlanExecutionCommandState.Idle, controller.state.value.command)
+            assertTrue(harness.commands.isEmpty())
+        }
+
     @Test
     fun frozenCountdownHasNoDurableWriteAndDuplicateBoundaryCommitsOnce() =
         runBlocking {
@@ -230,6 +320,8 @@ class PlanExecutionControllerTest {
         var readAction = action
         var beforeRead: suspend () -> Unit = {}
         var beforeExecute: suspend () -> Unit = {}
+        var beforeOverlap: suspend () -> Unit = {}
+        var overlapResult = false
 
         fun controller(scope: CoroutineScope) =
             PlanExecutionController(
@@ -245,7 +337,10 @@ class PlanExecutionControllerTest {
                     commands += command
                     failure?.let { throw it }
                     if (command.identity.kind == PlanTrackableKind.ACTIVITY) {
-                        PlanExecutionCommit.Activity(ActivityExecutionId("activity"), !command.noLive)
+                        PlanExecutionCommit.Activity(
+                            ActivityExecutionId("activity"),
+                            command.timeEntry?.completedAt == null && !command.noLive,
+                        )
                     } else {
                         PlanExecutionCommit.Sequence(
                             com.alexandr5476.lifetracing.domain
@@ -257,6 +352,10 @@ class PlanExecutionControllerTest {
                 WallClock { NOW },
                 { ZoneOffset.UTC },
                 scheduler,
+                overlapsCompletedHistory = { _, _ ->
+                    beforeOverlap()
+                    overlapResult
+                },
             )
     }
 
