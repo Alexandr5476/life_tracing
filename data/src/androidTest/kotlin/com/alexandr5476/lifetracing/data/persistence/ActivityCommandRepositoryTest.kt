@@ -105,13 +105,170 @@ class ActivityCommandRepositoryTest {
     fun tearDown() = database.close()
 
     @Test
+    fun selectedPlanCompletionRespectsCreationBoundary() {
+        template("chronology", TimeTrackingMode.STOPWATCH)
+        val plans = planRepository()
+        val writer = repository("chronology")
+        val early =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("chronology"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val before = count("activity_executions")
+        assertThrows(IllegalArgumentException::class.java) {
+            writer.addManualTimedFromPlan(
+                early.actionIdentity(),
+                instant(100),
+                instant(999),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(PlanEntryStatus.PLANNED, requireNotNull(plans.getPlan(early.id)).status)
+        assertNull(database.activityTemplateDao().getUserState("chronology")?.lastUsedAtMs)
+        val equal =
+            writer.addManualTimedFromPlan(
+                early.actionIdentity(),
+                instant(100),
+                instant(1_000),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        assertEquals(instant(1_000), requireNotNull(plans.getPlan(early.id)).fulfilledAt)
+        assertEquals(instant(1_000), equal.completedAt)
+        val later =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("chronology"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
+                instant(1_000),
+            )
+        val after =
+            writer.addManualTimedFromPlan(
+                later.actionIdentity(),
+                instant(1_001),
+                instant(1_100),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        assertEquals(instant(1_100), requireNotNull(plans.getPlan(later.id)).fulfilledAt)
+        assertEquals(instant(1_100), after.completedAt)
+    }
+
+    @Test
+    fun selectedNoLivePlanRejectsCompletionBeforeCreationWithoutResidue() {
+        template("chronology-no-live", TimeTrackingMode.NO_LIVE_TRACKING)
+        val plan =
+            planRepository().createActivityPlanFromTemplate(
+                ActivityTemplateId("chronology-no-live"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val before = count("activity_executions")
+        assertThrows(IllegalArgumentException::class.java) {
+            repository("chronology-no-live").addManualNoLiveFromPlan(
+                plan.actionIdentity(),
+                instant(999),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(PlanEntryStatus.PLANNED, requireNotNull(planRepository().getPlan(plan.id)).status)
+        assertNull(database.activityTemplateDao().getUserState("chronology-no-live")?.lastUsedAtMs)
+    }
+
+    @Test
+    fun startOptionsHistoryRechecksOverlapAtWriteBoundary() {
+        template("race-existing", TimeTrackingMode.STOPWATCH)
+        template("race-target", TimeTrackingMode.STOPWATCH)
+        val writer = repository("race")
+        val target = ActivityEntrySource.Template(ActivityTemplateId("race-target"))
+        assertFalse(writer.overlapsCompletedHistory(instant(100), instant(200)))
+        writer.addManualTimed(
+            ActivityEntrySource.Template(ActivityTemplateId("race-existing")),
+            instant(150),
+            instant(180),
+            instant(300),
+            ZoneOffset.UTC,
+        )
+        val before = count("activity_executions")
+        val beforeSnapshots = count("activity_snapshots")
+        assertThrows(PlanHistoricalOverlapException::class.java) {
+            writer.addManualTimed(
+                target,
+                instant(100),
+                instant(200),
+                instant(400),
+                ZoneOffset.UTC,
+                overlapApproved = false,
+            )
+        }
+        assertEquals(before, count("activity_executions"))
+        assertEquals(beforeSnapshots, count("activity_snapshots"))
+        assertNull(database.activityTemplateDao().getUserState("race-target")?.lastUsedAtMs)
+        val committed =
+            writer.addManualTimed(
+                target,
+                instant(100),
+                instant(200),
+                instant(400),
+                ZoneOffset.UTC,
+                overlapApproved = true,
+            )
+        assertEquals(before + 1, count("activity_executions"))
+        assertEquals(committed.id, requireNotNull(writer.getHistory(committed.id)).execution.id)
+    }
+
+    @Test
+    fun canonicalPlanReadersRejectFulfillmentTimestampMismatch() {
+        template("timestamp-link", TimeTrackingMode.STOPWATCH)
+        val plans = planRepository()
+        val plan =
+            plans.createActivityPlanFromTemplate(
+                ActivityTemplateId("timestamp-link"),
+                PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
+                instant(1_000),
+            )
+        val writer = repository("timestamp-link")
+        val execution =
+            writer.addManualTimedFromPlan(
+                plan.actionIdentity(),
+                instant(1_000),
+                instant(1_100),
+                instant(1_200),
+                ZoneOffset.UTC,
+            )
+        assertEquals(execution.id, requireNotNull(plans.getPlan(plan.id)).fulfilledActivityExecutionId)
+        assertEquals(
+            plan.id,
+            PlanReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getFocusedAction(plan.id)
+                .identity.planEntryId,
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET fulfilled_at_ms = 1150000 WHERE id = ?",
+            arrayOf(plan.id.value),
+        )
+        assertThrows(IllegalArgumentException::class.java) { plans.getPlan(plan.id) }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC }).getFocusedAction(plan.id)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DailyReadRepository(database, CurrentZoneIdProvider { ZoneOffset.UTC })
+                .getDaily(DailyQuery(LocalDate.of(2026, 8, 20), instant(1_200), 10))
+        }
+    }
+
+    @Test
     fun selectedPlanFailedValueWriteDoesNotFulfillOrLeaveExecution() {
         template("invalid-value-plan", TimeTrackingMode.STOPWATCH, fields = true)
         val plan =
             planRepository().createActivityPlanFromTemplate(
                 ActivityTemplateId("invalid-value-plan"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val foreignField = ActivitySnapshotFieldId("foreign-snapshot-field")
         val before = count("activity_executions")
@@ -146,7 +303,7 @@ class ActivityCommandRepositoryTest {
             planRepository().createActivityPlanFromTemplate(
                 ActivityTemplateId("overlap-plan"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val before = count("activity_executions")
         assertThrows(PlanHistoricalOverlapException::class.java) {
@@ -181,7 +338,7 @@ class ActivityCommandRepositoryTest {
             planRepository().createActivityPlanFromTemplate(
                 ActivityTemplateId("selected-plan"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val execution =
             repository("selected-plan").addManualTimedFromPlan(
@@ -281,7 +438,7 @@ class ActivityCommandRepositoryTest {
             planRepository().createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-archived"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val identity = plan.actionIdentity()
         database.activityTemplateDao().archive("plan-archived", 1_100_000)
@@ -348,13 +505,13 @@ class ActivityCommandRepositoryTest {
             plans.createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-finish"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val overtime =
             plans.createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-overtime"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 21)),
-                instant(1_000),
+                instant(100),
             )
         val writer = repository("plan-timers")
         val before = count("activity_executions")
@@ -383,17 +540,17 @@ class ActivityCommandRepositoryTest {
         val execution =
             writer.startLiveFromPlan(
                 overtime.actionIdentity(),
-                instant(1_000),
+                instant(100),
                 instant(1_700),
                 ZoneOffset.UTC,
             )
-        assertEquals(instant(1_000), execution.startedAt)
+        assertEquals(instant(100), execution.startedAt)
         assertEquals(overtime.id, execution.planEntryId)
         val historyPlan =
             plans.createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-finish"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 22)),
-                instant(1_000),
+                instant(100),
             )
         val history =
             writer.addManualTimedFromPlan(
@@ -415,7 +572,7 @@ class ActivityCommandRepositoryTest {
             planRepository().createActivityPlanFromTemplate(
                 ActivityTemplateId("plan-no-live"),
                 PlanTarget.FloatingDay(LocalDate.of(2026, 8, 20)),
-                instant(1_000),
+                instant(100),
             )
         val writer = repository("plan-no-live")
         val unrelated =

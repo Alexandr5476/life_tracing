@@ -37,6 +37,7 @@ internal data class PlanActivityExecutionLinkRow(
     @androidx.room.ColumnInfo(name = "plan_entry_id") val planEntryId: String?,
     @androidx.room.ColumnInfo(name = "context_type") val contextType: String,
     val status: String,
+    @androidx.room.ColumnInfo(name = "completed_at_ms") val completedAtMs: Long?,
 )
 
 internal data class PlanSequenceExecutionLinkRow(
@@ -146,7 +147,7 @@ internal abstract class PlanEntryDao {
     abstract fun hasLiveSequence(id: String): Boolean
 
     @Query(
-        "SELECT id, snapshot_id, plan_entry_id, context_type, status FROM activity_executions " +
+        "SELECT id, snapshot_id, plan_entry_id, context_type, status, completed_at_ms FROM activity_executions " +
             "WHERE plan_entry_id IN (:planIds) AND context_type = 'STANDALONE' AND status IN ('RUNNING', 'PAUSED')",
     )
     abstract fun liveActivityLinks(planIds: List<String>): List<PlanActivityExecutionLinkRow>
@@ -158,7 +159,7 @@ internal abstract class PlanEntryDao {
     abstract fun liveSequenceLinks(planIds: List<String>): List<PlanSequenceExecutionLinkRow>
 
     @Query(
-        "SELECT id, snapshot_id, plan_entry_id, context_type, status FROM activity_executions WHERE id IN (:ids)",
+        "SELECT id, snapshot_id, plan_entry_id, context_type, status, completed_at_ms FROM activity_executions WHERE id IN (:ids)",
     )
     abstract fun activityExecutionLinks(ids: List<String>): List<PlanActivityExecutionLinkRow>
 

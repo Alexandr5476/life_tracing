@@ -114,6 +114,7 @@ class ActivityCommandRepository internal constructor(
         eventZoneId: ZoneId,
         valueOverrides: List<ActivityEntryValueOverride> = emptyList(),
         expectedTemplateRevision: Long? = null,
+        overlapApproved: Boolean = true,
     ): ActivityExecution =
         transaction {
             val prepared =
@@ -125,6 +126,9 @@ class ActivityCommandRepository internal constructor(
                 )
             require(prepared.snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "Timed history requires a timed Activity"
+            }
+            if (!overlapApproved && overlapsCompletedHistory(startedAt, completedAt)) {
+                throw PlanHistoricalOverlapException()
             }
             val generated =
                 executionFactory.createManualTimed(
@@ -195,6 +199,9 @@ class ActivityCommandRepository internal constructor(
             if (!overlapApproved && overlapsCompletedHistory(startedAt, completedAt)) {
                 throw PlanHistoricalOverlapException()
             }
+            require(completedAt >= requireNotNull(prepared.plan).createdAt) {
+                "Historical Plan completion precedes Plan creation"
+            }
             val generated =
                 executionFactory.createManualTimed(
                     prepared.snapshot,
@@ -218,6 +225,9 @@ class ActivityCommandRepository internal constructor(
             val prepared = prepareSelectedPlan(expected, commandAt)
             require(prepared.snapshot.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
                 "No-live history requires a NO_LIVE_TRACKING Activity"
+            }
+            require(completedAt >= requireNotNull(prepared.plan).createdAt) {
+                "Historical Plan completion precedes Plan creation"
             }
             val generated =
                 executionFactory.createManualNoLiveHistory(

@@ -275,8 +275,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                 RuntimeOccurrenceStatus.DELETED_EXECUTION
         }
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}")
+            .onNodeWithTag("history-occurrence-${deletionTarget.value}")
             .performScrollTo()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
@@ -290,8 +292,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val removedSpan =
             requireNotNull(removed.completedAt).toEpochMilli() - requireNotNull(removed.enteredAt).toEpochMilli()
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}")
+            .onNodeWithTag("history-occurrence-${removed.occurrenceId.value}")
             .performScrollTo()
+        composeTestRule
+            .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()

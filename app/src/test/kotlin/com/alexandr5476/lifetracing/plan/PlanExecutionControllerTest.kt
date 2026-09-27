@@ -2,9 +2,14 @@ package com.alexandr5476.lifetracing.plan
 
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotField
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
+import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -57,6 +62,58 @@ class PlanExecutionControllerTest {
             )
             assertEquals(harness.action.identity, harness.commands.single().identity)
             assertEquals(1, harness.coordinations)
+        }
+
+    @Test
+    fun exactNowPlanTimeEntryUsesFrozenCountdown() =
+        runBlocking {
+            val base = activityAction(Duration.ofSeconds(3))
+            val snapshot = (base.snapshot as FocusedPlanAction.Snapshot.Activity).value
+            val fieldId = ActivitySnapshotFieldId("value")
+            val action =
+                base.copy(
+                    snapshot =
+                        FocusedPlanAction.Snapshot.Activity(
+                            snapshot.copy(
+                                fields =
+                                    listOf(
+                                        ActivitySnapshotField(
+                                            fieldId,
+                                            null,
+                                            0,
+                                            "Value",
+                                            type = CustomFieldType.NUMBER,
+                                            displayPrecision = 0,
+                                        ),
+                                    ),
+                            ),
+                        ),
+                )
+            val values = listOf(ActivityExecutionValueOverride(fieldId, NumberExecutionValue(fieldId, 7)))
+            val harness = Harness(action)
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            controller.launchTimeEntry(PlanTimeEntryRequest(NOW, null, ZoneOffset.UTC, values))
+            controller.awaitPreflight()
+            assertTrue(harness.commands.isEmpty())
+            assertEquals(1, harness.scheduler.scheduled.size)
+            harness.scheduler.fireTwice()
+            controller.awaitCommitted()
+            assertEquals(1, harness.commands.size)
+            assertEquals(null, harness.commands.single().timeEntry)
+            assertEquals(values, harness.commands.single().values)
+        }
+
+    @Test
+    fun futurePlanTimeEntryWithCountdownNeverSchedulesOrWrites() =
+        runBlocking {
+            val harness = Harness(activityAction(Duration.ofSeconds(3)))
+            val controller = harness.controller(this)
+            controller.awaitPrepared()
+            controller.launchTimeEntry(PlanTimeEntryRequest(NOW.plusMillis(1), null, ZoneOffset.UTC, emptyList()))
+            withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Rejected } }
+            assertTrue(harness.commands.isEmpty())
+            assertTrue(harness.scheduler.scheduled.isEmpty())
         }
 
     @Test

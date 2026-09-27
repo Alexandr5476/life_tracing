@@ -832,6 +832,33 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun overlapAppearingAfterOptionsPreflightReturnsToConfirmation() =
+        runBlocking {
+            val harness = Harness()
+            harness.writerFailure =
+                com.alexandr5476.lifetracing.domain
+                    .PlanHistoricalOverlapException()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+            controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first { (it.options as? LauncherLoad.Content)?.value?.overlap != null }
+            }
+            assertEquals(1, harness.commands.size)
+            assertTrue(!(harness.commands.single() as LauncherDurableCommand.StartOptionsTimed).overlapApproved)
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.ConfirmOptionsOverlap)
+            controller.awaitCommitted()
+            assertEquals(2, harness.commands.size)
+            assertTrue((harness.commands.last() as LauncherDurableCommand.StartOptionsTimed).overlapApproved)
+            controller.close()
+        }
+
+    @Test
     fun completedOptionsUseExactOverlapConfirmationWithoutLiveAdmission() =
         runBlocking {
             val harness = Harness()

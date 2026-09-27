@@ -659,6 +659,7 @@ class LifeTracingRuntimeGraph internal constructor(
                                     proposal.zoneId,
                                     proposal.values,
                                     proposal.expectedTemplateRevision,
+                                    proposal.overlapApproved,
                                 )
                             }
                         },
@@ -960,6 +961,7 @@ internal fun executeLauncherCommand(
                     proposal.zoneId,
                     proposal.values,
                     proposal.expectedRevision,
+                    command.overlapApproved,
                 )
             LauncherCommit.Activity(execution.id, false)
         }

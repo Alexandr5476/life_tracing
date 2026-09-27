@@ -238,13 +238,18 @@ class PlanExecutionController internal constructor(
                     request.startedAt != null
                 },
             ) { "Invalid Plan time entry" }
-            require(request.completedAt == null || request.completedAt <= wallClock.now())
-            require(request.startedAt == null || request.startedAt <= wallClock.now())
+            val commandBoundary = wallClock.now()
+            require(request.completedAt == null || request.completedAt <= commandBoundary)
+            require(request.startedAt == null || request.startedAt <= commandBoundary)
             require(
                 request.startedAt == null || request.completedAt == null || request.startedAt <= request.completedAt,
             )
             if (request.completedAt == null && hasLiveSession()) {
                 publish(attempt, PlanExecutionCommandState.Conflict("Another live session is already active"))
+                return
+            }
+            if (request.completedAt == null && request.startedAt == commandBoundary) {
+                checkAndStart(attempt, target, request.values)
                 return
             }
             if (!confirmed &&

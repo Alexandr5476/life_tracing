@@ -135,7 +135,7 @@ class PlanExecutionPersistenceTest {
                 plans.createActivityPlanFromTemplate(
                     source.id,
                     PlanSchedule.FloatingDay(LocalDate.of(2026, 9, 21)),
-                    at.plusSeconds(2),
+                    at.minusSeconds(1_200),
                 )
             val historicalStart = at.minusSeconds(900)
             val historicalEnd = at.minusSeconds(600)

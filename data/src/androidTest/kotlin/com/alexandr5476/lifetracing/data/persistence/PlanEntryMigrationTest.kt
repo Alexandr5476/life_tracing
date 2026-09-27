@@ -18,7 +18,14 @@ import org.junit.runner.RunWith
 class PlanEntryMigrationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val names =
-        listOf("plan-v9-activity", "plan-v9-sequence", "plan-v9-fresh", "plan-v9-history", "plan-v9-chronology")
+        listOf(
+            "plan-v9-activity",
+            "plan-v9-sequence",
+            "plan-v9-fresh",
+            "plan-v9-history",
+            "plan-v9-chronology",
+            "plan-v10-shape",
+        )
 
     @get:Rule
     val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), LifeTracingDatabase::class.java)
@@ -109,6 +116,22 @@ class PlanEntryMigrationTest {
                 }.isFailure,
             )
             assertEquals(1050L, migrated.long("SELECT fulfilled_at_ms FROM plan_entries WHERE id = 'historical'"))
+        }
+    }
+
+    @Test
+    fun freshAndMigratedDatabaseKeepV10PlanChronology() {
+        val fresh = LifeTracingDatabase.builder(context, names[2]).allowMainThreadQueries().build()
+        val freshDb = fresh.openHelper.readableDatabase
+        assertEquals(10L, freshDb.long("PRAGMA user_version"))
+        val freshSql = freshDb.text("SELECT sql FROM sqlite_master WHERE name = 'plan_entries'")
+        assertTrue(freshSql.contains("fulfilled_at_ms") && freshSql.contains("created_at_ms"))
+        fresh.close()
+
+        LifeTracingMigrationTestDatabaseFactory.createVersion9(helper, names[5]).close()
+        helper.runMigrationsAndValidate(names[5], 10, true, MIGRATION_9_10).use { migrated ->
+            assertEquals(10L, migrated.long("PRAGMA user_version"))
+            assertEquals(freshSql, migrated.text("SELECT sql FROM sqlite_master WHERE name = 'plan_entries'"))
         }
     }
 

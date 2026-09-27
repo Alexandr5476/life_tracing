@@ -361,6 +361,27 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun overlapIntroducedAtManualWriteReturnsToConfirmation() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.writerFailure =
+                com.alexandr5476.lifetracing.domain
+                    .PlanHistoricalOverlapException()
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitOverlap()
+            assertEquals(0, fixture.timed.size)
+            assertEquals(1, fixture.attemptedTimed.size)
+            assertTrue(!fixture.attemptedTimed.single().overlapApproved)
+            fixture.writerFailure = null
+            fixture.controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+            fixture.awaitCommitted()
+            assertEquals(1, fixture.timed.size)
+            assertTrue(fixture.attemptedTimed.last().overlapApproved)
+            fixture.close()
+        }
+
+    @Test
     fun overlapCancelIntervalEditAndDuplicateCommitTapsCannotWriteTwice() =
         runBlocking {
             val gate = CompletableDeferred<Unit>()
@@ -475,6 +496,7 @@ class ManualActivityEntryControllerTest {
                 },
                 { proposal ->
                     timedWriteGate?.await()
+                    fixture.attemptedTimed += proposal
                     fixture.writerFailure?.let { throw it }
                     fixture.timed += proposal
                     execution()
@@ -509,6 +531,7 @@ class ManualActivityEntryControllerTest {
         var overlapChecks = 0
         var overlap = false
         var writerFailure: RuntimeException? = null
+        val attemptedTimed = mutableListOf<ManualEntryProposal>()
         val timed = mutableListOf<ManualEntryProposal>()
         val noLive = mutableListOf<ManualEntryProposal>()
 

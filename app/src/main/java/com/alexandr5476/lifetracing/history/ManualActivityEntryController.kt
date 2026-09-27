@@ -19,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
@@ -97,6 +98,7 @@ data class ManualEntryProposal(
     val zoneId: ZoneId,
     val values: List<ActivityEntryValueOverride>,
     internal val draftVersion: Long = 0,
+    val overlapApproved: Boolean = false,
 ) {
     internal val intervalKey = ManualEntryIntervalKey(startedAt, completedAt, zoneId)
 }
@@ -393,6 +395,7 @@ class ManualActivityEntryController internal constructor(
         state.copy(values = state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values)
     }
 
+    @Suppress("LongMethod")
     private fun save(approvedInterval: ManualEntryIntervalKey? = null) {
         if (mutationInFlight) return
         val template = (mutableState.value.selected as? ManualEntryLoad.Content)?.value ?: return
@@ -419,7 +422,12 @@ class ManualActivityEntryController internal constructor(
                             continue
                         }
                         mutableState.update { it.copy(command = ManualEntryCommand.Committing) }
-                        val result = if (fresh.startedAt == null) writeNoLive(fresh) else writeTimed(fresh)
+                        val result =
+                            if (fresh.startedAt == null) {
+                                writeNoLive(fresh)
+                            } else {
+                                writeTimed(fresh.copy(overlapApproved = approval == fresh.intervalKey))
+                            }
                         if (!closed) mutableState.update { it.copy(command = ManualEntryCommand.Committed(result)) }
                         return@launch
                     }
@@ -427,6 +435,17 @@ class ManualActivityEntryController internal constructor(
                     throw cancelled
                 } catch (invalid: ManualEntryIssueException) {
                     if (!closed) invalid.present()
+                } catch (_: PlanHistoricalOverlapException) {
+                    if (!closed) {
+                        val proposal = runCatching { buildProposal(template) }.getOrNull()
+                        val nextCommand =
+                            if (proposal != null) {
+                                ManualEntryCommand.Overlap(proposal)
+                            } else {
+                                ManualEntryCommand.Failure(ManualEntryIssue.SAVE_FAILURE)
+                            }
+                        mutableState.update { it.copy(command = nextCommand) }
+                    }
                 } catch (_: StaleLauncherTargetException) {
                     if (!closed) {
                         staleTemplateId = template.id

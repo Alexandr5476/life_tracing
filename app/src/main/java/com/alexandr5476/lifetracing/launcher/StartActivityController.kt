@@ -26,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.LibraryLaunchTarget
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
@@ -314,6 +315,7 @@ internal sealed interface LauncherDurableCommand {
 
     data class StartOptionsTimed(
         val proposal: StartOptionsProposal,
+        val overlapApproved: Boolean,
     ) : LauncherDurableCommand {
         override val at: Instant = proposal.commandAt
         override val zoneId: ZoneId = proposal.zoneId
@@ -960,7 +962,12 @@ class StartActivityController internal constructor(
                 if (!optionAttemptCurrent(attempt, draft)) return
                 mutableState.update { it.copy(command = LauncherCommandState.Committing(attempt)) }
             }
-            commitOptions(attempt, draft, zone)
+            commitOptions(
+                attempt,
+                draft,
+                zone,
+                approved != null && approved.interval == first.interval && approved.draftVersion == draft.draftVersion,
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -1019,10 +1026,12 @@ class StartActivityController internal constructor(
         }
     }
 
+    @Suppress("LongMethod")
     private suspend fun commitOptions(
         attempt: Long,
         draft: StartOptionsDraft,
         zone: ZoneId,
+        overlapApproved: Boolean,
     ) {
         val committed =
             try {
@@ -1039,7 +1048,7 @@ class StartActivityController internal constructor(
                                 when {
                                     proposal.isLive -> LauncherDurableCommand.StartOptionsLive(proposal)
                                     proposal.startedAt == null -> LauncherDurableCommand.StartOptionsNoLive(proposal)
-                                    else -> LauncherDurableCommand.StartOptionsTimed(proposal)
+                                    else -> LauncherDurableCommand.StartOptionsTimed(proposal, overlapApproved)
                                 }
                             }
                             is StartOptionsValidation.Invalid -> throw StartOptionsValidationException(validated)
@@ -1050,6 +1059,25 @@ class StartActivityController internal constructor(
                 throw cancelled
             } catch (invalid: StartOptionsValidationException) {
                 optionIssue(attempt, invalid.validation)
+                return
+            } catch (_: PlanHistoricalOverlapException) {
+                synchronized(lifecycleLock) {
+                    if (attemptGeneration.get() == attempt) {
+                        val proposal =
+                            (
+                                draft.validate(
+                                    wallClock.now(),
+                                    zone,
+                                ) as? StartOptionsValidation.Valid
+                            )?.proposal
+                        mutableState.update { state ->
+                            state.copy(
+                                options = LauncherLoad.Content(draft.copy(overlap = proposal, issue = null)),
+                                command = LauncherCommandState.Idle,
+                            )
+                        }
+                    }
+                }
                 return
             } catch (_: ExpiredFinishTimerStartException) {
                 optionIssue(attempt, StartOptionsValidation.Invalid(StartOptionsIssue.EXPIRED_FINISH))
