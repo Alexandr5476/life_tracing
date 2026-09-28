@@ -2,8 +2,13 @@ package com.alexandr5476.lifetracing.launcher
 
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
+import com.alexandr5476.lifetracing.domain.ActivityTemplate
+import com.alexandr5476.lifetracing.domain.ActivityTemplateField
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryContents
@@ -14,6 +19,7 @@ import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import kotlinx.coroutines.CompletableDeferred
@@ -33,13 +39,14 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-@Suppress("LargeClass") // Launcher boundary scenarios share one focused harness.
+@Suppress("LargeClass", "MaxLineLength") // Launcher boundary scenarios share one focused harness.
 class StartActivityControllerTest {
     @Test
     fun homeUsesBoundedRecentOrderedPinnedAndRetryWithoutHydratingTargets() =
@@ -796,6 +803,473 @@ class StartActivityControllerTest {
             controller.close()
         }
 
+    @Test
+    fun secondaryOptionsOpenWithoutWritingAndBackdatedLiveSkipsCountdown() =
+        runBlocking {
+            val harness = Harness()
+            harness.templateReader = { template(it.value, countdown = Duration.ofSeconds(30)) }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            assertTrue(harness.commands.isEmpty())
+            assertTrue(harness.scheduler.scheduled.isEmpty())
+
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            val command = harness.commands.single() as LauncherDurableCommand.StartOptionsLive
+            assertEquals(Instant.parse("2026-08-20T09:00:00Z"), command.proposal.startedAt)
+            assertEquals(NOW, command.proposal.commandAt)
+            assertEquals(ZoneOffset.UTC, command.proposal.zoneId)
+            assertEquals(1, command.proposal.expectedRevision)
+            assertTrue(harness.scheduler.scheduled.isEmpty())
+            assertEquals(1, harness.coordinationCalls)
+            controller.dispatch(StartActivityAction.SaveOptions)
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun overlapAppearingAfterOptionsPreflightReturnsToConfirmation() =
+        runBlocking {
+            val harness = Harness()
+            harness.writerFailure =
+                com.alexandr5476.lifetracing.domain
+                    .PlanHistoricalOverlapException()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+            controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first { (it.options as? LauncherLoad.Content)?.value?.overlap != null }
+            }
+            assertEquals(1, harness.commands.size)
+            assertTrue(!(harness.commands.single() as LauncherDurableCommand.StartOptionsTimed).overlapApproved)
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.ConfirmOptionsOverlap)
+            controller.awaitCommitted()
+            assertEquals(2, harness.commands.size)
+            assertTrue((harness.commands.last() as LauncherDurableCommand.StartOptionsTimed).overlapApproved)
+            controller.close()
+        }
+
+    @Test
+    fun completedOptionsUseExactOverlapConfirmationWithoutLiveAdmission() =
+        runBlocking {
+            val harness = Harness()
+            harness.live = true
+            harness.overlaps = { _, _ -> true }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+            controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(
+                2_000,
+            ) { controller.state.first { (it.options as? LauncherLoad.Content)?.value?.overlap != null } }
+            assertTrue(harness.commands.isEmpty())
+            assertEquals(0, harness.liveChecks)
+            controller.dispatch(StartActivityAction.ConfirmOptionsOverlap)
+            controller.awaitCommitted()
+            val proposal = (harness.commands.single() as LauncherDurableCommand.StartOptionsTimed).proposal
+            assertEquals(Instant.parse("2026-08-20T08:00:00Z"), proposal.startedAt)
+            assertEquals(Instant.parse("2026-08-20T09:00:00Z"), proposal.completedAt)
+            assertEquals(0, harness.coordinationCalls)
+            controller.close()
+        }
+
+    @Test
+    fun noLiveOptionsCompleteWithMissingStartEvenDuringAnotherLiveSession() =
+        runBlocking {
+            val harness = Harness()
+            harness.live = true
+            harness.templateReader = { template(it.value, TimeTrackingMode.NO_LIVE_TRACKING) }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-19T18:30"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            val proposal = (harness.commands.single() as LauncherDurableCommand.StartOptionsNoLive).proposal
+            assertNull(proposal.startedAt)
+            assertEquals(Instant.parse("2026-08-19T18:30:00Z"), proposal.completedAt)
+            assertEquals(0, harness.liveChecks)
+            controller.close()
+        }
+
+    @Test
+    fun expiredFinishOptionsRetainDraftAndCanRecoverWithExplicitEnd() =
+        runBlocking {
+            val harness = Harness()
+            harness.templateReader = { template(it.value, TimeTrackingMode.TIMER) }
+            harness.writerFailure = ExpiredFinishTimerStartException()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.issue ==
+                        StartOptionsIssue.EXPIRED_FINISH
+                }
+            }
+            assertEquals("2026-08-20T08:00", (controller.state.value.options as LauncherLoad.Content).value.startedText)
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            assertTrue(harness.commands.last() is LauncherDurableCommand.StartOptionsTimed)
+            controller.close()
+        }
+
+    @Test
+    fun staleOptionsRequireReloadBeforeNewTemplateRevisionCanCommit() =
+        runBlocking {
+            val harness = Harness()
+            var revision = 1L
+            harness.templateReader = { id ->
+                template(id.value, revision = revision).copy(
+                    fields =
+                        listOf(
+                            ActivityTemplateField(
+                                ActivityTemplateFieldId(if (revision == 1L) "old-field" else "new-field"),
+                                0,
+                                "Count",
+                                CustomFieldType.NUMBER,
+                                displayPrecision = 0,
+                                defaultNumberScaled = 5,
+                                createdAt = NOW,
+                                updatedAt = NOW,
+                            ),
+                        ),
+                )
+            }
+            harness.writerFailure = StaleLauncherTargetException()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(
+                2_000,
+            ) { controller.state.first { (it.options as? LauncherLoad.Content)?.value?.stale == true } }
+            assertEquals(1, harness.commands.size)
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:30"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            assertEquals(1, harness.commands.size)
+            revision = 2
+            controller.dispatch(StartActivityAction.ReviewOptionsTemplate)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.template?.revision ==
+                        2L
+                }
+            }
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:30"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            assertEquals(
+                2L,
+                (harness.commands.last() as LauncherDurableCommand.StartOptionsLive).proposal.expectedRevision,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun optionsCoordinationFailureDoesNotRetrySuccessfulWriter() =
+        runBlocking {
+            val harness = Harness()
+            harness.coordinationFailure = IllegalStateException("runtime unavailable")
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCoordinationFailure()
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            assertEquals(1, harness.commands.size)
+            assertEquals(LauncherRouteExitDecision.DELIVER_COMMIT, controller.arbitrateRouteExit())
+            controller.close()
+        }
+
+    @Test
+    fun invalidAndDstStartOptionsNeedExplicitOffsetBeforeWriter() =
+        runBlocking {
+            val harness = Harness()
+            harness.zone = ZoneId.of("Europe/Berlin")
+            harness.wall.value = Instant.parse("2026-11-01T12:00:00Z")
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("bad"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.issue ==
+                        StartOptionsIssue.INVALID_START
+                }
+            }
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-03-29T02:30"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.issue ==
+                        StartOptionsIssue.NONEXISTENT_START
+                }
+            }
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-10-25T02:30"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.issue ==
+                        StartOptionsIssue.AMBIGUOUS_START
+                }
+            }
+            val draft = (controller.state.value.options as LauncherLoad.Content).value
+            assertEquals(2, draft.startedOffsets.size)
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.ChooseOptionStartOffset(draft.startedOffsets.last()))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            assertEquals(
+                Instant.parse("2026-10-25T01:30:00Z"),
+                (harness.commands.single() as LauncherDurableCommand.StartOptionsLive).proposal.startedAt,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun expiredFinishOptionsCanRecoverByChoosingNonExpiredStart() =
+        runBlocking {
+            val harness = Harness()
+            harness.templateReader = { template(it.value, TimeTrackingMode.TIMER) }
+            harness.writerFailure = ExpiredFinishTimerStartException()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+            controller.awaitOptions()
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            withTimeout(2_000) {
+                controller.state.first {
+                    (it.options as? LauncherLoad.Content)?.value?.issue ==
+                        StartOptionsIssue.EXPIRED_FINISH
+                }
+            }
+            harness.writerFailure = null
+            controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T09:55"))
+            controller.dispatch(StartActivityAction.SaveOptions)
+            controller.awaitCommitted()
+            assertEquals(
+                Instant.parse("2026-08-20T09:55:00Z"),
+                (harness.commands.last() as LauncherDurableCommand.StartOptionsLive).proposal.startedAt,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun oneOffDraftIsNonDurableAndNoLiveCommitsWithoutCoordination() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Quick note"))
+            controller.dispatch(StartActivityAction.EditOneOffComment("Now"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.NO_LIVE_TRACKING))
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitCommitted()
+            val command = harness.commands.single() as LauncherDurableCommand.OneOff
+            assertEquals("Quick note", command.draft.name)
+            assertEquals("Now", command.draft.shortComment)
+            assertEquals(TimeTrackingMode.NO_LIVE_TRACKING, command.draft.timeTrackingMode)
+            assertEquals(command.at, harness.wall.now())
+            assertEquals(0, harness.coordinationCalls)
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffTimerValidationConflictRetryAndCoordinationFailureKeepSingleWriter() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Quick timer"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("0"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("7"))
+            harness.writerFailure = LiveSessionConflictException()
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitConflict()
+            assertEquals(
+                "Quick timer",
+                controller.state.value.oneOff
+                    ?.name,
+            )
+            harness.writerFailure = null
+            harness.coordinationFailure = IllegalStateException("coordination")
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            controller.awaitCoordinationFailure()
+            assertEquals(2, harness.commands.size)
+            assertEquals(
+                Duration.ofMinutes(7),
+                (harness.commands.last() as LauncherDurableCommand.OneOff).draft.timerTarget,
+            )
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            assertEquals(2, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffAdmissionSurvivesBackAndDuplicateAction() =
+        runBlocking {
+            val harness = Harness()
+            val writerGate = CompletableDeferred<Unit>()
+            harness.writerGate = writerGate
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Retained"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            withTimeout(2_000) { controller.state.first { it.command is LauncherCommandState.Committing } }
+            assertEquals(LauncherRouteExitDecision.WAIT_FOR_COMMIT, controller.arbitrateRouteExit())
+            controller.dispatch(StartActivityAction.CloseOneOff)
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            writerGate.complete(Unit)
+            controller.awaitCommitted()
+            assertEquals(LauncherRouteExitDecision.DELIVER_COMMIT, controller.arbitrateRouteExit())
+            assertEquals(1, harness.commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun oneOffBackBeforeAdmissionDropsDraftWithoutWriter() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Draft"))
+            controller.dispatch(StartActivityAction.CloseOneOff)
+            assertNull(controller.state.value.oneOff)
+            assertTrue(harness.commands.isEmpty())
+            controller.close()
+        }
+
+    @Test
+    fun timedOneOffCoordinationFailureCannotRetryCommittedWriter() =
+        runBlocking {
+            val harness = Harness().apply { coordinationFailure = IllegalStateException("scheduler failed") }
+            val controller = harness.controller(this)
+            controller.awaitHome()
+            controller.dispatch(StartActivityAction.OpenOneOff)
+            controller.dispatch(StartActivityAction.EditOneOffName("Committed timer"))
+            controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("4"))
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.awaitCoordinationFailure()
+
+            controller.dispatch(StartActivityAction.ExecuteOneOff)
+            controller.dispatch(StartActivityAction.RetryLaunch)
+            kotlinx.coroutines.yield()
+
+            assertEquals(1, harness.commands.size)
+            assertTrue(harness.commands.single() is LauncherDurableCommand.OneOff)
+            assertTrue(controller.state.value.command is LauncherCommandState.CommittedCoordinationFailure)
+            controller.close()
+        }
+
+    @Test
+    fun routeSessionRetainsOneOffDraftAcrossHostReacquisition() =
+        runBlocking {
+            val harness = Harness()
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.dispatch(StartActivityAction.OpenOneOff)
+            first.controller.dispatch(StartActivityAction.EditOneOffName("Retained one-off"))
+            first.controller.dispatch(StartActivityAction.EditOneOffComment("draft comment"))
+            first.controller.dispatch(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER))
+            first.controller.dispatch(StartActivityAction.EditOneOffTimerMinutes("9"))
+            val draft = requireNotNull(first.controller.state.value.oneOff)
+
+            first.controller.dispatch(StartActivityAction.Select(activityId("ignored while authoring")))
+            val recreated = owner.acquire { error("Reacquisition must retain the route controller") }
+
+            assertSame(first, recreated)
+            assertSame(first.controller, recreated.controller)
+            assertEquals(draft, recreated.controller.state.value.oneOff)
+            assertTrue(recreated.controller.state.value.selected !is LauncherLoad.Content)
+            assertTrue(harness.commands.isEmpty())
+
+            recreated.controller.dispatch(StartActivityAction.CloseOneOff)
+            assertNull(recreated.controller.state.value.oneOff)
+            assertTrue(harness.commands.isEmpty())
+            owner.release(recreated)
+            assertNull(owner.activeSession)
+        }
+
+    @Test
+    fun routeSessionRetainsOneOffWriterAdmissionAndDeliversTerminalOnce() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val harness = Harness().apply { writerGate = gate }
+            val owner = StartActivityRouteSessionOwner()
+            val first = owner.acquire { harness.controller(this) }
+            first.controller.awaitHome()
+            first.controller.dispatch(StartActivityAction.OpenOneOff)
+            first.controller.dispatch(StartActivityAction.EditOneOffName("Admitted one-off"))
+            first.controller.dispatch(StartActivityAction.ExecuteOneOff)
+            withTimeout(2_000) {
+                first.controller.state.first { it.command is LauncherCommandState.Committing }
+            }
+
+            val recreated = owner.acquire { error("Admitted writer must keep its original controller") }
+            assertSame(first, recreated)
+            assertSame(first.controller, recreated.controller)
+            recreated.controller.dispatch(StartActivityAction.ExecuteOneOff)
+            recreated.controller.dispatch(StartActivityAction.Select(activityId("ignored during commit")))
+            gate.complete(Unit)
+            recreated.controller.awaitCommitted()
+
+            var deliveries = 0
+            recreated.exitPolicy.onCommand(recreated.controller.state.value.command) { deliveries++ }
+            owner
+                .acquire { error("Committed route remains retained until release") }
+                .exitPolicy
+                .onCommand(recreated.controller.state.value.command) { deliveries++ }
+            assertEquals(1, harness.commands.size)
+            assertEquals(1, deliveries)
+
+            owner.release(recreated)
+            assertNull(owner.activeSession)
+        }
+
     private class Harness {
         val wall = MutableWallClock(NOW)
         val scheduler = FakePreflightScheduler()
@@ -817,11 +1291,14 @@ class StartActivityControllerTest {
         var reorderFailure: Exception? = null
         var coordinationFailure: Exception? = null
         var live = false
+        var zone: ZoneId = ZoneOffset.UTC
         var initialLiveConflict: (suspend (LibraryLaunchTarget) -> Boolean)? = null
         var onSelectObserved: (LauncherCommandState) -> Unit = {}
         var onReadPublicationChecked: (LauncherReadChannel) -> Unit = {}
         var onReadPublicationArbitrated: (LauncherReadChannel) -> Unit = {}
         var target: LibraryLaunchTarget = activityTarget("activity")
+        var templateReader: suspend (ActivityTemplateId) -> ActivityTemplate? = { id -> template(id.value) }
+        var overlaps: suspend (Instant, Instant) -> Boolean = { _, _ -> false }
         var searcher: suspend (String) -> List<LibraryTrackable> = { query ->
             searchQueries += query
             listOf(trackable(query))
@@ -835,6 +1312,7 @@ class StartActivityControllerTest {
             target
         }
 
+        @Suppress("LongMethod") // The launcher harness supplies every dependency explicitly.
         fun controller(scope: CoroutineScope) =
             StartActivityController(
                 scope,
@@ -868,8 +1346,19 @@ class StartActivityControllerTest {
                             LauncherCommit.Activity(ActivityExecutionId("activity-execution"), true)
                         is LauncherDurableCommand.CompleteNoLive ->
                             LauncherCommit.Activity(ActivityExecutionId("no-live-execution"), false)
+                        is LauncherDurableCommand.OneOff ->
+                            LauncherCommit.Activity(
+                                ActivityExecutionId("one-off-execution"),
+                                command.draft.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING,
+                            )
                         is LauncherDurableCommand.StartSequence ->
                             LauncherCommit.Sequence(SequenceExecutionId("sequence-execution"))
+                        is LauncherDurableCommand.StartOptionsLive ->
+                            LauncherCommit.Activity(ActivityExecutionId("options-live"), true)
+                        is LauncherDurableCommand.StartOptionsTimed,
+                        is LauncherDurableCommand.StartOptionsNoLive,
+                        ->
+                            LauncherCommit.Activity(ActivityExecutionId("options-history"), false)
                     }
                 },
                 {
@@ -877,13 +1366,15 @@ class StartActivityControllerTest {
                     coordinationFailure?.let { throw it }
                 },
                 wall,
-                { ZoneOffset.UTC },
+                { zone },
                 scheduler,
                 initialLiveConflict = initialLiveConflict,
                 onSelectObserved = onSelectObserved,
                 onReadPublicationChecked = onReadPublicationChecked,
                 onReadPublicationArbitrated = onReadPublicationArbitrated,
                 onPinnedOrderCommitted = { pinnedOrderCommits++ },
+                readActivityTemplate = templateReader,
+                overlapsCompletedHistory = overlaps,
             )
     }
 
@@ -958,6 +1449,9 @@ class StartActivityControllerTest {
         fun awaitArbitration() = check(arbitrated.await(2, TimeUnit.SECONDS)) { "Publication did not arbitrate" }
     }
 
+    private suspend fun StartActivityController.awaitOptions() =
+        withTimeout(2_000) { state.first { it.options is LauncherLoad.Content } }
+
     private suspend fun StartActivityController.awaitHome() =
         withTimeout(2_000) { state.first { it.home is LauncherLoad.Content } }
 
@@ -1023,6 +1517,24 @@ class StartActivityControllerTest {
         fun activityId(id: String) = LibraryTemplateId.Activity(ActivityTemplateId(id))
 
         fun sequenceId(id: String) = LibraryTemplateId.Sequence(SequenceTemplateId(id))
+
+        fun template(
+            id: String,
+            mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+            revision: Long = 1,
+            countdown: Duration = Duration.ZERO,
+        ) = ActivityTemplate(
+            ActivityTemplateId(id),
+            id,
+            null,
+            mode,
+            if (mode == TimeTrackingMode.TIMER) Duration.ofMinutes(10) else null,
+            StatisticsSeriesId("$id-series"),
+            revision,
+            NOW,
+            NOW,
+            settings = ActivityTemplateSettings(startCountdown = countdown),
+        )
 
         fun activityTarget(
             id: String,

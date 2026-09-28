@@ -56,10 +56,11 @@ internal fun resolveHistoricalLocalDateTime(
     val offsets = zone.rules.getValidOffsets(local)
     if (offsets.isEmpty()) return HistoricalLocalDateTimeResolution.Nonexistent
     if (offsets.size > 2) error("ZoneRules returned ${offsets.size} valid offsets")
-    if (offsets.size == 2 && (selectedOffset == null || selectedOffset !in offsets)) {
+    if (offsets.size == 1) return HistoricalLocalDateTimeResolution.Resolved(local.toInstant(offsets.single()))
+    if (selectedOffset == null || selectedOffset !in offsets) {
         return HistoricalLocalDateTimeResolution.Ambiguous(offsets)
     }
-    return HistoricalLocalDateTimeResolution.Resolved(local.toInstant(selectedOffset ?: offsets.single()))
+    return HistoricalLocalDateTimeResolution.Resolved(local.toInstant(selectedOffset))
 }
 
 private val HISTORICAL_DATE_TIME_FORMATTER =

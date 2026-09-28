@@ -378,6 +378,7 @@ class PlanReadRepository internal constructor(
                         link.contextType == "STANDALONE" &&
                             link.planEntryId == plan.id.value &&
                             link.status == "COMPLETED" &&
+                            link.completedAtMs == plan.fulfilledAt?.toEpochMilli() &&
                             (
                                 link.snapshotId == summary.id ||
                                     ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(

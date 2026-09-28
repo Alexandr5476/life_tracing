@@ -79,7 +79,7 @@ internal object PlanEntrySchemaV9 {
         ).forEach { table -> db.execSQL("DROP TABLE `v9_$table`") }
     }
 
-    private val planStatements =
+    internal val planStatements =
         listOf(
             """
             CREATE TABLE `plan_entries` (
@@ -124,9 +124,9 @@ internal object PlanEntrySchemaV9 {
                         AND `fulfilled_activity_execution_id` IS NULL AND `fulfilled_sequence_execution_id` IS NULL)
                     OR (`status` = 'FULFILLED' AND `fulfilled_at_ms` IS NOT NULL AND `cancelled_at_ms` IS NULL)),
                 CHECK (`fulfilled_activity_execution_id` IS NULL OR `fulfilled_sequence_execution_id` IS NULL),
+                CHECK (`fulfilled_at_ms` IS NULL OR `fulfilled_at_ms` >= `created_at_ms`),
                 CHECK (`updated_at_ms` >= `created_at_ms`),
-                CHECK (`cancelled_at_ms` IS NULL OR `cancelled_at_ms` >= `created_at_ms`),
-                CHECK (`fulfilled_at_ms` IS NULL OR `fulfilled_at_ms` >= `created_at_ms`)
+                CHECK (`cancelled_at_ms` IS NULL OR `cancelled_at_ms` >= `created_at_ms`)
             )
             """.trimIndent(),
             "CREATE INDEX `plan_entries_status_planned_day` ON `plan_entries` (`status`, `planned_day`)",

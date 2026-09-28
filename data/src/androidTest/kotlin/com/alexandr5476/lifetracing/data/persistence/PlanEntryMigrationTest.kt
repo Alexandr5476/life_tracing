@@ -17,7 +17,15 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PlanEntryMigrationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val names = listOf("plan-v9-activity", "plan-v9-sequence", "plan-v9-fresh", "plan-v9-history")
+    private val names =
+        listOf(
+            "plan-v9-activity",
+            "plan-v9-sequence",
+            "plan-v9-fresh",
+            "plan-v9-history",
+            "plan-v9-chronology",
+            "plan-v10-shape",
+        )
 
     @get:Rule
     val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), LifeTracingDatabase::class.java)
@@ -88,6 +96,42 @@ class PlanEntryMigrationTest {
             assertEquals("sequence", migrated.text("SELECT sequence_execution_id FROM active_session"))
             assertEquals("plan_entries:SET NULL", migrated.foreignKey("sequence_executions", "plan_entry_id"))
             assertForeignKeysClean(migrated)
+        }
+    }
+
+    @Test
+    fun exactV8ToV9StillRejectsFulfillmentBeforePlanCreation() {
+        LifeTracingMigrationTestDatabaseFactory.createVersion8(helper, names[4]).close()
+        helper.runMigrationsAndValidate(names[4], 9, true, MIGRATION_8_9).use { migrated ->
+            migrated.seedSnapshots()
+            migrated.execSQL(
+                "INSERT INTO plan_entries (id, trackable_kind, activity_snapshot_id, precision, planned_day, " +
+                    "status, created_at_ms, updated_at_ms, fulfilled_at_ms) VALUES " +
+                    "('historical', 'ACTIVITY', 'activity-snapshot', 'DAY', '1970-01-01', " +
+                    "'FULFILLED', 1000, 1100, 1050)",
+            )
+            assertTrue(
+                runCatching {
+                    migrated.execSQL("UPDATE plan_entries SET fulfilled_at_ms = 900 WHERE id = 'historical'")
+                }.isFailure,
+            )
+            assertEquals(1050L, migrated.long("SELECT fulfilled_at_ms FROM plan_entries WHERE id = 'historical'"))
+        }
+    }
+
+    @Test
+    fun freshAndMigratedDatabaseKeepV10PlanChronology() {
+        val fresh = LifeTracingDatabase.builder(context, names[2]).allowMainThreadQueries().build()
+        val freshDb = fresh.openHelper.readableDatabase
+        assertEquals(10L, freshDb.long("PRAGMA user_version"))
+        val freshSql = freshDb.text("SELECT sql FROM sqlite_master WHERE name = 'plan_entries'")
+        assertTrue(freshSql.contains("fulfilled_at_ms") && freshSql.contains("created_at_ms"))
+        fresh.close()
+
+        LifeTracingMigrationTestDatabaseFactory.createVersion9(helper, names[5]).close()
+        helper.runMigrationsAndValidate(names[5], 10, true, MIGRATION_9_10).use { migrated ->
+            assertEquals(10L, migrated.long("PRAGMA user_version"))
+            assertEquals(freshSql, migrated.text("SELECT sql FROM sqlite_master WHERE name = 'plan_entries'"))
         }
     }
 

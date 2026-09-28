@@ -132,6 +132,30 @@ class PlanReadRepositoryTest {
     }
 
     @Test
+    fun weekRejectsActivityFulfillmentTimestampThatDiffersFromLinkedExecution() {
+        database.planEntryDao().insert(plan("fulfilled-activity", activity = "no-live", day = "2026-08-20"))
+        val completedAt = Instant.parse("2026-08-20T08:00:00Z")
+        LiveSessionRepository.create(database).completeNoLiveActivityFromPlan(
+            PlanEntryId("fulfilled-activity"),
+            completedAt,
+            ZoneOffset.UTC,
+        )
+
+        val validRow = week("2026-08-17", "2026-08-20").selectedDayPlans.single()
+        assertEquals(PlanEntryStatus.FULFILLED, validRow.plan.status)
+        assertEquals(completedAt, validRow.plan.fulfilledAt)
+
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE plan_entries SET fulfilled_at_ms = ? WHERE id = ?",
+            arrayOf<Any>(completedAt.plusSeconds(1).toEpochMilli(), "fulfilled-activity"),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            week("2026-08-17", "2026-08-20")
+        }
+    }
+
+    @Test
     fun exactPlacementUsesTheCurrentZoneWithoutMutatingTheDurableTarget() {
         database.planEntryDao().insert(plan("floating", activity = "no-live", day = "2026-08-20"))
         database.planEntryDao().insert(plan("week", sequence = "sequence", precision = "WEEK", week = "2026-08-17"))

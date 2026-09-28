@@ -496,7 +496,8 @@ class PlanRepository internal constructor(
                                         executionSnapshot,
                                     )
                             ) &&
-                            execution.status == ActivityExecutionStatus.COMPLETED,
+                            execution.status == ActivityExecutionStatus.COMPLETED &&
+                            plan.fulfilledAt == execution.completedAt,
                     ) { "Plan fulfillment ActivityExecution linkage is invalid" }
                 }
             }

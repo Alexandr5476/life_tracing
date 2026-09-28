@@ -207,6 +207,7 @@ class DailyReadRepository internal constructor(
                             link.contextType == "STANDALONE" &&
                                 link.planEntryId == plan.id.value &&
                                 link.status == "COMPLETED" &&
+                                link.completedAtMs == plan.fulfilledAt?.toEpochMilli() &&
                                 (
                                     executionSnapshot.id == snapshot.id ||
                                         ActivityHistoricalSnapshotPolicy.isCommentOnlyReplacement(

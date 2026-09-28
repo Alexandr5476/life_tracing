@@ -106,23 +106,33 @@ internal object LifeTracingMigrationTestDatabaseFactory {
     fun createVersion9(
         helper: MigrationTestHelper,
         name: String,
+    ): SupportSQLiteDatabase = helper.createDatabase(name, 9).also(::createVersion9Shape)
+
+    fun createVersion10(
+        helper: MigrationTestHelper,
+        name: String,
     ): SupportSQLiteDatabase =
-        helper.createDatabase(name, 9).also { database ->
-            PlanEntrySchemaV9.dropPlan(database)
-            ActiveSessionSchemaV8.drop(database)
-            SequenceExecutionSchemaV7.drop(database)
-            SequenceSnapshotSchemaV6.drop(database)
-            SequenceTemplateSchemaV5.drop(database)
-            ActivitySnapshotSchemaV3.drop(database)
-            ActivityTemplateSchemaV2.recreate(database)
-            ActivitySnapshotSchemaV3.create(database)
-            ActivityExecutionSchemaV4.createAndSeed(database)
-            SequenceTemplateSchemaV5.create(database)
-            SequenceSnapshotSchemaV6.create(database)
-            SequenceExecutionSchemaV7.create(database)
-            ActiveSessionSchemaV8.create(database)
-            PlanEntrySchemaV9.migrate(database)
+        helper.createDatabase(name, 10).also { database ->
+            createVersion9Shape(database)
+            HistoryDiscoveryIndexSchemaV10.create(database)
         }
+
+    private fun createVersion9Shape(database: SupportSQLiteDatabase) {
+        PlanEntrySchemaV9.dropPlan(database)
+        ActiveSessionSchemaV8.drop(database)
+        SequenceExecutionSchemaV7.drop(database)
+        SequenceSnapshotSchemaV6.drop(database)
+        SequenceTemplateSchemaV5.drop(database)
+        ActivitySnapshotSchemaV3.drop(database)
+        ActivityTemplateSchemaV2.recreate(database)
+        ActivitySnapshotSchemaV3.create(database)
+        ActivityExecutionSchemaV4.createAndSeed(database)
+        SequenceTemplateSchemaV5.create(database)
+        SequenceSnapshotSchemaV6.create(database)
+        SequenceExecutionSchemaV7.create(database)
+        ActiveSessionSchemaV8.create(database)
+        PlanEntrySchemaV9.migrate(database)
+    }
 }
 
 @Ignore("Migration-schema value object, not an instrumentation test")

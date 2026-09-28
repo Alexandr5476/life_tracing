@@ -90,7 +90,5 @@ data class ActivityHistoryItem(
     val snapshot: ActivityConfigSnapshot,
 )
 
-class ExpiredFinishTimerDecisionRequiredException :
-    IllegalStateException(
-        "Backdated FINISH Timer already reached zero; product behavior is unresolved",
-    )
+class ExpiredFinishTimerStartException :
+    IllegalStateException("The FINISH Timer deadline must be after the start command time")

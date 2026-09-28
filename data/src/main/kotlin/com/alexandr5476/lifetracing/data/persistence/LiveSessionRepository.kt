@@ -37,6 +37,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.EffectiveSequenceStepSettingsResolver
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceProjector
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
+import com.alexandr5476.lifetracing.domain.ExpiredFinishTimerStartException
 import com.alexandr5476.lifetracing.domain.LiveSessionConflictException
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -66,6 +67,7 @@ import com.alexandr5476.lifetracing.domain.StaleSequenceRouteException
 import com.alexandr5476.lifetracing.domain.StaleSequenceTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerDeadlineCalculator
+import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import java.time.Instant
@@ -242,6 +244,15 @@ class LiveSessionRepository internal constructor(
             val snapshot = loadActivitySnapshot(requireNotNull(plan.activitySnapshotId))
             require(snapshot.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
                 "NO_LIVE_TRACKING Plan requires quick completion"
+            }
+            val startedAtMs = startedAt.toEpochMilli()
+            val createdAtMs = createdAt.toEpochMilli()
+            require(startedAtMs <= createdAtMs) { "Start must not be in the future" }
+            if (snapshot.timeTrackingMode == TimeTrackingMode.TIMER &&
+                snapshot.settings.timerZeroBehavior == TimerZeroBehavior.FINISH &&
+                Math.addExact(startedAtMs, requireNotNull(snapshot.timerTarget).toMillis()) <= createdAtMs
+            ) {
+                throw ExpiredFinishTimerStartException()
             }
             val execution =
                 ActivityExecutionValuePolicy.apply(
