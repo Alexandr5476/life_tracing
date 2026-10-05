@@ -27,6 +27,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -92,25 +93,52 @@ class ArchivedTemplatesProductionTest {
             val activityId = LibraryTemplateId.Activity(activity.id)
             val sequenceId = LibraryTemplateId.Sequence(sequence.id)
             val ids = setOf(activityId, sequenceId)
-            val execution = library.startActivityFromTemplate(activity.id, at.plusSeconds(10), at, ZoneOffset.UTC)
-            live.completeActiveActivity(at.plusSeconds(12))
-            val sequenceRuntime = library.startSequenceFromTemplate(sequence.id, at.plusSeconds(20), at, ZoneOffset.UTC)
-            live.endSequenceEarly(at.plusSeconds(22))
             val plans = PlanRepository.create(context)
             val schedule = PlanSchedule.FloatingDay(LocalDate.now())
-            val activityPlan = plans.createActivityPlanFromTemplate(activity.id, schedule, at)
-            val sequencePlan = plans.createSequencePlanFromTemplate(sequence.id, schedule, at)
+            val activityPlan = plans.createActivityPlanFromTemplate(activity.id, schedule, at.plusSeconds(2))
+            val sequencePlan = plans.createSequencePlanFromTemplate(sequence.id, schedule, at.plusSeconds(3))
+            val activityStartedAt = at.plusSeconds(10)
+            val execution =
+                library.startActivityFromTemplate(
+                    activity.id,
+                    startedAt = activityStartedAt,
+                    createdAt = activityStartedAt,
+                    zoneId = ZoneOffset.UTC,
+                )
+            live.completeActiveActivity(at.plusSeconds(12))
+            val sequenceStartedAt = at.plusSeconds(20)
+            val sequenceRuntime =
+                library.startSequenceFromTemplate(
+                    sequence.id,
+                    startedAt = sequenceStartedAt,
+                    createdAt = sequenceStartedAt,
+                    zoneId = ZoneOffset.UTC,
+                )
+            live.endSequenceEarly(at.plusSeconds(22))
             val history = HistoryReadRepository.create(context)
             val activityFact = requireNotNull(history.getActivityDetail(execution.id))
             val sequenceFact = requireNotNull(history.getSequenceDetail(sequenceRuntime.execution.id))
             val sequenceAuthoring = requireNotNull(authoring.getSequenceTemplateAuthoringState(sequence.id))
             val stepSnapshots = sequenceAuthoring.activitySnapshots
             val planReads = PlanReadRepository.create(context)
-            val activityPlanSnapshot = planReads.getFocusedAction(activityPlan.id).snapshot
-            val sequencePlanSnapshot = planReads.getFocusedAction(sequencePlan.id).snapshot
+            val activityPlanAction = planReads.getFocusedAction(activityPlan.id)
+            val sequencePlanAction = planReads.getFocusedAction(sequencePlan.id)
+            assertEquals(PlanSourceState.CURRENT, activityPlanAction.sourceState)
+            assertEquals(PlanSourceState.CURRENT, sequencePlanAction.sourceState)
+            val activityPlanSnapshot = activityPlanAction.snapshot
+            val sequencePlanSnapshot = sequencePlanAction.snapshot
 
             library.archiveActivityTemplate(activity.id, at.plusSeconds(30))
             library.archiveSequenceTemplate(sequence.id, at.plusSeconds(30))
+            val archivedPlanReads = PlanReadRepository.create(context)
+            val archivedActivityPlanAction = archivedPlanReads.getFocusedAction(activityPlan.id)
+            val archivedSequencePlanAction = archivedPlanReads.getFocusedAction(sequencePlan.id)
+            assertEquals(PlanSourceState.ARCHIVED, archivedActivityPlanAction.sourceState)
+            assertEquals(PlanSourceState.ARCHIVED, archivedSequencePlanAction.sourceState)
+            assertEquals(activityPlanAction.identity, archivedActivityPlanAction.identity)
+            assertEquals(sequencePlanAction.identity, archivedSequencePlanAction.identity)
+            assertEquals(activityPlanSnapshot, archivedActivityPlanAction.snapshot)
+            assertEquals(sequencePlanSnapshot, archivedSequencePlanAction.snapshot)
             val freshAuthoring = TemplateAuthoringRepository.create(context)
             val archivedActivity = requireNotNull(freshAuthoring.getActivityTemplate(activity.id))
             val archivedSequence = requireNotNull(freshAuthoring.getSequenceTemplate(sequence.id))
@@ -181,8 +209,14 @@ class ArchivedTemplatesProductionTest {
                 assertEquals(activityPlan, afterPlans.getPlan(activityPlan.id))
                 assertEquals(sequencePlan, afterPlans.getPlan(sequencePlan.id))
                 val afterPlanReads = PlanReadRepository.create(context)
-                assertEquals(activityPlanSnapshot, afterPlanReads.getFocusedAction(activityPlan.id).snapshot)
-                assertEquals(sequencePlanSnapshot, afterPlanReads.getFocusedAction(sequencePlan.id).snapshot)
+                val restoredActivityPlanAction = afterPlanReads.getFocusedAction(activityPlan.id)
+                val restoredSequencePlanAction = afterPlanReads.getFocusedAction(sequencePlan.id)
+                assertEquals(PlanSourceState.CURRENT, restoredActivityPlanAction.sourceState)
+                assertEquals(PlanSourceState.CURRENT, restoredSequencePlanAction.sourceState)
+                assertEquals(activityPlanAction.identity, restoredActivityPlanAction.identity)
+                assertEquals(sequencePlanAction.identity, restoredSequencePlanAction.identity)
+                assertEquals(activityPlanSnapshot, restoredActivityPlanAction.snapshot)
+                assertEquals(sequencePlanSnapshot, restoredSequencePlanAction.snapshot)
                 assertEquals(seriesBefore, seriesIds(context))
                 assertNull(LiveSessionRepository.create(context).getActiveSession())
                 scenario.onActivity {
@@ -205,7 +239,7 @@ class ArchivedTemplatesProductionTest {
                 createdAt = at,
             )
         val id = LibraryTemplateId.Activity(template.id)
-        LibraryRepository.create(context).archiveActivityTemplate(template.id, at)
+        LibraryRepository.create(context).archiveActivityTemplate(template.id, at.plusSeconds(1))
         val seriesBefore = seriesIds(context)
         ActivityScenario.launch(MainActivity::class.java).use {
             openArchives()
