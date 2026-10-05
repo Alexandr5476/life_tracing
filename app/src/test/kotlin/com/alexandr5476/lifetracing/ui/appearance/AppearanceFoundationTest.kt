@@ -20,6 +20,8 @@ class AppearanceFoundationTest {
 
     @Test
     fun persisted_appearance_values_round_trip_and_unknown_values_fall_back() {
+        assertEquals(ThemeMode.SYSTEM, ThemeMode.fromStorage(null))
+        assertEquals(AccentPaletteId.DEFAULT, AccentPaletteId.fromStorage(null))
         assertEquals(ThemeMode.DARK, ThemeMode.fromStorage(ThemeMode.DARK.name))
         assertEquals(ThemeMode.SYSTEM, ThemeMode.fromStorage("future-theme"))
         assertEquals(AccentPaletteId.SLATE, AccentPaletteId.fromStorage(AccentPaletteId.SLATE.name))

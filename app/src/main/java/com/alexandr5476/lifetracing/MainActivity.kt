@@ -62,8 +62,8 @@ import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
+import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
-import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.serialization.Serializable
 
 class MainActivity : AppCompatActivity() {
@@ -204,9 +204,8 @@ internal fun LifeTracingApp(
     activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
     sequenceHistoryMutationRouteSessions: SequenceHistoryMutationRouteSessionOwner? = null,
 ) {
-    LifeTracingTheme(
-        themeMode = appearance.themeMode,
-        accentPaletteId = appearance.accentPaletteId,
+    LifeTracingAppearance(
+        appearance = appearance,
         systemIsDark = systemIsDark,
     ) {
         Surface {
