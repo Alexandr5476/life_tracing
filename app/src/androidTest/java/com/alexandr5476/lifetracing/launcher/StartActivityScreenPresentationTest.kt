@@ -25,8 +25,12 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
+import com.alexandr5476.lifetracing.domain.ActivityTemplateField
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CategoryOption
+import com.alexandr5476.lifetracing.domain.CategoryOptionId
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.Folder
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryContents
@@ -43,6 +47,8 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 class StartActivityScreenPresentationTest {
@@ -524,6 +530,111 @@ class StartActivityScreenPresentationTest {
             .onNodeWithText(text(com.alexandr5476.lifetracing.R.string.manual_history_proceed))
             .assertIsNotEnabled()
     }
+
+    @Test
+    fun ambiguousOffsetShowsSelectedIndicatorOnlyOnChosenOffset() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val local = LocalDateTime.parse("2026-10-25T02:30:00")
+        val offsets = zone.rules.getValidOffsets(local)
+        assertEquals(2, offsets.size)
+        val draft =
+            optionsTemplate().initialStartOptions(Instant.parse("2026-10-25T10:00:00Z"), zone).copy(
+                startedText = "2026-10-25 02:30",
+                startedOffsets = offsets,
+                startedOffset = offsets[1],
+            )
+        var state by mutableStateOf(StartActivityState(options = LauncherLoad.Content(draft)))
+        val interaction = StartActivityRouteInteraction()
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, {}, interaction) } }
+
+        val firstLabel =
+            composeTestRule.activity.getString(
+                com.alexandr5476.lifetracing.R.string.manual_history_first_occurrence,
+                offsets[0].id,
+            )
+        val secondLabel =
+            composeTestRule.activity.getString(
+                com.alexandr5476.lifetracing.R.string.manual_history_second_occurrence,
+                offsets[1].id,
+            )
+        composeTestRule.onNodeWithText(secondLabel + " \u2713").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(firstLabel).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(firstLabel + " \u2713").assertDoesNotExist()
+        composeTestRule.onNodeWithText(secondLabel).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText("\u2713", substring = true).assertCountEquals(1)
+
+        state =
+            state.copy(
+                options =
+                    LauncherLoad.Content(
+                        draft.copy(
+                            startedOffsets = emptyList(),
+                            completedText = "2026-10-25 02:30",
+                            completedOffsets = offsets,
+                            completedOffset = offsets[0],
+                        ),
+                    ),
+            )
+        composeTestRule.onNodeWithText(firstLabel + " \u2713").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(secondLabel).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(secondLabel + " \u2713").assertDoesNotExist()
+        composeTestRule.onNodeWithText(firstLabel).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText("\u2713", substring = true).assertCountEquals(1)
+    }
+
+    @Test
+    fun categoryShowsSelectedIndicatorOnlyOnNonMissingChosenOption() {
+        val now = Instant.parse("2026-08-20T10:00:00Z")
+        val chosen = CategoryOption(CategoryOptionId("chosen"), 1, "Chosen option")
+        val other = CategoryOption(CategoryOptionId("other"), 0, "Other option")
+        val field =
+            ActivityTemplateField(
+                id = ActivityTemplateFieldId("category"),
+                position = 0,
+                name = "Category field",
+                type = CustomFieldType.CATEGORY,
+                defaultCategoryOptionId = chosen.id,
+                createdAt = now,
+                updatedAt = now,
+                categoryOptions = listOf(other, chosen),
+            )
+        val draft = optionsTemplate(listOf(field)).initialStartOptions(now, ZoneOffset.UTC)
+        assertEquals(chosen.id, draft.values.getValue(field.id).selectedOptionId)
+        assertFalse(draft.values.getValue(field.id).missing)
+        var state by mutableStateOf(StartActivityState(options = LauncherLoad.Content(draft)))
+        val interaction = StartActivityRouteInteraction()
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, {}, interaction) } }
+
+        composeTestRule.onNodeWithText(chosen.label + " \u2713").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(other.label).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(other.label + " \u2713").assertDoesNotExist()
+        composeTestRule.onNodeWithText(chosen.label).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText("\u2713", substring = true).assertCountEquals(1)
+
+        state =
+            state.copy(
+                options =
+                    LauncherLoad.Content(
+                        draft.copy(values = mapOf(field.id to draft.values.getValue(field.id).copy(missing = true))),
+                    ),
+            )
+        composeTestRule.onNodeWithText(chosen.label).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText(other.label).performScrollTo().assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("\u2713", substring = true).assertCountEquals(0)
+    }
+
+    private fun optionsTemplate(fields: List<ActivityTemplateField> = emptyList()) =
+        ActivityTemplate(
+            id = ActivityTemplateId("options-activity"),
+            name = "Options activity",
+            shortComment = null,
+            timeTrackingMode = TimeTrackingMode.STOPWATCH,
+            timerTarget = null,
+            statisticsSeriesId = StatisticsSeriesId("series"),
+            createdAt = Instant.parse("2026-08-20T10:00:00Z"),
+            updatedAt = Instant.parse("2026-08-20T10:00:00Z"),
+            fields = fields,
+        )
 
     private fun homeState(
         recent: List<LibraryTrackable>,

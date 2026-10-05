@@ -928,7 +928,7 @@ private fun StartOptionsOffsets(
                 } else {
                     R.string.manual_history_second_occurrence
                 }
-            Text(stringResource(label, offset.id) + if (selected == offset) " ?" else "")
+            Text(stringResource(label, offset.id) + if (selected == offset) " \u2713" else "")
         }
     }
 }
@@ -965,7 +965,7 @@ private fun StartOptionsField(
                     onClick = { onAction(StartActivityAction.ChooseOptionCategory(field.id, option.id)) },
                     enabled = enabled,
                 ) {
-                    Text(option.label + if (!draft.missing && draft.selectedOptionId == option.id) " ?" else "")
+                    Text(option.label + if (!draft.missing && draft.selectedOptionId == option.id) " \u2713" else "")
                 }
             }
     }
