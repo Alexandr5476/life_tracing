@@ -40,6 +40,31 @@ import java.time.ZoneOffset
 
 class MainActivityNavigationTest {
     @Test
+    fun settings_uses_the_daily_stack_and_back_removes_only_its_current_entry() {
+        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
+        stack.openSettings()
+        stack.openSettings()
+        assertEquals(listOf(DailyRoot, LibraryRoot, SettingsRoot), stack)
+        stack.removeSettings()
+        assertEquals(listOf(DailyRoot, LibraryRoot), stack)
+        stack.removeSettings()
+        assertEquals(listOf(DailyRoot, LibraryRoot), stack)
+    }
+
+    @Test
+    fun restored_settings_identity_needs_no_session_normalization() {
+        val restored: MutableList<NavKey> = mutableListOf(DailyRoot, SettingsRoot)
+        restored.normalizeRestoredStartActivity()
+        restored.normalizeRestoredPlanExecution()
+        restored.normalizeRestoredActivityTemplateEditor()
+        restored.normalizeRestoredManualActivityEntry()
+        restored.normalizeRestoredStatisticsSeriesDetail()
+        assertEquals(listOf(DailyRoot, SettingsRoot), restored)
+        restored.removeSettings()
+        assertEquals(dailyInitialBackStack, restored)
+    }
+
+    @Test
     fun launcherUsesTheSingleDailyBackStackAndOnlyPopsItsOwnEntry() {
         val backStack = dailyInitialBackStack.toMutableList()
 

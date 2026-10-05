@@ -582,4 +582,26 @@
     <string name="plan_time_entry_review_zone">Проверить в текущем часовом поясе</string>
     <string name="plan_time_entry_invalid_number">Укажите корректное число.</string>
     <string name="plan_time_entry_selected_offset">Выбрано: %1$s</string>
+    <string name="settings_title">Настройки</string>
+    <string name="settings_back">Назад к текущему дню</string>
+    <string name="settings_theme">Тема оформления</string>
+    <string name="settings_accent">Акцентный цвет</string>
+    <string name="settings_language">Язык приложения</string>
+    <string name="settings_interface_scale">Размер интерфейса</string>
+    <string name="settings_text_scale">Размер текста</string>
+    <string name="settings_system">Как в системе</string>
+    <string name="settings_light">Светлая</string>
+    <string name="settings_dark">Тёмная</string>
+    <string name="settings_accent_default">Синий по умолчанию</string>
+    <string name="settings_accent_slate">Серый</string>
+    <string name="settings_english">Английский</string>
+    <string name="settings_russian">Русский</string>
+    <string name="settings_loading">Загрузка настроек…</string>
+    <string name="settings_read_failure">Не удалось загрузить настройки.</string>
+    <string name="settings_reload">Загрузить настройки снова</string>
+    <string name="settings_saving">Сохранение изменения…</string>
+    <string name="settings_write_failure">Не удалось сохранить изменение. Попробуйте снова.</string>
+    <string name="settings_retry">Повторить изменение</string>
+    <string name="settings_percent">%1$d%%</string>
+    <string name="settings_option_description">%1$s: %2$s</string>
 </resources>

@@ -20,6 +20,8 @@ enum class AppLanguage(
  * AppCompat persists per-app locales itself, so language is intentionally not duplicated in DataStore.
  */
 object AppLanguageController {
+    fun current(): AppLanguage = AppLanguage.fromLanguageTag(AppCompatDelegate.getApplicationLocales().get(0)?.language)
+
     fun apply(language: AppLanguage) {
         val locales =
             if (language == AppLanguage.SYSTEM) {
