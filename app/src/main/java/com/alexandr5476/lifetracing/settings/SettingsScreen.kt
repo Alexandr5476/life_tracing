@@ -43,6 +43,7 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 internal fun SettingsRoute(
     repository: AppearancePreferencesRepository,
     onBack: () -> Unit,
+    onArchivedTemplates: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val controller =
@@ -58,7 +59,14 @@ internal fun SettingsRoute(
     val configuration = LocalConfiguration.current
     LaunchedEffect(configuration) { controller.refreshLanguage() }
     val state by controller.state.collectAsState()
-    SettingsScreen(state, controller::change, controller::retryMutation, controller::retryRead, onBack)
+    SettingsScreen(
+        state,
+        controller::change,
+        controller::retryMutation,
+        controller::retryRead,
+        onBack,
+        onArchivedTemplates,
+    )
 }
 
 @Composable
@@ -69,6 +77,7 @@ internal fun SettingsScreen(
     onRetryMutation: () -> Unit,
     onRetryRead: () -> Unit,
     onBack: () -> Unit,
+    onArchivedTemplates: () -> Unit = {},
 ) {
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
@@ -87,6 +96,12 @@ internal fun SettingsScreen(
             )
             LifeTracingSecondaryButton(onClick = onBack, modifier = Modifier.testTag("settings-back")) {
                 Text(stringResource(R.string.settings_back))
+            }
+            LifeTracingSecondaryButton(
+                onClick = onArchivedTemplates,
+                modifier = Modifier.testTag("settings-archived-templates"),
+            ) {
+                Text(stringResource(R.string.archived_templates_title))
             }
             SettingsFeedback(state, onRetryMutation, onRetryRead)
             val appearance = state.appearance

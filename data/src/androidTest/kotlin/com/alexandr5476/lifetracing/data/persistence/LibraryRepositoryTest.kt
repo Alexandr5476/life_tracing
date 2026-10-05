@@ -373,6 +373,75 @@ class LibraryRepositoryTest {
             listOf(900, 1),
             observedTagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
         )
+
+        repeat(itemCount) { index ->
+            repository.archiveActivityTemplate(ActivityTemplateId("activity-$index"), instant(1))
+            repository.archiveSequenceTemplate(SequenceTemplateId("sequence-$index"), instant(1))
+        }
+        tagQueries.clear()
+        val archived = repository.getArchived()
+        val archivedQueries = synchronized(tagQueries) { tagQueries.toList() }
+        assertEquals(itemCount * 2, archived.size)
+        assertTrue(archived.all { TagId("tag") in it.tagIds && it.isArchived })
+        assertEquals(
+            listOf(900, 1),
+            archivedQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
+        )
+        assertEquals(
+            listOf(900, 1),
+            archivedQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
+        )
+        val selects = archivedQueries.map { it.first.lowercase() }.filter { it.startsWith("select") }
+        assertEquals(2, selects.count { "select templates.id, templates.name" in it })
+        val aggregateTables =
+            listOf(
+                "activity_snapshots",
+                "sequence_snapshots",
+                "activity_executions",
+                "sequence_executions",
+                "plan_entries",
+                "statistics_series",
+                "activity_template_fields",
+                "sequence_template_nodes",
+            )
+        assertTrue(selects.none { sql -> aggregateTables.any { it in sql } })
+    }
+
+    @Test
+    fun failedRestoreTransactionsKeepBothKindsArchivedAndRetryOnlyClearsTheLifecycleMarker() {
+        activity("restore-failed-activity", "Activity", deleted = 2, revision = 7)
+        sequence("restore-failed-sequence", "Sequence", deleted = 2, revision = 9)
+        val activityId = ActivityTemplateId("restore-failed-activity")
+        val sequenceId = SequenceTemplateId("restore-failed-sequence")
+        val beforeActivity = requireNotNull(database.activityTemplateDao().getById(activityId.value))
+        val beforeSequence = requireNotNull(database.sequenceTemplateDao().getById(sequenceId.value))
+        val repository = repository()
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER reject_activity_restore BEFORE UPDATE OF deleted_at_ms ON activity_templates " +
+                "WHEN OLD.id = 'restore-failed-activity' AND NEW.deleted_at_ms IS NULL " +
+                "BEGIN SELECT RAISE(ABORT, 'forced Restore failure'); END",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER reject_sequence_restore BEFORE UPDATE OF deleted_at_ms ON sequence_templates " +
+                "WHEN OLD.id = 'restore-failed-sequence' AND NEW.deleted_at_ms IS NULL " +
+                "BEGIN SELECT RAISE(ABORT, 'forced Restore failure'); END",
+        )
+
+        assertThrows(SQLiteException::class.java) { repository.restoreActivityTemplate(activityId) }
+        assertThrows(SQLiteException::class.java) { repository.restoreSequenceTemplate(sequenceId) }
+        assertEquals(beforeActivity, database.activityTemplateDao().getById(activityId.value))
+        assertEquals(beforeSequence, database.sequenceTemplateDao().getById(sequenceId.value))
+        assertEquals(2, repository.getArchived().size)
+        assertTrue(repository.getAll().isEmpty())
+
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_activity_restore")
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_sequence_restore")
+        repository.restoreActivityTemplate(activityId)
+        repository.restoreSequenceTemplate(sequenceId)
+        assertEquals(beforeActivity.copy(deletedAtMs = null), database.activityTemplateDao().getById(activityId.value))
+        assertEquals(beforeSequence.copy(deletedAtMs = null), database.sequenceTemplateDao().getById(sequenceId.value))
+        assertTrue(repository.getArchived().isEmpty())
+        assertEquals(2, repository.getAll().size)
     }
 
     @Test

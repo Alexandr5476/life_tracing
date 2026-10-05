@@ -40,6 +40,21 @@ import java.time.ZoneOffset
 
 class MainActivityNavigationTest {
     @Test
+    fun archives_is_a_secondary_settings_entry_and_back_preserves_the_surrounding_stack() {
+        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot, SettingsRoot)
+        stack.openArchivedTemplates()
+        stack.openArchivedTemplates()
+        assertEquals(listOf(DailyRoot, LibraryRoot, SettingsRoot, ArchivedTemplatesRoot), stack)
+        stack.removeArchivedTemplates()
+        stack.removeArchivedTemplates()
+        assertEquals(listOf(DailyRoot, LibraryRoot, SettingsRoot), stack)
+        stack.removeSettings()
+        assertEquals(listOf(DailyRoot, LibraryRoot), stack)
+        stack.openArchivedTemplates()
+        assertEquals(listOf(DailyRoot, LibraryRoot), stack)
+    }
+
+    @Test
     fun settings_uses_the_daily_stack_and_back_removes_only_its_current_entry() {
         val stack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot)
         stack.openSettings()

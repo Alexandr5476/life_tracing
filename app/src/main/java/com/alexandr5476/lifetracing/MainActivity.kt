@@ -56,6 +56,7 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionRoute
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSession
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanRoute
+import com.alexandr5476.lifetracing.settings.ArchivedTemplatesRoute
 import com.alexandr5476.lifetracing.settings.SettingsRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
 import com.alexandr5476.lifetracing.statistics.StatisticsRoute
@@ -142,6 +143,9 @@ data object LibraryRoot : NavKey
 
 @Serializable
 data object SettingsRoot : NavKey
+
+@Serializable
+data object ArchivedTemplatesRoot : NavKey
 
 @Serializable
 data object PlanRoot : NavKey
@@ -383,6 +387,7 @@ internal fun LifeTracingApp(
                             val route = backStack.last() as SequenceHistoryDetailRoot
                             backStack.handleSequenceHistoryDetailBack(route.executionId, sequenceHistorySessions)
                         }
+                        backStack.lastOrNull() is ArchivedTemplatesRoot -> backStack.removeArchivedTemplates()
                         backStack.lastOrNull() is SettingsRoot -> backStack.removeSettings()
                         else -> backStack.removeLastOrNull()
                     }
@@ -422,7 +427,17 @@ internal fun LifeTracingApp(
                                 appearanceRepository ?: remember(context.applicationContext) {
                                     AppearancePreferencesRepository(context.applicationContext)
                                 }
-                            SettingsRoute(repository, onBack = backStack::removeSettings)
+                            SettingsRoute(
+                                repository,
+                                onBack = backStack::removeSettings,
+                                onArchivedTemplates = backStack::openArchivedTemplates,
+                            )
+                        }
+                        entry<ArchivedTemplatesRoot> {
+                            ArchivedTemplatesRoute(
+                                onBack = backStack::removeArchivedTemplates,
+                                onRestored = libraryOwner::refreshIfInitialized,
+                            )
                         }
                         entry<StartActivityRoot> {
                             val session = launcherSessions.activeSession
@@ -785,6 +800,14 @@ internal fun MutableList<NavKey>.openSettings() {
 
 internal fun MutableList<NavKey>.removeSettings() {
     if (lastOrNull() is SettingsRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openArchivedTemplates() {
+    if (lastOrNull() is SettingsRoot) add(ArchivedTemplatesRoot)
+}
+
+internal fun MutableList<NavKey>.removeArchivedTemplates() {
+    if (lastOrNull() is ArchivedTemplatesRoot) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openLibrary() {

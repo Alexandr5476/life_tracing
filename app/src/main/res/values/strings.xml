@@ -604,4 +604,15 @@
     <string name="settings_retry">Retry change</string>
     <string name="settings_percent">%1$d%%</string>
     <string name="settings_option_description">%1$s: %2$s</string>
+    <string name="archived_templates_title">Archived templates</string>
+    <string name="archived_templates_back">Back to Settings</string>
+    <string name="archived_templates_loading">Loading archived templates…</string>
+    <string name="archived_templates_empty">No archived templates.</string>
+    <string name="archived_templates_read_failure">Archived templates could not be loaded.</string>
+    <string name="archived_templates_reload">Reload templates</string>
+    <string name="archived_templates_restore">Restore</string>
+    <string name="archived_templates_restoring">Restoring template…</string>
+    <string name="archived_templates_restoring_row">Restoring…</string>
+    <string name="archived_templates_restore_failure">The template could not be restored. Try again.</string>
+    <string name="archived_templates_retry">Retry Restore</string>
 </resources>

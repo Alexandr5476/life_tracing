@@ -604,4 +604,15 @@
     <string name="settings_retry">Повторить изменение</string>
     <string name="settings_percent">%1$d%%</string>
     <string name="settings_option_description">%1$s: %2$s</string>
+    <string name="archived_templates_title">Архив шаблонов</string>
+    <string name="archived_templates_back">Назад к настройкам</string>
+    <string name="archived_templates_loading">Загрузка архивных шаблонов…</string>
+    <string name="archived_templates_empty">В архиве нет шаблонов.</string>
+    <string name="archived_templates_read_failure">Не удалось загрузить архивные шаблоны.</string>
+    <string name="archived_templates_reload">Загрузить шаблоны снова</string>
+    <string name="archived_templates_restore">Восстановить</string>
+    <string name="archived_templates_restoring">Восстановление шаблона…</string>
+    <string name="archived_templates_restoring_row">Восстановление…</string>
+    <string name="archived_templates_restore_failure">Не удалось восстановить шаблон. Попробуйте снова.</string>
+    <string name="archived_templates_retry">Повторить восстановление</string>
 </resources>
