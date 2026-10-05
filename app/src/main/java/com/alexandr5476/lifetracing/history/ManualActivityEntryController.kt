@@ -11,10 +11,7 @@
 
 package com.alexandr5476.lifetracing.history
 
-import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
-import com.alexandr5476.lifetracing.domain.ActivityEntryOptionReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
-import com.alexandr5476.lifetracing.domain.ActivityEntryValue
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
@@ -22,11 +19,10 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
-import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
-import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -102,6 +98,7 @@ data class ManualEntryProposal(
     val zoneId: ZoneId,
     val values: List<ActivityEntryValueOverride>,
     internal val draftVersion: Long = 0,
+    val overlapApproved: Boolean = false,
 ) {
     internal val intervalKey = ManualEntryIntervalKey(startedAt, completedAt, zoneId)
 }
@@ -330,22 +327,7 @@ class ManualActivityEntryController internal constructor(
             selected = ManualEntryLoad.Content(this),
             startedText = timestamp,
             completedText = timestamp,
-            values =
-                fields.filter { it.deletedAt == null }.associate { field ->
-                    field.id to
-                        ManualEntryFieldDraft(
-                            field.type,
-                            formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision),
-                            field.defaultCategoryOptionId,
-                            field.defaultText.orEmpty(),
-                            missing =
-                                when (field.type) {
-                                    CustomFieldType.NUMBER -> field.defaultNumberScaled == null
-                                    CustomFieldType.CATEGORY -> field.defaultCategoryOptionId == null
-                                    CustomFieldType.TEXT -> field.defaultText == null
-                                },
-                        )
-                },
+            values = initialEntryValues(),
         )
     }
 
@@ -413,6 +395,7 @@ class ManualActivityEntryController internal constructor(
         state.copy(values = state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values)
     }
 
+    @Suppress("LongMethod")
     private fun save(approvedInterval: ManualEntryIntervalKey? = null) {
         if (mutationInFlight) return
         val template = (mutableState.value.selected as? ManualEntryLoad.Content)?.value ?: return
@@ -439,7 +422,12 @@ class ManualActivityEntryController internal constructor(
                             continue
                         }
                         mutableState.update { it.copy(command = ManualEntryCommand.Committing) }
-                        val result = if (fresh.startedAt == null) writeNoLive(fresh) else writeTimed(fresh)
+                        val result =
+                            if (fresh.startedAt == null) {
+                                writeNoLive(fresh)
+                            } else {
+                                writeTimed(fresh.copy(overlapApproved = approval == fresh.intervalKey))
+                            }
                         if (!closed) mutableState.update { it.copy(command = ManualEntryCommand.Committed(result)) }
                         return@launch
                     }
@@ -447,6 +435,17 @@ class ManualActivityEntryController internal constructor(
                     throw cancelled
                 } catch (invalid: ManualEntryIssueException) {
                     if (!closed) invalid.present()
+                } catch (_: PlanHistoricalOverlapException) {
+                    if (!closed) {
+                        val proposal = runCatching { buildProposal(template) }.getOrNull()
+                        val nextCommand =
+                            if (proposal != null) {
+                                ManualEntryCommand.Overlap(proposal)
+                            } else {
+                                ManualEntryCommand.Failure(ManualEntryIssue.SAVE_FAILURE)
+                            }
+                        mutableState.update { it.copy(command = nextCommand) }
+                    }
                 } catch (_: StaleLauncherTargetException) {
                     if (!closed) {
                         staleTemplateId = template.id
@@ -530,28 +529,16 @@ class ManualActivityEntryController internal constructor(
         if (started != null && started.instant > completed.instant) {
             throw ManualEntryIssueException(ManualEntryIssue.REVERSED_INTERVAL)
         }
-        val active = template.fields.filter { it.deletedAt == null }
         val overrides =
-            active.map { field ->
-                val draft = state.values[field.id] ?: throw ManualEntryIssueException(ManualEntryIssue.SAVE_FAILURE)
-                val value =
-                    when {
-                        draft.missing -> ActivityEntryValue.Missing
-                        field.type == CustomFieldType.NUMBER ->
-                            ActivityEntryValue.Number(
-                                parseLauncherNumber(draft.numberText, field.displayPrecision)
-                                    ?: throw ManualEntryIssueException(ManualEntryIssue.INVALID_NUMBER),
-                            )
-                        field.type == CustomFieldType.CATEGORY -> {
-                            val option =
-                                draft.selectedOptionId?.takeIf { selected ->
-                                    field.categoryOptions.any { it.id == selected && !it.isArchived }
-                                } ?: throw ManualEntryIssueException(ManualEntryIssue.INVALID_CATEGORY)
-                            ActivityEntryValue.Category(ActivityEntryOptionReference.Template(option))
-                        }
-                        else -> ActivityEntryValue.Text(draft.text)
-                    }
-                ActivityEntryValueOverride(ActivityEntryFieldReference.Template(field.id), value)
+            when (val proposed = template.proposeEntryValues(state.values)) {
+                is TemplateEntryValues.Valid -> proposed.values
+                is TemplateEntryValues.Invalid -> throw ManualEntryIssueException(
+                    when (proposed.issue) {
+                        TemplateEntryValueIssue.MISSING_DRAFT -> ManualEntryIssue.SAVE_FAILURE
+                        TemplateEntryValueIssue.INVALID_NUMBER -> ManualEntryIssue.INVALID_NUMBER
+                        TemplateEntryValueIssue.INVALID_CATEGORY -> ManualEntryIssue.INVALID_CATEGORY
+                    },
+                )
             }
         return ManualEntryProposal(
             ActivityEntrySource.Template(template.id),

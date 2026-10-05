@@ -5,10 +5,14 @@ import android.database.DatabaseUtils
 import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.data.persistence.ActivityCommandRepository
+import com.alexandr5476.lifetracing.data.persistence.DailyReadRepository
+import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -17,6 +21,10 @@ import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.DailyActive
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
@@ -30,6 +38,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
 import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
@@ -39,7 +48,9 @@ import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.plan.PlanExecutionCommandState
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
+import com.alexandr5476.lifetracing.plan.PlanExecutionDurableCommand
 import com.alexandr5476.lifetracing.plan.PlanExecutionLoad
+import com.alexandr5476.lifetracing.plan.PlanTimeEntryRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,6 +72,116 @@ import java.time.ZoneOffset
 
 @RunWith(AndroidJUnit4::class)
 class PlanExecutionPersistenceTest {
+    @Test
+    fun productionPlanTimeEntryDispatchPersistsLiveAndHistoryForCanonicalReaders() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val live = LiveSessionRepository.create(context)
+        val activities = ActivityCommandRepository.create(context)
+        val authoring = TemplateAuthoringRepository.create(context)
+        val plans = PlanRepository.create(context) { ZoneOffset.UTC }
+        val planReads = PlanReadRepository.create(context) { ZoneOffset.UTC }
+        val daily = DailyReadRepository.create(context, CurrentZoneIdProvider { ZoneOffset.UTC })
+        val history = HistoryReadRepository.create(context)
+        val statistics = StatisticsRepository.create(context)
+        val at = Instant.ofEpochMilli(Instant.now().toEpochMilli())
+        try {
+            clearLiveSession(live, at)
+            val source =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "S3 time entry " + at.toEpochMilli(),
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                    ),
+                    createdAt = at,
+                )
+            val livePlan =
+                plans.createActivityPlanFromTemplate(
+                    source.id,
+                    PlanSchedule.FloatingDay(LocalDate.of(2026, 9, 20)),
+                    at,
+                )
+            val liveStart = at.minusSeconds(300)
+            val liveCommit =
+                executePlanCommand(
+                    PlanExecutionDurableCommand(
+                        livePlan.actionIdentity(),
+                        false,
+                        emptyList(),
+                        at.plusSeconds(1),
+                        ZoneOffset.UTC,
+                        PlanTimeEntryRequest(liveStart, null, ZoneOffset.UTC, emptyList()),
+                    ),
+                    live,
+                    activities,
+                ) as com.alexandr5476.lifetracing.plan.PlanExecutionCommit.Activity
+            assertTrue(liveCommit.isLive)
+            assertEquals(liveStart, (live.getActiveRuntime() as ActiveActivityRuntime).execution.startedAt)
+            assertEquals(livePlan.id, (live.getActiveRuntime() as ActiveActivityRuntime).execution.planEntryId)
+            assertTrue(planReads.getFocusedAction(livePlan.id).engaged)
+            assertEquals(
+                liveCommit.executionId,
+                (
+                    daily
+                        .getDaily(DailyQuery(liveStart.atZone(ZoneOffset.UTC).toLocalDate(), at, 20))
+                        .active as DailyActive.Activity
+                ).runtime.execution.id,
+            )
+            live.completeActiveActivity(at.plusSeconds(2))
+            assertEquals(liveCommit.executionId, plans.getPlan(livePlan.id)?.fulfilledActivityExecutionId)
+
+            val historyPlan =
+                plans.createActivityPlanFromTemplate(
+                    source.id,
+                    PlanSchedule.FloatingDay(LocalDate.of(2026, 9, 21)),
+                    at.minusSeconds(1_200),
+                )
+            val historicalStart = at.minusSeconds(900)
+            val historicalEnd = at.minusSeconds(600)
+            val historyCommit =
+                executePlanCommand(
+                    PlanExecutionDurableCommand(
+                        historyPlan.actionIdentity(),
+                        false,
+                        emptyList(),
+                        at.plusSeconds(3),
+                        ZoneOffset.UTC,
+                        PlanTimeEntryRequest(historicalStart, historicalEnd, ZoneOffset.UTC, emptyList()),
+                    ),
+                    live,
+                    activities,
+                ) as com.alexandr5476.lifetracing.plan.PlanExecutionCommit.Activity
+            assertFalse(historyCommit.isLive)
+            assertNull(live.getActiveSession())
+            val fulfilled = requireNotNull(plans.getPlan(historyPlan.id))
+            assertEquals(historyCommit.executionId, fulfilled.fulfilledActivityExecutionId)
+            assertEquals(historicalEnd, fulfilled.fulfilledAt)
+            assertEquals(at.plusSeconds(3), fulfilled.updatedAt)
+            val detail = requireNotNull(history.getActivityDetail(historyCommit.executionId))
+            assertEquals(historyPlan.id, detail.root.planEntryId)
+            assertEquals(historicalStart, detail.root.startedAt)
+            assertEquals(Duration.ofSeconds(300), detail.root.activeDuration)
+            val dayRead =
+                daily.getDaily(
+                    DailyQuery(historicalStart.atZone(ZoneOffset.UTC).toLocalDate(), at.plusSeconds(3), 50),
+                )
+            assertTrue(
+                dayRead.completedHistory
+                    .filterIsInstance<CompletedActivityHistoryRoot>()
+                    .any { it.executionId == historyCommit.executionId },
+            )
+            val seriesId =
+                requireNotNull(
+                    (planReads.getFocusedAction(historyPlan.id).snapshot as FocusedPlanAction.Snapshot.Activity)
+                        .value.statisticsSeriesId,
+                )
+            assertTrue(statistics.activitySeries(seriesId, StatisticsPeriod.AllTime).executionCount >= 2L)
+        } finally {
+            clearLiveSession(live, at.plusSeconds(30))
+        }
+    }
+
     @Test
     fun realCountdownCommitsOnceZeroBypassesPreflightAndAbandonedPreflightIsNotRecoverable() =
         runBlocking {

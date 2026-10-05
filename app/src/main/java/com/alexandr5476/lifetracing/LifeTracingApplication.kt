@@ -23,10 +23,12 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityEntryFieldReference
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityEntryValueOverride
+import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorController
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceEditorActivityChoice
@@ -342,6 +344,16 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         onPinnedOrderCommitted = onPinnedOrderCommitted,
                         mutationGate = coordinator.mutationGate,
+                        readActivityTemplate = { id ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                templateAuthoringRepository.getActivityTemplate(id)
+                            }
+                        },
+                        overlapsCompletedHistory = { started, completed ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(started, completed)
+                            }
+                        },
                     )
                 },
                 {
@@ -546,7 +558,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         },
                         { command ->
                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                executePlanCommand(command, repository)
+                                executePlanCommand(command, repository, activityCommandRepository)
                             }
                         },
                         {
@@ -558,6 +570,11 @@ class LifeTracingRuntimeGraph internal constructor(
                         ZoneId::systemDefault,
                         CoroutinePreflightScheduler(uiScope),
                         mutationGate = coordinator.mutationGate,
+                        overlapsCompletedHistory = { startedAt, completedAt ->
+                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                activityCommandRepository.overlapsCompletedHistory(startedAt, completedAt)
+                            }
+                        },
                     )
                 },
                 {
@@ -642,6 +659,7 @@ class LifeTracingRuntimeGraph internal constructor(
                                     proposal.zoneId,
                                     proposal.values,
                                     proposal.expectedTemplateRevision,
+                                    proposal.overlapApproved,
                                 )
                             }
                         },
@@ -779,34 +797,70 @@ internal fun executePlanMutation(
 internal fun executePlanCommand(
     command: PlanExecutionDurableCommand,
     repository: LiveSessionRepository,
+    activityCommands: ActivityCommandRepository? = null,
 ): PlanExecutionCommit =
     when (command.identity.kind) {
-        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY -> {
-            val execution =
-                if (command.noLive) {
-                    repository.completeNoLiveActivityFromPlan(
-                        command.identity,
-                        command.at,
-                        command.zoneId,
-                        valueOverrides = command.values,
-                    )
-                } else {
-                    repository.startActivityFromPlan(
-                        command.identity,
-                        command.at,
-                        command.at,
-                        command.zoneId,
-                        command.values,
-                    )
-                }
-            PlanExecutionCommit.Activity(execution.id, !command.noLive)
-        }
+        com.alexandr5476.lifetracing.domain.PlanTrackableKind.ACTIVITY ->
+            executeActivityPlanCommand(command, repository, activityCommands)
         com.alexandr5476.lifetracing.domain.PlanTrackableKind.SEQUENCE -> {
-            require(!command.noLive && command.values.isEmpty()) { "Sequence start does not accept Activity values" }
+            require(command.timeEntry == null && !command.noLive && command.values.isEmpty()) {
+                "Sequence start does not accept Activity time entry or values"
+            }
             val state = repository.startSequenceFromPlan(command.identity, command.at, command.at, command.zoneId)
             PlanExecutionCommit.Sequence(state.execution.id)
         }
     }
+
+private fun executeActivityPlanCommand(
+    command: PlanExecutionDurableCommand,
+    repository: LiveSessionRepository,
+    activityCommands: ActivityCommandRepository?,
+): PlanExecutionCommit.Activity {
+    val execution =
+        when {
+            command.timeEntry != null -> executePlanTimeEntry(command, requireNotNull(activityCommands))
+            command.noLive ->
+                repository.completeNoLiveActivityFromPlan(
+                    command.identity,
+                    command.at,
+                    command.zoneId,
+                    valueOverrides = command.values,
+                )
+            else ->
+                repository.startActivityFromPlan(
+                    command.identity,
+                    command.at,
+                    command.at,
+                    command.zoneId,
+                    command.values,
+                )
+        }
+    return PlanExecutionCommit.Activity(execution.id, command.timeEntry?.completedAt == null && !command.noLive)
+}
+
+private fun executePlanTimeEntry(
+    command: PlanExecutionDurableCommand,
+    writer: ActivityCommandRepository,
+): ActivityExecution {
+    val entry = requireNotNull(command.timeEntry)
+    return when {
+        entry.startedAt != null && entry.completedAt == null ->
+            writer.startLiveFromPlan(command.identity, entry.startedAt, command.at, entry.zoneId, entry.values)
+        entry.startedAt != null && entry.completedAt != null ->
+            writer.addManualTimedFromPlan(
+                command.identity,
+                entry.startedAt,
+                entry.completedAt,
+                command.at,
+                entry.zoneId,
+                entry.values,
+                entry.overlapApproved,
+            )
+        entry.startedAt == null && entry.completedAt != null ->
+            writer.addManualNoLiveFromPlan(command.identity, entry.completedAt, command.at, entry.zoneId, entry.values)
+        else -> error("Invalid Plan time entry")
+    }
+}
 
 internal fun executeExpandedSequenceCommand(
     command: ExpandedSequenceCommand,
@@ -842,6 +896,8 @@ internal fun executeExpandedSequenceCommand(
     }
 }
 
+// Keep each canonical repository call visible at the composition boundary.
+@Suppress("LongMethod")
 internal fun executeLauncherCommand(
     command: LauncherDurableCommand,
     activityCommandRepository: ActivityCommandRepository,
@@ -881,7 +937,60 @@ internal fun executeLauncherCommand(
                 )
             LauncherCommit.Activity(execution.id, false)
         }
-        is LauncherDurableCommand.StartSequence -> {
+        is LauncherDurableCommand.StartOptionsLive -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.startLive(
+                    proposal.source,
+                    requireNotNull(proposal.startedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, true)
+        }
+        is LauncherDurableCommand.StartOptionsTimed -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.addManualTimed(
+                    proposal.source,
+                    requireNotNull(proposal.startedAt),
+                    requireNotNull(proposal.completedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
+                    command.overlapApproved,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.StartOptionsNoLive -> {
+            val proposal = command.proposal
+            val execution =
+                activityCommandRepository.addManualNoLive(
+                    proposal.source,
+                    requireNotNull(proposal.completedAt),
+                    proposal.commandAt,
+                    proposal.zoneId,
+                    proposal.values,
+                    proposal.expectedRevision,
+                )
+            LauncherCommit.Activity(execution.id, false)
+        }
+        is LauncherDurableCommand.OneOff -> {
+            val source = ActivityEntrySource.OneOff(command.draft)
+            val execution =
+                if (command.draft.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                    activityCommandRepository.completeOneOffNoLiveNow(command.draft, command.at, command.zoneId)
+                } else {
+                    activityCommandRepository.startLive(source, command.at, command.at, command.zoneId)
+                }
+            LauncherCommit.Activity(
+                execution.id,
+                command.draft.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING,
+            )
+        } is LauncherDurableCommand.StartSequence -> {
             val state =
                 libraryRepository.startSequenceFromTemplate(
                     command.templateId,

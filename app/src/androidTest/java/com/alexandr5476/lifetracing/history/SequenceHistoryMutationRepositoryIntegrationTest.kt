@@ -274,9 +274,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                 ?.status ==
                 RuntimeOccurrenceStatus.DELETED_EXECUTION
         }
+        scrollToHistoryOccurrence(deletionTarget.value)
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}")
-            .performScrollTo()
+            .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
@@ -289,9 +289,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val retained = closeBefore.occurrences.last()
         val removedSpan =
             requireNotNull(removed.completedAt).toEpochMilli() - requireNotNull(removed.enteredAt).toEpochMilli()
+        scrollToHistoryOccurrence(removed.occurrenceId.value)
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}")
-            .performScrollTo()
+            .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -501,9 +501,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
 
         val beforeStructural = requireNotNull(history.getSequenceDetail(execution))
         val target = beforeStructural.occurrences.first()
+        scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
-            .performScrollTo()
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -515,9 +515,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
         assertEquals(beforeStructural.updatedAt, history.getSequenceDetail(execution)?.updatedAt)
 
+        scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
-            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
-            .performScrollTo()
+            .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -646,6 +646,14 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
                 ?.executionId == id
         }
+    }
+
+    private fun scrollToHistoryOccurrence(occurrenceId: String) {
+        val tag = "history-occurrence-$occurrenceId"
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag(tag).performScrollTo()
     }
 
     private fun backToHistory() {
