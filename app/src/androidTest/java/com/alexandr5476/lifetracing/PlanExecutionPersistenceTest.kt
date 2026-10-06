@@ -21,14 +21,16 @@ import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
-import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanHistoricalOverlapException
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -62,6 +64,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -102,7 +105,8 @@ class PlanExecutionPersistenceTest {
                     PlanSchedule.FloatingDay(LocalDate.of(2026, 9, 20)),
                     at,
                 )
-            val liveStart = at.minusSeconds(300)
+            // Establish the historical overlap ourselves, independent of other tests' completed History.
+            val liveStart = at.minusSeconds(900)
             val liveCommit =
                 executePlanCommand(
                     PlanExecutionDurableCommand(
@@ -139,15 +143,26 @@ class PlanExecutionPersistenceTest {
                 )
             val historicalStart = at.minusSeconds(900)
             val historicalEnd = at.minusSeconds(600)
+            val historyCommand =
+                PlanExecutionDurableCommand(
+                    historyPlan.actionIdentity(),
+                    false,
+                    emptyList(),
+                    at.plusSeconds(3),
+                    ZoneOffset.UTC,
+                    PlanTimeEntryRequest(historicalStart, historicalEnd, ZoneOffset.UTC, emptyList()),
+                )
+            assertTrue(activities.overlapsCompletedHistory(historicalStart, historicalEnd))
+            assertThrows(PlanHistoricalOverlapException::class.java) {
+                executePlanCommand(historyCommand, live, activities)
+            }
+            assertEquals(historyPlan, plans.getPlan(historyPlan.id))
+            assertEquals(0L, countPlanActivityExecutions(context, historyPlan.id.value))
+            assertNull(live.getActiveSession())
             val historyCommit =
                 executePlanCommand(
-                    PlanExecutionDurableCommand(
-                        historyPlan.actionIdentity(),
-                        false,
-                        emptyList(),
-                        at.plusSeconds(3),
-                        ZoneOffset.UTC,
-                        PlanTimeEntryRequest(historicalStart, historicalEnd, ZoneOffset.UTC, emptyList()),
+                    historyCommand.copy(
+                        timeEntry = requireNotNull(historyCommand.timeEntry).copy(overlapApproved = true),
                     ),
                     live,
                     activities,
@@ -166,17 +181,18 @@ class PlanExecutionPersistenceTest {
                 daily.getDaily(
                     DailyQuery(historicalStart.atZone(ZoneOffset.UTC).toLocalDate(), at.plusSeconds(3), 50),
                 )
-            assertTrue(
-                dayRead.completedHistory
-                    .filterIsInstance<CompletedActivityHistoryRoot>()
-                    .any { it.executionId == historyCommit.executionId },
+            val historicalDate = historicalStart.atZone(ZoneOffset.UTC).toLocalDate()
+            // Daily exposes a bounded first page; unrelated newer facts may precede this execution.
+            assertEquals(
+                history.getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(historicalDate, historicalDate), 50)),
+                dayRead.completedHistory,
             )
             val seriesId =
                 requireNotNull(
                     (planReads.getFocusedAction(historyPlan.id).snapshot as FocusedPlanAction.Snapshot.Activity)
                         .value.statisticsSeriesId,
                 )
-            assertTrue(statistics.activitySeries(seriesId, StatisticsPeriod.AllTime).executionCount >= 2L)
+            assertEquals(2L, statistics.activitySeries(seriesId, StatisticsPeriod.AllTime).executionCount)
         } finally {
             clearLiveSession(live, at.plusSeconds(30))
         }

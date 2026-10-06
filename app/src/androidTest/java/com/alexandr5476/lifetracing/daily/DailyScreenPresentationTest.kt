@@ -385,7 +385,10 @@ class DailyScreenPresentationTest {
 
             Locale.setDefault(russian)
             composeTestRule.runOnIdle { effectiveLocale.value = Locale.UK }
-            composeTestRule.onNodeWithText(localizedDate(selectedDate, Locale.UK)).assertIsDisplayed()
+            composeTestRule
+                .onNodeWithText(localizedDate(selectedDate, Locale.UK))
+                .performScrollTo()
+                .assertIsDisplayed()
         } finally {
             Locale.setDefault(originalDefault)
         }
@@ -1037,7 +1040,10 @@ class DailyScreenPresentationTest {
         noLive: CompletedActivityHistoryRoot,
         timed: CompletedActivityHistoryRoot,
     ) {
-        composeTestRule.onNodeWithText(localizedDate(selectedDate, locale)).assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText(localizedDate(selectedDate, locale))
+            .performScrollTo()
+            .assertIsDisplayed()
         composeTestRule
             .onNodeWithText(localizedString(locale, R.string.daily_week_of, localizedDate(weekStart, locale)))
             .performScrollTo()

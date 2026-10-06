@@ -59,7 +59,7 @@ class ArchivedTemplatesProductionTest {
     val compose = createEmptyComposeRule()
 
     @Test
-    fun production_restore_preserves_both_identities_and_frozen_facts_and_refreshes_retained_library() =
+    fun production_restore_preserves_both_identities_and_frozen_facts_and_refreshes_retained_library(): Unit =
         runBlocking {
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             val library = LibraryRepository.create(context)
@@ -161,6 +161,7 @@ class ArchivedTemplatesProductionTest {
                     .onNodeWithText(resource(scenario, R.string.daily_library))
                     .performScrollTo()
                     .performClick()
+                compose.onNodeWithText(resource(scenario, R.string.library_new_activity)).assertIsDisplayed()
                 val owner = AtomicReference<LibraryControllerOwner>()
                 val retained = AtomicReference<LibraryController>()
                 scenario.onActivity {

@@ -155,8 +155,9 @@ class SettingsProductionRouteTest {
         expected: AppearancePreferences,
     ) {
         click(tag)
-        withTimeout(5_000) { repository.preferences.first { it == expected } }
+        // Drive the Compose dispatcher before waiting for the command's persisted result.
         awaitSelected(tag)
+        assertEquals(expected, withTimeout(5_000) { repository.preferences.first() })
     }
 
     private fun assertSelections() {
