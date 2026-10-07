@@ -426,7 +426,7 @@ class StandaloneActivityRecoveryTest {
             plannedWeekStart = null,
             plannedMonth = null,
             scheduledInstantMs = null,
-            creationZoneId = "UTC",
+            creationZoneId = null,
             status = "PLANNED",
             fulfilledActivityExecutionId = null,
             fulfilledSequenceExecutionId = null,

@@ -399,7 +399,11 @@ class RuntimeCoordinatorRecoveryTest {
                 assertEquals(at(60), store.activity(execution.id).completedAt)
                 assertNull(store.live.getActiveSession())
                 assertEquals(1L, process.coordinator.semanticGeneration.value)
-                assertEquals(1, process.scheduler.cancellations)
+                // Time changes cancel the old clock mapping before terminal scheduling cancels again.
+                val expectedCancellations =
+                    if (expectedOperations[index] == RuntimeBroadcastOperation.TimeChanged) 2 else 1
+                assertEquals(expectedCancellations, process.scheduler.cancellations)
+                assertEquals(expectedCancellations, process.local.cancellations)
                 assertTrue(process.effects.isEmpty())
                 assertTrue(process.notifications.completions.isEmpty())
             }
