@@ -391,20 +391,37 @@ class LibraryRepositoryTest {
             listOf(900, 1),
             archivedQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
         )
-        val selects = archivedQueries.map { it.first.lowercase() }.filter { it.startsWith("select") }
-        assertEquals(2, selects.count { "select templates.id, templates.name" in it })
-        val aggregateTables =
-            listOf(
-                "activity_snapshots",
-                "sequence_snapshots",
-                "activity_executions",
-                "sequence_executions",
-                "plan_entries",
-                "statistics_series",
-                "activity_template_fields",
-                "sequence_template_nodes",
-            )
-        assertTrue(selects.none { sql -> aggregateTables.any { it in sql } })
+        // Only two summary reads and two Tag-link chunks per kind are allowed. This rejects
+        // all aggregate hydration, including sequence_nodes, even if a new table is introduced.
+        val normalizedQueries =
+            archivedQueries.map {
+                it.first
+                    .lowercase()
+                    .trim()
+                    .trimEnd(';')
+                    .replace(Regex("\\s+"), " ")
+            }
+        // Room may finish asynchronous invalidation bookkeeping from the fixture's archive writes.
+        // Its fixed-table maintenance read is separate from catalog hydration; no other SELECT is excluded.
+        val selects =
+            normalizedQueries.filter {
+                it.startsWith("select") && it != "select * from room_table_modification_log where invalidated = 1"
+            }
+        val catalogShapes = selects.map { it.replace(Regex("\\?(?:\\s*,\\s*\\?)*"), "?") }
+        val allowedSelects =
+            listOf("activity", "sequence").flatMap { kind ->
+                val summary =
+                    "select templates.id, templates.name, templates.short_comment, templates.folder_id, " +
+                        "state.pinned_rank, state.last_used_at_ms, templates.deleted_at_ms " +
+                        "from ${kind}_templates as templates left join ${kind}_template_user_state as state " +
+                        "on state.${kind}_template_id = templates.id where templates.deleted_at_ms is not null " +
+                        "order by templates.name collate nocase, templates.id"
+                val tags =
+                    "select ${kind}_template_id as template_id, tag_id from ${kind}_template_tags " +
+                        "where ${kind}_template_id in (?)"
+                listOf(summary, tags, tags)
+            }
+        assertEquals(allowedSelects.sorted(), catalogShapes.sorted())
     }
 
     @Test

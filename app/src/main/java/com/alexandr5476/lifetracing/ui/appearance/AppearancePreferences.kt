@@ -78,8 +78,8 @@ class AppearancePreferencesRepository internal constructor(
     private fun toAppearancePreferences(preferences: Preferences): AppearancePreferences {
         val stored = preferences.asMap()
         return AppearancePreferences(
-            themeMode = ThemeMode.fromStorage(preferences[THEME_MODE]),
-            accentPaletteId = AccentPaletteId.fromStorage(preferences[ACCENT_PALETTE_ID]),
+            themeMode = ThemeMode.fromStorage(stored[THEME_MODE] as? String),
+            accentPaletteId = AccentPaletteId.fromStorage(stored[ACCENT_PALETTE_ID] as? String),
             interfaceScalePercent = AppearanceScalePolicy.interfaceFromStorage(stored[INTERFACE_SCALE_PERCENT] as? Int),
             textScalePercent = AppearanceScalePolicy.textFromStorage(stored[TEXT_SCALE_PERCENT] as? Int),
         )

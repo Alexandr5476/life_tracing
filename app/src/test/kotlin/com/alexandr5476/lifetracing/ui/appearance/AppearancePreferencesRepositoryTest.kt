@@ -102,6 +102,46 @@ class AppearancePreferencesRepositoryTest {
         }
 
     @Test
+    fun wrong_type_theme_falls_back_independently_and_can_be_overwritten_and_reloaded() =
+        malformedStringPreferenceCanRecover("theme_mode")
+
+    @Test
+    fun wrong_type_accent_falls_back_independently_and_can_be_overwritten_and_reloaded() =
+        malformedStringPreferenceCanRecover("accent_palette_id")
+
+    private fun malformedStringPreferenceCanRecover(key: String) =
+        runBlocking {
+            val legal = AppearancePreferences(ThemeMode.DARK, AccentPaletteId.SLATE, 115, 125)
+            withStore { store ->
+                val repository = AppearancePreferencesRepository(store)
+                repository.setThemeMode(legal.themeMode)
+                repository.setAccentPaletteId(legal.accentPaletteId)
+                repository.setInterfaceScalePercent(legal.interfaceScalePercent)
+                repository.setTextScalePercent(legal.textScalePercent)
+                store.edit { it[intPreferencesKey(key)] = 42 }
+            }
+            withStore { store ->
+                val repository = AppearancePreferencesRepository(store)
+                val fallback =
+                    if (key == "theme_mode") {
+                        legal.copy(themeMode = ThemeMode.SYSTEM)
+                    } else {
+                        legal.copy(accentPaletteId = AccentPaletteId.DEFAULT)
+                    }
+                assertEquals(fallback, repository.preferences.first())
+                if (key == "theme_mode") {
+                    repository.setThemeMode(legal.themeMode)
+                } else {
+                    repository.setAccentPaletteId(legal.accentPaletteId)
+                }
+                assertEquals(legal, repository.preferences.first())
+            }
+            withStore { store ->
+                assertEquals(legal, AppearancePreferencesRepository(store).preferences.first())
+            }
+        }
+
+    @Test
     fun writers_accept_every_legal_value_and_reject_invalid_values_without_changing_preferences() =
         runBlocking {
             withStore { store ->

@@ -10,9 +10,11 @@ import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -27,6 +29,76 @@ import java.io.File
 class SettingsPersistenceTest {
     @TempDir
     lateinit var directory: File
+
+    @Test
+    @Suppress("LongMethod")
+    fun accepted_write_survives_immediate_screen_disposal_and_recreation_without_replay() =
+        runBlocking {
+            val initial = AppearancePreferences(ThemeMode.LIGHT, AccentPaletteId.SLATE, 115, 125)
+            val expected = initial.copy(themeMode = ThemeMode.DARK)
+            val requests = mutableListOf<SettingsChange.Appearance>()
+            withStore { store, processScope ->
+                val repository = AppearancePreferencesRepository(store)
+                repository.setThemeMode(initial.themeMode)
+                repository.setAccentPaletteId(initial.accentPaletteId)
+                repository.setInterfaceScalePercent(initial.interfaceScalePercent)
+                repository.setTextScalePercent(initial.textScalePercent)
+                val screen = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+                val recreatedScreen = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+                val entered = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val finished = CompletableDeferred<Unit>()
+                val writer =
+                    SettingsPreferenceWriter { change ->
+                        requests += change
+                        entered.complete(Unit)
+                        try {
+                            release.await()
+                            RepositorySettingsWriter(repository).write(change)
+                        } finally {
+                            finished.complete(Unit)
+                        }
+                    }
+                try {
+                    val controller =
+                        SettingsController(
+                            repository.preferences,
+                            writer,
+                            { AppLanguage.SYSTEM },
+                            {},
+                            screen,
+                            appearanceMutationScope = processScope,
+                        )
+                    withTimeout(5_000) { controller.state.first { it.ready } }
+                    controller.change(SettingsChange.Theme(ThemeMode.DARK))
+                    withTimeout(5_000) { entered.await() }
+                    assertEquals(initial, controller.state.value.appearance)
+                    screen.cancel()
+                    val recreated =
+                        SettingsController(
+                            repository.preferences,
+                            writer,
+                            { AppLanguage.SYSTEM },
+                            {},
+                            recreatedScreen,
+                            appearanceMutationScope = processScope,
+                        )
+                    withTimeout(5_000) { recreated.state.first { it.ready } }
+                    assertEquals(initial, recreated.state.value.appearance)
+                    release.complete(Unit)
+                    withTimeout(5_000) { finished.await() }
+                    assertEquals(expected, AppearancePreferencesRepository(store).preferences.first())
+                    assertEquals(listOf(SettingsChange.Theme(ThemeMode.DARK)), requests)
+                } finally {
+                    release.complete(Unit)
+                    screen.cancel()
+                    recreatedScreen.cancel()
+                }
+            }
+            withStore { store, _ ->
+                assertEquals(expected, AppearancePreferencesRepository(store).preferences.first())
+            }
+        }
 
     @Test
     fun focused_settings_writes_are_observed_preserve_other_fields_and_reload_without_a_locale_key() =

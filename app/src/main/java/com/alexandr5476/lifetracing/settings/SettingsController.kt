@@ -75,6 +75,7 @@ internal class SettingsController(
     private val readLanguage: () -> AppLanguage,
     private val applyLanguage: (AppLanguage) -> Unit,
     private val scope: CoroutineScope,
+    private val appearanceMutationScope: CoroutineScope = scope,
 ) {
     private val mutableState = MutableStateFlow(SettingsState())
     val state: StateFlow<SettingsState> = mutableState
@@ -121,7 +122,10 @@ internal class SettingsController(
         if (!mutableState.compareAndSet(current, requested)) {
             return
         }
-        scope.launch {
+        // Accepted appearance writes belong to the process, while observation and locale UI work
+        // retain the screen lifecycle. A recreated controller only reads; it never replays requests.
+        val mutationScope = if (change is SettingsChange.Appearance) appearanceMutationScope else scope
+        mutationScope.launch {
             try {
                 when (change) {
                     is SettingsChange.Appearance -> writer.write(change)

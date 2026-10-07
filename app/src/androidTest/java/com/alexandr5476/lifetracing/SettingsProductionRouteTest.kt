@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
+import androidx.core.os.LocaleListCompat
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.PreferencesSerializer
 import androidx.datastore.preferences.preferencesDataStoreFile
@@ -126,6 +127,31 @@ class SettingsProductionRouteTest {
                         }
                         scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
                         awaitDestination("daily-settings")
+                        listOf("fr", "fr,en").forEach { unsupported ->
+                            scenario.onActivity {
+                                AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(unsupported))
+                            }
+                            scenario.recreate()
+                            awaitDestination("daily-settings")
+                            val seeded = AtomicReference<String>()
+                            scenario.onActivity {
+                                seeded.set(AppCompatDelegate.getApplicationLocales().toLanguageTags())
+                            }
+                            assertEquals(unsupported, seeded.get())
+                            click("daily-settings")
+                            awaitSelected("settings-language-SYSTEM")
+                            assertPlatformLocales(scenario, AppLanguage.SYSTEM)
+                            scenario.recreate()
+                            awaitSelected("settings-language-SYSTEM")
+                            assertPlatformLocales(scenario, AppLanguage.SYSTEM)
+                            assertEquals(expected, repository.preferences.first())
+                            assertEquals(appearanceStorage, readStoredAppearance(context).asMap())
+                            assertEquals(originalRuntime, live.getActiveRuntime())
+                            assertSame(daily, LifeTracingRuntimeGraph.from(context).dailyController)
+                            assertEquals(selectedDate, daily.state.value.selectedDate)
+                            click("settings-back")
+                            awaitDestination("daily-settings")
+                        }
                         assertDailyDensity(scenario)
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)

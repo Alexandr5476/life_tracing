@@ -38,22 +38,25 @@ import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import com.alexandr5476.lifetracing.ui.theme.spacing
+import kotlinx.coroutines.CoroutineScope
 
 @Composable
 internal fun SettingsRoute(
     repository: AppearancePreferencesRepository,
+    appearanceMutationScope: CoroutineScope,
     onBack: () -> Unit,
     onArchivedTemplates: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val controller =
-        remember(repository, scope) {
+        remember(repository, scope, appearanceMutationScope) {
             SettingsController(
                 repository.preferences,
                 RepositorySettingsWriter(repository),
                 AppLanguageController::current,
                 AppLanguageController::apply,
                 scope,
+                appearanceMutationScope,
             )
         }
     val configuration = LocalConfiguration.current
