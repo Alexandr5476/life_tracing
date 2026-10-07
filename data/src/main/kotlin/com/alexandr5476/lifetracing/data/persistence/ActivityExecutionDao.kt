@@ -48,7 +48,7 @@ internal data class ActivitySnapshotOptionValueMetadataRow(
     @androidx.room.ColumnInfo(name = "snapshot_field_id") val snapshotFieldId: String,
 )
 
-internal data class HistoricalSequenceChildValidationScope(
+internal data class SequenceChildValidationScope(
     val snapshots: Map<String, ActivitySnapshotExecutionMetadataRow>,
     val occurrences: Map<String, SequenceOccurrenceLinkRow>,
     val fields: Map<String, ActivitySnapshotFieldValueMetadataRow>,
@@ -477,9 +477,12 @@ internal abstract class ActivityExecutionDao {
     protected abstract fun hardDeleteUnchecked(id: String): Int
 
     @Transaction
-    open fun insertAggregate(aggregate: ActivityExecutionAggregateEntity) {
+    open fun insertAggregate(
+        aggregate: ActivityExecutionAggregateEntity,
+        validationScope: SequenceChildValidationScope? = null,
+    ) {
         insertExecutionUnchecked(aggregate.execution)
-        requireValidAggregate(aggregate)
+        requireValidAggregate(aggregate, validationScope)
         if (aggregate.pauses.isNotEmpty()) insertPausesUnchecked(aggregate.pauses)
         if (aggregate.values.isNotEmpty()) insertValuesUnchecked(aggregate.values)
     }
@@ -530,9 +533,10 @@ internal abstract class ActivityExecutionDao {
         }
     }
 
-    fun historicalSequenceChildValidationScope(
+    // Build inside the owning transaction, after occurrence writes, and reuse for every child write.
+    fun sequenceChildValidationScope(
         aggregates: List<ActivityExecutionAggregateEntity>,
-    ): HistoricalSequenceChildValidationScope {
+    ): SequenceChildValidationScope {
         val snapshotIds = aggregates.map { it.execution.snapshotId }.distinct()
         val occurrenceIds = aggregates.mapNotNull { it.execution.sequenceOccurrenceId }.distinct()
         val fieldIds =
@@ -545,7 +549,7 @@ internal abstract class ActivityExecutionDao {
                 .flatMap { aggregate ->
                     aggregate.values.mapNotNull(ActivityExecutionFieldValueEntity::categoryOptionId)
                 }.distinct()
-        return HistoricalSequenceChildValidationScope(
+        return SequenceChildValidationScope(
             snapshots =
                 snapshotIds.chunked(SQLITE_BIND_CHUNK_SIZE).flatMap(::getSnapshotExecutionMetadataForIds).associateBy {
                     it.id
@@ -571,11 +575,12 @@ internal abstract class ActivityExecutionDao {
     open fun persistSequenceChildDelta(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         require(after.execution.contextType == "SEQUENCE_CHILD") {
             "Coordinated child persistence only accepts SEQUENCE_CHILD"
         }
-        requireValidAggregate(after)
+        requireValidAggregate(after, validationScope)
         require(before.execution.stableIdentity() == after.execution.stableIdentity()) {
             "Sequence child identity cannot change"
         }
@@ -729,7 +734,7 @@ internal abstract class ActivityExecutionDao {
     open fun correctSequenceChildTiming(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         requireValidAggregate(after, validationScope)
         require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
@@ -769,7 +774,7 @@ internal abstract class ActivityExecutionDao {
     open fun correctSequenceChildStructuralTiming(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         requireValidAggregate(after, validationScope)
         require(before.execution.sequenceHistoryIdentity() == after.execution.sequenceHistoryIdentity()) {
@@ -878,7 +883,7 @@ internal abstract class ActivityExecutionDao {
     open fun softDeleteCompletedSequenceChild(
         before: ActivityExecutionAggregateEntity,
         after: ActivityExecutionAggregateEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         requireValidAggregate(after, validationScope)
         require(before.pauses == after.pauses && before.values == after.values) {
@@ -1008,7 +1013,7 @@ internal abstract class ActivityExecutionDao {
 
     private fun requireValidAggregate(
         aggregate: ActivityExecutionAggregateEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         val execution = aggregate.execution
         requireValidContext(execution, validationScope)
@@ -1037,7 +1042,7 @@ internal abstract class ActivityExecutionDao {
 
     private fun requireValidContext(
         execution: ActivityExecutionEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         when (execution.contextType) {
             "STANDALONE" -> {
@@ -1115,7 +1120,7 @@ internal abstract class ActivityExecutionDao {
 
     private fun requireValidOwnedRows(
         aggregate: ActivityExecutionAggregateEntity,
-        validationScope: HistoricalSequenceChildValidationScope? = null,
+        validationScope: SequenceChildValidationScope? = null,
     ) {
         aggregate.pauses.forEach { pause ->
             require(pause.activityExecutionId == aggregate.execution.id) {

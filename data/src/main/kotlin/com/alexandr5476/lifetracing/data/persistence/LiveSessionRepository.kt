@@ -936,14 +936,18 @@ class LiveSessionRepository internal constructor(
             before.execution.toEntityAggregate(),
             after.execution.toEntityAggregate(),
         )
-        after.children.forEach { (occurrenceId, child) ->
+        val children = after.children.mapValues { (_, child) -> child.toEntityAggregate() }
+        val childDao = database.activityExecutionDao()
+        val validationScope = childDao.sequenceChildValidationScope(children.values.toList())
+        children.forEach { (occurrenceId, child) ->
             val previous = before.children[occurrenceId]
             if (previous == null) {
-                database.activityExecutionDao().insertAggregate(child.toEntityAggregate())
+                childDao.insertAggregate(child, validationScope)
             } else {
-                database.activityExecutionDao().persistSequenceChildDelta(
+                childDao.persistSequenceChildDelta(
                     previous.toEntityAggregate(),
-                    child.toEntityAggregate(),
+                    child,
+                    validationScope,
                 )
             }
         }

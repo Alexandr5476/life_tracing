@@ -1959,6 +1959,41 @@ class LiveSessionRepositoryTest {
             val repeatId = "$snapshotId-repeat"
             val fixtures = LiveRuntimeTestFixtures(database)
             fixtures.activity("millisecond-timer", "TIMER", targetMs = 1)
+            database.activitySnapshotDao().insertFields(
+                listOf(
+                    ActivitySnapshotFieldEntity(
+                        id = "limit-number",
+                        snapshotId = "millisecond-timer",
+                        sourceFieldId = null,
+                        position = 0,
+                        nameAtCreation = "Number",
+                        localNameOverride = null,
+                        fieldType = "NUMBER",
+                        unit = null,
+                        displayPrecision = 0,
+                        defaultNumberScaled = 7,
+                        defaultCategoryOptionId = null,
+                        defaultText = null,
+                    ),
+                    ActivitySnapshotFieldEntity(
+                        id = "limit-category",
+                        snapshotId = "millisecond-timer",
+                        sourceFieldId = null,
+                        position = 1,
+                        nameAtCreation = "Category",
+                        localNameOverride = null,
+                        fieldType = "CATEGORY",
+                        unit = null,
+                        displayPrecision = null,
+                        defaultNumberScaled = null,
+                        defaultCategoryOptionId = "limit-option",
+                        defaultText = null,
+                    ),
+                ),
+            )
+            database.activitySnapshotDao().insertOptions(
+                listOf(ActivitySnapshotCategoryOptionEntity("limit-option", "limit-category", null, 0, "Option", null)),
+            )
             database.sequenceSnapshotDao().insertAggregate(
                 SequenceSnapshotAggregateEntity(
                     SequenceSnapshotEntity(snapshotId, snapshotId, null, null, null, "sequence-series", 0),
@@ -1989,7 +2024,13 @@ class LiveSessionRepositoryTest {
             assertEquals(Instant.ofEpochMilli(1), NextRuntimeDeadlineResolver.resolve(recovered)?.at)
 
             val recoveryAt = Instant.ofEpochMilli(3L * count)
+            queries.clear()
             val result = repository.reconcileActiveSession(recoveryAt)
+            assertBatchedRecoveryChildValidation(
+                queries.toList(),
+                count,
+                requireNotNull(started.execution.currentOccurrenceId).value,
+            )
             val terminal = repositorySequence(started.execution.id.value)
             val endedAt = Instant.ofEpochMilli(2L * count - 1)
             assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
@@ -2007,7 +2048,29 @@ class LiveSessionRepositoryTest {
                 database
                     .activityExecutionDao()
                     .getSequenceChildAggregates(terminal.id.value)
-                    .associate { requireNotNull(it.execution.sequenceOccurrenceId) to it.execution }
+                    .also { aggregates ->
+                        aggregates.forEach { aggregate ->
+                            assertEquals(
+                                setOf(
+                                    ActivityExecutionFieldValueEntity(
+                                        aggregate.execution.id,
+                                        "limit-number",
+                                        7,
+                                        null,
+                                        null,
+                                    ),
+                                    ActivityExecutionFieldValueEntity(
+                                        aggregate.execution.id,
+                                        "limit-category",
+                                        null,
+                                        "limit-option",
+                                        null,
+                                    ),
+                                ),
+                                aggregate.values.toSet(),
+                            )
+                        }
+                    }.associate { requireNotNull(it.execution.sequenceOccurrenceId) to it.execution }
             val countdowns =
                 terminal.intervals
                     .filter { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }
@@ -2602,6 +2665,49 @@ class LiveSessionRepositoryTest {
         }
         database = builder.build()
         repository = repository(database, offset)
+    }
+
+    private fun assertBatchedRecoveryChildValidation(
+        queries: List<Pair<String, List<Any?>>>,
+        occurrenceCount: Int,
+        currentOccurrenceId: String,
+    ) {
+        val batchSize = 900 // Below SQLite's portable 999-bind limit.
+        val currentChildReads =
+            queries.filter { (sql, _) ->
+                sql.lowercase().startsWith("select * from activity_executions where sequence_occurrence_id =")
+            }
+        // Active projection hydrates three times; reconciliation hydrates the same child twice more.
+        assertEquals("Original current child hydrations", 5, currentChildReads.size)
+        assertTrue(currentChildReads.all { (_, arguments) -> arguments == listOf(currentOccurrenceId) })
+        val metadata =
+            listOf(
+                "select id, sequence_execution_id, activity_snapshot_id from sequence_occurrences" to
+                    (occurrenceCount + batchSize - 1) / batchSize,
+                "select id, time_tracking_mode, statistics_series_id from activity_snapshots" to 1,
+                "select id, snapshot_id, field_type from activity_snapshot_fields" to 1,
+                "select id, snapshot_field_id from activity_snapshot_category_options" to 1,
+            )
+        metadata.forEach { (prefix, expectedBatches) ->
+            val reads = queries.filter { (sql, _) -> sql.lowercase().startsWith(prefix) }
+            val batches = reads.filter { (sql, _) -> sql.lowercase().contains("where id in") }
+            assertEquals("Batched validation reads for $prefix", expectedBatches, batches.size)
+            assertTrue(batches.all { (_, arguments) -> arguments.size in 1..batchSize })
+            val points = reads.filterNot { (sql, _) -> sql.lowercase().contains("where id in") }
+            // Only the fixed number of original-current-child hydrations may use point metadata reads.
+            assertTrue("Point validation reads for $prefix: ${points.size}", points.size <= currentChildReads.size)
+            if (prefix.endsWith("from sequence_occurrences")) {
+                assertTrue(points.all { (_, arguments) -> arguments == listOf(currentOccurrenceId) })
+            }
+        }
+        val scopedOptionReads =
+            queries.count { (sql, _) ->
+                sql.lowercase().startsWith("select options.id, options.snapshot_field_id")
+            }
+        assertTrue(
+            "Per-child Category validation reads: $scopedOptionReads",
+            scopedOptionReads <= currentChildReads.size,
+        )
     }
 
     private fun startRecoverySequence(snapshot: String) =
