@@ -263,6 +263,36 @@ class AndroidRuntimeCoordinatorTest {
         }
 
     @Test
+    fun failedDurableRecoveryDoesNotPublishScheduleOrFeedbackSuccess() {
+        val runtime = runningTimer()
+        val scheduler = FakeScheduler()
+        val local = FakeLocalDriver()
+        val notifications = FakeNotifications()
+        val effects = mutableListOf<RuntimeDeadlineFeedback>()
+        val coordinator =
+            coordinator(
+                load = { runtime },
+                reconcile = { error("durable reconciliation failed") },
+                scheduler = scheduler,
+                local = local,
+                feedback = effects::add,
+                notifications = notifications,
+            )
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { coordinator.onForeground() }
+        }
+
+        assertEquals(0, scheduler.scheduled.size)
+        assertEquals(0, scheduler.cancellations)
+        assertEquals(0, local.armed.size)
+        assertEquals(0, local.cancellations)
+        assertEquals(0, notifications.attempts)
+        assertEquals(emptyList<RuntimeDeadlineFeedback>(), effects)
+        assertEquals(0L, coordinator.semanticGeneration.value)
+    }
+
+    @Test
     fun schedulingPrecedesAndSurvivesIndependentEffectFailures() =
         runBlocking {
             val first = runningTimer()

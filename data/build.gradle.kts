@@ -18,6 +18,10 @@ android {
     namespace = "com.alexandr5476.lifetracing.data"
     compileSdk = 36
 
+    testFixtures {
+        enable = true
+    }
+
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -38,6 +42,8 @@ kotlin {
 
 dependencies {
     implementation(project(":domain"))
+    testFixturesApi(project(":domain"))
+    testFixturesImplementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.runtime)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit.jupiter)
