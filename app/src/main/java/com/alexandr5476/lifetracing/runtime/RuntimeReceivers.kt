@@ -8,7 +8,13 @@ import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import kotlinx.coroutines.launch
 
-class RuntimeDeadlineReceiver : BroadcastReceiver() {
+internal typealias RuntimeBroadcastLauncher = (Context, RuntimeBroadcastOperation, () -> Unit) -> Unit
+
+class RuntimeDeadlineReceiver internal constructor(
+    private val launchBroadcast: RuntimeBroadcastLauncher,
+) : BroadcastReceiver() {
+    constructor() : this(::launchRuntimeBroadcast)
+
     override fun onReceive(
         context: Context,
         intent: Intent,
@@ -19,18 +25,22 @@ class RuntimeDeadlineReceiver : BroadcastReceiver() {
             return
         }
         val pending = goAsync()
-        launchRuntimeBroadcast(context, operation, pending::finish)
+        launchBroadcast(context, operation, pending::finish)
     }
 }
 
-class RuntimeRecoveryReceiver : BroadcastReceiver() {
+open class RuntimeRecoveryReceiver internal constructor(
+    private val launchBroadcast: RuntimeBroadcastLauncher,
+) : BroadcastReceiver() {
+    constructor() : this(::launchRuntimeBroadcast)
+
     override fun onReceive(
         context: Context,
         intent: Intent,
     ) {
         val operation = RuntimeBroadcastOperation.recovery(intent.action) ?: return
         val pending = goAsync()
-        launchRuntimeBroadcast(context, operation, pending::finish)
+        launchBroadcast(context, operation, pending::finish)
     }
 }
 
@@ -69,15 +79,24 @@ internal sealed interface RuntimeBroadcastOperation {
     }
 }
 
-@Suppress("TooGenericExceptionCaught") // Graph initialization failure must still finish the broadcast.
 private fun launchRuntimeBroadcast(
     context: Context,
     operation: RuntimeBroadcastOperation,
     finish: () -> Unit,
 ) {
+    launchRuntimeBroadcast(operation, finish) { LifeTracingRuntimeGraph.from(context) }
+}
+
+/** The receiver seam retains the real goAsync result and this production coroutine lifetime. */
+@Suppress("TooGenericExceptionCaught") // Graph initialization failure must still finish the broadcast.
+internal fun launchRuntimeBroadcast(
+    operation: RuntimeBroadcastOperation,
+    finish: () -> Unit,
+    acquireGraph: () -> LifeTracingRuntimeGraph,
+) {
     val graph =
         try {
-            LifeTracingRuntimeGraph.from(context)
+            acquireGraph()
         } catch (error: RuntimeException) {
             finish()
             throw error

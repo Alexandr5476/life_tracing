@@ -196,13 +196,14 @@ class LifeTracingRuntimeGraph internal constructor(
     ): StatisticsSeriesDetailController = statisticsSeriesDetailControllerFactory(seriesId, initialPeriod)
 
     companion object {
-        @Volatile
-        private var instance: LifeTracingRuntimeGraph? = null
+        private val processOwner = RuntimeGraphOwner(::create)
 
-        fun from(context: Context): LifeTracingRuntimeGraph =
-            instance ?: synchronized(this) {
-                instance ?: create(context.applicationContext).also { instance = it }
-            }
+        fun from(context: Context): LifeTracingRuntimeGraph = from(context, processOwner)
+
+        internal fun from(
+            context: Context,
+            owner: RuntimeGraphOwner,
+        ): LifeTracingRuntimeGraph = owner.get(context.applicationContext)
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         private fun create(context: Context): LifeTracingRuntimeGraph {
@@ -1053,4 +1054,17 @@ internal class DailyControllerOwner(
     private val controller = lazy(LazyThreadSafetyMode.SYNCHRONIZED, factory)
 
     fun get(): DailyController = controller.value
+}
+
+/** Process-local lazy ownership; instrumentation can discard an isolated owner without global resets. */
+internal class RuntimeGraphOwner(
+    private val create: (Context) -> LifeTracingRuntimeGraph,
+) {
+    @Volatile
+    private var instance: LifeTracingRuntimeGraph? = null
+
+    fun get(context: Context): LifeTracingRuntimeGraph =
+        instance ?: synchronized(this) {
+            instance ?: create(context).also { instance = it }
+        }
 }
