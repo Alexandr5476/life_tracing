@@ -373,6 +373,92 @@ class LibraryRepositoryTest {
             listOf(900, 1),
             observedTagQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
         )
+
+        repeat(itemCount) { index ->
+            repository.archiveActivityTemplate(ActivityTemplateId("activity-$index"), instant(1))
+            repository.archiveSequenceTemplate(SequenceTemplateId("sequence-$index"), instant(1))
+        }
+        tagQueries.clear()
+        val archived = repository.getArchived()
+        val archivedQueries = synchronized(tagQueries) { tagQueries.toList() }
+        assertEquals(itemCount * 2, archived.size)
+        assertTrue(archived.all { TagId("tag") in it.tagIds && it.isArchived })
+        assertEquals(
+            listOf(900, 1),
+            archivedQueries.filter { "FROM activity_template_tags" in it.first }.map { it.second.size },
+        )
+        assertEquals(
+            listOf(900, 1),
+            archivedQueries.filter { "FROM sequence_template_tags" in it.first }.map { it.second.size },
+        )
+        // Only two summary reads and two Tag-link chunks per kind are allowed. This rejects
+        // all aggregate hydration, including sequence_nodes, even if a new table is introduced.
+        val normalizedQueries =
+            archivedQueries.map {
+                it.first
+                    .lowercase()
+                    .trim()
+                    .trimEnd(';')
+                    .replace(Regex("\\s+"), " ")
+            }
+        // Room may finish asynchronous invalidation bookkeeping from the fixture's archive writes.
+        // Its fixed-table maintenance read is separate from catalog hydration; no other SELECT is excluded.
+        val selects =
+            normalizedQueries.filter {
+                it.startsWith("select") && it != "select * from room_table_modification_log where invalidated = 1"
+            }
+        val catalogShapes = selects.map { it.replace(Regex("\\?(?:\\s*,\\s*\\?)*"), "?") }
+        val allowedSelects =
+            listOf("activity", "sequence").flatMap { kind ->
+                val summary =
+                    "select templates.id, templates.name, templates.short_comment, templates.folder_id, " +
+                        "state.pinned_rank, state.last_used_at_ms, templates.deleted_at_ms " +
+                        "from ${kind}_templates as templates left join ${kind}_template_user_state as state " +
+                        "on state.${kind}_template_id = templates.id where templates.deleted_at_ms is not null " +
+                        "order by templates.name collate nocase, templates.id"
+                val tags =
+                    "select ${kind}_template_id as template_id, tag_id from ${kind}_template_tags " +
+                        "where ${kind}_template_id in (?)"
+                listOf(summary, tags, tags)
+            }
+        assertEquals(allowedSelects.sorted(), catalogShapes.sorted())
+    }
+
+    @Test
+    fun failedRestoreTransactionsKeepBothKindsArchivedAndRetryOnlyClearsTheLifecycleMarker() {
+        activity("restore-failed-activity", "Activity", deleted = 2, revision = 7)
+        sequence("restore-failed-sequence", "Sequence", deleted = 2, revision = 9)
+        val activityId = ActivityTemplateId("restore-failed-activity")
+        val sequenceId = SequenceTemplateId("restore-failed-sequence")
+        val beforeActivity = requireNotNull(database.activityTemplateDao().getById(activityId.value))
+        val beforeSequence = requireNotNull(database.sequenceTemplateDao().getById(sequenceId.value))
+        val repository = repository()
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER reject_activity_restore BEFORE UPDATE OF deleted_at_ms ON activity_templates " +
+                "WHEN OLD.id = 'restore-failed-activity' AND NEW.deleted_at_ms IS NULL " +
+                "BEGIN SELECT RAISE(ABORT, 'forced Restore failure'); END",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER reject_sequence_restore BEFORE UPDATE OF deleted_at_ms ON sequence_templates " +
+                "WHEN OLD.id = 'restore-failed-sequence' AND NEW.deleted_at_ms IS NULL " +
+                "BEGIN SELECT RAISE(ABORT, 'forced Restore failure'); END",
+        )
+
+        assertThrows(SQLiteException::class.java) { repository.restoreActivityTemplate(activityId) }
+        assertThrows(SQLiteException::class.java) { repository.restoreSequenceTemplate(sequenceId) }
+        assertEquals(beforeActivity, database.activityTemplateDao().getById(activityId.value))
+        assertEquals(beforeSequence, database.sequenceTemplateDao().getById(sequenceId.value))
+        assertEquals(2, repository.getArchived().size)
+        assertTrue(repository.getAll().isEmpty())
+
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_activity_restore")
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_sequence_restore")
+        repository.restoreActivityTemplate(activityId)
+        repository.restoreSequenceTemplate(sequenceId)
+        assertEquals(beforeActivity.copy(deletedAtMs = null), database.activityTemplateDao().getById(activityId.value))
+        assertEquals(beforeSequence.copy(deletedAtMs = null), database.sequenceTemplateDao().getById(sequenceId.value))
+        assertTrue(repository.getArchived().isEmpty())
+        assertEquals(2, repository.getAll().size)
     }
 
     @Test

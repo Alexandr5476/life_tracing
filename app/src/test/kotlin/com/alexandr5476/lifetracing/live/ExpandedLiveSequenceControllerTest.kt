@@ -443,7 +443,7 @@ class ExpandedLiveSequenceControllerTest {
             val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
             val scope = CoroutineScope(dispatcher)
             val dispatcherBlocked = CompletableDeferred<Unit>()
-            val releaseDispatcher = CompletableDeferred<Unit>()
+            val releaseDispatcher = CountDownLatch(1)
             val pauseEntered = CompletableDeferred<Unit>()
             val releasePause = CompletableDeferred<Unit>()
             val coordinationEntered = CompletableDeferred<Unit>()
@@ -483,12 +483,14 @@ class ExpandedLiveSequenceControllerTest {
 
                 scope.launch {
                     dispatcherBlocked.complete(Unit)
-                    releaseDispatcher.await()
+                    // Block the worker thread; a suspending await would let queued commands run.
+                    assertTrue(releaseDispatcher.await(10, TimeUnit.SECONDS))
                 }
-                dispatcherBlocked.await()
+                withTimeout(1_000) { dispatcherBlocked.await() }
                 controller.pause()
                 controller.saveCurrentValues()
 
+                assertFalse(pauseEntered.isCompleted)
                 assertEquals(0, captures)
                 assertTrue(controller.state.value.commandInFlight)
                 assertInstanceOf(ExpandedSequenceFailure.Rejected::class.java, controller.state.value.commandFailure)
@@ -498,10 +500,10 @@ class ExpandedLiveSequenceControllerTest {
                 controller.markMissing(number)
                 assertEquals(submitted, controller.state.value.currentValueDraft)
 
-                releaseDispatcher.complete(Unit)
-                pauseEntered.await()
+                releaseDispatcher.countDown()
+                withTimeout(1_000) { pauseEntered.await() }
                 releasePause.complete(Unit)
-                coordinationEntered.await()
+                withTimeout(1_000) { coordinationEntered.await() }
                 assertTrue(controller.state.value.commandInFlight)
                 controller.editNumber(number, "8")
                 controller.editText(text, "after-submit")
@@ -518,6 +520,9 @@ class ExpandedLiveSequenceControllerTest {
                 )
                 assertEquals(submitted, controller.state.value.currentValueDraft)
             } finally {
+                releaseDispatcher.countDown()
+                releasePause.complete(Unit)
+                releaseCoordination.complete(Unit)
                 controller.close()
                 dispatcher.close()
             }
@@ -529,7 +534,7 @@ class ExpandedLiveSequenceControllerTest {
             val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
             val scope = CoroutineScope(dispatcher)
             val dispatcherBlocked = CompletableDeferred<Unit>()
-            val releaseDispatcher = CompletableDeferred<Unit>()
+            val releaseDispatcher = CountDownLatch(1)
             val writerEntered = CompletableDeferred<ExpandedSequenceCommand>()
             var now = Instant.EPOCH.plusSeconds(59)
             val expanded = expanded(mode = TimeTrackingMode.TIMER)
@@ -550,19 +555,22 @@ class ExpandedLiveSequenceControllerTest {
                 controller.awaitLoaded()
                 scope.launch {
                     dispatcherBlocked.complete(Unit)
-                    releaseDispatcher.await()
+                    // Block the worker thread; a suspending await would let queued commands run.
+                    assertTrue(releaseDispatcher.await(10, TimeUnit.SECONDS))
                 }
-                dispatcherBlocked.await()
+                withTimeout(1_000) { dispatcherBlocked.await() }
 
                 controller.pause()
+                assertFalse(writerEntered.isCompleted)
                 now = deadline.plusSeconds(1)
-                releaseDispatcher.complete(Unit)
+                releaseDispatcher.countDown()
 
                 assertEquals(
                     ExpandedSequenceCommand.Pause(expanded.runtime.execution.id, deadline.minusSeconds(1)),
                     withTimeout(1_000) { writerEntered.await() },
                 )
             } finally {
+                releaseDispatcher.countDown()
                 controller.close()
                 dispatcher.close()
             }

@@ -56,14 +56,16 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionRoute
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSession
 import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanRoute
+import com.alexandr5476.lifetracing.settings.ArchivedTemplatesRoute
+import com.alexandr5476.lifetracing.settings.SettingsRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
 import com.alexandr5476.lifetracing.statistics.StatisticsRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
+import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingMotion
-import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.serialization.Serializable
 
 class MainActivity : AppCompatActivity() {
@@ -108,6 +110,7 @@ class MainActivity : AppCompatActivity() {
             val appearance by appearancePreferences.preferences.collectAsState(initial = AppearancePreferences())
             LifeTracingApp(
                 appearance,
+                appearanceRepository = appearancePreferences,
                 startActivityRouteSessions = startActivityRouteSessions,
                 activityTemplateEditorRouteSessions = activityTemplateEditorRouteSessions,
                 sequenceTemplateEditorRouteSessions = sequenceTemplateEditorRouteSessions,
@@ -137,6 +140,12 @@ data object StartActivityRoot : NavKey
 /** Navigation identity only: Library reads its canonical catalog on entry. */
 @Serializable
 data object LibraryRoot : NavKey
+
+@Serializable
+data object SettingsRoot : NavKey
+
+@Serializable
+data object ArchivedTemplatesRoot : NavKey
 
 @Serializable
 data object PlanRoot : NavKey
@@ -190,6 +199,7 @@ internal val dailyInitialBackStack: List<NavKey> = listOf(DailyRoot)
 internal fun LifeTracingApp(
     appearance: AppearancePreferences = AppearancePreferences(),
     systemIsDark: Boolean = isSystemInDarkTheme(),
+    appearanceRepository: AppearancePreferencesRepository? = null,
     startActivityRouteSessions: StartActivityRouteSessionOwner? = null,
     activityTemplateEditorRouteSessions: ActivityTemplateEditorRouteSessionOwner? = null,
     sequenceTemplateEditorRouteSessions: SequenceTemplateEditorRouteSessionOwner? = null,
@@ -204,9 +214,8 @@ internal fun LifeTracingApp(
     activityHistoryMutationRouteSessions: ActivityHistoryMutationRouteSessionOwner? = null,
     sequenceHistoryMutationRouteSessions: SequenceHistoryMutationRouteSessionOwner? = null,
 ) {
-    LifeTracingTheme(
-        themeMode = appearance.themeMode,
-        accentPaletteId = appearance.accentPaletteId,
+    LifeTracingAppearance(
+        appearance = appearance,
         systemIsDark = systemIsDark,
     ) {
         Surface {
@@ -378,6 +387,8 @@ internal fun LifeTracingApp(
                             val route = backStack.last() as SequenceHistoryDetailRoot
                             backStack.handleSequenceHistoryDetailBack(route.executionId, sequenceHistorySessions)
                         }
+                        backStack.lastOrNull() is ArchivedTemplatesRoot -> backStack.removeArchivedTemplates()
+                        backStack.lastOrNull() is SettingsRoot -> backStack.removeSettings()
                         else -> backStack.removeLastOrNull()
                     }
                 },
@@ -396,6 +407,7 @@ internal fun LifeTracingApp(
                                 onPlan = { backStack.openPlan() },
                                 onHistory = { backStack.openHistory() },
                                 onStatistics = { backStack.openStatistics() },
+                                onSettings = { backStack.openSettings() },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
@@ -408,6 +420,24 @@ internal fun LifeTracingApp(
                                             runtimeGraph.createPlanExecutionController(identity)
                                         }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
                                 },
+                            )
+                        }
+                        entry<SettingsRoot> {
+                            val repository =
+                                appearanceRepository ?: remember(context.applicationContext) {
+                                    AppearancePreferencesRepository(context.applicationContext)
+                                }
+                            SettingsRoute(
+                                repository,
+                                appearanceMutations = runtimeGraph.appearanceMutations,
+                                onBack = backStack::removeSettings,
+                                onArchivedTemplates = backStack::openArchivedTemplates,
+                            )
+                        }
+                        entry<ArchivedTemplatesRoot> {
+                            ArchivedTemplatesRoute(
+                                onBack = backStack::removeArchivedTemplates,
+                                onRestored = libraryOwner::refreshIfInitialized,
                             )
                         }
                         entry<StartActivityRoot> {
@@ -763,6 +793,22 @@ internal fun MutableList<NavKey>.openStartActivity() {
 
 internal fun MutableList<NavKey>.removeStartActivity() {
     if (lastOrNull() is StartActivityRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openSettings() {
+    if (lastOrNull() !is SettingsRoot) add(SettingsRoot)
+}
+
+internal fun MutableList<NavKey>.removeSettings() {
+    if (lastOrNull() is SettingsRoot) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.openArchivedTemplates() {
+    if (lastOrNull() is SettingsRoot) add(ArchivedTemplatesRoot)
+}
+
+internal fun MutableList<NavKey>.removeArchivedTemplates() {
+    if (lastOrNull() is ArchivedTemplatesRoot) removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openLibrary() {

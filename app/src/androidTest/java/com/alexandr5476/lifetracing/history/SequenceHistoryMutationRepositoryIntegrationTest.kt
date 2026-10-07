@@ -621,30 +621,46 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             composeTestRule.onAllNodesWithText(label).fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.onNodeWithText(label).performClick()
+        awaitHistoryLoaded()
+    }
+
+    private fun awaitHistoryLoaded(): HistoryController {
         val activity = composeTestRule.activity
         val controller =
             activity.historyControllerOwner.get {
                 LifeTracingRuntimeGraph.from(activity).createHistoryController()
             }
-        composeTestRule.waitUntil(5_000) { controller.state.value.load !is HistoryRootsLoad.Loading }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.onAllNodesWithTag("history-add-completed-activity").fetchSemanticsNodes().size == 1 &&
+                controller.state.value.load !is HistoryRootsLoad.Loading
+        }
+        val load = controller.state.value.load
+        check(load is HistoryRootsLoad.Content || load is HistoryRootsLoad.Empty) {
+            "History browse read did not succeed: $load"
+        }
+        return controller
     }
 
     private fun openSequence(id: com.alexandr5476.lifetracing.domain.SequenceExecutionId) {
+        val controller = awaitHistoryLoaded()
         val tag = "history-sequence-${id.value}"
         val loadMoreLabel = composeTestRule.activity.getString(R.string.manual_history_load_more)
         while (composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isEmpty()) {
             val loadMore = composeTestRule.onAllNodesWithText(loadMoreLabel).fetchSemanticsNodes()
             check(loadMore.isNotEmpty()) { "History entry ${id.value} is not in the current browse window" }
+            val previousPage = controller.state.value.load
             composeTestRule.onNodeWithText(loadMoreLabel).performScrollTo().performClick()
             composeTestRule.waitUntil(5_000) {
-                composeTestRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() ||
-                    composeTestRule.onAllNodesWithText(loadMoreLabel).fetchSemanticsNodes().isEmpty()
+                controller.state.value.load !is HistoryRootsLoad.Loading &&
+                    controller.state.value.load != previousPage
             }
+            awaitHistoryLoaded()
         }
         composeTestRule.onNodeWithTag(tag, useUnmergedTree = true).performScrollTo().performClick()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
-                ?.executionId == id
+                ?.executionId == id &&
+                composeTestRule.onAllNodesWithTag("sequence-history-timing").fetchSemanticsNodes().size == 1
         }
     }
 
@@ -657,9 +673,26 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
     }
 
     private fun backToHistory() {
+        val session = requireNotNull(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
+        // A durable write can be visible before the detail reload finishes; Back is consumed until then.
+        composeTestRule.waitUntil(5_000) {
+            val state = session.controller.state.value
+            !state.isMutating &&
+                state.load is HistoryDetailLoad.Content &&
+                state.timingDraft == null &&
+                state.childDeletionProposal == null &&
+                state.structuralTarget == null
+        }
+        assertNull(session.controller.state.value.issue)
         composeTestRule
             .onNodeWithText(composeTestRule.activity.getString(R.string.history_back))
+            .performScrollTo()
+            .assertIsDisplayed()
             .performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession == null
+        }
+        awaitHistoryLoaded()
     }
 
     private fun replaceTimestamp(

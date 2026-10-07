@@ -1,8 +1,10 @@
 package com.alexandr5476.lifetracing.ui.appearance
 
 import android.content.Context
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
@@ -15,7 +17,14 @@ private val Context.appearanceDataStore by preferencesDataStore(name = "appearan
 data class AppearancePreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val accentPaletteId: AccentPaletteId = AccentPaletteId.DEFAULT,
-)
+    val interfaceScalePercent: Int = AppearanceScalePolicy.DEFAULT_PERCENT,
+    val textScalePercent: Int = AppearanceScalePolicy.DEFAULT_PERCENT,
+) {
+    init {
+        require(interfaceScalePercent in AppearanceScalePolicy.interfacePercentages)
+        require(textScalePercent in AppearanceScalePolicy.textPercentages)
+    }
+}
 
 enum class ThemeMode {
     SYSTEM,
@@ -38,10 +47,10 @@ fun resolveDarkTheme(
         ThemeMode.DARK -> true
     }
 
-class AppearancePreferencesRepository(
-    context: Context,
+class AppearancePreferencesRepository internal constructor(
+    private val dataStore: DataStore<Preferences>,
 ) {
-    private val dataStore = context.applicationContext.appearanceDataStore
+    constructor(context: Context) : this(context.applicationContext.appearanceDataStore)
 
     val preferences: Flow<AppearancePreferences> =
         dataStore.data
@@ -56,14 +65,30 @@ class AppearancePreferencesRepository(
         dataStore.edit { preferences -> preferences[ACCENT_PALETTE_ID] = accentPaletteId.name }
     }
 
-    private fun toAppearancePreferences(preferences: Preferences) =
-        AppearancePreferences(
-            themeMode = ThemeMode.fromStorage(preferences[THEME_MODE]),
-            accentPaletteId = AccentPaletteId.fromStorage(preferences[ACCENT_PALETTE_ID]),
+    suspend fun setInterfaceScalePercent(percent: Int) {
+        require(percent in AppearanceScalePolicy.interfacePercentages)
+        dataStore.edit { preferences -> preferences[INTERFACE_SCALE_PERCENT] = percent }
+    }
+
+    suspend fun setTextScalePercent(percent: Int) {
+        require(percent in AppearanceScalePolicy.textPercentages)
+        dataStore.edit { preferences -> preferences[TEXT_SCALE_PERCENT] = percent }
+    }
+
+    private fun toAppearancePreferences(preferences: Preferences): AppearancePreferences {
+        val stored = preferences.asMap()
+        return AppearancePreferences(
+            themeMode = ThemeMode.fromStorage(stored[THEME_MODE] as? String),
+            accentPaletteId = AccentPaletteId.fromStorage(stored[ACCENT_PALETTE_ID] as? String),
+            interfaceScalePercent = AppearanceScalePolicy.interfaceFromStorage(stored[INTERFACE_SCALE_PERCENT] as? Int),
+            textScalePercent = AppearanceScalePolicy.textFromStorage(stored[TEXT_SCALE_PERCENT] as? Int),
         )
+    }
 
     private companion object {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val ACCENT_PALETTE_ID = stringPreferencesKey("accent_palette_id")
+        val INTERFACE_SCALE_PERCENT = intPreferencesKey("interface_scale_percent")
+        val TEXT_SCALE_PERCENT = intPreferencesKey("text_scale_percent")
     }
 }

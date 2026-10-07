@@ -77,6 +77,7 @@ fun DailyRoute(
     onPlan: () -> Unit = {},
     onHistory: () -> Unit = {},
     onStatistics: () -> Unit = {},
+    onSettings: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -95,6 +96,7 @@ fun DailyRoute(
         onPlan = onPlan,
         onHistory = onHistory,
         onStatistics = onStatistics,
+        onSettings = onSettings,
         onExpandSequence = onExpandSequence,
         onExecutePlan = onExecutePlan,
     )
@@ -110,6 +112,7 @@ internal fun DailyScreen(
     onPlan: () -> Unit = {},
     onHistory: () -> Unit = {},
     onStatistics: () -> Unit = {},
+    onSettings: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
@@ -132,6 +135,7 @@ internal fun DailyScreen(
                 onPlan,
                 onHistory,
                 onStatistics,
+                onSettings,
             )
             CommandFailure(state.commandFailure)
             when (val load = state.load) {
@@ -156,6 +160,7 @@ private fun DateHeader(
     onPlan: () -> Unit,
     onHistory: () -> Unit,
     onStatistics: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -200,6 +205,9 @@ private fun DateHeader(
                 }
                 LifeTracingSecondaryButton(onClick = onStatistics) {
                     Text(stringResource(R.string.daily_statistics))
+                }
+                LifeTracingSecondaryButton(onClick = onSettings, modifier = Modifier.testTag("daily-settings")) {
+                    Text(stringResource(R.string.settings_title))
                 }
             }
         }
