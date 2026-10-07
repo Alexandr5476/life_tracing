@@ -135,7 +135,7 @@ class SequenceHistoryCommandRepository internal constructor(
                     .map { it.toEntityAggregate() }
                     .filter { childBeforeById.getValue(it.execution.id) != it }
             val validationScope =
-                database.activityExecutionDao().historicalSequenceChildValidationScope(changedChildren)
+                database.activityExecutionDao().sequenceChildValidationScope(changedChildren)
             changedChildren.forEach { after ->
                 database.activityExecutionDao().correctSequenceChildTiming(
                     childBeforeById.getValue(after.execution.id),
@@ -207,7 +207,7 @@ class SequenceHistoryCommandRepository internal constructor(
     ) {
         val beforeById = beforeChildren.associateBy { it.execution.id }
         val changed = afterChildren.filter { beforeById.getValue(it.execution.id) != it }
-        val validationScope = database.activityExecutionDao().historicalSequenceChildValidationScope(changed)
+        val validationScope = database.activityExecutionDao().sequenceChildValidationScope(changed)
         changed.forEach { after ->
             val before = beforeById.getValue(after.execution.id)
             if (before.execution.deletedAtMs == null && after.execution.deletedAtMs != null) {

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertDoesNotThrow
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
@@ -446,6 +447,79 @@ class SequenceExecutionTest {
             )
         assertDoesNotThrow {
             SequenceExecutionValidator.requireValid(running(snapshot).copy(occurrences = listOf(completed)), snapshot)
+        }
+    }
+
+    @Test
+    fun repeatProvenanceValidationReadsGrowLinearlyThroughTheOccurrenceLimit() {
+        val reads =
+            listOf(128, 512, 5_000).map { childCount ->
+                val children = CountingList(List(childCount) { step("child-$it", it) })
+                val snapshot =
+                    snapshot(
+                        nodes = listOf(SequenceSnapshotRepeatBlock(SequenceSnapshotNodeId("repeat"), 0, 2, children)),
+                    )
+                val execution =
+                    SequenceExecutionFactory(
+                        { SequenceExecutionId("execution") },
+                        RuntimeOccurrenceMaterializer(sequenceIds()),
+                    ).start(snapshot, instant(0), instant(0), ZoneId.of("UTC"))
+                children.reads = 0
+
+                SequenceExecutionValidator.requireValid(execution, snapshot)
+
+                assertTrue(children.reads <= 12L * childCount, "Repeat child reads: ${children.reads} for $childCount")
+                children.reads
+            }
+
+        assertTrue(reads[1] <= reads[0] * 4 + 12, "Four times the children must not cause quadratic membership work")
+    }
+
+    @Test
+    fun repeatOwnershipIndexPreservesForeignChildAndMissingSourceValidation() {
+        val snapshot =
+            snapshot(
+                nodes =
+                    listOf(
+                        repeat("first", 0, 2, step("one", 0)),
+                        repeat("second", 1, 2, step("two", 0)),
+                        step("top", 2),
+                    ),
+            )
+        val valid =
+            occurrence("occ", "one").copy(
+                repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("first"),
+                repeatIteration = 2,
+            )
+        listOf(
+            valid.copy(repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("second")),
+            valid.copy(sourceSequenceSnapshotNodeId = SequenceSnapshotNodeId("top")),
+            valid.copy(repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("absent")),
+            valid.copy(repeatSourceSnapshotNodeId = null),
+            valid.copy(repeatIteration = null),
+        ).forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) {
+                SequenceExecutionValidator.requireValid(running(snapshot).copy(occurrences = listOf(invalid)), snapshot)
+            }
+        }
+        assertDoesNotThrow {
+            SequenceExecutionValidator.requireValid(
+                running(snapshot).copy(occurrences = listOf(valid.copy(sourceSequenceSnapshotNodeId = null))),
+                snapshot,
+            )
+        }
+    }
+
+    private class CountingList<T>(
+        private val items: List<T>,
+    ) : AbstractList<T>() {
+        var reads = 0L
+        override val size: Int
+            get() = items.size
+
+        override fun get(index: Int): T {
+            reads++
+            return items[index]
         }
     }
 

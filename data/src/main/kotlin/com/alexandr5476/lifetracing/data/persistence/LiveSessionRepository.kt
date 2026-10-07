@@ -931,47 +931,23 @@ class LiveSessionRepository internal constructor(
                 ),
             )
         }
-        after.children.forEach { (occurrenceId, child) ->
-            val occurrence = after.execution.occurrences.single { it.id == occurrenceId }
-            ActivityExecutionValidator.requireValid(child, activities.getValue(occurrence.activitySnapshotId))
-            require(
-                child.context == ActivityExecutionContext.SEQUENCE_CHILD &&
-                    child.sequenceExecutionId == after.execution.id &&
-                    child.sequenceOccurrenceId == occurrenceId,
-            ) { "Sequence child ownership disagrees with the intended runtime state" }
-        }
-        val current = after.execution.currentOccurrenceId?.let(after.children::get)
-        val currentOccurrence =
-            after.execution.currentOccurrenceId?.let { id -> after.execution.occurrences.single { it.id == id } }
-        if (currentOccurrence != null) {
-            if (activities.getValue(currentOccurrence.activitySnapshotId).timeTrackingMode ==
-                TimeTrackingMode.NO_LIVE_TRACKING
-            ) {
-                require(current == null) { "Current No-live Step cannot have a child execution" }
-            } else {
-                requireNotNull(current) { "Current timed Step requires its child execution" }
-                require(
-                    current.status ==
-                        if (after.execution.status == SequenceExecutionStatus.PAUSED) {
-                            ActivityExecutionStatus.PAUSED
-                        } else {
-                            ActivityExecutionStatus.RUNNING
-                        },
-                ) { "Current child state disagrees with the intended Sequence state" }
-            }
-        }
+        requireValidSequenceRuntimeChildren(after, activities)
         database.sequenceExecutionDao().persistRuntimeDelta(
             before.execution.toEntityAggregate(),
             after.execution.toEntityAggregate(),
         )
-        after.children.forEach { (occurrenceId, child) ->
+        val children = after.children.mapValues { (_, child) -> child.toEntityAggregate() }
+        val childDao = database.activityExecutionDao()
+        val validationScope = childDao.sequenceChildValidationScope(children.values.toList())
+        children.forEach { (occurrenceId, child) ->
             val previous = before.children[occurrenceId]
             if (previous == null) {
-                database.activityExecutionDao().insertAggregate(child.toEntityAggregate())
+                childDao.insertAggregate(child, validationScope)
             } else {
-                database.activityExecutionDao().persistSequenceChildDelta(
+                childDao.persistSequenceChildDelta(
                     previous.toEntityAggregate(),
-                    child.toEntityAggregate(),
+                    child,
+                    validationScope,
                 )
             }
         }
@@ -1378,3 +1354,40 @@ class LiveSessionRepository internal constructor(
 }
 
 private fun persisted(instant: Instant): Instant = Instant.ofEpochMilli(instant.toEpochMilli())
+
+// The caller validates the Sequence aggregate before validating its child ownership.
+internal fun requireValidSequenceRuntimeChildren(
+    state: SequenceRuntimeState,
+    activities: Map<ActivitySnapshotId, ActivityConfigSnapshot>,
+) {
+    val occurrencesById = state.execution.occurrences.associateBy { it.id }
+    state.children.forEach { (occurrenceId, child) ->
+        val occurrence = occurrencesById.getValue(occurrenceId)
+        ActivityExecutionValidator.requireValid(child, activities.getValue(occurrence.activitySnapshotId))
+        require(
+            child.context == ActivityExecutionContext.SEQUENCE_CHILD &&
+                child.sequenceExecutionId == state.execution.id &&
+                child.sequenceOccurrenceId == occurrenceId,
+        ) { "Sequence child ownership disagrees with the intended runtime state" }
+    }
+    val current = state.execution.currentOccurrenceId?.let(state.children::get)
+    val currentOccurrence =
+        state.execution.currentOccurrenceId?.let(occurrencesById::getValue)
+    if (currentOccurrence != null) {
+        if (activities.getValue(currentOccurrence.activitySnapshotId).timeTrackingMode ==
+            TimeTrackingMode.NO_LIVE_TRACKING
+        ) {
+            require(current == null) { "Current No-live Step cannot have a child execution" }
+        } else {
+            requireNotNull(current) { "Current timed Step requires its child execution" }
+            require(
+                current.status ==
+                    if (state.execution.status == SequenceExecutionStatus.PAUSED) {
+                        ActivityExecutionStatus.PAUSED
+                    } else {
+                        ActivityExecutionStatus.RUNNING
+                    },
+            ) { "Current child state disagrees with the intended Sequence state" }
+        }
+    }
+}

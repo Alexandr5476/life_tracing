@@ -886,6 +886,10 @@ class LibraryRepository internal constructor(
 
         fun create(context: Context): LibraryRepository {
             val database = LifeTracingDatabase.builder(context.applicationContext, DATABASE_NAME).build()
+            return create(database)
+        }
+
+        internal fun create(database: LifeTracingDatabase): LibraryRepository {
             val live =
                 LiveSessionRepository(
                     database,

@@ -18,13 +18,21 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
+import com.alexandr5476.lifetracing.domain.HistoryDateRange
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
+import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceCardinalityPolicy
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
@@ -41,6 +49,9 @@ import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.TransitionCountdownProgressResolver
+import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
+import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -53,6 +64,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -1150,6 +1162,7 @@ class LiveSessionRepositoryTest {
     }
 
     @Test
+    @Suppress("LongMethod") // The file-reopen fixture and frozen-source assertions form one recovery scenario.
     fun authoredRuntimeAddSnapshotsAndCurrentChildRecoverAndReconcileAfterFileReopen() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "runtime-add-authoring-reopen-${System.nanoTime()}"
@@ -1184,11 +1197,17 @@ class LiveSessionRepositoryTest {
                 )
             val immediate = immediateState.execution.occurrences.single { it.isRuntimeAdded && it.id != deferred.id }
             val childId = requireNotNull(immediateState.currentChild).id
+            val frozenRuntime = activeSequence()
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE activity_templates SET name = 'Changed source', timer_target_ms = 120000, revision = 10 " +
+                    "WHERE id = 'runtime-template'",
+            )
             database.close()
 
             database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
             repository = repository(database, 100)
             val recovered = activeSequence()
+            assertEquals(frozenRuntime, recovered)
             assertEquals(immediate.id, recovered.execution.currentOccurrenceId)
             assertEquals(childId, recovered.currentChild?.id)
             assertEquals(9L, recovered.activitySnapshots.getValue(immediate.activitySnapshotId).sourceRevision)
@@ -1479,6 +1498,291 @@ class LiveSessionRepositoryTest {
             assertEquals(instant(60), restored.occurrences[0].completedAt)
             assertEquals(instant(90), restored.occurrences[1].enteredAt)
             assertEquals(instant(90), repositoryExecution("activity-101").startedAt)
+            assertEquals(OccurrenceCompletionReason.NATURAL_TIMER_END, restored.occurrences[0].completionReason)
+            assertEquals(
+                instant(90),
+                restored.intervals.single { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }.endedAt,
+            )
+            assertEquals(2, count("activity_executions"))
+        }
+    }
+
+    @Test
+    fun runningStopwatchReopenPreservesCurrentChildAndUsesFreshDisplayAnchor() {
+        withFileRuntime { name ->
+            LiveRuntimeTestFixtures(database).repeatSequence("sequence-stopwatch-recovery", "stopwatch")
+            startRecoverySequence("sequence-stopwatch-recovery")
+            val before = activeSequence()
+            reopenRuntime(name)
+
+            val restored = activeSequence()
+            assertEquals(before, restored)
+            assertNull(NextRuntimeDeadlineResolver.resolve(restored))
+            assertTrue(repository.reconcileActiveSession(instant(600)).appliedEvents.isEmpty())
+            assertEquals(before, activeSequence())
+            val display =
+                RuntimeDisplayBaseline.capture(restored, WallMonotonicAnchor(instant(600), 7_000), 7_000)
+            assertEquals(Duration.ofSeconds(600), display.currentStepStopwatchElapsed(7_000))
+            assertEquals(Duration.ofSeconds(605), display.currentStepStopwatchElapsed(12_000))
+            assertEquals(1, count("activity_executions"))
+        }
+    }
+
+    @Test
+    fun pausedTimerReopenPreservesPausesValuesAndResumesOnlyRemainingActiveTime() {
+        withFileRuntime { name ->
+            val started = startRecoverySequence("sequence-defaults")
+            val field = ActivitySnapshotFieldId("defaults-number")
+            repository.updateCurrentSequenceStepValues(
+                started.execution.id,
+                started.execution.currentOccurrenceId!!,
+                listOf(ActivityExecutionValueOverride(field, NumberExecutionValue(field, 0))),
+                instant(5),
+            )
+            repository.pauseActiveSequence(instant(10))
+            val before = activeSequence()
+            val childBefore = requireNotNull(before.currentChild)
+            val childPause = childBefore.pauses.single()
+            val sequencePause = before.execution.intervals.single { it.endedAt == null }
+            reopenRuntime(name)
+
+            assertEquals(before, activeSequence())
+            assertTrue(repository.reconcileActiveSession(instant(600)).appliedEvents.isEmpty())
+            assertEquals(before, activeSequence())
+            assertNull(NextRuntimeDeadlineResolver.resolve(activeSequence()))
+            val display =
+                RuntimeDisplayBaseline.capture(activeSequence(), WallMonotonicAnchor(instant(600), 0), 0)
+            assertEquals(Duration.ofSeconds(10), display.activeElapsed(100_000))
+            assertEquals(Duration.ofSeconds(50), display.timerRemaining(100_000))
+
+            repository.resumeActiveSequence(instant(600))
+            val resumed = activeSequence()
+            assertEquals(childBefore.id, resumed.currentChild?.id)
+            assertEquals(childPause.copy(endedAt = instant(600)), resumed.currentChild?.pauses?.single())
+            assertEquals(
+                sequencePause.copy(endedAt = instant(600)),
+                resumed.execution.intervals.single { it.id == sequencePause.id },
+            )
+            assertEquals(instant(650), NextRuntimeDeadlineResolver.resolve(resumed)?.at)
+            assertTrue(repository.reconcileActiveSession(instant(649)).appliedEvents.isEmpty())
+            repository.reconcileActiveSession(instant(650))
+            val child = repositoryExecution(childBefore.id.value)
+            assertEquals(Duration.ofSeconds(60), child.activeDuration)
+            assertEquals(childBefore.values, child.values)
+            assertEquals(instant(650), child.completedAt)
+            assertEquals(ActiveSessionState.WAITING_NEXT, repository.getActiveSession()?.state)
+            reopenRuntime(name, 200)
+            assertEquals(child, repositoryExecution(child.id.value))
+            assertEquals(before.execution.id, activeSequence().execution.id)
+            assertEquals(1, count("activity_executions"))
+        }
+    }
+
+    @Test
+    fun persistedRunningCountdownReopensBeforeDeadlineWithOriginalIntervalAndTarget() {
+        withFileRuntime { name ->
+            startRecoverySequence("sequence-timer")
+            repository.reconcileActiveSession(instant(60))
+            val before = activeSequence()
+            val countdown = before.execution.intervals.single { it.endedAt == null }
+            reopenRuntime(name)
+
+            assertEquals(before, activeSequence())
+            assertTrue(repository.reconcileActiveSession(instant(80)).appliedEvents.isEmpty())
+            assertEquals(before, activeSequence())
+            val progress = requireNotNull(TransitionCountdownProgressResolver.running(activeSequence()))
+            assertEquals(countdown.occurrenceId, progress.targetOccurrenceId)
+            assertEquals(
+                Duration.ZERO,
+                TransitionCountdownProgressResolver.closedDuration(before.execution, progress.targetOccurrenceId),
+            )
+            assertEquals(Duration.ofSeconds(30), progress.remaining)
+            assertEquals(Duration.ofSeconds(20), Duration.between(countdown.startedAt, instant(80)))
+            assertEquals(instant(90), progress.deadlineAt)
+            val display =
+                RuntimeDisplayBaseline.capture(activeSequence(), WallMonotonicAnchor(instant(80), 0), 0)
+            assertEquals(Duration.ofSeconds(10), display.transitionCountdownRemaining(0))
+            assertEquals(instant(90), NextRuntimeDeadlineResolver.resolve(activeSequence())?.at)
+            assertNull(activeSequence().currentChild)
+
+            repository.reconcileActiveSession(instant(90))
+            val entered = activeSequence()
+            assertEquals(countdown.occurrenceId, entered.execution.currentOccurrenceId)
+            assertEquals(instant(90), entered.currentChild?.startedAt)
+            assertEquals(
+                countdown.copy(endedAt = instant(90)),
+                entered.execution.intervals.single { it.id == countdown.id },
+            )
+        }
+    }
+
+    @Test
+    fun pausedCountdownReopenRetainsConsumedDurationAndStartsTargetAtResumedDeadlineOnce() {
+        withFileRuntime { name ->
+            startRecoverySequence("sequence-timer")
+            repository.reconcileActiveSession(instant(60))
+            repository.pauseActiveSequence(instant(70))
+            val before = activeSequence()
+            val target = requireNotNull(before.transitionCountdownTargetId)
+            reopenRuntime(name)
+
+            assertEquals(before, activeSequence())
+            assertTrue(repository.reconcileActiveSession(instant(600)).appliedEvents.isEmpty())
+            assertEquals(before, activeSequence())
+            val progress = requireNotNull(TransitionCountdownProgressResolver.paused(activeSequence()))
+            assertEquals(target, progress.targetOccurrenceId)
+            assertEquals(
+                Duration.ofSeconds(10),
+                TransitionCountdownProgressResolver.closedDuration(before.execution, target),
+            )
+            assertEquals(Duration.ofSeconds(20), progress.remaining)
+            val display =
+                RuntimeDisplayBaseline.capture(activeSequence(), WallMonotonicAnchor(instant(600), 0), 0)
+            assertEquals(Duration.ofSeconds(20), display.transitionCountdownRemaining(100_000))
+            assertNull(progress.deadlineAt)
+            assertNull(NextRuntimeDeadlineResolver.resolve(activeSequence()))
+            assertEquals(1, count("activity_executions"))
+
+            repository.resumeActiveSequence(instant(600))
+            assertEquals(instant(620), NextRuntimeDeadlineResolver.resolve(activeSequence())?.at)
+            assertTrue(repository.reconcileActiveSession(instant(619)).appliedEvents.isEmpty())
+            repository.reconcileActiveSession(instant(1_000))
+            val entered = activeSequence()
+            assertEquals(target, entered.execution.currentOccurrenceId)
+            assertEquals(
+                instant(620),
+                entered.execution
+                    .occurrences
+                    .single { it.id == target }
+                    .enteredAt,
+            )
+            assertEquals(instant(620), entered.currentChild?.startedAt)
+            assertEquals(
+                Duration.ofSeconds(30),
+                TransitionCountdownProgressResolver.closedDuration(entered.execution, target),
+            )
+            assertEquals(
+                before.execution.intervals.map { it.id },
+                entered.execution
+                    .intervals
+                    .take(before.execution.intervals.size)
+                    .map { it.id },
+            )
+            reopenRuntime(name, 200)
+            assertEquals(entered, activeSequence())
+            assertTrue(repository.reconcileActiveSession(instant(2_000)).appliedEvents.isEmpty())
+            assertEquals(entered, activeSequence())
+            assertEquals(2, count("activity_executions"))
+        }
+    }
+
+    @Test
+    fun planLinkedTerminalCatchUpReopensIntoCanonicalReadersWithoutDoubleCounting() {
+        verifyTerminalPlanRecovery(forceFailure = false)
+    }
+
+    @Test
+    fun lateTerminalPlanFailureRollsBackDurablyAndRetryCommitsExactlyOnce() {
+        verifyTerminalPlanRecovery(forceFailure = true)
+    }
+
+    @Test
+    @Suppress("LongMethod") // Keep the bind-boundary fixture and its complete query accounting together.
+    fun activeLoaderChunksDistinctDerivedSnapshotsAndNeverScansUnfinishedHistory() {
+        withFileRuntime { name ->
+            val fixtures = LiveRuntimeTestFixtures(database)
+            fixtures.standaloneExecution(id = "unpointed-activity")
+            fixtures.sequenceExecution(id = "unpointed-sequence")
+            val started = startRecoverySequence("sequence")
+            val before = requireNotNull(database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+            val derivedIds = List(1_001) { "derived-$it" }
+            database.runInTransaction {
+                derivedIds.forEach { fixtures.activity(it, "STOPWATCH") }
+                val source = before.occurrences.last()
+                val added =
+                    derivedIds.mapIndexed { index, id ->
+                        source.copy(
+                            id = "derived-occurrence-$index",
+                            sourceSequenceSnapshotNodeId = null,
+                            activitySnapshotId = id,
+                            runtimePosition = index + before.occurrences.size,
+                            isRuntimeAdded = true,
+                        )
+                    }
+                database.sequenceExecutionDao().persistRuntimeDelta(
+                    before,
+                    before.copy(occurrences = before.occurrences + added),
+                )
+            }
+            val persisted = requireNotNull(database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+            val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
+            reopenRuntime(name, queries = queries)
+            // Opening and Room invalidation bookkeeping are outside aggregate query accounting.
+            database.openHelper.writableDatabase
+            queries.clear()
+            val recovered = activeSequence()
+            val reads =
+                queries.filter {
+                    it.first.lowercase().startsWith("select") &&
+                        "room_table_modification_log" !in it.first.lowercase()
+                }
+            val expectedIds = (derivedIds + "stopwatch").toSet()
+            assertEquals(
+                expectedIds,
+                recovered.activitySnapshots.keys
+                    .map { it.value }
+                    .toSet(),
+            )
+            assertEquals(persisted.toDomain(), recovered.execution)
+            assertEquals(started.currentChild?.id, recovered.currentChild?.id)
+            val modes =
+                reads.filter {
+                    it.first.lowercase().startsWith("select id, time_tracking_mode from activity_snapshots")
+                }
+            val hydration = reads.filter { it.first.lowercase().startsWith("select * from activity_snapshots") }
+            listOf(modes, hydration).forEach { batch ->
+                assertTrue(batch.size in 2..12)
+                assertTrue(batch.all { it.second.size in 1..900 && " in (" in it.first.lowercase() })
+                assertEquals(expectedIds, batch.flatMap { it.second }.toSet())
+                assertTrue(batch.any { it.second.size == 900 })
+            }
+            listOf("activity_snapshot_settings", "activity_snapshot_fields", "activity_snapshot_category_options")
+                .forEach { table ->
+                    val batch = reads.filter { "from $table " in it.first.lowercase() }
+                    assertTrue(batch.size in 2..12)
+                    assertTrue(batch.all { " in (" in it.first.lowercase() && it.second.size in 1..900 })
+                }
+            listOf("sequence_executions", "sequence_intervals")
+                .forEach { table ->
+                    val owned = reads.filter { "from $table " in it.first.lowercase() }
+                    assertTrue(owned.isNotEmpty())
+                    assertTrue(owned.all { it.second == listOf(started.execution.id.value) })
+                }
+            val occurrenceReads = reads.filter { "from sequence_occurrences " in it.first.lowercase() }
+            assertTrue(occurrenceReads.size in 1..8)
+            occurrenceReads.forEach { (sql, arguments) ->
+                val expected =
+                    if (sql.lowercase().startsWith("select *")) {
+                        started.execution.id.value
+                    } else {
+                        started.execution.currentOccurrenceId!!.value
+                    }
+                assertEquals(listOf(expected), arguments)
+            }
+            val childReads = reads.filter { "from activity_executions " in it.first.lowercase() }
+            assertTrue(childReads.size in 1..4)
+            assertTrue(childReads.all { it.second == listOf(started.execution.currentOccurrenceId!!.value) })
+            // Fixed validation passes plus two chunks per snapshot-owned table, independent of occurrence count.
+            assertTrue(reads.size < 140)
+            assertTrue(reads.none { "from activity_templates" in it.first.lowercase() })
+            assertTrue(reads.none { "from sequence_templates" in it.first.lowercase() })
+            assertTrue(repository.reconcileActiveSession(instant(600)).appliedEvents.isEmpty())
+            database.activeSessionDao().clear()
+            reopenRuntime(name, 200)
+            assertNull(repository.getActiveRuntime())
+            assertTrue(repository.reconcileActiveSession(instant(1_000)).appliedEvents.isEmpty())
+            assertNotNull(database.sequenceExecutionDao().getById("unpointed-sequence"))
+            assertNotNull(database.activityExecutionDao().getById("unpointed-activity"))
         }
     }
 
@@ -1646,27 +1950,246 @@ class LiveSessionRepositoryTest {
     }
 
     @Test
-    fun longCatchUpReturnsAllTimerAndCountdownFeedbackInSemanticOrder() {
-        repository.startSequenceFromSnapshot(
-            SequenceSnapshotId("sequence-many-timers"),
-            instant(0),
-            instant(0),
-            ZoneOffset.UTC,
-        )
+    @Suppress("LongMethod") // One limit-sized file-reopen scenario verifies the complete recovered aggregate.
+    fun fileReopenCatchesUpLimitSizedRepeatWithoutChangingIdentityOrLogicalTime() {
+        withFileRuntime { name ->
+            val count = RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES
+            val childCount = count / 2
+            val snapshotId = "limit-repeat"
+            val repeatId = "$snapshotId-repeat"
+            val fixtures = LiveRuntimeTestFixtures(database)
+            fixtures.activity("millisecond-timer", "TIMER", targetMs = 1)
+            database.activitySnapshotDao().insertFields(
+                listOf(
+                    ActivitySnapshotFieldEntity(
+                        id = "limit-number",
+                        snapshotId = "millisecond-timer",
+                        sourceFieldId = null,
+                        position = 0,
+                        nameAtCreation = "Number",
+                        localNameOverride = null,
+                        fieldType = "NUMBER",
+                        unit = null,
+                        displayPrecision = 0,
+                        defaultNumberScaled = 7,
+                        defaultCategoryOptionId = null,
+                        defaultText = null,
+                    ),
+                    ActivitySnapshotFieldEntity(
+                        id = "limit-category",
+                        snapshotId = "millisecond-timer",
+                        sourceFieldId = null,
+                        position = 1,
+                        nameAtCreation = "Category",
+                        localNameOverride = null,
+                        fieldType = "CATEGORY",
+                        unit = null,
+                        displayPrecision = null,
+                        defaultNumberScaled = null,
+                        defaultCategoryOptionId = "limit-option",
+                        defaultText = null,
+                    ),
+                ),
+            )
+            database.activitySnapshotDao().insertOptions(
+                listOf(ActivitySnapshotCategoryOptionEntity("limit-option", "limit-category", null, 0, "Option", null)),
+            )
+            database.sequenceSnapshotDao().insertAggregate(
+                SequenceSnapshotAggregateEntity(
+                    SequenceSnapshotEntity(snapshotId, snapshotId, null, null, null, "sequence-series", 0),
+                    SequenceSnapshotSettingsEntity(snapshotId, true, 0, 1, true, true, false, true, true, "ACTIVE"),
+                    nodes =
+                        listOf(SequenceSnapshotNodeEntity(repeatId, snapshotId, "REPEAT", null, 0, null, 2)) +
+                            List(childCount) { index ->
+                                SequenceSnapshotNodeEntity(
+                                    "$snapshotId-step-$index",
+                                    snapshotId,
+                                    "STEP",
+                                    repeatId,
+                                    index,
+                                    "millisecond-timer",
+                                    null,
+                                )
+                            },
+                ),
+            )
+            val started = startRecoverySequence(snapshotId)
+            val originalChildId = requireNotNull(started.currentChild).id
+            val originalOccurrences = started.execution.occurrences
+            val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
+            reopenRuntime(name, 100_000, queries)
+            val recovered = activeSequence()
+            assertEquals(started.execution, recovered.execution)
+            assertEquals(originalChildId, recovered.currentChild?.id)
+            assertEquals(Instant.ofEpochMilli(1), NextRuntimeDeadlineResolver.resolve(recovered)?.at)
 
-        val events = repository.reconcileActiveSession(instant(10_000)).appliedEvents
-        val expected =
-            buildList {
-                repeat(12) { index ->
-                    if (index > 0) {
-                        add(RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN to instant(61L * index))
-                    }
-                    add(RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO to instant(60L + 61L * index))
+            val recoveryAt = Instant.ofEpochMilli(3L * count)
+            queries.clear()
+            val result = repository.reconcileActiveSession(recoveryAt)
+            assertBatchedRecoveryChildValidation(
+                queries.toList(),
+                count,
+                requireNotNull(started.execution.currentOccurrenceId).value,
+            )
+            val terminal = repositorySequence(started.execution.id.value)
+            val endedAt = Instant.ofEpochMilli(2L * count - 1)
+            assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
+            assertEquals(endedAt, terminal.endedAt)
+            assertEquals(Duration.ofMillis(count.toLong()), terminal.activeDuration)
+            assertEquals(Duration.ofMillis(count - 1L), terminal.pauseDuration)
+            assertEquals(Duration.ofMillis(2L * count - 1), terminal.wallDuration)
+            assertNull(result.finalSession)
+            assertNull(repository.getActiveRuntime())
+            assertEquals(2 * count - 1, result.appliedEvents.size)
+            val latestFeedback = result.appliedEvents.last().deadline
+            assertEquals(endedAt, latestFeedback.at)
+            assertEquals(RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO, latestFeedback.kind)
+            val children =
+                database
+                    .activityExecutionDao()
+                    .getSequenceChildAggregates(terminal.id.value)
+                    .also { aggregates ->
+                        aggregates.forEach { aggregate ->
+                            assertEquals(
+                                setOf(
+                                    ActivityExecutionFieldValueEntity(
+                                        aggregate.execution.id,
+                                        "limit-number",
+                                        7,
+                                        null,
+                                        null,
+                                    ),
+                                    ActivityExecutionFieldValueEntity(
+                                        aggregate.execution.id,
+                                        "limit-category",
+                                        null,
+                                        "limit-option",
+                                        null,
+                                    ),
+                                ),
+                                aggregate.values.toSet(),
+                            )
+                        }
+                    }.associate { requireNotNull(it.execution.sequenceOccurrenceId) to it.execution }
+            val countdowns =
+                terminal.intervals
+                    .filter { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }
+                    .associateBy { it.occurrenceId }
+            assertEquals(count, children.size)
+            assertEquals(count - 1, countdowns.size)
+            assertEquals(2 * count - 1, terminal.intervals.size)
+            terminal.occurrences.forEachIndexed { index, occurrence ->
+                val enteredAt = Instant.ofEpochMilli(2L * index)
+                val completedAt = enteredAt.plusMillis(1)
+                val original = originalOccurrences[index]
+                assertEquals(
+                    original.copy(
+                        status = RuntimeOccurrenceStatus.COMPLETED,
+                        enteredAt = enteredAt,
+                        completedAt = completedAt,
+                        completionReason = OccurrenceCompletionReason.NATURAL_TIMER_END,
+                    ),
+                    occurrence,
+                )
+                assertEquals(repeatId, occurrence.repeatSourceSnapshotNodeId?.value)
+                assertEquals(index / childCount + 1, occurrence.repeatIteration)
+                val child = children.getValue(occurrence.id.value)
+                assertEquals(terminal.id.value, child.sequenceExecutionId)
+                assertEquals(occurrence.activitySnapshotId.value, child.snapshotId)
+                assertEquals(enteredAt.toEpochMilli(), child.startedAtMs)
+                assertEquals(completedAt.toEpochMilli(), child.completedAtMs)
+                assertEquals(1L, child.activeDurationMs)
+                assertEquals("COMPLETED", child.status)
+                if (index == 0) {
+                    assertEquals(originalChildId.value, child.id)
+                } else {
+                    val countdown = countdowns.getValue(occurrence.id)
+                    assertEquals(enteredAt.minusMillis(1), countdown.startedAt)
+                    assertEquals(enteredAt, countdown.endedAt)
+                    val feedback = result.appliedEvents[2 * index - 1].deadline
+                    assertEquals(RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN, feedback.kind)
+                    assertEquals(enteredAt, feedback.at)
+                    assertEquals(occurrence.id, feedback.expectedOccurrenceId)
                 }
+                val timerFeedback = result.appliedEvents[2 * index].deadline
+                assertEquals(completedAt, timerFeedback.at)
+                assertEquals(occurrence.id, timerFeedback.expectedOccurrenceId)
             }
+            val occurrenceReads =
+                queries.filter { (sql, _) ->
+                    sql.lowercase().startsWith("select * from sequence_occurrences")
+                }
+            assertTrue(occurrenceReads.isNotEmpty())
+            assertTrue(
+                occurrenceReads.all { (sql, arguments) ->
+                    sql.lowercase().contains("where sequence_execution_id =") && arguments == listOf(terminal.id.value)
+                },
+            )
+            val snapshotReads =
+                queries.filter { (sql, _) ->
+                    sql.lowercase().startsWith("select * from activity_snapshots where id in")
+                }
+            assertTrue(snapshotReads.size in 1..12)
+            assertTrue(snapshotReads.all { (_, arguments) -> arguments.size <= 3 })
+            val identities = children.mapValues { it.value.id }
+            reopenRuntime(name, 200_000)
+            assertEquals(terminal, repositorySequence(terminal.id.value))
+            assertNull(repository.getActiveSession())
+            assertTrue(repository.reconcileActiveSession(recoveryAt).appliedEvents.isEmpty())
+            assertEquals(
+                identities,
+                database
+                    .activityExecutionDao()
+                    .getSequenceChildAggregates(terminal.id.value)
+                    .associate { requireNotNull(it.execution.sequenceOccurrenceId) to it.execution.id },
+            )
+            val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            val global = statistics.global(StatisticsPeriod.AllTime)
+            assertEquals(1L, global.topLevelExecutionCount)
+            assertEquals(Duration.ofMillis(count.toLong()), global.totalTrackedDuration)
+        }
+    }
 
-        assertEquals(expected, events.map { it.deadline.kind to it.deadline.at })
-        assertNull(repository.getActiveSession())
+    @Test
+    fun longCatchUpReturnsAllTimerAndCountdownFeedbackInSemanticOrder() {
+        withFileRuntime { name ->
+            val started = startRecoverySequence("sequence-many-timers")
+            val before = activeSequence()
+            reopenRuntime(name)
+            assertEquals(before, activeSequence())
+            val events = repository.reconcileActiveSession(instant(10_000)).appliedEvents
+            val expected =
+                buildList {
+                    repeat(12) { index ->
+                        if (index > 0) {
+                            add(RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN to instant(61L * index))
+                        }
+                        add(RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO to instant(60L + 61L * index))
+                    }
+                }
+            assertEquals(expected, events.map { it.deadline.kind to it.deadline.at })
+            val terminal = repositorySequence(started.execution.id.value)
+            assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
+            assertEquals(instant(731), terminal.endedAt)
+            assertEquals(before.execution.occurrences.map { it.id }, terminal.occurrences.map { it.id })
+            val children =
+                terminal.occurrences.map {
+                    requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(it.id.value))
+                }
+            children.forEachIndexed { index, child ->
+                assertEquals(61_000L * index, child.execution.startedAtMs)
+                assertEquals(60_000L + 61_000L * index, child.execution.completedAtMs)
+            }
+            reopenRuntime(name, 200)
+            assertNull(repository.getActiveSession())
+            assertTrue(repository.reconcileActiveSession(instant(20_000)).appliedEvents.isEmpty())
+            assertEquals(terminal, repositorySequence(terminal.id.value))
+            assertEquals(
+                children,
+                terminal.occurrences.map { database.activityExecutionDao().getAggregateByOccurrence(it.id.value) },
+            )
+            assertEquals(12, count("activity_executions"))
+        }
     }
 
     @Test
@@ -2089,11 +2612,268 @@ class LiveSessionRepositoryTest {
             repository = repository(database, 100)
             repository.reconcileActiveSession(instant(reconcileAtSeconds))
             verify(started.execution.id)
+            val recovered = repositorySequence(started.execution.id.value)
+            val children =
+                recovered.occurrences.map { database.activityExecutionDao().getAggregateByOccurrence(it.id.value) }
+            assertTrue(repository.reconcileActiveSession(instant(reconcileAtSeconds + 1)).appliedEvents.isEmpty())
+            reopenRuntime(name, 200)
+            assertTrue(repository.reconcileActiveSession(instant(reconcileAtSeconds + 2)).appliedEvents.isEmpty())
+            assertEquals(recovered, repositorySequence(started.execution.id.value))
+            assertEquals(
+                children,
+                recovered.occurrences.map { database.activityExecutionDao().getAggregateByOccurrence(it.id.value) },
+            )
         } finally {
             database.close()
             context.deleteDatabase(name)
             database = inMemoryDatabase()
         }
+    }
+
+    private fun withFileRuntime(verify: (String) -> Unit) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "sequence-recovery-${System.nanoTime()}"
+        database.close()
+        context.deleteDatabase(name)
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            seed(database)
+            repository = repository(database)
+            verify(name)
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+            database = inMemoryDatabase()
+        }
+    }
+
+    private fun reopenRuntime(
+        name: String,
+        offset: Int = 100,
+        queries: CopyOnWriteArrayList<Pair<String, List<Any?>>>? = null,
+    ) {
+        database.close()
+        val builder =
+            LifeTracingDatabase
+                .builder(ApplicationProvider.getApplicationContext(), name)
+                .allowMainThreadQueries()
+        if (queries != null) {
+            builder.setQueryCallback(
+                { sql, arguments -> queries += sql to arguments.toList() },
+                java.util.concurrent.Executor(Runnable::run),
+            )
+        }
+        database = builder.build()
+        repository = repository(database, offset)
+    }
+
+    private fun assertBatchedRecoveryChildValidation(
+        queries: List<Pair<String, List<Any?>>>,
+        occurrenceCount: Int,
+        currentOccurrenceId: String,
+    ) {
+        val batchSize = 900 // Below SQLite's portable 999-bind limit.
+        val currentChildReads =
+            queries.filter { (sql, _) ->
+                sql.lowercase().startsWith("select * from activity_executions where sequence_occurrence_id =")
+            }
+        // Active projection hydrates three times; reconciliation hydrates the same child twice more.
+        assertEquals("Original current child hydrations", 5, currentChildReads.size)
+        assertTrue(currentChildReads.all { (_, arguments) -> arguments == listOf(currentOccurrenceId) })
+        val metadata =
+            listOf(
+                "select id, sequence_execution_id, activity_snapshot_id from sequence_occurrences" to
+                    (occurrenceCount + batchSize - 1) / batchSize,
+                "select id, time_tracking_mode, statistics_series_id from activity_snapshots" to 1,
+                "select id, snapshot_id, field_type from activity_snapshot_fields" to 1,
+                "select id, snapshot_field_id from activity_snapshot_category_options" to 1,
+            )
+        metadata.forEach { (prefix, expectedBatches) ->
+            val reads = queries.filter { (sql, _) -> sql.lowercase().startsWith(prefix) }
+            val batches = reads.filter { (sql, _) -> sql.lowercase().contains("where id in") }
+            assertEquals("Batched validation reads for $prefix", expectedBatches, batches.size)
+            assertTrue(batches.all { (_, arguments) -> arguments.size in 1..batchSize })
+            val points = reads.filterNot { (sql, _) -> sql.lowercase().contains("where id in") }
+            // Only the fixed number of original-current-child hydrations may use point metadata reads.
+            assertTrue("Point validation reads for $prefix: ${points.size}", points.size <= currentChildReads.size)
+            if (prefix.endsWith("from sequence_occurrences")) {
+                assertTrue(points.all { (_, arguments) -> arguments == listOf(currentOccurrenceId) })
+            }
+        }
+        val scopedOptionReads =
+            queries.count { (sql, _) ->
+                sql.lowercase().startsWith("select options.id, options.snapshot_field_id")
+            }
+        assertTrue(
+            "Per-child Category validation reads: $scopedOptionReads",
+            scopedOptionReads <= currentChildReads.size,
+        )
+    }
+
+    private fun startRecoverySequence(snapshot: String) =
+        repository.startSequenceFromSnapshot(
+            SequenceSnapshotId(snapshot),
+            instant(0),
+            instant(0),
+            ZoneOffset.UTC,
+        )
+
+    @Suppress("LongMethod") // One explicit fixture covers persistence, rollback, retry, and canonical reads.
+    private fun verifyTerminalPlanRecovery(forceFailure: Boolean) {
+        withFileRuntime { name ->
+            val planId = PlanEntryId("recovery-plan")
+            database.planEntryDao().insert(
+                PlanEntryEntity(
+                    id = planId.value,
+                    trackableKind = "SEQUENCE",
+                    sourceActivityTemplateId = null,
+                    sourceSequenceTemplateId = null,
+                    sourceRevision = null,
+                    activitySnapshotId = null,
+                    sequencePlanSnapshotId = "sequence-timers",
+                    precision = "DAY",
+                    plannedDay = "1970-01-01",
+                    plannedWeekStart = null,
+                    plannedMonth = null,
+                    scheduledInstantMs = null,
+                    creationZoneId = null,
+                    status = "PLANNED",
+                    fulfilledActivityExecutionId = null,
+                    fulfilledSequenceExecutionId = null,
+                    createdAtMs = 0,
+                    updatedAtMs = 0,
+                    cancelledAtMs = null,
+                    fulfilledAtMs = null,
+                ),
+            )
+            val started = repository.startSequenceFromPlan(planId, instant(0), instant(0), ZoneOffset.UTC)
+            val rootBefore = database.sequenceExecutionDao().getAggregate(started.execution.id.value)
+            val initialOccurrenceId = requireNotNull(started.execution.currentOccurrenceId).value
+            val childBefore = database.activityExecutionDao().getAggregateByOccurrence(initialOccurrenceId)
+            val sessionBefore = database.activeSessionDao().get()
+            val planBefore = database.planEntryDao().getById(planId.value)
+            val frozen = activeSequence()
+            if (forceFailure) {
+                database.openHelper.writableDatabase.execSQL(
+                    "CREATE TRIGGER fail_recovery_fulfillment BEFORE UPDATE ON plan_entries " +
+                        "WHEN OLD.id = 'recovery-plan' AND NEW.status = 'FULFILLED' " +
+                        "BEGIN SELECT RAISE(ABORT, 'induced terminal fulfillment failure'); END",
+                )
+            }
+            reopenRuntime(name)
+            assertEquals(frozen, activeSequence())
+            if (forceFailure) {
+                val failure =
+                    assertThrows(RuntimeException::class.java) { repository.reconcileActiveSession(instant(600)) }
+                assertTrue(
+                    generateSequence<Throwable>(failure) { it.cause }.any {
+                        it.message?.contains("induced terminal fulfillment failure") == true
+                    },
+                )
+                reopenRuntime(name, 200)
+                assertEquals(rootBefore, database.sequenceExecutionDao().getAggregate(started.execution.id.value))
+                assertEquals(
+                    childBefore,
+                    database.activityExecutionDao().getAggregateByOccurrence(initialOccurrenceId),
+                )
+                assertEquals(sessionBefore, database.activeSessionDao().get())
+                assertEquals(planBefore, database.planEntryDao().getById(planId.value))
+                assertEquals(1, count("activity_executions"))
+                assertEquals(1, count("sequence_intervals"))
+                database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_recovery_fulfillment")
+            }
+            val events = repository.reconcileActiveSession(instant(600)).appliedEvents
+            assertEquals(
+                listOf(instant(60), instant(90), instant(150)),
+                events.map { it.deadline.at },
+            )
+            val terminal = repositorySequence(started.execution.id.value)
+            val children =
+                terminal.occurrences.map {
+                    requireNotNull(database.activityExecutionDao().getAggregateByOccurrence(it.id.value))
+                }
+            reopenRuntime(name, 300)
+            assertTrue(repository.reconcileActiveSession(instant(1_000)).appliedEvents.isEmpty())
+            assertNull(repository.getActiveRuntime())
+            assertEquals(terminal, repositorySequence(terminal.id.value))
+            assertEquals(
+                children,
+                terminal.occurrences.map { database.activityExecutionDao().getAggregateByOccurrence(it.id.value) },
+            )
+            assertEquals(2, count("activity_executions"))
+            assertEquals(3, count("sequence_intervals"))
+            assertEquals(started.currentChild?.id?.value, children[0].execution.id)
+            assertEquals(90_000L, children[1].execution.startedAtMs)
+            assertEquals(150_000L, children[1].execution.completedAtMs)
+            assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
+            assertEquals(instant(150), terminal.endedAt)
+            assertNull(terminal.currentOccurrenceId)
+            assertTrue(terminal.intervals.all { it.endedAt != null })
+            assertEquals(
+                frozen.snapshot,
+                database.sequenceSnapshotDao().getAggregate(terminal.snapshotId.value)?.toDomain(),
+            )
+            assertEquals(frozen.execution.statisticsSeriesId, terminal.statisticsSeriesId)
+            terminal.occurrences.forEachIndexed { index, occurrence ->
+                assertEquals(
+                    frozen.execution.occurrences[index].copy(
+                        status = RuntimeOccurrenceStatus.COMPLETED,
+                        enteredAt = instant(if (index == 0) 0 else 90),
+                        completedAt = instant(if (index == 0) 60 else 150),
+                        completionReason = OccurrenceCompletionReason.NATURAL_TIMER_END,
+                    ),
+                    occurrence,
+                )
+            }
+            assertTerminalCanonicalReads(terminal.id, planId)
+        }
+    }
+
+    private fun assertTerminalCanonicalReads(
+        executionId: SequenceExecutionId,
+        planId: PlanEntryId,
+    ) {
+        val zone = CurrentZoneIdProvider { ZoneOffset.UTC }
+        val day = LocalDate.of(1970, 1, 1)
+        val plans = PlanReadRepository(database, zone).getWeek(WeekPlanQuery(day.minusDays(3), day, instant(600)))
+        val row = plans.selectedDayPlans.single()
+        assertEquals(planId, row.plan.id)
+        assertEquals(PlanEntryStatus.FULFILLED, row.plan.status)
+        assertEquals(executionId, row.plan.fulfilledSequenceExecutionId)
+        assertEquals(instant(150), row.plan.fulfilledAt)
+        assertEquals(SequenceSnapshotId("sequence-timers"), row.plan.sequenceSnapshotId)
+        assertFalse(row.engaged)
+        assertFalse(row.overdue)
+
+        val history = HistoryReadRepository(database)
+        val roots = history.getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(day, day), 10))
+        val root = roots.single() as CompletedSequenceHistoryRoot
+        assertEquals(executionId, root.executionId)
+        assertEquals(planId, root.planEntryId)
+        assertEquals(day, root.primaryLocalDate)
+        assertEquals(instant(150), root.completedAt)
+        val detail = requireNotNull(history.getSequenceDetail(executionId))
+        assertEquals(root, detail.root)
+        assertEquals(listOf(instant(0), instant(90)), detail.occurrences.map { it.enteredAt })
+        assertEquals(listOf(instant(60), instant(150)), detail.occurrences.map { it.completedAt })
+        assertTrue(detail.occurrences.all { it.child?.activeDuration == Duration.ofSeconds(60) })
+
+        val daily = DailyReadRepository(database, zone).getDaily(DailyQuery(day, instant(600), 10))
+        assertNull(daily.active)
+        assertEquals(roots, daily.completedHistory)
+        assertEquals(row.plan, daily.dayPlans.single().plan)
+        assertFalse(daily.dayPlans.single().engaged)
+
+        val statistics = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+        val global = statistics.global(StatisticsPeriod.AllTime)
+        assertEquals(1L, global.topLevelExecutionCount)
+        assertEquals(Duration.ofSeconds(120), global.totalTrackedDuration)
+        val sequence = statistics.sequenceSeries(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
+        assertEquals(Duration.ofSeconds(120), sequence.activeDurations.total)
+        assertEquals(Duration.ofSeconds(30), sequence.totalPauseIdleDuration)
+        val activity = statistics.activitySeries(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        assertEquals(2L, activity.executionCount)
+        assertEquals(Duration.ofSeconds(120), activity.durations.total)
     }
 
     private fun repository(

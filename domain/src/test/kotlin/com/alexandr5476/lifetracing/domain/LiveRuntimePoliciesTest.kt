@@ -333,6 +333,59 @@ class LiveRuntimePoliciesTest {
         }
     }
 
+    @Test
+    fun repeatTimerCountdownCatchUpReadsAggregateListsLinearlyThroughTheOccurrenceLimit() {
+        val reads =
+            listOf(512, 2_048, RuntimeOccurrenceCardinalityPolicy.MAX_SUPPORTED_RUNTIME_OCCURRENCES).map { count ->
+                val timer = activity("timer", TimeTrackingMode.TIMER, 1)
+                val activities = mapOf(timer.id to timer)
+                val base = sequence(List(count / 2) { timer.id }, autoAdvance = true, countdownSeconds = 1)
+                val children = CountingList(base.nodes.filterIsInstance<SequenceSnapshotActivityStep>())
+                val snapshot =
+                    base.copy(
+                        nodes = listOf(SequenceSnapshotRepeatBlock(SequenceSnapshotNodeId("repeat"), 0, 2, children)),
+                    )
+                val runtime = engine()
+                val started = runtime.start(snapshot, activities, instant(0), instant(0), ZoneOffset.UTC)
+                val occurrences = CountingList(started.execution.occurrences)
+                val intervals = CountingList(started.execution.intervals)
+                children.reads = 0
+                val hydratedExecution = started.execution.copy(occurrences = occurrences, intervals = intervals)
+
+                val finished =
+                    runtime.reconcile(
+                        started.copy(execution = hydratedExecution),
+                        snapshot,
+                        activities,
+                        instant(3L * count),
+                    )
+
+                assertEquals(SequenceExecutionStatus.COMPLETED, finished.execution.status)
+                assertEquals(instant(2L * count - 1), finished.execution.endedAt)
+                assertEquals(count, finished.children.size)
+                val firstOccurrenceId = requireNotNull(started.execution.currentOccurrenceId)
+                assertEquals(started.currentChild?.id, finished.children.getValue(firstOccurrenceId).id)
+                val totalReads = children.reads + occurrences.reads + intervals.reads
+                assertTrue(totalReads <= 8L * count, "Aggregate reads: $totalReads for $count occurrences")
+                totalReads
+            }
+
+        assertTrue(reads[1] <= reads[0] * 4 + 8, "Four times the due suffix must not cause quadratic hydration work")
+    }
+
+    private class CountingList<T>(
+        private val items: List<T>,
+    ) : AbstractList<T>() {
+        var reads = 0L
+        override val size: Int
+            get() = items.size
+
+        override fun get(index: Int): T {
+            reads++
+            return items[index]
+        }
+    }
+
     private fun engine(): SequenceRuntimeEngine {
         var execution = 0
         var occurrence = 0
