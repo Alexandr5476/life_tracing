@@ -7,6 +7,7 @@ import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +56,36 @@ internal class RepositorySettingsWriter(
     }
 }
 
+/** Process-owned ordering; controller recreation never replays an accepted mutation. */
+internal class SettingsAppearanceMutations(
+    private val scope: CoroutineScope,
+) {
+    private var tail: Job? = null
+
+    fun launchIfAccepted(
+        accept: () -> Boolean,
+        mutation: suspend () -> Unit,
+    ) {
+        val job =
+            synchronized(this) {
+                if (!accept()) return
+                val previous = tail
+                scope
+                    .launch(start = CoroutineStart.LAZY) {
+                        previous?.join()
+                        mutation()
+                    }.also { tail = it }
+            }
+        job.invokeOnCompletion {
+            synchronized(this) {
+                if (tail === job) tail = null
+            }
+        }
+        // join starts a lazy predecessor even if the dispatcher starts a later job first.
+        job.start()
+    }
+}
+
 internal data class SettingsState(
     val appearance: AppearancePreferences? = null,
     val language: AppLanguage? = null,
@@ -75,7 +106,7 @@ internal class SettingsController(
     private val readLanguage: () -> AppLanguage,
     private val applyLanguage: (AppLanguage) -> Unit,
     private val scope: CoroutineScope,
-    private val appearanceMutationScope: CoroutineScope = scope,
+    private val appearanceMutations: SettingsAppearanceMutations = SettingsAppearanceMutations(scope),
 ) {
     private val mutableState = MutableStateFlow(SettingsState())
     val state: StateFlow<SettingsState> = mutableState
@@ -116,30 +147,34 @@ internal class SettingsController(
     }
 
     fun change(change: SettingsChange) {
-        val current = mutableState.value
-        if (!current.ready || current.pending != null) return
-        val requested = current.copy(pending = change, writeCompleted = false, failure = null)
-        if (!mutableState.compareAndSet(current, requested)) {
-            return
+        if (change is SettingsChange.Appearance) {
+            appearanceMutations.launchIfAccepted({ accept(change) }) { executeChange(change) }
+        } else if (accept(change)) {
+            scope.launch { executeChange(change) }
         }
-        // Accepted appearance writes belong to the process, while observation and locale UI work
-        // retain the screen lifecycle. A recreated controller only reads; it never replays requests.
-        val mutationScope = if (change is SettingsChange.Appearance) appearanceMutationScope else scope
-        mutationScope.launch {
-            try {
-                when (change) {
-                    is SettingsChange.Appearance -> writer.write(change)
-                    is SettingsChange.Language -> {
-                        applyLanguage(change.value)
-                        refreshLanguage()
-                    }
+    }
+
+    private fun accept(change: SettingsChange): Boolean {
+        val current = mutableState.value
+        if (!current.ready || current.pending != null) return false
+        val requested = current.copy(pending = change, writeCompleted = false, failure = null)
+        return mutableState.compareAndSet(current, requested)
+    }
+
+    private suspend fun executeChange(change: SettingsChange) {
+        try {
+            when (change) {
+                is SettingsChange.Appearance -> writer.write(change)
+                is SettingsChange.Language -> {
+                    applyLanguage(change.value)
+                    refreshLanguage()
                 }
-                mutableState.update { settle(it.copy(writeCompleted = true)) }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                mutableState.update { it.copy(pending = null, writeCompleted = false, failure = change) }
             }
+            mutableState.update { settle(it.copy(writeCompleted = true)) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            mutableState.update { it.copy(pending = null, writeCompleted = false, failure = change) }
         }
     }
 

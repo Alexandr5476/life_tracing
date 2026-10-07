@@ -429,7 +429,7 @@ internal fun LifeTracingApp(
                                 }
                             SettingsRoute(
                                 repository,
-                                appearanceMutationScope = runtimeGraph.scope,
+                                appearanceMutations = runtimeGraph.appearanceMutations,
                                 onBack = backStack::removeSettings,
                                 onArchivedTemplates = backStack::openArchivedTemplates,
                             )
