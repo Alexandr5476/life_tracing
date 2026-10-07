@@ -255,12 +255,18 @@ object SequenceExecutionValidator {
             snapshot.nodes.filterIsInstance<SequenceSnapshotRepeatBlock>().associateBy(
                 SequenceSnapshotRepeatBlock::id,
             )
+        val repeatOwners =
+            buildMap {
+                repeats.values.forEach { repeat ->
+                    repeat.children.forEach { child -> put(child.id, repeat.id) }
+                }
+            }
         val topLevelStepIds =
             snapshot.nodes.filterIsInstance<SequenceSnapshotActivityStep>().mapTo(hashSetOf()) { it.id }
         execution.occurrences.forEach { occurrence ->
             require(occurrence.runtimePosition >= 0) { "Runtime position must not be negative" }
             requireOccurrenceState(occurrence)
-            requireOccurrenceSource(occurrence, topLevelStepIds, sourceSteps, repeats)
+            requireOccurrenceSource(occurrence, topLevelStepIds, sourceSteps, repeats, repeatOwners)
         }
         val current = execution.occurrences.filter { it.status == RuntimeOccurrenceStatus.CURRENT }
         require(current.size <= 1) { "Sequence may have at most one current occurrence" }
@@ -274,6 +280,7 @@ object SequenceExecutionValidator {
         topLevelStepIds: Set<SequenceSnapshotNodeId>,
         sourceSteps: Map<SequenceSnapshotNodeId, SequenceSnapshotActivityStep>,
         repeats: Map<SequenceSnapshotNodeId, SequenceSnapshotRepeatBlock>,
+        repeatOwners: Map<SequenceSnapshotNodeId, SequenceSnapshotNodeId>,
     ) {
         if (occurrence.isRuntimeAdded) {
             require(
@@ -311,7 +318,7 @@ object SequenceExecutionValidator {
                 "Top-level Step occurrence cannot carry Repeat metadata"
             }
         } else {
-            require(repeat.children.any { it.id == step.id }) {
+            require(repeatOwners[step.id] == repeat.id) {
                 "Occurrence Step must belong to its Repeat source"
             }
         }
