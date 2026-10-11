@@ -2,10 +2,11 @@ package com.alexandr5476.lifetracing.runtime
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActiveRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSequenceState
+import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
@@ -37,13 +38,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.TimeZone
 
-@RunWith(AndroidJUnit4::class)
+@RunWith(Parameterized::class)
 @Suppress("LargeClass", "TooManyFunctions") // One file-backed ownership harness covers recovery entry points.
-class RuntimeCoordinatorRecoveryTest {
+class RuntimeCoordinatorRecoveryTest(
+    private val origin: Instant,
+    private val eventZone: ZoneId,
+) {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val name = "coordinator-recovery-" + System.nanoTime()
     private val lateName = "$name-late"
@@ -51,17 +58,23 @@ class RuntimeCoordinatorRecoveryTest {
     private var processReference: Process? = null
     private val store get() = requireNotNull(storeReference)
     private val process get() = requireNotNull(processReference)
+    private val previousZone = TimeZone.getDefault()
 
     @Before
     fun setUp() {
+        TimeZone.setDefault(TimeZone.getTimeZone(eventZone))
         open()
     }
 
     @After
     fun tearDown() {
-        discard()
-        context.deleteDatabase(name)
-        context.deleteDatabase(lateName)
+        try {
+            discard()
+            context.deleteDatabase(name)
+            context.deleteDatabase(lateName)
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
     }
 
     @Test
@@ -471,6 +484,384 @@ class RuntimeCoordinatorRecoveryTest {
         assertEquals(1L to 0L, store.executionCounts())
     }
 
+    @Test
+    fun runningTimedCurrentRetainsIdentityAcrossColdForegroundAndRelocation() =
+        runBlocking {
+            val id = startSequence()
+            assertColdForegroundPreservesState(id, 4, ActiveSequenceState.RUNNING_CURRENT)
+            assertEquals(at(5), nextDeadline().at)
+            val display = requireNotNull(process.coordinator.displayBaseline)
+            assertEquals(Duration.ofSeconds(1), display.timerRemaining(900_000))
+            assertEquals(Duration.ofMillis(500), display.timerRemaining(900_500))
+        }
+
+    @Test
+    fun runningStopwatchCurrentNeverAcquiresAnAutomaticDeadline() =
+        runBlocking {
+            val id = startSequence(mode = TimeTrackingMode.STOPWATCH)
+            assertColdForegroundPreservesState(id, 100, ActiveSequenceState.RUNNING_CURRENT)
+            assertNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(store.live.getActiveRuntime())))
+            assertEquals(Duration.ofSeconds(100), process.coordinator.displayBaseline!!.activeElapsed(900_000))
+            assertEquals(Duration.ofSeconds(101), process.coordinator.displayBaseline!!.activeElapsed(901_000))
+        }
+
+    @Test
+    fun pausedCurrentRetainsChildAndPauseUntilResumeInTheNewZone() =
+        runBlocking {
+            val id = startSequence()
+            store.live.pauseActiveSequence(id, at(1))
+            assertColdForegroundPreservesState(id, 100, ActiveSequenceState.PAUSED_CURRENT)
+            val paused = store.sequence(id)
+            val child = store.children(id).single()
+            val display = requireNotNull(process.coordinator.displayBaseline)
+            assertEquals(Duration.ofSeconds(1), display.activeElapsed(900_000))
+            assertEquals(display.activeElapsed(900_000), display.activeElapsed(999_000))
+            store.live.resumeActiveSequence(id, at(100))
+            assertEquals(at(104), nextDeadline().at)
+            assertEquals(child.id, store.children(id).single().id)
+            assertEquals(
+                child.pauses.single().id,
+                store
+                    .children(id)
+                    .single()
+                    .pauses
+                    .single()
+                    .id,
+            )
+            assertEquals(
+                paused.intervals.map { it.id },
+                store
+                    .sequence(id)
+                    .intervals
+                    .take(2)
+                    .map { it.id },
+            )
+            discard()
+            open()
+            assertTrue(
+                store.live
+                    .reconcileActiveSession(at(104).minusMillis(1))
+                    .appliedEvents
+                    .isEmpty(),
+            )
+            assertEquals(
+                at(104),
+                store.live
+                    .reconcileActiveSession(at(104))
+                    .appliedEvents
+                    .single()
+                    .deadline.at,
+            )
+        }
+
+    @Test
+    fun waitingNextRemainsWithoutCurrentChildOrDeadlineAcrossTemporalRecovery() =
+        runBlocking {
+            val id = startSequence(autoAdvance = false)
+            store.live.reconcileActiveSession(at(5))
+            assertColdForegroundPreservesState(id, 100, ActiveSequenceState.WAITING_NEXT)
+        }
+
+    @Test
+    fun runningCountdownRetainsTargetAndEntersItOnceAtTheMillisecondBoundary() =
+        runBlocking {
+            val id = startSequence()
+            store.live.reconcileActiveSession(at(5))
+            assertColdForegroundPreservesState(id, 6, ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN)
+            val deadline = nextDeadline()
+            val target = (store.live.getActiveRuntime() as ActiveSequenceRuntime).transitionCountdownTargetId
+            process.wall.value = at(8).minusMillis(1)
+            process.coordinator.onDeadlineSignal(deadline)
+            assertNull(store.sequence(id).currentOccurrenceId)
+            assertEquals(1, store.children(id).size)
+            process.wall.value = at(8)
+            process.coordinator.onDeadlineSignal(deadline)
+            assertEquals(target, store.sequence(id).currentOccurrenceId)
+            assertEquals(at(8), store.children(id).maxBy { requireNotNull(it.startedAt) }.startedAt)
+            val children = store.children(id)
+            process.wall.value = at(8).plusMillis(1)
+            process.coordinator.onDeadlineSignal(deadline)
+            assertEquals(children, store.children(id))
+            assertEquals(1, process.effects.size)
+        }
+
+    @Test
+    fun pausedCountdownRetainsConsumedIntervalAndResumeUsesOnlyTheRemainder() =
+        runBlocking {
+            val id = startSequence()
+            store.live.reconcileActiveSession(at(5))
+            store.live.pauseActiveSequence(id, at(6))
+            assertColdForegroundPreservesState(id, 100, ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN)
+            val paused = store.sequence(id)
+            val display = requireNotNull(process.coordinator.displayBaseline)
+            assertEquals(Duration.ofSeconds(2), display.transitionCountdownRemaining(900_000))
+            assertEquals(Duration.ofSeconds(2), display.transitionCountdownRemaining(999_000))
+            val target = (store.live.getActiveRuntime() as ActiveSequenceRuntime).transitionCountdownTargetId
+            store.live.resumeActiveSequence(id, at(100))
+            assertEquals(at(102), nextDeadline().at)
+            assertEquals(
+                paused.intervals.map { it.id },
+                store
+                    .sequence(id)
+                    .intervals
+                    .take(3)
+                    .map { it.id },
+            )
+            discard()
+            open()
+            assertTrue(
+                store.live
+                    .reconcileActiveSession(at(102).minusMillis(1))
+                    .appliedEvents
+                    .isEmpty(),
+            )
+            assertEquals(1, store.children(id).size)
+            assertEquals(
+                at(102),
+                store.live
+                    .reconcileActiveSession(at(102))
+                    .appliedEvents
+                    .single()
+                    .deadline.at,
+            )
+            assertEquals(target, store.sequence(id).currentOccurrenceId)
+            assertEquals(at(102), store.children(id).maxBy { requireNotNull(it.startedAt) }.startedAt)
+        }
+
+    @Test
+    fun noLiveCurrentRemainsRepresentableWithoutATimedChildOrDeadline() =
+        runBlocking {
+            val id = startSequence(mode = TimeTrackingMode.NO_LIVE_TRACKING)
+            assertColdForegroundPreservesState(id, 100, ActiveSequenceState.RUNNING_CURRENT)
+            assertTrue(store.children(id).isEmpty())
+            assertNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(store.live.getActiveRuntime())))
+        }
+
+    @Test
+    fun terminalSequenceCannotRewindOrRegainAnActivePointer() =
+        runBlocking {
+            for (early in listOf(false, true)) {
+                val id = startSequence()
+                if (early) store.live.endSequenceEarly(id, at(1)) else store.live.reconcileActiveSession(at(100))
+                assertEquals(
+                    if (early) SequenceExecutionStatus.ENDED_EARLY else SequenceExecutionStatus.COMPLETED,
+                    store.sequence(id).status,
+                )
+                assertColdForegroundPreservesState(id, 200, null)
+                val terminal = store.sequence(id)
+                process.wall.value = at(0)
+                process.coordinator.onSystemTimeChanged()
+                assertEquals(terminal, store.sequence(id))
+                assertNull(store.live.getActiveSession())
+            }
+        }
+
+    @Test
+    fun timezoneBroadcastBeforeAndAfterActivityDeadlineIsSilentAndIdempotent() =
+        runBlocking {
+            val execution = startActivity()
+            val before = requireNotNull(store.live.getActiveRuntime())
+            val expected = nextDeadline()
+            createProcess(0, 1_000).coordinator.onRuntimeStateChanged()
+            val obsoleteCallback = requireNotNull(process.local.callback)
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+            process.wall.value = expected.at.minusMillis(1)
+            process.monotonic.value = 2_000
+            val generation = process.coordinator.semanticGeneration.value
+            val signal =
+                requireNotNull(RuntimeBroadcastOperation.recovery(android.content.Intent.ACTION_TIMEZONE_CHANGED))
+            signal.dispatch(process.coordinator)
+            signal.dispatch(process.coordinator)
+            assertEquals(generation + 2, process.coordinator.semanticGeneration.value)
+            assertEquals(before, store.live.getActiveRuntime())
+            assertEquals(expected, process.local.deadline)
+            assertEquals(WallMonotonicAnchor(expected.at.minusMillis(1), 2_000), process.local.anchor)
+            assertEquals(2_001L, process.local.anchor!!.elapsedAt(expected.at))
+            assertEquals(2, process.local.cancellations)
+            assertEquals(2, process.scheduler.cancellations)
+            assertTrue(process.effects.isEmpty())
+            process.wall.value = expected.at.plusMillis(1)
+            process.monotonic.value = 3_000
+            signal.dispatch(process.coordinator)
+            val completed = store.activity(execution.id)
+            assertEquals(expected.at, completed.completedAt)
+            assertEquals(execution.originalZoneId, completed.originalZoneId)
+            assertEquals(execution.originalUtcOffsetMinutes, completed.originalUtcOffsetMinutes)
+            assertEquals(execution.primaryLocalDate, completed.primaryLocalDate)
+            assertEquals(execution.statisticsSeriesId, completed.statisticsSeriesId)
+            obsoleteCallback(expected)
+            signal.dispatch(process.coordinator)
+            process.coordinator.onForeground()
+            assertEquals(completed, store.activity(execution.id))
+            assertEquals(1L to 0L, store.executionCounts())
+            assertTrue(process.effects.isEmpty())
+            assertTrue(process.notifications.completions.isEmpty())
+            discard()
+            open()
+            createProcess(100, 90_000)
+            signal.dispatch(process.coordinator)
+            assertNull(store.live.getActiveRuntime())
+            assertNull(process.coordinator.displayBaseline)
+            assertEquals(completed, store.activity(execution.id))
+        }
+
+    @Test
+    fun coldDstChainPersistsOrderedLogicalEventsAndExactIntervalAccounting() =
+        runBlocking {
+            val id = startSequence()
+            val before = store.sequence(id)
+            val child = store.children(id).single()
+            discard()
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+            open()
+            val result = store.live.reconcileActiveSession(at(100))
+            assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), result.appliedEvents.map { it.deadline.at })
+            assertEquals(
+                listOf(
+                    RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
+                    RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN,
+                    RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
+                    RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN,
+                    RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
+                ),
+                result.appliedEvents.map { it.deadline.kind },
+            )
+            val terminal = store.sequence(id)
+            assertEquals(listOf(0L, 5L, 8L, 15L, 18L).map(::at), terminal.intervals.map { it.startedAt })
+            assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), terminal.intervals.map { it.endedAt })
+            assertEquals(Duration.ofSeconds(23), terminal.activeDuration)
+            assertEquals(Duration.ofSeconds(6), terminal.pauseDuration)
+            assertEquals(Duration.ofSeconds(29), terminal.wallDuration)
+            assertEquals(before.snapshotId, terminal.snapshotId)
+            assertEquals(before.statisticsSeriesId, terminal.statisticsSeriesId)
+            assertEquals(before.originalZoneId, terminal.originalZoneId)
+            assertEquals(before.originalUtcOffsetMinutes, terminal.originalUtcOffsetMinutes)
+            assertEquals(before.primaryLocalDate, terminal.primaryLocalDate)
+            before.occurrences.zip(terminal.occurrences).forEach { (original, completed) ->
+                assertEquals(original.id, completed.id)
+                assertEquals(original.sourceSequenceSnapshotNodeId, completed.sourceSequenceSnapshotNodeId)
+                assertEquals(original.activitySnapshotId, completed.activitySnapshotId)
+                assertEquals(original.runtimePosition, completed.runtimePosition)
+                assertEquals(original.repeatSourceSnapshotNodeId, completed.repeatSourceSnapshotNodeId)
+                assertEquals(original.repeatIteration, completed.repeatIteration)
+                assertEquals(original.isRuntimeAdded, completed.isRuntimeAdded)
+            }
+            val children = store.children(id)
+            val firstChild = children.minBy { requireNotNull(it.startedAt) }
+            assertEquals(child.id, firstChild.id)
+            assertEquals(child.snapshotId, firstChild.snapshotId)
+            assertEquals(child.values, firstChild.values)
+            assertEquals(child.statisticsSeriesId, firstChild.statisticsSeriesId)
+            assertEquals(3L to 1L, store.executionCounts())
+            discard()
+            open()
+            createProcess(200, 20_000).coordinator.onForeground()
+            for (event in result.appliedEvents) process.coordinator.onDeadlineSignal(event.deadline)
+            assertEquals(terminal, store.sequence(id))
+            assertEquals(children, store.children(id))
+            assertTrue(process.effects.isEmpty())
+            assertTrue(process.notifications.completions.isEmpty())
+        }
+
+    @Test
+    fun backwardCountdownClockRearmsAndForwardCatchUpNeverRewindsCommittedFacts() =
+        runBlocking {
+            val id = startSequence()
+            store.live.reconcileActiveSession(at(5))
+            createProcess(6, 1_000).coordinator.onRuntimeStateChanged()
+            val deadline = nextDeadline()
+            val obsolete = requireNotNull(process.local.callback)
+            val before = store.live.getActiveRuntime()
+            process.wall.value = at(5)
+            process.monotonic.value = 20_000
+            process.coordinator.onSystemTimeChanged()
+            assertEquals(before, store.live.getActiveRuntime())
+            assertEquals(WallMonotonicAnchor(at(5), 20_000), process.local.anchor)
+            assertEquals(23_000L, process.local.anchor!!.elapsedAt(deadline.at))
+            obsolete(deadline)
+            assertEquals(before, store.live.getActiveRuntime())
+            assertEquals(deadline, process.local.deadline)
+            process.wall.value = at(20)
+            process.monotonic.value = 21_000
+            process.coordinator.onSystemTimeChanged()
+            val committed = store.sequence(id)
+            val children = store.children(id)
+            assertEquals(at(18), committed.occurrences.last().enteredAt)
+            assertEquals(at(29), nextDeadline().at)
+            assertEquals(WallMonotonicAnchor(at(20), 21_000), process.local.anchor)
+            process.wall.value = at(19)
+            process.monotonic.value = 22_000
+            process.coordinator.onSystemTimeChanged()
+            obsolete(deadline)
+            assertEquals(committed, store.sequence(id))
+            assertEquals(children, store.children(id))
+            assertEquals(at(29), process.local.deadline!!.at)
+            assertEquals(32_000L, process.local.anchor!!.elapsedAt(at(29)))
+            assertTrue(process.effects.isEmpty())
+            assertTrue(process.notifications.completions.isEmpty())
+            discard()
+            open()
+            assertEquals(committed, store.sequence(id))
+        }
+
+    private suspend fun assertColdForegroundPreservesState(
+        id: SequenceExecutionId,
+        recoverySeconds: Long,
+        expectedState: ActiveSequenceState?,
+    ) {
+        val before = store.live.getActiveRuntime()
+        val root = store.sequence(id)
+        val children = store.children(id)
+        val counts = store.executionCounts()
+        val deadline = before?.let(NextRuntimeDeadlineResolver::resolve)
+        createProcess(0, 50_000).coordinator.onRuntimeStateChanged()
+        // Backgrounding has no command. Reopening discards the old baseline and every process owner.
+        discard()
+        TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Auckland"))
+        open()
+        assertEquals(before, store.live.getActiveRuntime())
+        createProcess(recoverySeconds, 900_000, observeAnchor = true).coordinator.onForeground()
+        repeat(2) {
+            requireNotNull(RuntimeBroadcastOperation.recovery(android.content.Intent.ACTION_TIMEZONE_CHANGED))
+                .dispatch(process.coordinator)
+        }
+        assertEquals(before, store.live.getActiveRuntime())
+        assertEquals(root, store.sequence(id))
+        assertEquals(children, store.children(id))
+        assertEquals(counts, store.executionCounts())
+        assertEquals(WallMonotonicAnchor(at(recoverySeconds), 900_000), process.anchorAtReconciliation)
+        assertEquals(deadline, process.local.deadline)
+        assertTrue(process.effects.isEmpty())
+        assertTrue(process.notifications.completions.isEmpty())
+        if (expectedState != null) {
+            val runtime = store.live.getActiveRuntime() as ActiveSequenceRuntime
+            assertEquals(expectedState, ActiveSequenceStateResolver.resolve(runtime))
+            if (expectedState in
+                setOf(
+                    ActiveSequenceState.PAUSED_CURRENT,
+                    ActiveSequenceState.WAITING_NEXT,
+                    ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN,
+                )
+            ) {
+                assertNull(deadline)
+                assertTrue(process.scheduler.deadlines.isEmpty())
+            }
+            if (expectedState in
+                setOf(
+                    ActiveSequenceState.WAITING_NEXT,
+                    ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN,
+                    ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN,
+                )
+            ) {
+                assertNull(runtime.execution.currentOccurrenceId)
+                assertNull(runtime.currentChild)
+            }
+        } else {
+            assertNull(store.live.getActiveSession())
+            assertNull(process.coordinator.displayBaseline)
+        }
+    }
+
     private fun nextDeadline(): RuntimeDeadline =
         requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(store.live.getActiveRuntime())))
 
@@ -485,14 +876,22 @@ class RuntimeCoordinatorRecoveryTest {
             ),
             at(0),
             at(0),
-            ZoneOffset.UTC,
+            eventZone,
         )
 
-    private fun startSequence(): SequenceExecutionId {
+    private fun startSequence(
+        mode: TimeTrackingMode = TimeTrackingMode.TIMER,
+        autoAdvance: Boolean = true,
+    ): SequenceExecutionId {
         val activities =
             listOf(5L, 7L, 11L).map {
                 store.authoring.createActivityTemplate(
-                    ActivityTemplateDraft("Timer $it", null, TimeTrackingMode.TIMER, Duration.ofSeconds(it)),
+                    ActivityTemplateDraft(
+                        "Step $it",
+                        null,
+                        mode,
+                        if (mode == TimeTrackingMode.TIMER) Duration.ofSeconds(it) else null,
+                    ),
                     createdAt = at(0),
                 )
             }
@@ -501,7 +900,11 @@ class RuntimeCoordinatorRecoveryTest {
                 SequenceTemplateDraft(
                     "Sequence",
                     null,
-                    settings = SequenceTemplateSettings(beforeEachStepCountdown = Duration.ofSeconds(3)),
+                    settings =
+                        SequenceTemplateSettings(
+                            autoAdvance = autoAdvance,
+                            beforeEachStepCountdown = Duration.ofSeconds(3),
+                        ),
                     nodes =
                         activities.mapIndexed { index, activity ->
                             SequenceNodeDraft.Step(
@@ -516,7 +919,7 @@ class RuntimeCoordinatorRecoveryTest {
                 createdAt = at(0),
             )
         return store.library
-            .startSequenceFromTemplate(template.id, at(0), at(0), ZoneOffset.UTC)
+            .startSequenceFromTemplate(template.id, at(0), at(0), eventZone)
             .execution.id
     }
 
@@ -535,7 +938,7 @@ class RuntimeCoordinatorRecoveryTest {
         wallSeconds: Long,
         elapsedMs: Long,
         observeAnchor: Boolean = false,
-    ): Process = Process(store, wallSeconds, elapsedMs, observeAnchor).also { processReference = it }
+    ): Process = Process(store, at(wallSeconds), elapsedMs, observeAnchor).also { processReference = it }
 
     private class MutableWallClock(
         var value: Instant,
@@ -551,11 +954,11 @@ class RuntimeCoordinatorRecoveryTest {
 
     private class Process(
         store: RuntimeRecoveryStore,
-        wallSeconds: Long,
+        wallInstant: Instant,
         elapsedMs: Long,
         observeAnchor: Boolean,
     ) {
-        val wall = MutableWallClock(at(wallSeconds))
+        val wall = MutableWallClock(wallInstant)
         val monotonic = MutableMonotonicClock(elapsedMs)
         val scheduler = RecordingScheduler()
         val local = RecordingLocalDriver()
@@ -655,7 +1058,16 @@ class RuntimeCoordinatorRecoveryTest {
         override fun canPostRuntimeNotifications(): Boolean = true
     }
 
-    private companion object {
-        fun at(seconds: Long): Instant = Instant.ofEpochSecond(seconds)
+    private fun at(seconds: Long): Instant = origin.plusSeconds(seconds)
+
+    companion object {
+        @JvmStatic
+        @Parameterized.Parameters(name = "origin={0}, eventZone={1}")
+        fun temporalContexts(): List<Array<Any>> =
+            listOf(
+                arrayOf(Instant.EPOCH, ZoneOffset.UTC),
+                arrayOf(Instant.parse("2026-03-29T00:59:57Z"), ZoneId.of("Europe/Berlin")),
+                arrayOf(Instant.parse("2026-10-25T00:59:57Z"), ZoneId.of("Europe/Berlin")),
+            )
     }
 }

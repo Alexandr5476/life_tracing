@@ -878,6 +878,70 @@ class AndroidRuntimeCoordinatorTest {
         }
 
     @Test
+    @Suppress("LongMethod") // One independent clock timeline makes obsolete callback ordering explicit.
+    fun realDstTimeSignalsReanchorPendingAbsoluteDeadlineAndOldCallbackCannotAdvanceIt() =
+        runBlocking {
+            for (origin in listOf(
+                Instant.parse("2026-03-29T00:59:30Z"),
+                Instant.parse("2026-10-25T00:59:30Z"),
+            )) {
+                val current = runningTimer(startedAtSeconds = origin.epochSecond)
+                val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(current))
+                val wall = MutableWallClock(origin)
+                val monotonic = MutableMonotonicClock(1_000)
+                val local = FakeLocalDriver()
+                val scheduler = FakeScheduler()
+                val effects = mutableListOf<RuntimeDeadlineFeedback>()
+                val reconciled = mutableListOf<Instant>()
+                val coordinator =
+                    coordinator(
+                        load = { current },
+                        reconcile = {
+                            reconciled += it
+                            RuntimeReconciliationResult(current.session, emptyList())
+                        },
+                        scheduler = scheduler,
+                        local = local,
+                        feedback = effects::add,
+                        wall = wall,
+                        monotonic = monotonic,
+                    )
+                coordinator.onRuntimeStateChanged()
+                val obsolete = local.armed.single()
+                wall.value = origin.minusSeconds(3_600)
+                monotonic.value = 61_000
+                coordinator.onSystemTimeChanged()
+                assertEquals(
+                    3_721_000L,
+                    local.armed
+                        .last()
+                        .anchor
+                        .elapsedAt(deadline.at),
+                )
+                obsolete.callback(deadline)
+                assertEquals(listOf(wall.value), reconciled)
+                assertEquals(deadline, local.armed.last().deadline)
+                wall.value = deadline.at.minusMillis(1)
+                monotonic.value = 62_000
+                coordinator.onSystemTimeChanged()
+                assertEquals(
+                    62_001L,
+                    local.armed
+                        .last()
+                        .anchor
+                        .elapsedAt(deadline.at),
+                )
+                assertEquals(Duration.ofMillis(1), coordinator.displayBaseline!!.timerRemaining(62_000))
+                assertEquals(Duration.ZERO, coordinator.displayBaseline!!.timerRemaining(62_001))
+                assertEquals(deadline, scheduler.scheduled.last())
+                assertEquals(2, scheduler.cancellations)
+                assertEquals(2, local.cancellations)
+                assertEquals(emptyList<RuntimeDeadlineFeedback>(), effects)
+                assertEquals(3L, coordinator.semanticGeneration.value)
+            }
+        }
+
+    @Test
     fun exactCapabilitySelectsOneExactOrInexactPath() {
         val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(runningTimer()))
         val exactBackend = FakeAlarmBackend(true)
