@@ -16,6 +16,7 @@ import com.alexandr5476.lifetracing.daily.nextPlanTemporalBoundary
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.CancelledPlanPageQuery
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.LocalDateTimeResolutionException
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanReadRow
@@ -36,9 +37,8 @@ import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.temporal.TemporalAdjusters
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -55,17 +55,20 @@ sealed interface PlanLoad<out T> {
     ) : PlanLoad<Nothing>
 }
 
-enum class PlanMessage { LOAD_FAILED, INVALID_SCHEDULE, ACTION_UNAVAILABLE }
+enum class PlanMessage {
+    LOAD_FAILED,
+    INVALID_SCHEDULE,
+    INVALID_DATE,
+    INVALID_TIME,
+    NONEXISTENT_TIME,
+    AMBIGUOUS_TIME,
+    INVALID_OFFSET,
+    ZONE_CHANGED,
+    ACTION_UNAVAILABLE,
+    PERSISTENCE_FAILED,
+}
 
 enum class PlanScheduleKind { FLOATING_DAY, EXACT_DAY, WEEK }
-
-data class PlanScheduleForm(
-    val source: ReusablePlanCatalogItem?,
-    val identity: PlanActionIdentity?,
-    val kind: PlanScheduleKind,
-    val date: String,
-    val time: String,
-)
 
 data class PlanCatalogState(
     val query: String = "",
@@ -133,6 +136,16 @@ sealed interface PlanAction {
         val value: String,
     ) : PlanAction
 
+    data class SelectScheduleOffset(
+        val offset: ZoneOffset,
+        val date: String,
+        val time: String,
+        val zoneId: ZoneId,
+        val inputRevision: Long,
+    ) : PlanAction
+
+    data object RevalidateScheduleZone : PlanAction
+
     data object DismissForm : PlanAction
 
     data object SubmitForm : PlanAction
@@ -172,6 +185,11 @@ sealed interface PlanMutation {
     data class Reschedule(
         val identity: PlanActionIdentity,
         val schedule: PlanSchedule,
+        val at: Instant,
+    ) : PlanMutation
+
+    data class PreserveSchedule(
+        val identity: PlanActionIdentity,
         val at: Instant,
     ) : PlanMutation
 
@@ -224,6 +242,7 @@ class PlanController internal constructor(
             semanticGeneration.collect { generation ->
                 if (generation != handled) {
                     handled = generation
+                    checkDraftZone()
                     if (visible) {
                         armBoundary()
                         loadWeek()
@@ -265,32 +284,42 @@ class PlanController internal constructor(
             is PlanAction.SelectCatalogItem -> selectCatalogItem(action.item)
             is PlanAction.Reschedule -> openReschedule(action.row)
             is PlanAction.ChangeScheduleKind ->
-                mutableState.update { state ->
-                    state.form?.let { form ->
-                        state.copy(
-                            form =
-                                form.copy(
-                                    kind = action.kind,
-                                    date =
-                                        if (action.kind == PlanScheduleKind.WEEK) {
-                                            state.weekStart.toString()
-                                        } else {
-                                            form.date
-                                        },
-                                ),
+                updateForm { form ->
+                    if (form.kind == action.kind) {
+                        form
+                    } else {
+                        form.edited().copy(
+                            kind = action.kind,
+                            date =
+                                if (action.kind ==
+                                    PlanScheduleKind.WEEK
+                                ) {
+                                    mutableState.value.weekStart.toString()
+                                } else {
+                                    form.date
+                                },
                         )
                     }
-                        ?: state
                 }
             is PlanAction.ChangeScheduleDate ->
-                mutableState.update { state ->
-                    state.form?.let { state.copy(form = it.copy(date = action.value)) }
-                        ?: state
+                updateForm { form ->
+                    if (form.date == action.value) form else form.edited().copy(date = action.value)
                 }
             is PlanAction.ChangeScheduleTime ->
-                mutableState.update { state ->
-                    state.form?.let { state.copy(form = it.copy(time = action.value)) }
-                        ?: state
+                updateForm { form ->
+                    if (form.time == action.value) form else form.edited().copy(time = action.value)
+                }
+            is PlanAction.SelectScheduleOffset -> selectOffset(action)
+            PlanAction.RevalidateScheduleZone ->
+                updateForm {
+                    it.copy(
+                        schedulingZoneId = zoneId(),
+                        selectedOffset = null,
+                        zoneReviewRequired = false,
+                        error = null,
+                        inputRevision =
+                            it.inputRevision + 1,
+                    )
                 }
             PlanAction.DismissForm -> mutableState.update { it.copy(form = null) }
             PlanAction.SubmitForm -> submitForm()
@@ -329,6 +358,7 @@ class PlanController internal constructor(
 
     fun onRouteEntered() {
         visible = true
+        checkDraftZone()
         armBoundary()
         if (recovery == null) loadWeek(clearFailure = true) else retryRecovery()
     }
@@ -476,6 +506,7 @@ class PlanController internal constructor(
     }
 
     private fun selectCatalogItem(item: ReusablePlanCatalogItem) {
+        if (closed || mutationInFlight.get()) return
         val state = mutableState.value
         mutableState.update {
             it.copy(
@@ -487,6 +518,7 @@ class PlanController internal constructor(
                         PlanScheduleKind.FLOATING_DAY,
                         state.selectedDate.toString(),
                         "09:00",
+                        schedulingZoneId = zoneId(),
                     ),
             )
         }
@@ -494,25 +526,82 @@ class PlanController internal constructor(
 
     private fun openReschedule(row: PlanReadRow) {
         if (mutableState.value.isMutating || !row.isMutable()) return
-        val (kind, date, time) = row.plan.target.toForm(zoneId())
-        mutableState.update { it.copy(form = PlanScheduleForm(null, row.plan.actionIdentity(), kind, date, time)) }
+        val zone = zoneId()
+        val (kind, date, time) = row.plan.target.toForm(zone)
+        mutableState.update {
+            it.copy(
+                form = PlanScheduleForm(null, row.plan.actionIdentity(), kind, date, time, zone),
+            )
+        }
+    }
+
+    private fun PlanScheduleForm.edited() =
+        copy(
+            scheduleEdited = true,
+            selectedOffset = null,
+            error = null,
+            inputRevision =
+                inputRevision + 1,
+        )
+
+    private fun updateForm(transform: (PlanScheduleForm) -> PlanScheduleForm) {
+        if (closed || mutationInFlight.get()) return
+        mutableState.update { state ->
+            state.form?.let {
+                state.copy(form = PlanScheduleInput.evaluate(PlanScheduleInput.checkZone(transform(it), zoneId())))
+            } ?: state
+        }
+    }
+
+    private fun checkDraftZone() {
+        mutableState.update { state ->
+            state.form?.let { state.copy(form = PlanScheduleInput.checkZone(it, zoneId())) } ?: state
+        }
+    }
+
+    private fun selectOffset(action: PlanAction.SelectScheduleOffset) {
+        if (closed || mutationInFlight.get()) return
+        mutableState.update { state ->
+            val form = state.form ?: return@update state
+            val checked = PlanScheduleInput.checkZone(form, zoneId())
+            if (checked.zoneReviewRequired) return@update state.copy(form = checked)
+            val currentTuple =
+                form.kind == PlanScheduleKind.EXACT_DAY &&
+                    !form.preservesExistingSchedule &&
+                    form.date == action.date &&
+                    form.time == action.time &&
+                    form.schedulingZoneId == action.zoneId &&
+                    form.inputRevision == action.inputRevision
+            val selected =
+                if (currentTuple) {
+                    PlanScheduleInput.evaluate(form.copy(selectedOffset = action.offset))
+                } else {
+                    form.copy(selectedOffset = null, error = PlanMessage.INVALID_OFFSET)
+                }
+            state.copy(form = selected)
+        }
     }
 
     private fun submitForm() {
-        val form = mutableState.value.form ?: return
-        val schedule =
-            runCatching { form.toSchedule(zoneId()) }.getOrElse {
-                mutableState.update { it.copy(mutationFailure = PlanMessage.INVALID_SCHEDULE) }
-                return
-            }
-        val at = now()
-        val mutation =
-            when (val source = form.source?.id) {
-                is LibraryTemplateId.Activity -> PlanMutation.CreateActivity(source.id, schedule, at)
-                is LibraryTemplateId.Sequence -> PlanMutation.CreateSequence(source.id, schedule, at)
-                null -> PlanMutation.Reschedule(requireNotNull(form.identity), schedule, at)
-            }
-        mutate(mutation)
+        if (closed || mutationInFlight.get()) return
+        val original = mutableState.value.form ?: return
+        val form = PlanScheduleInput.evaluate(PlanScheduleInput.checkZone(original, zoneId()))
+        mutableState.update { it.copy(form = form) }
+        if (form.error == null) {
+            val at = now()
+            val mutation =
+                if (form.preservesExistingSchedule) {
+                    PlanMutation.PreserveSchedule(requireNotNull(form.identity), at)
+                } else {
+                    val schedule = PlanScheduleInput.schedule(form)
+                    when (val source = form.source?.id) {
+                        is LibraryTemplateId.Activity -> PlanMutation.CreateActivity(source.id, schedule, at)
+                        is LibraryTemplateId.Sequence -> PlanMutation.CreateSequence(source.id, schedule, at)
+                        null -> PlanMutation.Reschedule(requireNotNull(form.identity), schedule, at)
+                    }
+                }
+            mutate(mutation)
+        }
     }
 
     private fun mutate(command: PlanMutation) {
@@ -521,14 +610,45 @@ class PlanController internal constructor(
         scope.launch {
             var failureMessage: PlanMessage? = null
             try {
+                val proposal =
+                    when (command) {
+                        is PlanMutation.CreateActivity -> command.schedule
+                        is PlanMutation.CreateSequence -> command.schedule
+                        is PlanMutation.Reschedule -> command.schedule
+                        else -> null
+                    }
+                if (proposal is PlanSchedule.ExactDay && proposal.currentZoneId != zoneId()) {
+                    mutationInFlight.set(false)
+                    mutableState.update {
+                        it.copy(
+                            isMutating = false,
+                            form =
+                                it.form?.let { form ->
+                                    PlanScheduleInput.checkZone(form, zoneId())
+                                },
+                        )
+                    }
+                    return@launch
+                }
                 commitMutation(command)
             } catch (cancelled: CancellationException) {
                 mutationInFlight.set(false)
                 throw cancelled
+            } catch (invalid: LocalDateTimeResolutionException) {
+                mutationInFlight.set(false)
+                mutableState.update { state ->
+                    state.copy(
+                        isMutating = false,
+                        form = state.form?.let { PlanScheduleInput.failed(it, invalid.failure) },
+                    )
+                }
+                return@launch
             } catch (_: StalePlanActionException) {
                 failureMessage = PlanMessage.ACTION_UNAVAILABLE
-            } catch (_: Exception) {
+            } catch (_: IllegalArgumentException) {
                 failureMessage = PlanMessage.ACTION_UNAVAILABLE
+            } catch (_: Exception) {
+                failureMessage = PlanMessage.PERSISTENCE_FAILED
             }
             if (!closed) {
                 mutableState.update {
@@ -708,17 +828,6 @@ class PlanController internal constructor(
                 }
             is PlanTarget.Week -> Triple(PlanScheduleKind.WEEK, weekStart.toString(), "09:00")
             is PlanTarget.Month -> error("Month scheduling is unavailable")
-        }
-
-    private fun PlanScheduleForm.toSchedule(zone: ZoneId): PlanSchedule =
-        when (kind) {
-            PlanScheduleKind.FLOATING_DAY -> PlanSchedule.FloatingDay(LocalDate.parse(date))
-            PlanScheduleKind.EXACT_DAY ->
-                PlanSchedule.ExactDay(
-                    LocalDateTime.of(LocalDate.parse(date), LocalTime.parse(time)),
-                    zone,
-                )
-            PlanScheduleKind.WEEK -> PlanSchedule.Week(LocalDate.parse(date))
         }
 
     private companion object {

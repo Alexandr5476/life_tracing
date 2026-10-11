@@ -615,4 +615,17 @@
     <string name="archived_templates_restoring_row">Восстановление…</string>
     <string name="archived_templates_restore_failure">Не удалось восстановить шаблон. Попробуйте снова.</string>
     <string name="archived_templates_retry">Повторить восстановление</string>
+    <string name="plan_invalid_date">Введите корректную дату (ГГГГ-ММ-ДД).</string>
+    <string name="plan_invalid_time">Введите корректное местное время (ЧЧ:мм).</string>
+    <string name="plan_nonexistent_time">Такого местного времени нет в указанном часовом поясе. Выберите другое время.</string>
+    <string name="plan_ambiguous_time">Это местное время встречается дважды. Выберите один из вариантов.</string>
+    <string name="plan_invalid_offset">Выбранное смещение UTC больше не подходит для этой даты, времени и часового пояса. Выберите заново.</string>
+    <string name="plan_zone_changed">Часовой пояс устройства изменился. Перед сохранением проверьте дату и время в текущем часовом поясе.</string>
+    <string name="plan_review_current_zone">Использовать текущий пояс и проверить</string>
+    <string name="plan_scheduling_zone">Часовой пояс расписания: %1$s</string>
+    <string name="plan_preserved_schedule">Пока расписание не изменено, сохранение оставляет исходный точный момент.</string>
+    <string name="plan_utc_offset">UTC%1$s</string>
+    <string name="plan_first_occurrence">%1$s · %2$s · первый раз</string>
+    <string name="plan_second_occurrence">%1$s · %2$s · второй раз</string>
+    <string name="plan_persistence_failed">Не удалось сохранить план. Обновите данные перед новой попыткой.</string>
 </resources>
