@@ -7,6 +7,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.YearMonth
 import java.time.ZoneId
+import java.time.ZoneOffset
 
 @JvmInline
 value class PlanEntryId(
@@ -71,8 +72,13 @@ sealed interface PlanSchedule {
     data class ExactDay(
         val localDateTime: LocalDateTime,
         val currentZoneId: ZoneId,
+        val selectedOffset: ZoneOffset? = null,
     ) : PlanSchedule {
-        override fun toTarget() = PlanTarget.ExactDay(localDateTime.atZone(currentZoneId).toInstant(), currentZoneId)
+        override fun toTarget() =
+            PlanTarget.ExactDay(
+                StrictLocalDateTimeResolver.requireInstant(localDateTime, currentZoneId, selectedOffset),
+                currentZoneId,
+            )
     }
 
     data class Week(
@@ -201,7 +207,24 @@ object PlanEntryTransitions {
         plan: PlanEntry,
         target: PlanTarget,
         at: Instant,
-    ): PlanEntry = plan.requirePlanned(at).copy(target = target, updatedAt = at).validated()
+    ): PlanEntry {
+        val current = preserveSchedule(plan, at)
+        val changed = current.copy(target = target, updatedAt = at).validated()
+        return if (current.target.hasEquivalentSchedule(target)) current else changed
+    }
+
+    fun preserveSchedule(
+        plan: PlanEntry,
+        at: Instant,
+    ): PlanEntry = plan.requirePlanned(at).validated()
+
+    private fun PlanTarget.hasEquivalentSchedule(other: PlanTarget): Boolean =
+        when (this) {
+            is PlanTarget.ExactDay -> other is PlanTarget.ExactDay && scheduledAt == other.scheduledAt
+            is PlanTarget.FloatingDay -> this == other
+            is PlanTarget.Week -> this == other
+            is PlanTarget.Month -> false
+        }
 
     fun fulfill(
         plan: PlanEntry,

@@ -2,6 +2,9 @@
 
 package com.alexandr5476.lifetracing.history
 
+import com.alexandr5476.lifetracing.domain.LocalDateTimeResolution
+import com.alexandr5476.lifetracing.domain.LocalDateTimeResolutionException
+import com.alexandr5476.lifetracing.domain.StrictLocalDateTimeResolver
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -54,13 +57,14 @@ internal fun resolveHistoricalLocalDateTime(
             return HistoricalLocalDateTimeResolution.Invalid
         }
     val offsets = zone.rules.getValidOffsets(local)
-    if (offsets.isEmpty()) return HistoricalLocalDateTimeResolution.Nonexistent
-    if (offsets.size > 2) error("ZoneRules returned ${offsets.size} valid offsets")
-    if (offsets.size == 1) return HistoricalLocalDateTimeResolution.Resolved(local.toInstant(offsets.single()))
-    if (selectedOffset == null || selectedOffset !in offsets) {
-        return HistoricalLocalDateTimeResolution.Ambiguous(offsets)
+    // Retain the historical editor contract: only a valid overlap choice is meaningful input.
+    val overlapChoice = selectedOffset?.takeIf { offsets.size == 2 && it in offsets }
+    return when (val result = StrictLocalDateTimeResolver.resolve(local, zone, overlapChoice)) {
+        is LocalDateTimeResolution.Resolved -> HistoricalLocalDateTimeResolution.Resolved(result.instant)
+        LocalDateTimeResolution.Nonexistent -> HistoricalLocalDateTimeResolution.Nonexistent
+        is LocalDateTimeResolution.Ambiguous -> HistoricalLocalDateTimeResolution.Ambiguous(result.validOffsets)
+        is LocalDateTimeResolution.Failure -> throw LocalDateTimeResolutionException(result)
     }
-    return HistoricalLocalDateTimeResolution.Resolved(local.toInstant(selectedOffset))
 }
 
 private val HISTORICAL_DATE_TIME_FORMATTER =

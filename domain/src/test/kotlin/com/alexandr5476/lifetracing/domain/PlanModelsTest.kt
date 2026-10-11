@@ -16,6 +16,71 @@ class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
 
     @Test
+    fun `new ExactDay input rejects DST gap and unresolved overlap`() {
+        val zone = ZoneId.of("Europe/Berlin")
+        listOf("2026-03-29T02:30", "2026-10-25T02:30").forEach { local ->
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanSchedule.ExactDay(LocalDateTime.parse(local), zone).toTarget()
+            }
+        }
+    }
+
+    @Test
+    fun `equivalent exact reschedule retains original identity precision and provenance`() {
+        val instant = Instant.parse("2026-10-25T01:30:27.123Z")
+        val original = activityPlan(PlanTarget.ExactDay(instant, null))
+        val result =
+            PlanEntryTransitions.reschedule(
+                original,
+                PlanTarget.ExactDay(instant, ZoneId.of("Pacific/Auckland")),
+                createdAt.plusSeconds(1),
+            )
+
+        assertEquals(original, result)
+        assertEquals(original.actionIdentity(), result.actionIdentity())
+    }
+
+    @Test
+    fun `literal target equivalence preserves all Plan facts while target class changes do not`() {
+        listOf(
+            PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+            PlanTarget.Week(LocalDate.parse("2026-08-17")),
+            PlanTarget.ExactDay(createdAt, ZoneId.of("UTC")),
+        ).forEach { target ->
+            val original = activityPlan(target)
+            assertEquals(original, PlanEntryTransitions.reschedule(original, target, createdAt.plusSeconds(1)))
+            assertEquals(original, PlanEntryTransitions.preserveSchedule(original, createdAt.plusSeconds(1)))
+        }
+        val original = activityPlan(PlanTarget.ExactDay(createdAt, null))
+        val floating = PlanTarget.FloatingDay(LocalDate.parse("2026-08-20"))
+        assertEquals(
+            original.copy(target = floating, updatedAt = createdAt.plusSeconds(1)),
+            PlanEntryTransitions.reschedule(original, floating, createdAt.plusSeconds(1)),
+        )
+    }
+
+    @Test
+    fun `no-op domain transitions still reject terminal states and out of order time`() {
+        val original = activityPlan()
+        val cancelled = PlanEntryTransitions.cancel(original, createdAt.plusSeconds(1))
+        val fulfilled = PlanEntryTransitions.fulfill(original, ActivityExecutionId("execution"), null, createdAt)
+        listOf(cancelled, fulfilled).forEach { terminal ->
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.preserveSchedule(terminal, createdAt.plusSeconds(2))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.reschedule(terminal, terminal.target, createdAt.plusSeconds(2))
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanEntryTransitions.preserveSchedule(original, createdAt.minusMillis(1))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanEntryTransitions.reschedule(original, original.target, createdAt.minusMillis(1))
+        }
+    }
+
+    @Test
     fun `production schedules resolve only supported day and Monday week targets`() {
         val zone = ZoneId.of("Asia/Kolkata")
         val local = LocalDateTime.parse("2026-08-20T15:30:00")

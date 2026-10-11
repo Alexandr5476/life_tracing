@@ -18,6 +18,20 @@ The frozen v1 schema has no interval-aware persisted access structure. Because v
 
 A future schema/performance change may introduce an exact interval-aware persisted index (such as an R-tree-backed design). Until then, the current exact database predicate is intentional and must not be represented as worst-case bounded.
 
+## Strict ExactDay scheduling and unchanged-target commands
+
+New ExactDay scheduling input is the exact LocalDateTime, applicable ZoneId, and optional explicitly selected ZoneOffset committed by the command. Both Activity and Sequence creation and explicit rescheduling resolve that tuple again at the public command boundary using ZoneRules.getValidOffsets(), never LocalDateTime.atZone() default adjustment/selection or a trusted preview Instant.
+
+Zero valid offsets rejects a DST gap. One valid offset resolves without selection, but any supplied offset must equal it. Two valid offsets require explicit selection of one of those offsets; absence returns ambiguity with both choices and an invalid or obsolete choice is rejected. Unsupported cardinality fails explicitly. Resolution exposes typed semantic outcomes suitable for later localized presentation. Invalid input produces no durable scheduling, snapshot-owned metadata, source, Recent, or linkage effects.
+
+Persisted ExactDay scheduledAt is the authoritative absolute Instant, including existing seconds and milliseconds and legacy null creationZoneId. Reads never revalidate it as new local input. An explicit preserve-existing-schedule command accepts only the expected PlanActionIdentity and command timestamp, reloads the current Plan transactionally, and returns it unchanged without reconstructing local values or requiring offset selection.
+
+Preservation and equivalent explicit rescheduling still enforce optimistic action identity, PLANNED status, absence of RUNNING/PAUSED linked root Execution, deferred Month actions, and command timestamp ordering. Invalid explicit temporal input is rejected before equivalence can produce success. FloatingDay equivalence is literal date equality; Week equivalence is literal weekStart equality; ExactDay equivalence is scheduledAt Instant equality regardless of proposed creation zone. Different target classes are never equivalent. An equivalent proposal returns the original Plan without executing a DAO reschedule update, retaining the original creationZoneId (including null), target precision, timestamps, identity, frozen snapshot, source revision, Statistics provenance, and all lifecycle/linkage facts. A changed device zone alone cannot revise the target.
+
+A genuinely changed reschedule updates only the same Plan's target, creation-zone context for a new ExactDay target, and command timestamp within the existing transactional writer. It does not replace the frozen snapshot, source identity/revision, or unrelated durable facts and creates no reschedule-history record. Storage remains scheduled_instant_ms with no offset-choice column or schema change.
+
+This command contract intentionally precedes scheduling-form integration. Offset controls, localized errors, dirty-state tracking, draft-zone policy, and choosing preservation for unchanged forms remain deferred. Sharing the pure resolution policy with historical-time handling preserves that consumer's existing parsing and manual historical Activity semantics.
+
 ## First coded Plan UI scope
 
 The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.

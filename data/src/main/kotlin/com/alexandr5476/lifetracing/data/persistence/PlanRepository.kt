@@ -80,6 +80,16 @@ class PlanRepository internal constructor(
         at: Instant,
     ): PlanEntry = reschedulePlanEntry(expected.planEntryId, schedule.toTarget(), at, expected)
 
+    /** Preserve the authoritative stored target without interpreting displayed local input. */
+    fun preservePlanSchedule(
+        expected: PlanActionIdentity,
+        at: Instant,
+    ): PlanEntry =
+        transaction {
+            val plan = requireMutablePlan(expected.planEntryId, expected)
+            PlanEntryTransitions.preserveSchedule(plan, at)
+        }
+
     fun updatePlanFromTemplate(
         expected: PlanActionIdentity,
         updatedAt: Instant,
@@ -229,8 +239,9 @@ class PlanRepository internal constructor(
     ): PlanEntry =
         transaction {
             val plan = requireMutablePlan(id, expected)
-            PlanEntryTransitions.reschedule(plan, target, at)
-            val shape = target.persistenceShape()
+            val rescheduled = PlanEntryTransitions.reschedule(plan, target, at)
+            if (rescheduled === plan) return@transaction plan
+            val shape = rescheduled.target.persistenceShape()
             check(
                 database.planEntryDao().reschedule(
                     id.value,
