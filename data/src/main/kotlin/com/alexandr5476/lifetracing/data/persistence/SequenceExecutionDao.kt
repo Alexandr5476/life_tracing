@@ -37,6 +37,8 @@ internal data class SequenceHistoryRootEntity(
     @androidx.room.ColumnInfo(name = "pause_duration_ms") val pauseDurationMs: Long?,
     @androidx.room.ColumnInfo(name = "wall_duration_ms") val wallDurationMs: Long?,
     @androidx.room.ColumnInfo(name = "primary_local_date") val primaryLocalDate: String,
+    @androidx.room.ColumnInfo(name = "original_zone_id") val originalZoneId: String,
+    @androidx.room.ColumnInfo(name = "original_utc_offset_minutes") val originalUtcOffsetMinutes: Int?,
 )
 
 @Dao
@@ -47,7 +49,8 @@ internal abstract class SequenceExecutionDao {
 
     @Query(
         "SELECT id, snapshot_id, plan_entry_id, status, started_at_ms, ended_at_ms, active_duration_ms, " +
-            "pause_duration_ms, wall_duration_ms, primary_local_date FROM sequence_executions " +
+            "pause_duration_ms, wall_duration_ms, primary_local_date, " +
+            "original_zone_id, original_utc_offset_minutes FROM sequence_executions " +
             "WHERE status IN ('COMPLETED', 'ENDED_EARLY') " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
             "AND (:cursorDate IS NULL OR primary_local_date < :cursorDate " +

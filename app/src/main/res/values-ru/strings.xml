@@ -629,4 +629,5 @@
     <string name="plan_second_occurrence">%1$s · %2$s · второй раз</string>
     <string name="plan_persistence_failed">Не удалось сохранить план. Обновите данные перед новой попыткой.</string>
     <string name="calendar_time_with_offset">%1$s · UTC%2$s</string>
+    <string name="history_timestamp_context">%1$s (UTC%2$s, %3$s)</string>
 </resources>

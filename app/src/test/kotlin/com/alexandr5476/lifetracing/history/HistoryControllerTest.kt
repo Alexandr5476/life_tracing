@@ -36,6 +36,35 @@ import java.time.ZoneOffset
 @Suppress("LargeClass") // One controller fixture keeps the behavior matrix self-contained.
 class HistoryControllerTest {
     @Test
+    fun rediscoveryPreservesOriginalAttributionAndStoredDateAfterCurrentZoneChanges() =
+        runBlocking {
+            val berlin = java.time.ZoneId.of("Europe/Berlin")
+            val first =
+                root("first").copy(
+                    originalZoneId = berlin,
+                    originalUtcOffsetMinutes = 120,
+                    completedAt = Instant.parse("2026-10-25T00:30:00Z"),
+                )
+            val second =
+                first.copy(
+                    executionId = ActivityExecutionId("second"),
+                    completedAt = Instant.parse("2026-10-25T01:30:00Z"),
+                    originalUtcOffsetMinutes = 60,
+                )
+            var deviceZone = ZoneOffset.ofHours(9)
+            val fixture = fixture(zoneId = { deviceZone }) { listOf(second, first) }
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(1)
+            fixture.controller.onRouteExited()
+            deviceZone = ZoneOffset.ofHours(-7)
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(2)
+            assertEquals(listOf(second, first), (fixture.controller.state.value.load as HistoryRootsLoad.Content).roots)
+            assertEquals(TODAY, first.primaryLocalDate)
+            fixture.close()
+        }
+
+    @Test
     fun initialRouteEntryIssuesOneFiniteQueryContainingToday() =
         runBlocking {
             val fixture = fixture { emptyList() }
@@ -867,6 +896,8 @@ class HistoryControllerTest {
                 null,
                 TimeTrackingMode.STOPWATCH,
                 null,
+                java.time.ZoneOffset.UTC,
+                null,
             )
 
         private fun sequence(id: String) =
@@ -882,6 +913,8 @@ class HistoryControllerTest {
                 Duration.ofSeconds(60),
                 null,
                 id,
+                null,
+                java.time.ZoneOffset.UTC,
                 null,
             )
 

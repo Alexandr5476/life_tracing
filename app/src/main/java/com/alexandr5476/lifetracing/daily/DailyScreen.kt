@@ -57,15 +57,14 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
+import com.alexandr5476.lifetracing.ui.historicalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.math.BigDecimal
 import java.time.Duration
-import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -650,15 +649,18 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                     Text(
                         stringResource(
                             R.string.daily_time_range,
-                            localizedTime(startedAt),
-                            localizedTime(root.completedAt),
+                            historicalTimestamp(startedAt, root.originalZoneId, includeDate = false),
+                            historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
                         ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
                     Text(
-                        stringResource(R.string.daily_completed_at, localizedTime(root.completedAt)),
+                        stringResource(
+                            R.string.daily_completed_at,
+                            historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -671,8 +673,8 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                 Text(
                     stringResource(
                         R.string.daily_time_range,
-                        localizedTime(root.startedAt),
-                        localizedTime(root.completedAt),
+                        historicalTimestamp(root.startedAt, root.originalZoneId, includeDate = false),
+                        historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
@@ -769,18 +771,6 @@ private fun localizedTime(time: LocalTime): String {
     val locale = LocalConfiguration.current.locales[0]
     return remember(time, locale) {
         DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(time)
-    }
-}
-
-@Composable
-private fun localizedTime(instant: Instant): String {
-    val locale = LocalConfiguration.current.locales[0]
-    val zoneId = ZoneId.systemDefault()
-    return remember(instant, locale, zoneId) {
-        DateTimeFormatter
-            .ofLocalizedTime(FormatStyle.SHORT)
-            .withLocale(locale)
-            .format(instant.atZone(zoneId))
     }
 }
 

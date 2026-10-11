@@ -629,4 +629,5 @@
     <string name="plan_second_occurrence">%1$s · %2$s · second occurrence</string>
     <string name="plan_persistence_failed">Could not save the Plan. Reload before trying again.</string>
     <string name="calendar_time_with_offset">%1$s · UTC%2$s</string>
+    <string name="history_timestamp_context">%1$s (UTC%2$s, %3$s)</string>
 </resources>

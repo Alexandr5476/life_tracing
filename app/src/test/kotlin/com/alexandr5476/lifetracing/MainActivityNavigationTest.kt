@@ -466,6 +466,8 @@ class MainActivityNavigationTest {
                 null,
                 "Sequence",
                 null,
+                java.time.ZoneOffset.UTC,
+                null,
             ),
             Instant.parse("2026-01-01T01:00:00Z"),
             ZoneOffset.UTC,

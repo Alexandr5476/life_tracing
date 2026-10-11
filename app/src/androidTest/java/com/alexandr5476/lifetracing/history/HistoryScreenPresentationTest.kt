@@ -4,7 +4,11 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -70,12 +74,147 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.ConcurrentModificationException
+import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicInteger
 
 class HistoryScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun repeatedHourDetailShowsEachEndpointsHistoricalOffset() {
+        val previousZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
+        try {
+            val zone = ZoneId.of("Europe/Berlin")
+            val detail = activityDetail(zone = zone)
+            val crossing =
+                detail.copy(
+                    root =
+                        detail.root.copy(
+                            startedAt = Instant.parse("2026-10-25T00:30:00Z"),
+                            completedAt = Instant.parse("2026-10-25T01:30:00Z"),
+                            activeDuration = Duration.ofHours(1),
+                        ),
+                )
+            setDetail { ActivityDetail(crossing) }
+            composeTestRule.onNodeWithText("UTC+02:00", substring = true).assertIsDisplayed()
+            composeTestRule.onNodeWithText("UTC+01:00", substring = true).assertIsDisplayed()
+            composeTestRule.onNodeWithText("Europe/Berlin", substring = true).assertIsDisplayed()
+            composeTestRule.onNodeWithText("Asia/Tokyo", substring = true).assertDoesNotExist()
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
+    }
+
+    @Test
+    fun localizedNoLiveRootsDisambiguateOverlapAndSequenceChildrenUseOwnZones() {
+        val previousZone = TimeZone.getDefault()
+        val russian = Locale.forLanguageTag("ru")
+        val locale = mutableStateOf(Locale.US)
+        val detailMode = mutableStateOf(false)
+        val berlin = ZoneId.of("Europe/Berlin")
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        val date = LocalDate.parse("2026-10-25")
+        val noLive =
+            activityDetail(TimeTrackingMode.NO_LIVE_TRACKING, duration = null, zone = berlin).root.copy(
+                primaryLocalDate = date,
+                startedAt = null,
+                completedAt = first,
+                originalUtcOffsetMinutes = 120,
+            )
+        val later =
+            noLive.copy(
+                executionId = ActivityExecutionId("later"),
+                completedAt = second,
+                originalUtcOffsetMinutes = 60,
+            )
+        val sequence = sequenceDetail(SequenceExecutionStatus.COMPLETED, berlin)
+        val performed = sequence.occurrences.first()
+        val child =
+            requireNotNull(performed.child).copy(
+                startedAt = first,
+                completedAt = second,
+                originalZoneId = ZoneId.of("Asia/Tokyo"),
+                originalUtcOffsetMinutes = 540,
+                activeDuration = Duration.ofHours(1),
+            )
+        val sequenceDetail =
+            sequence.copy(
+                root = sequence.root.copy(startedAt = first, completedAt = second),
+                occurrences =
+                    listOf(
+                        performed.copy(enteredAt = first, completedAt = second, child = child),
+                        sequence.occurrences.last(),
+                    ),
+                intervals = sequence.intervals.take(1).map { it.copy(startedAt = first, endedAt = second) },
+            )
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
+            composeTestRule.setContent {
+                val configuration = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
+                configuration.setLocale(locale.value)
+                val context = composeTestRule.activity.createConfigurationContext(configuration)
+                CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                    LifeTracingTheme {
+                        if (detailMode.value) {
+                            Column(Modifier.verticalScroll(rememberScrollState())) { SequenceDetail(sequenceDetail) }
+                        } else {
+                            HistoryScreen(
+                                HistoryPresentationState(
+                                    HistoryBrowseWindow(date.minusDays(1), date),
+                                    HistoryRootsLoad.Content(listOf(noLive, later)),
+                                ),
+                                {},
+                            )
+                        }
+                    }
+                }
+            }
+            for (language in listOf(Locale.US, russian)) {
+                composeTestRule.runOnIdle { locale.value = language }
+                val clock =
+                    DateTimeFormatter
+                        .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+                        .withLocale(language)
+                        .format(first.atZone(berlin))
+                composeTestRule
+                    .onNodeWithText(
+                        "$clock (UTC+02:00, Europe/Berlin)",
+                    ).performScrollTo()
+                    .assertIsDisplayed()
+                composeTestRule
+                    .onNodeWithText(
+                        "$clock (UTC+01:00, Europe/Berlin)",
+                    ).performScrollTo()
+                    .assertIsDisplayed()
+                val configuration = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
+                configuration.setLocale(language)
+                val resources = composeTestRule.activity.createConfigurationContext(configuration).resources
+                val missing = resources.getString(R.string.history_missing_value)
+                composeTestRule
+                    .onAllNodesWithText(resources.getString(R.string.history_active_duration, missing))
+                    .assertCountEquals(2)
+                composeTestRule.onNodeWithText("0:00").assertDoesNotExist()
+            }
+            composeTestRule.runOnIdle { detailMode.value = true }
+            val childStart =
+                DateTimeFormatter
+                    .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+                    .withLocale(russian)
+                    .format(first.atZone(child.originalZoneId)) + " (UTC+09:00, Asia/Tokyo)"
+            composeTestRule.onNodeWithText(childStart, substring = true).performScrollTo().assertIsDisplayed()
+            composeTestRule
+                .onAllNodesWithText("UTC+02:00, Europe/Berlin", substring = true)[0]
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeTestRule.onNodeWithTag("history-occurrence-tombstone").performScrollTo().assertIsDisplayed()
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
+    }
 
     @Test
     fun activityDetailUsesHistoricalZoneAndPreservesFrozenConfigurationAndValues() {
@@ -599,7 +738,7 @@ class HistoryScreenPresentationTest {
     }
 
     @Test
-    fun completedSequenceStatusAndSummaryOnlyMixedListArePresentedWithoutCurrentZoneClocks() {
+    fun completedSequenceStatusAndMixedListKeepStoredDatesAndOriginalZoneClocks() {
         val suppliedDate = LocalDate.parse("2001-02-03")
         val activity = activityDetail().root.copy(primaryLocalDate = suppliedDate, title = "Activity summary")
         val sequence =
@@ -623,8 +762,8 @@ class HistoryScreenPresentationTest {
         composeTestRule.onNodeWithTag("history-activity-${activity.executionId.value}").assertExists()
         composeTestRule.onNodeWithTag("history-sequence-${sequence.executionId.value}").assertExists()
         composeTestRule
-            .onNodeWithText(historicalTime(activity.completedAt, ZoneId.systemDefault()), substring = true)
-            .assertDoesNotExist()
+            .onAllNodesWithText(historicalTime(activity.completedAt, activity.originalZoneId), substring = true)
+            .assertCountEquals(2)
         assertTrue(activity.completedAt.toString().startsWith("2026"))
     }
 
@@ -760,6 +899,8 @@ class HistoryScreenPresentationTest {
                 "Frozen comment",
                 mode,
                 target,
+                zone,
+                null,
             ),
             END,
             zone,
@@ -844,6 +985,8 @@ class HistoryScreenPresentationTest {
                         START.plusSeconds(70),
                         Duration.ofMinutes(1),
                         listOf(childField),
+                        zone,
+                        null,
                     ),
                 ),
                 occurrence(
@@ -887,6 +1030,8 @@ class HistoryScreenPresentationTest {
                 null,
                 "Historical sequence",
                 "Frozen sequence comment",
+                zone,
+                null,
             ),
             END,
             zone,
@@ -972,6 +1117,8 @@ class HistoryScreenPresentationTest {
                         end,
                         Duration.between(start, end),
                         emptyList(),
+                        ZoneId.of("UTC"),
+                        null,
                     )
                 },
                 SequenceHistoryChildMutationFacts(

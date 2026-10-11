@@ -1226,6 +1226,8 @@ class SequenceHistoryProposalBuilderTest {
                 null,
                 "Sequence",
                 null,
+                java.time.ZoneOffset.UTC,
+                null,
             ),
             TOKEN,
             ZoneId.of("UTC"),
@@ -1298,6 +1300,8 @@ class SequenceHistoryProposalBuilderTest {
                     completed,
                     Duration.ofMinutes(9),
                     emptyList(),
+                    java.time.ZoneOffset.UTC,
+                    null,
                 )
             },
             facts,

@@ -47,6 +47,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -81,6 +82,222 @@ class HistoryReadRepositoryTest {
     fun tearDown() {
         database.close()
         fileDatabaseName?.let(ApplicationProvider.getApplicationContext<Context>()::deleteDatabase)
+    }
+
+    @Test
+    fun originalAttributionRoundTripsThroughCanonicalHistoryAndDailyWithoutChangingFacts() {
+        val name = "history-original-attribution.db"
+        reopenFileDatabase(name)
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.seedSeries()
+        fixtures.activity("timed", "STOPWATCH")
+        fixtures.activity("no-live", "NO_LIVE_TRACKING")
+        fixtures.sequence("sequence", listOf("timed"))
+        val zone = ZoneId.of("Europe/Berlin")
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        val previousDayStart = Instant.parse("2026-10-24T21:30:00Z")
+        val factory = ActivityExecutionFactory { ActivityExecutionId("timed-history") }
+        val timed =
+            factory.createManualTimed(
+                requireNotNull(database.activitySnapshotDao().getAggregate("timed")).toDomain(),
+                previousDayStart,
+                second,
+                second.plusSeconds(1),
+                zone,
+            )
+        database.activityExecutionDao().insertAggregate(timed.toEntityAggregate())
+        val noLiveSnapshot = requireNotNull(database.activitySnapshotDao().getAggregate("no-live")).toDomain()
+        val noLive =
+            listOf(first, second).mapIndexed { index, at ->
+                ActivityExecutionFactory { ActivityExecutionId("no-live-$index") }
+                    .createManualNoLiveHistory(noLiveSnapshot, at, at.plusSeconds(1), zone)
+                    .also { database.activityExecutionDao().insertAggregate(it.toEntityAggregate()) }
+            }
+        // A valid legacy row has no stored offset, but always has its original zone.
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET original_utc_offset_minutes = NULL WHERE id = 'no-live-1'",
+        )
+        val live = LiveSessionRepository.create(database)
+        val completed =
+            live.startSequenceFromSnapshot(
+                SequenceSnapshotId("sequence"),
+                previousDayStart,
+                previousDayStart,
+                zone,
+            )
+        live.completeCurrentSequenceStep(requireNotNull(completed.execution.currentOccurrenceId), first)
+        val early = live.startSequenceFromSnapshot(SequenceSnapshotId("sequence"), second, second, zone)
+        live.endSequenceEarly(second.plusSeconds(60))
+        val activities =
+            (listOf(timed.id) + noLive.map { it.id }).associateWith {
+                requireNotNull(database.activityExecutionDao().getAggregate(it.value))
+            }
+        val sequences =
+            listOf(completed.execution.id, early.execution.id).associateWith {
+                requireNotNull(database.sequenceExecutionDao().getHistoryAggregate(it.value))
+            }
+        val children =
+            sequences.keys.associateWith {
+                database.activityExecutionDao().getSequenceChildAggregates(
+                    it.value,
+                )
+            }
+        val activitySnapshot = database.activitySnapshotDao().getAggregate("timed")
+        val sequenceSnapshot = database.sequenceSnapshotDao().getAggregate("sequence")
+        val statistics =
+            StatisticsRepository(
+                database,
+            ) { StatisticsSeriesId("unused") }.overview(StatisticsPeriod.AllTime)
+        val all = repository.getCompletedRoots(query("2026-10-24", "2026-10-25", 20))
+        assertEquals(5, all.size)
+        assertEquals(
+            listOf(120, null),
+            all
+                .filterIsInstance<CompletedActivityHistoryRoot>()
+                .filter { it.startedAt == null }
+                .sortedBy { it.completedAt }
+                .map { it.originalUtcOffsetMinutes },
+        )
+        for (deviceZone in listOf("America/Los_Angeles", "Pacific/Kiritimati")) {
+            reopenFileDatabase(name, deleteFirst = false)
+            val currentZone = ZoneId.of(deviceZone)
+            assertEquals(all, repository.getCompletedRoots(query("2026-10-24", "2026-10-25", 20)))
+            for (root in all) {
+                assertEquals(zone, root.originalZoneId)
+                when (root) {
+                    is CompletedActivityHistoryRoot -> {
+                        val detail = requireNotNull(repository.getActivityDetail(root.executionId))
+                        assertEquals(root, detail.root)
+                        assertEquals(root.originalZoneId, detail.originalZoneId)
+                    }
+                    is CompletedSequenceHistoryRoot -> {
+                        val detail = requireNotNull(repository.getSequenceDetail(root.executionId))
+                        assertEquals(root, detail.root)
+                        assertEquals(root.originalZoneId, detail.originalZoneId)
+                    }
+                }
+            }
+            val daily = DailyReadRepository(database, CurrentZoneIdProvider { currentZone })
+            for (date in listOf("2026-10-24", "2026-10-25")) {
+                val selected = LocalDate.parse(date)
+                val expected = all.filter { it.primaryLocalDate == selected }
+                assertEquals(expected, repository.getCompletedRoots(query(date, date, 20)))
+                assertEquals(
+                    expected,
+                    daily.getDaily(DailyQuery(selected, second.plusSeconds(120), 20)).completedHistory,
+                )
+            }
+            val page = repository.getCompletedRoots(query("2026-10-24", "2026-10-25", 2))
+            val remainder =
+                repository.getCompletedRoots(
+                    query("2026-10-24", "2026-10-25", 20).copy(continuation = page.last().cursor()),
+                )
+            assertEquals(all, page + remainder)
+            activities.forEach { (id, facts) ->
+                assertEquals(facts, database.activityExecutionDao().getAggregate(id.value))
+            }
+            sequences.forEach { (id, facts) ->
+                assertEquals(facts, database.sequenceExecutionDao().getHistoryAggregate(id.value))
+            }
+            children.forEach { (id, facts) ->
+                assertEquals(facts, database.activityExecutionDao().getSequenceChildAggregates(id.value))
+            }
+            assertEquals(activitySnapshot, database.activitySnapshotDao().getAggregate("timed"))
+            assertEquals(sequenceSnapshot, database.sequenceSnapshotDao().getAggregate("sequence"))
+            assertEquals(
+                statistics,
+                StatisticsRepository(database) {
+                    StatisticsSeriesId("unused")
+                }.overview(StatisticsPeriod.AllTime),
+            )
+            assertEquals(7L, count("activity_executions") + count("sequence_executions"))
+            assertNull(database.activeSessionDao().get())
+        }
+        assertEquals(Duration.ofHours(4), timed.activeDuration)
+        assertEquals(LocalDate.parse("2026-10-24"), timed.primaryLocalDate)
+    }
+
+    @Test
+    fun childOriginalZoneAndFrozenOccurrenceProvenanceSurviveReloadAndTombstone() {
+        val name = "history-child-zone.db"
+        reopenFileDatabase(name)
+        val execution = insertSequenceDisplayFixture()
+        val before = requireNotNull(repository.getSequenceDetail(execution.id))
+        val occurrence = before.occurrences.single()
+        val child = requireNotNull(occurrence.child)
+        assertEquals(ZoneOffset.ofHours(3), before.root.originalZoneId)
+        assertEquals(ZoneOffset.UTC, child.originalZoneId)
+        reopenFileDatabase(name, deleteFirst = false)
+        assertEquals(before, repository.getSequenceDetail(execution.id))
+        SequenceHistoryCommandRepository(database).deleteChildHistory(
+            execution.id,
+            com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand(
+                before.updatedAt,
+                occurrence.occurrenceId,
+                child.executionId,
+            ),
+            before.updatedAt.plusMillis(1),
+        )
+        val deletedRow = database.activityExecutionDao().getById(child.executionId.value)
+        reopenFileDatabase(name, deleteFirst = false)
+        val tombstone = requireNotNull(repository.getSequenceDetail(execution.id)).occurrences.single()
+        assertNull(tombstone.child)
+        assertEquals(com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus.DELETED_EXECUTION, tombstone.status)
+        assertEquals(child.executionId, tombstone.childMutationFacts?.executionId)
+        assertEquals(occurrence.activitySnapshotId, tombstone.activitySnapshotId)
+        assertEquals(occurrence.sourceSequenceSnapshotNodeId, tombstone.sourceSequenceSnapshotNodeId)
+        assertEquals(occurrence.repeatSourceSnapshotNodeId, tombstone.repeatSourceSnapshotNodeId)
+        assertEquals(occurrence.repeatIteration, tombstone.repeatIteration)
+        assertEquals(occurrence.isRuntimeAdded, tombstone.isRuntimeAdded)
+        assertEquals(deletedRow, database.activityExecutionDao().getById(child.executionId.value))
+    }
+
+    @Test
+    fun corruptedSequenceAttributionFailsInBothCanonicalReaders() {
+        val fixtures = LiveRuntimeTestFixtures(database)
+        fixtures.seedSeries()
+        fixtures.activity("timed", "STOPWATCH")
+        fixtures.sequence("sequence", listOf("timed"))
+        val live = LiveSessionRepository.create(database)
+        val started = live.startSequenceFromSnapshot(SequenceSnapshotId("sequence"), at(0), at(0), ZoneOffset.UTC)
+        live.completeCurrentSequenceStep(requireNotNull(started.execution.currentOccurrenceId), at(100))
+        for ((zone, offset) in listOf("invalid/zone" to 0, "UTC" to 60)) {
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET original_zone_id = ?, original_utc_offset_minutes = ? WHERE id = ?",
+                arrayOf(zone, offset, started.execution.id.value),
+            )
+            val failure =
+                if (zone ==
+                    "UTC"
+                ) {
+                    IllegalArgumentException::class.java
+                } else {
+                    java.time.DateTimeException::class.java
+                }
+            assertThrows(failure) { repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 10)) }
+            assertThrows(failure) { repository.getSequenceDetail(started.execution.id) }
+        }
+    }
+
+    @Test
+    fun corruptedOriginalAttributionFailsInBothCanonicalReaders() {
+        insertActivitySnapshot("activity-snapshot", "Frozen Activity", null)
+        val execution = insertActivity("bad-zone", at(100))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET original_zone_id = 'invalid/zone' WHERE id = 'bad-zone'",
+        )
+        assertThrows(java.time.DateTimeException::class.java) {
+            repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 10))
+        }
+        assertThrows(java.time.DateTimeException::class.java) { repository.getActivityDetail(execution.id) }
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET original_zone_id = 'UTC', original_utc_offset_minutes = 60 WHERE id = 'bad-zone'",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.getCompletedRoots(query("2026-08-20", "2026-08-20", 10))
+        }
+        assertThrows(IllegalArgumentException::class.java) { repository.getActivityDetail(execution.id) }
     }
 
     @Test
@@ -485,6 +702,16 @@ class HistoryReadRepositoryTest {
 
         assertEquals(sequence.updatedAt, detail.updatedAt)
         assertEquals(ZoneOffset.ofHours(3), detail.originalZoneId)
+        assertEquals(detail.originalZoneId, detail.root.originalZoneId)
+        assertEquals(180, detail.root.originalUtcOffsetMinutes)
+        val occurrence = detail.occurrences.single()
+        val child = requireNotNull(occurrence.child)
+        assertEquals(ZoneOffset.UTC, child.originalZoneId)
+        assertEquals(0, child.originalUtcOffsetMinutes)
+        assertEquals("sequence-display-child", child.executionId.value)
+        assertEquals("display-snapshot", occurrence.activitySnapshotId.value)
+        assertEquals("sequence-display-node", occurrence.sourceSequenceSnapshotNodeId?.value)
+        assertFalse(occurrence.isRuntimeAdded)
         assertEquals("Creation sequence number", detail.fields[0].name)
         assertEquals(
             SequenceHistoryConfiguredValue.Number(7),
@@ -599,6 +826,8 @@ class HistoryReadRepositoryTest {
         val queries = synchronized(observedSql) { observedSql.map(String::lowercase) }
 
         assertEquals(1, queries.count { "from activity_executions" in it && "limit" in it })
+        val rootQueries = queries.filter { "from activity_executions" in it || "from sequence_executions" in it }
+        assertTrue(rootQueries.all { "original_zone_id" in it && "original_utc_offset_minutes" in it })
         assertEquals(1, queries.count { "from sequence_executions" in it && "limit" in it })
         assertEquals(1, queries.count { "from activity_snapshots" in it && " in (" in it })
         assertEquals(1, queries.count { "from sequence_snapshots" in it && " in (" in it })

@@ -10,6 +10,25 @@ History navigation derives its reachable newest date from the latest persisted c
 
 The v10 index-only migration adds bounded exact newest-root access paths: `(context_type, status, deleted_at_ms, primary_local_date)` for standalone nondeleted completed Activity roots and `(status, primary_local_date)` for Sequence roots. The latter uses one lookup per terminal status. These indexes change neither durable History semantics nor stored values.
 
+## Original-zone completed-History presentation
+
+Canonical completed roots project the existing non-null `original_zone_id` and optional
+`original_utc_offset_minutes` directly from bounded root discovery rows. Detail roots and
+performed Sequence children retain the same stored provenance. No device-zone fallback,
+persistence normalization, migration, or additional temporal lookup is permitted.
+
+History and Daily completed timestamps show the original ZoneId and the actual UTC offset
+of each displayed Instant in that zone. Each endpoint is interpreted independently across
+DST transitions; the stored original offset describes the primary instant (timed Activity
+start, No-live completion, Sequence start), not every endpoint. Invalid zone IDs or an
+inconsistent non-null primary offset fail at canonical mapping/validation. Legacy null
+offsets remain valid. Stored `primaryLocalDate` remains the selector/grouping authority.
+
+Sequence child Activity timestamps use the child's stored zone. Sequence-owned occurrence
+and interval timestamps retain the root zone because those rows store no independent zone.
+Deletion/tombstone visibility, identity, duration accounting, Statistics, paging and all
+live-runtime/Plan timezone policies remain unchanged.
+
 ## Exact historical-overlap preflight performance exception
 
 `overlapsCompletedHistory` remains the canonical exact in-database overlap predicate for completed standalone timed Activities: `started_at_ms <= proposedEnd` and `completed_at_ms >= proposedStart`. It uses the existing `(context_type, completed_at_ms)` access path, `EXISTS`, and short-circuit behavior; it neither loads History into application/UI memory nor performs an application-side History scan.
