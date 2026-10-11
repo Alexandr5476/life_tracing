@@ -630,7 +630,7 @@ class StandaloneActivityRecoveryTest(
 
     companion object {
         @JvmStatic
-        @Parameterized.Parameters(name = "origin={0}, eventZone={1}")
+        @Parameterized.Parameters(name = "context={index}")
         fun temporalContexts(): List<Array<Any>> =
             listOf(
                 arrayOf(Instant.EPOCH, ZoneOffset.UTC),
