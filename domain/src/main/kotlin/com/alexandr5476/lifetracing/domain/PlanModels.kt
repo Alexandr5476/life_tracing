@@ -295,6 +295,8 @@ data class PlanCalendarEntry(
     val plan: PlanEntry,
     val effectiveLocalDate: LocalDate,
     val exactLocalTime: LocalTime?,
+    val effectiveZoneId: ZoneId? = null,
+    val exactUtcOffset: ZoneOffset? = null,
 )
 
 data class PlanListEntry(

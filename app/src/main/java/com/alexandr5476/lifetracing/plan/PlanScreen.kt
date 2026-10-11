@@ -391,7 +391,13 @@ private fun CancelledDialog(
         is com.alexandr5476.lifetracing.domain.PlanTarget.ExactDay ->
             stringResource(
                 R.string.plan_exact_at,
-                requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
+                exactUtcOffset?.let { offset ->
+                    stringResource(
+                        R.string.calendar_time_with_offset,
+                        requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
+                        if (offset.totalSeconds == 0) "+00:00" else offset.id,
+                    )
+                } ?: requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
             )
         is com.alexandr5476.lifetracing.domain.PlanTarget.Week -> null
         is com.alexandr5476.lifetracing.domain.PlanTarget.Month -> error("Month Plans are not rendered")

@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import com.alexandr5476.lifetracing.daily.CoroutineLocalDateBoundaryScheduler
 import com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler
 import com.alexandr5476.lifetracing.daily.nextPlanTemporalBoundary
+import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.CancelledPlanPageQuery
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
@@ -209,6 +210,7 @@ sealed interface PlanMutation {
     ) : PlanMutation
 }
 
+@Suppress("LargeClass") // One owner keeps Plan commands and canonical recovery atomic with calendar publication.
 class PlanController internal constructor(
     private val scope: CoroutineScope,
     private val readWeek: suspend (WeekPlanQuery) -> WeekPlanRead,
@@ -244,7 +246,6 @@ class PlanController internal constructor(
                     handled = generation
                     checkDraftZone()
                     if (visible) {
-                        armBoundary()
                         loadWeek()
                     }
                 }
@@ -255,132 +256,136 @@ class PlanController internal constructor(
         loadWeek()
     }
 
-    fun dispatch(action: PlanAction) {
-        when (action) {
-            PlanAction.PreviousWeek -> changeWeek(-1)
-            PlanAction.NextWeek -> changeWeek(1)
-            PlanAction.Today -> today()
-            is PlanAction.SelectDate -> selectDate(action.date)
-            PlanAction.Refresh ->
-                if (recovery == null) {
-                    loadWeek(clearFailure = true)
-                } else {
-                    retryRecovery()
-                }
-            PlanAction.OpenCatalog -> openCatalog()
-            PlanAction.DismissCatalog -> {
-                catalogGeneration.incrementAndGet()
-                mutableState.update { it.copy(catalog = null) }
-            }
-            is PlanAction.SearchCatalog -> loadCatalog(action.query, null, false)
-            PlanAction.LoadMoreCatalog ->
-                mutableState.value.catalog?.let {
-                    if (it.hasNextPage &&
-                        !it.loading
-                    ) {
-                        loadCatalog(it.query, it.items.lastOrNull(), true)
-                    }
-                }
-            is PlanAction.SelectCatalogItem -> selectCatalogItem(action.item)
-            is PlanAction.Reschedule -> openReschedule(action.row)
-            is PlanAction.ChangeScheduleKind ->
-                updateForm { form ->
-                    if (form.kind == action.kind) {
-                        form
+    fun dispatch(action: PlanAction): Unit =
+        synchronized(recoveryLock) {
+            when (action) {
+                PlanAction.PreviousWeek -> changeWeek(-1)
+                PlanAction.NextWeek -> changeWeek(1)
+                PlanAction.Today -> today()
+                is PlanAction.SelectDate -> selectDate(action.date)
+                PlanAction.Refresh ->
+                    if (recovery == null) {
+                        loadWeek(clearFailure = true)
                     } else {
-                        form.edited().copy(
-                            kind = action.kind,
-                            date =
-                                if (action.kind ==
-                                    PlanScheduleKind.WEEK
-                                ) {
-                                    mutableState.value.weekStart.toString()
-                                } else {
-                                    form.date
-                                },
+                        retryRecovery()
+                    }
+                PlanAction.OpenCatalog -> openCatalog()
+                PlanAction.DismissCatalog -> {
+                    catalogGeneration.incrementAndGet()
+                    mutableState.update { it.copy(catalog = null) }
+                }
+                is PlanAction.SearchCatalog -> loadCatalog(action.query, null, false)
+                PlanAction.LoadMoreCatalog ->
+                    mutableState.value.catalog?.let {
+                        if (it.hasNextPage &&
+                            !it.loading
+                        ) {
+                            loadCatalog(it.query, it.items.lastOrNull(), true)
+                        }
+                    }
+                is PlanAction.SelectCatalogItem -> selectCatalogItem(action.item)
+                is PlanAction.Reschedule -> openReschedule(action.row)
+                is PlanAction.ChangeScheduleKind ->
+                    updateForm { form ->
+                        if (form.kind == action.kind) {
+                            form
+                        } else {
+                            form.edited().copy(
+                                kind = action.kind,
+                                date =
+                                    if (action.kind ==
+                                        PlanScheduleKind.WEEK
+                                    ) {
+                                        mutableState.value.weekStart.toString()
+                                    } else {
+                                        form.date
+                                    },
+                            )
+                        }
+                    }
+                is PlanAction.ChangeScheduleDate ->
+                    updateForm { form ->
+                        if (form.date == action.value) form else form.edited().copy(date = action.value)
+                    }
+                is PlanAction.ChangeScheduleTime ->
+                    updateForm { form ->
+                        if (form.time == action.value) form else form.edited().copy(time = action.value)
+                    }
+                is PlanAction.SelectScheduleOffset -> selectOffset(action)
+                PlanAction.RevalidateScheduleZone ->
+                    updateForm {
+                        it.copy(
+                            schedulingZoneId = zoneId(),
+                            selectedOffset = null,
+                            zoneReviewRequired = false,
+                            error = null,
+                            inputRevision =
+                                it.inputRevision + 1,
                         )
                     }
+                PlanAction.DismissForm -> mutableState.update { it.copy(form = null) }
+                PlanAction.SubmitForm -> submitForm()
+                is PlanAction.Cancel -> mutate(PlanMutation.Cancel(action.row.plan.actionIdentity(), now()))
+                is PlanAction.UpdateFromTemplate -> mutate(PlanMutation.Update(action.row.plan.actionIdentity(), now()))
+                PlanAction.OpenCancelled -> {
+                    mutableState.update { it.copy(cancelledOpen = true) }
+                    loadCancelled(false)
                 }
-            is PlanAction.ChangeScheduleDate ->
-                updateForm { form ->
-                    if (form.date == action.value) form else form.edited().copy(date = action.value)
+                PlanAction.DismissCancelled -> {
+                    cancelledGeneration.incrementAndGet()
+                    mutableState.update {
+                        it.copy(
+                            cancelledOpen = false,
+                            cancelled = null,
+                            cancelledItems = emptyList(),
+                            cancelledHasNextPage = false,
+                        )
+                    }
+                    if (recovery?.needsCancelled == true) loadCancelled(false)
                 }
-            is PlanAction.ChangeScheduleTime ->
-                updateForm { form ->
-                    if (form.time == action.value) form else form.edited().copy(time = action.value)
-                }
-            is PlanAction.SelectScheduleOffset -> selectOffset(action)
-            PlanAction.RevalidateScheduleZone ->
-                updateForm {
-                    it.copy(
-                        schedulingZoneId = zoneId(),
-                        selectedOffset = null,
-                        zoneReviewRequired = false,
-                        error = null,
-                        inputRevision =
-                            it.inputRevision + 1,
-                    )
-                }
-            PlanAction.DismissForm -> mutableState.update { it.copy(form = null) }
-            PlanAction.SubmitForm -> submitForm()
-            is PlanAction.Cancel -> mutate(PlanMutation.Cancel(action.row.plan.actionIdentity(), now()))
-            is PlanAction.UpdateFromTemplate -> mutate(PlanMutation.Update(action.row.plan.actionIdentity(), now()))
-            PlanAction.OpenCancelled -> {
-                mutableState.update { it.copy(cancelledOpen = true) }
-                loadCancelled(false)
+                PlanAction.LoadMoreCancelled -> if (mutableState.value.cancelledHasNextPage) loadCancelled(true)
+                is PlanAction.Restore -> mutate(PlanMutation.Restore(action.row.plan.actionIdentity(), now()))
             }
-            PlanAction.DismissCancelled -> {
-                cancelledGeneration.incrementAndGet()
-                mutableState.update {
-                    it.copy(
-                        cancelledOpen = false,
-                        cancelled = null,
-                        cancelledItems = emptyList(),
-                        cancelledHasNextPage = false,
-                    )
-                }
-                if (recovery?.needsCancelled == true) loadCancelled(false)
+        }
+
+    fun close(): Unit =
+        synchronized(recoveryLock) {
+            closed = true
+            visible = false
+            invalidationJob.cancel()
+            boundaryScheduler.cancel()
+            readGeneration.incrementAndGet()
+            catalogGeneration.incrementAndGet()
+            cancelledGeneration.incrementAndGet()
+        }
+
+    fun onRouteEntered(): Unit =
+        synchronized(recoveryLock) {
+            if (closed) return
+            visible = true
+            checkDraftZone()
+            if (recovery == null) loadWeek(clearFailure = true) else retryRecovery()
+        }
+
+    fun onRouteExited(): Unit =
+        synchronized(recoveryLock) {
+            visible = false
+            readGeneration.incrementAndGet()
+            boundaryScheduler.cancel()
+            catalogGeneration.incrementAndGet()
+            cancelledGeneration.incrementAndGet()
+            mutableState.update {
+                it.copy(
+                    catalog = null,
+                    form = null,
+                    cancelledOpen = false,
+                    cancelled = null,
+                    cancelledItems = emptyList(),
+                    cancelledHasNextPage = false,
+                    mutationFailure = null,
+                )
             }
-            PlanAction.LoadMoreCancelled -> if (mutableState.value.cancelledHasNextPage) loadCancelled(true)
-            is PlanAction.Restore -> mutate(PlanMutation.Restore(action.row.plan.actionIdentity(), now()))
         }
-    }
-
-    fun close() {
-        closed = true
-        visible = false
-        invalidationJob.cancel()
-        boundaryScheduler.cancel()
-        readGeneration.incrementAndGet()
-        catalogGeneration.incrementAndGet()
-        cancelledGeneration.incrementAndGet()
-    }
-
-    fun onRouteEntered() {
-        visible = true
-        checkDraftZone()
-        armBoundary()
-        if (recovery == null) loadWeek(clearFailure = true) else retryRecovery()
-    }
-
-    fun onRouteExited() {
-        visible = false
-        readGeneration.incrementAndGet()
-        boundaryScheduler.cancel()
-        catalogGeneration.incrementAndGet()
-        cancelledGeneration.incrementAndGet()
-        mutableState.update {
-            it.copy(
-                catalog = null,
-                form = null,
-                cancelledOpen = false,
-                cancelled = null,
-                cancelledItems = emptyList(),
-                cancelledHasNextPage = false,
-                mutationFailure = null,
-            )
-        }
-    }
 
     private fun changeWeek(delta: Long) {
         val state = mutableState.value
@@ -411,46 +416,68 @@ class PlanController internal constructor(
     private fun updateContext(
         weekStart: LocalDate,
         selectedDate: LocalDate,
-    ) {
-        mutableState.update { it.copy(weekStart = weekStart, selectedDate = selectedDate) }
-        loadWeek()
-    }
-
-    private fun loadWeek(clearFailure: Boolean = false) {
-        val generation = readGeneration.incrementAndGet()
+    ): Unit =
         synchronized(recoveryLock) {
-            recovery?.let {
-                it.weekGeneration = generation
-                it.weekPublished = false
-            }
+            mutableState.update { it.copy(weekStart = weekStart, selectedDate = selectedDate) }
+            loadWeek()
         }
-        val state = mutableState.value
-        if (!publishIfOwned(readGeneration, generation) {
-                it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
-            }
-        ) {
-            return
-        }
-        scope.launch {
-            try {
-                val readAt = now()
-                val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, readAt))
-                if (publishIfOwned(readGeneration, generation) { it.copy(week = PlanLoad.Content(read)) }) {
-                    armBoundary(read, readAt)
-                    canonicalPublished(CanonicalSurface.WEEK, generation)
+
+    private fun loadWeek(clearFailure: Boolean = false): Unit =
+        synchronized(recoveryLock) {
+            if (closed || !visible) return
+            val generation = readGeneration.incrementAndGet()
+            synchronized(recoveryLock) {
+                recovery?.let {
+                    it.weekGeneration = generation
+                    it.weekPublished = false
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                if (publishIfOwned(readGeneration, generation) {
-                        it.copy(week = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
+            }
+            val state = mutableState.value
+            val context = CalendarTemporalContext(now(), zoneId())
+            val semantic = semanticGeneration.value
+            if (!publishIfOwned(readGeneration, generation) {
+                    it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
+                }
+            ) {
+                return
+            }
+            armBoundary(context = context, generation = generation, semantic = semantic, requested = state)
+            scope.launch {
+                try {
+                    val read = readWeek(WeekPlanQuery(state.weekStart, state.selectedDate, context.now, context.zoneId))
+                    synchronized(recoveryLock) {
+                        if (ownsWeek(generation, state, context, semantic)) {
+                            if (read.temporalContext != null && read.temporalContext != context) {
+                                loadWeek()
+                            } else if (read.weekStart == state.weekStart &&
+                                read.selectedDate == state.selectedDate &&
+                                publishIfOwned(readGeneration, generation) { it.copy(week = PlanLoad.Content(read)) }
+                            ) {
+                                armBoundary(read, context, generation, semantic, state)
+                                canonicalPublished(CanonicalSurface.WEEK, generation)
+                            }
+                        } else {
+                            retryChangedZone(generation, semantic, context)
+                        }
                     }
-                ) {
-                    canonicalFailed(CanonicalSurface.WEEK, generation)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    synchronized(recoveryLock) {
+                        if (ownsWeek(generation, state, context, semantic)) {
+                            if (publishIfOwned(readGeneration, generation) {
+                                    it.copy(week = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
+                                }
+                            ) {
+                                canonicalFailed(CanonicalSurface.WEEK, generation)
+                            }
+                        } else {
+                            retryChangedZone(generation, semantic, context)
+                        }
+                    }
                 }
             }
         }
-    }
 
     private fun openCatalog() {
         mutableState.update { it.copy(catalog = PlanCatalogState()) }
@@ -461,49 +488,50 @@ class PlanController internal constructor(
         query: String,
         after: ReusablePlanCatalogItem?,
         append: Boolean,
-    ) {
-        val generation = catalogGeneration.incrementAndGet()
-        if (!publishIfOwned(catalogGeneration, generation) {
-                it.copy(
-                    catalog =
-                        (it.catalog ?: PlanCatalogState()).copy(
-                            query = query,
-                            loading = true,
-                            items = if (append) it.catalog?.items.orEmpty() else emptyList(),
-                            failure = null,
-                        ),
-                )
-            }
-        ) {
-            return
-        }
-        scope.launch {
-            try {
-                val page = readCatalog(query, CATALOG_PAGE_SIZE + 1, after)
-                publishIfOwned(catalogGeneration, generation) { state ->
-                    val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
-                    val prior = if (append) catalog.items else emptyList()
-                    state.copy(
+    ): Unit =
+        synchronized(recoveryLock) {
+            val generation = catalogGeneration.incrementAndGet()
+            if (!publishIfOwned(catalogGeneration, generation) {
+                    it.copy(
                         catalog =
-                            PlanCatalogState(
-                                query,
-                                (prior + page.take(CATALOG_PAGE_SIZE)).distinctBy { it.id },
-                                page.size > CATALOG_PAGE_SIZE,
-                                false,
-                                null,
+                            (it.catalog ?: PlanCatalogState()).copy(
+                                query = query,
+                                loading = true,
+                                items = if (append) it.catalog?.items.orEmpty() else emptyList(),
+                                failure = null,
                             ),
                     )
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                publishIfOwned(catalogGeneration, generation) { state ->
-                    val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
-                    state.copy(catalog = catalog.copy(loading = false, failure = PlanMessage.LOAD_FAILED))
+            ) {
+                return
+            }
+            scope.launch {
+                try {
+                    val page = readCatalog(query, CATALOG_PAGE_SIZE + 1, after)
+                    publishIfOwned(catalogGeneration, generation) { state ->
+                        val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
+                        val prior = if (append) catalog.items else emptyList()
+                        state.copy(
+                            catalog =
+                                PlanCatalogState(
+                                    query,
+                                    (prior + page.take(CATALOG_PAGE_SIZE)).distinctBy { it.id },
+                                    page.size > CATALOG_PAGE_SIZE,
+                                    false,
+                                    null,
+                                ),
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    publishIfOwned(catalogGeneration, generation) { state ->
+                        val catalog = state.catalog?.takeIf { it.query == query } ?: return@publishIfOwned null
+                        state.copy(catalog = catalog.copy(loading = false, failure = PlanMessage.LOAD_FAILED))
+                    }
                 }
             }
         }
-    }
 
     private fun selectCatalogItem(item: ReusablePlanCatalogItem) {
         if (closed || mutationInFlight.get()) return
@@ -726,86 +754,112 @@ class PlanController internal constructor(
         }
     }
 
-    private fun loadCancelled(append: Boolean) {
-        val generation = cancelledGeneration.incrementAndGet()
-        if (!append) {
-            synchronized(recoveryLock) {
-                recovery?.let {
-                    it.cancelledGeneration = generation
-                    it.cancelledPublished = false
+    private fun loadCancelled(append: Boolean): Unit =
+        synchronized(recoveryLock) {
+            val generation = cancelledGeneration.incrementAndGet()
+            if (!append) {
+                synchronized(recoveryLock) {
+                    recovery?.let {
+                        it.cancelledGeneration = generation
+                        it.cancelledPublished = false
+                    }
+                }
+            }
+            val offset = if (append) mutableState.value.cancelledItems.size else 0
+            if (!publishIfOwned(cancelledGeneration, generation) { it.copy(cancelled = PlanLoad.Loading) }) return
+            scope.launch {
+                try {
+                    val page = readCancelled(CancelledPlanPageQuery(offset, CANCELLED_PAGE_SIZE))
+                    if (publishIfOwned(cancelledGeneration, generation) { state ->
+                            val items = if (append) state.cancelledItems + page.items else page.items
+                            state.copy(
+                                cancelled = PlanLoad.Content(page),
+                                cancelledItems = items,
+                                cancelledHasNextPage = page.hasNextPage,
+                            )
+                        }
+                    ) {
+                        if (!append) canonicalPublished(CanonicalSurface.CANCELLED, generation)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    if (publishIfOwned(cancelledGeneration, generation) {
+                            it.copy(cancelled = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
+                        }
+                    ) {
+                        if (!append) canonicalFailed(CanonicalSurface.CANCELLED, generation)
+                    }
                 }
             }
         }
-        val offset = if (append) mutableState.value.cancelledItems.size else 0
-        if (!publishIfOwned(cancelledGeneration, generation) { it.copy(cancelled = PlanLoad.Loading) }) return
-        scope.launch {
-            try {
-                val page = readCancelled(CancelledPlanPageQuery(offset, CANCELLED_PAGE_SIZE))
-                if (publishIfOwned(cancelledGeneration, generation) { state ->
-                        val items = if (append) state.cancelledItems + page.items else page.items
-                        state.copy(
-                            cancelled = PlanLoad.Content(page),
-                            cancelledItems = items,
-                            cancelledHasNextPage = page.hasNextPage,
-                        )
-                    }
-                ) {
-                    if (!append) canonicalPublished(CanonicalSurface.CANCELLED, generation)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                if (publishIfOwned(cancelledGeneration, generation) {
-                        it.copy(cancelled = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
-                    }
-                ) {
-                    if (!append) canonicalFailed(CanonicalSurface.CANCELLED, generation)
-                }
-            }
-        }
-    }
 
     private inline fun publishIfOwned(
         owner: AtomicLong,
         generation: Long,
         transform: (PlanPresentationState) -> PlanPresentationState?,
-    ): Boolean {
-        var published = false
-        var eligible = !closed && visible && generation == owner.get()
-        while (eligible && !published) {
-            val current = mutableState.value
-            val replacement = transform(current)
-            eligible = replacement != null && !closed && visible && generation == owner.get()
-            if (eligible) published = mutableState.compareAndSet(current, requireNotNull(replacement))
+    ): Boolean =
+        synchronized(recoveryLock) {
+            var published = false
+            var eligible = !closed && visible && generation == owner.get()
+            while (eligible && !published) {
+                val current = mutableState.value
+                val replacement = transform(current)
+                eligible = replacement != null && !closed && visible && generation == owner.get()
+                if (eligible) published = mutableState.compareAndSet(current, requireNotNull(replacement))
+            }
+            published
         }
-        return published
-    }
 
     private fun LocalDate.monday() = with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
 
-    private fun onTemporalBoundary() {
-        if (visible) loadWeek()
+    private fun ownsWeek(
+        generation: Long,
+        requested: PlanPresentationState,
+        context: CalendarTemporalContext,
+        semantic: Long,
+    ): Boolean =
+        !closed &&
+            visible &&
+            readGeneration.get() == generation &&
+            mutableState.value.weekStart == requested.weekStart &&
+            mutableState.value.selectedDate == requested.selectedDate &&
+            semanticGeneration.value == semantic &&
+            zoneId() == context.zoneId
+
+    private fun retryChangedZone(
+        generation: Long,
+        semantic: Long,
+        context: CalendarTemporalContext,
+    ) {
+        val ownsGeneration = !closed && visible && readGeneration.get() == generation
+        if (ownsGeneration && semanticGeneration.value == semantic && zoneId() != context.zoneId) {
+            loadWeek()
+        }
     }
 
     private fun armBoundary(
         read: WeekPlanRead? = null,
-        projectionAt: Instant = now(),
+        context: CalendarTemporalContext,
+        generation: Long,
+        semantic: Long,
+        requested: PlanPresentationState,
     ) {
-        if (visible) {
-            val current = now()
-            val zone = zoneId()
-            boundaryScheduler.arm(
-                current,
-                zone,
-                read?.let {
-                    nextPlanTemporalBoundary(
-                        it.selectedDayPlans.map(PlanReadRow::plan) + it.weekPlans.map(PlanReadRow::plan),
-                        projectionAt,
-                        zone,
-                    )
-                },
-                ::onTemporalBoundary,
-            )
+        if (!ownsWeek(generation, requested, context, semantic)) return
+        boundaryScheduler.arm(
+            now(),
+            context.zoneId,
+            read?.let {
+                nextPlanTemporalBoundary(
+                    it.selectedDayPlans.map(PlanReadRow::plan) + it.weekPlans.map(PlanReadRow::plan),
+                    context.now,
+                    context.zoneId,
+                )
+            },
+        ) {
+            synchronized(recoveryLock) {
+                if (ownsWeek(generation, requested, context, semantic)) loadWeek()
+            }
         }
     }
 

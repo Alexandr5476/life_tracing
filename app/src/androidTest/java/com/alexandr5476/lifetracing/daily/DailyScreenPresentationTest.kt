@@ -104,6 +104,36 @@ class DailyScreenPresentationTest {
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun repeated_hour_labels_use_canonical_occurrence_offsets() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val date = LocalDate.parse("2026-10-25")
+        val entries =
+            listOf("2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z").mapIndexed { index, text ->
+                val instant = Instant.parse(text)
+                val occurrence = instant.atZone(zone)
+                plan(
+                    "Overlap $index",
+                    target = PlanTarget.ExactDay(instant, ZoneOffset.UTC),
+                    exactTime = occurrence.toLocalTime(),
+                ).copy(
+                    effectiveLocalDate = occurrence.toLocalDate(),
+                    exactUtcOffset = occurrence.offset,
+                )
+            }
+        screen(state(DailyDateRelation.TODAY, DailyRead(entries, emptyList(), emptyList(), null), selectedDate = date))
+        val clock =
+            LocalTime
+                .of(
+                    2,
+                    30,
+                ).format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(effectiveLocale()))
+        for (offset in listOf("+02:00", "+01:00")) {
+            val attributed = string(R.string.calendar_time_with_offset, clock, offset)
+            composeTestRule.onNodeWithText(string(R.string.daily_exact_time, attributed)).assertExists()
+        }
+    }
+
+    @Test
     fun header_empty_idle_failure_and_temporal_order_are_explicit() {
         val actions = mutableListOf<DailyAction>()
         val selected = LocalDate.parse("2026-08-19")

@@ -11,6 +11,7 @@ import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateValidator
+import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.CancelledPlanPageQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
@@ -53,7 +54,7 @@ class PlanReadRepository internal constructor(
     fun getWeek(query: WeekPlanQuery): WeekPlanRead =
         database.runInTransaction(
             Callable {
-                val zone = zoneIdProvider.currentZoneId()
+                val zone = query.zoneId ?: zoneIdProvider.currentZoneId()
                 val weekEnd = query.weekStart.plusDays(WEEK_DAY_COUNT)
                 val rangeStart = query.weekStart.atStartOfDay(zone).toInstant()
                 val rangeEnd = weekEnd.atStartOfDay(zone).toInstant()
@@ -83,6 +84,7 @@ class PlanReadRepository internal constructor(
                 val selectedPlans =
                     dayPlansByDate[query.selectedDate].orEmpty().sortedWith(
                         compareBy<PlanEntry> { it.exactLocalTime(zone) ?: LocalTime.MAX }
+                            .thenBy { (it.target as? PlanTarget.ExactDay)?.scheduledAt }
                             .thenBy(PlanEntry::createdAt)
                             .thenBy { it.id.value },
                     )
@@ -103,6 +105,7 @@ class PlanReadRepository internal constructor(
                         val date = query.weekStart.plusDays(offset)
                         PlanDayPresence(date, dayPlansByDate[date].orEmpty().size)
                     },
+                    CalendarTemporalContext(query.now, zone),
                 )
             },
         )
@@ -351,6 +354,7 @@ class PlanReadRepository internal constructor(
                 engagement.getValue(plan.id),
                 PlanOverdueCalculator.isOverdue(plan, now, zone),
                 activitySummary?.toRowMetadata(),
+                exact?.offset,
             )
         }
     }

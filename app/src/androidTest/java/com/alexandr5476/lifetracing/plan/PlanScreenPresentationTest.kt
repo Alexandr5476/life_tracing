@@ -53,6 +53,49 @@ class PlanScreenPresentationTest {
     private val selected = monday.plusDays(1)
 
     @Test
+    fun repeatedHourLabelsUseCanonicalOccurrenceOffsets() {
+        val zone = java.time.ZoneId.of("Europe/Berlin")
+        val date = LocalDate.parse("2026-10-25")
+        val entries =
+            listOf("2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z").mapIndexed { index, text ->
+                val instant = Instant.parse(text)
+                val occurrence = instant.atZone(zone)
+                row("overlap-$index", PlanTarget.ExactDay(instant, java.time.ZoneOffset.UTC)).copy(
+                    effectiveLocalDate = occurrence.toLocalDate(),
+                    exactLocalTime = occurrence.toLocalTime(),
+                    exactUtcOffset = occurrence.offset,
+                )
+            }
+        val start = date.with(java.time.DayOfWeek.MONDAY)
+        val read =
+            WeekPlanRead(
+                start,
+                date,
+                entries,
+                emptyList(),
+                (0L..6L).map {
+                    PlanDayPresence(
+                        start.plusDays(it),
+                        if (it ==
+                            6L
+                        ) {
+                            2
+                        } else {
+                            0
+                        },
+                    )
+                },
+            )
+        compose.setContent {
+            LifeTracingTheme { PlanScreen(PlanPresentationState(start, date, PlanLoad.Content(read)), {}, {}) }
+        }
+        for (offset in listOf("+02:00", "+01:00")) {
+            val clock = context.getString(R.string.calendar_time_with_offset, "02:30", offset)
+            compose.onNodeWithText(context.getString(R.string.plan_exact_at, clock)).assertExists()
+        }
+    }
+
+    @Test
     fun canonicalWeekShowsSevenDaysSeparateContextsAndIndependentScheduleExecutionSemantics() {
         val floatingNoLive = row("floating-no-live", PlanTarget.FloatingDay(selected), noLive = true)
         val exactNoLive =

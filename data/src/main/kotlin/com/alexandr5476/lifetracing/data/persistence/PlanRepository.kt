@@ -297,8 +297,14 @@ class PlanRepository internal constructor(
                         plan,
                         zoned?.toLocalDate() ?: (plan.target as PlanTarget.FloatingDay).date,
                         zoned?.toLocalTime(),
+                        zone,
+                        zoned?.offset,
                     )
-                }.sortedWith(compareBy(PlanCalendarEntry::effectiveLocalDate, PlanCalendarEntry::exactLocalTime))
+                }.sortedWith(
+                    compareBy(PlanCalendarEntry::effectiveLocalDate, PlanCalendarEntry::exactLocalTime)
+                        .thenBy { (it.plan.target as? PlanTarget.ExactDay)?.scheduledAt }
+                        .thenBy { it.plan.id.value },
+                )
         }
     }
 

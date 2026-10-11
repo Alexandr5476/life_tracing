@@ -588,7 +588,17 @@ private fun PlannedRow(
 private fun planContext(plan: DailyPlan): String =
     when (val target = plan.plan.target) {
         is PlanTarget.ExactDay ->
-            plan.exactLocalTime?.let { stringResource(R.string.daily_exact_time, localizedTime(it)) }
+            plan.exactLocalTime?.let { time ->
+                val clock =
+                    plan.exactUtcOffset?.let { offset ->
+                        stringResource(
+                            R.string.calendar_time_with_offset,
+                            localizedTime(time),
+                            if (offset.totalSeconds == 0) "+00:00" else offset.id,
+                        )
+                    } ?: localizedTime(time)
+                stringResource(R.string.daily_exact_time, clock)
+            }
                 ?: stringResource(R.string.daily_exact_time_unavailable)
         is PlanTarget.FloatingDay -> stringResource(R.string.daily_floating_day)
         is PlanTarget.Week -> stringResource(R.string.daily_week_of, localizedDate(target.weekStart))

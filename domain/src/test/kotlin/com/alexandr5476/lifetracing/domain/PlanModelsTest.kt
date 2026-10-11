@@ -248,6 +248,27 @@ class PlanModelsTest {
         assertEquals(identities.size, identities.toSet().size)
     }
 
+    @Test
+    fun `overlap occurrence overdue follows its absolute Instant in every zone`() {
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        val zones = listOf(ZoneId.of("Europe/Berlin"), ZoneId.of("America/New_York"))
+        for (scheduled in listOf(first, second)) {
+            val plan = activityPlan(PlanTarget.ExactDay(scheduled, ZoneId.of("UTC")))
+            for (zone in zones) {
+                assertFalse(PlanOverdueCalculator.isOverdue(plan, scheduled.minusMillis(1), zone))
+                assertFalse(PlanOverdueCalculator.isOverdue(plan, scheduled, zone))
+                assertTrue(PlanOverdueCalculator.isOverdue(plan, scheduled.plusMillis(1), zone))
+            }
+        }
+        assertTrue(
+            PlanOverdueCalculator.isOverdue(activityPlan(PlanTarget.ExactDay(first, null)), second, zones.first()),
+        )
+        assertFalse(
+            PlanOverdueCalculator.isOverdue(activityPlan(PlanTarget.ExactDay(second, null)), second, zones.first()),
+        )
+    }
+
     private fun activityPlan(
         target: PlanTarget = PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
         sourceId: ActivityTemplateId? = ActivityTemplateId("template"),
