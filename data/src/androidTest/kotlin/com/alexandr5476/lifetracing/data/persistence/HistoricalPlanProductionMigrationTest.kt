@@ -41,16 +41,21 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanEntryValidator
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrence
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotActivityStep
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotRepeatBlock
+import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
 import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
+import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import org.junit.After
@@ -117,7 +122,7 @@ class HistoricalPlanProductionMigrationTest {
                     status = PlanEntryStatus.CANCELLED,
                 ),
             )
-        migrate {
+        migrate(expectedMonth = expected[4]) {
             seedFrozenActivityV3()
             seedFrozenSequenceV6()
             execSQL("UPDATE activity_templates SET deleted_at_ms = 21 WHERE id = 'activity-template'")
@@ -125,6 +130,7 @@ class HistoricalPlanProductionMigrationTest {
         }
         repeat(2) { _ ->
             assertPlans(expected)
+            assertHistoricalMonth(expected[4])
             val library = LibraryRepository.create(database)
             assertEquals(listOf("Current activity"), library.getArchived().map { it.name })
             assertEquals(listOf("Current sequence"), library.getAll().map { it.name })
@@ -204,13 +210,46 @@ class HistoricalPlanProductionMigrationTest {
                 }
             }
             val reads = PlanReadRepository(database, CurrentZoneIdProvider { tokyo })
-            val sequence =
+            val focusedSequence =
                 (
                     reads
                         .getFocusedAction(
                             expected[3].id,
                         ).snapshot as FocusedPlanAction.Snapshot.Sequence
-                ).value
+                )
+            val sequence = focusedSequence.value
+            // Reuse the independent frozen expectations, with the scheduled fixture's explicit settings.
+            // This Plan has no Execution children from which the focused reader could recover configuration.
+            val frozen = HistoricalActiveV8Fixture(HistoricalActiveV8State.EMPTY, overtime = true)
+            val expectedSequence =
+                frozen.sequence.copy(
+                    settings = frozen.sequence.settings.copy(beforeEachStepCountdown = Duration.ZERO),
+                    nodes =
+                        listOf(
+                            SequenceSnapshotActivityStep(SequenceSnapshotNodeId("f-top"), 0, frozen.activity.id),
+                            SequenceSnapshotRepeatBlock(
+                                SequenceSnapshotNodeId("f-repeat"),
+                                1,
+                                2,
+                                listOf(
+                                    SequenceSnapshotActivityStep(
+                                        SequenceSnapshotNodeId("f-nested"),
+                                        0,
+                                        frozen.activity.id,
+                                        SequenceStepOverrides(
+                                            Duration.ZERO,
+                                            TimerZeroBehavior.OVERTIME,
+                                            false,
+                                            true,
+                                            true,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                )
+            assertEquals(expectedSequence, sequence)
+            assertEquals(mapOf(frozen.activity.id to frozen.activity), focusedSequence.activitySnapshots)
             assertEquals(2L, sequence.sourceRevision)
             val repeat = sequence.nodes[1] as SequenceSnapshotRepeatBlock
             assertEquals(2, repeat.repeatCount)
@@ -231,6 +270,7 @@ class HistoricalPlanProductionMigrationTest {
             assertEquals(0L, statistics().global(StatisticsPeriod.AllTime).topLevelExecutionCount)
             assertOriginalFacts()
             reopen()
+            assertHistoricalMonth(expected[4])
         }
     }
 
@@ -432,6 +472,10 @@ class HistoricalPlanProductionMigrationTest {
         assertEquals(SequenceExecutionStatus.ENDED_EARLY, ended.status)
         assertEquals(fixture.at(100), ended.endedAt)
         assertEquals(runtime.execution.occurrences.map { it.id }, ended.occurrences.map { it.id })
+        assertOccurrenceProvenance(
+            (fixture.runtime as ActiveSequenceRuntime).execution.occurrences,
+            ended.occurrences,
+        )
         assertEquals(fixture.completedChild, child("child-0"))
         assertEquals(1, database.activityExecutionDao().getSequenceChildAggregates("sequence").size)
         assertFulfilled(activePlan(fixture), fixture.at(100), sequence = true)
@@ -673,6 +717,7 @@ class HistoricalPlanProductionMigrationTest {
             root.occurrences.map { it.sourceSequenceSnapshotNodeId },
         )
         assertEquals(initial.occurrences.map { it.repeatIteration }, root.occurrences.map { it.repeatIteration })
+        assertOccurrenceProvenance(initial.occurrences, root.occurrences)
         assertTrue(root.occurrences.all { it.status == RuntimeOccurrenceStatus.COMPLETED })
         assertTrue(root.intervals.none { it.endedAt == null })
         val children = database.activityExecutionDao().getSequenceChildAggregates("sequence").map { it.toDomain() }
@@ -681,6 +726,11 @@ class HistoricalPlanProductionMigrationTest {
         fixture.currentChild?.let { assertTrue(children.any { child -> child.id == it.id }) }
         assertTrue(children.all { it.planEntryId == null })
         assertEquals(root.occurrences.map { it.id }.toSet(), children.map { it.sequenceOccurrenceId }.toSet())
+        children.forEach { child ->
+            val occurrence = root.occurrences.single { it.id == child.sequenceOccurrenceId }
+            assertEquals(root.id, child.sequenceExecutionId)
+            assertEquals(occurrence.activitySnapshotId, child.snapshotId)
+        }
         assertFulfilled(activePlan(fixture), fixture.at(end), sequence = true)
         assertStableTerminal(fixture.at(1_000))
         assertEquals(root, database.sequenceExecutionDao().getAggregate("sequence")!!.toDomain())
@@ -698,6 +748,23 @@ class HistoricalPlanProductionMigrationTest {
         assertEquals(4L, statistics().activitySeries(activitySeries, StatisticsPeriod.AllTime).executionCount)
         assertEquals(1L, statistics().sequenceSeries(sequenceSeries, StatisticsPeriod.AllTime).executionCount)
         assertFrozenFacts()
+    }
+
+    private fun assertOccurrenceProvenance(
+        expected: List<RuntimeOccurrence>,
+        actual: List<RuntimeOccurrence>,
+    ) {
+        assertEquals(expected.map { it.id }, actual.map { it.id })
+        expected.zip(actual).forEach { (before, after) ->
+            assertEquals(before.id, after.id)
+            assertEquals(before.activitySnapshotId, after.activitySnapshotId)
+            assertEquals(before.runtimePosition, after.runtimePosition)
+            assertEquals(before.sourceSequenceSnapshotNodeId, after.sourceSequenceSnapshotNodeId)
+            assertEquals(before.repeatSourceSnapshotNodeId, after.repeatSourceSnapshotNodeId)
+            assertEquals(before.repeatIteration, after.repeatIteration)
+            assertEquals(before.isRuntimeAdded, after.isRuntimeAdded)
+            assertEquals(before.isDeletedFromHistory, after.isDeletedFromHistory)
+        }
     }
 
     private fun assertFulfilled(
@@ -941,6 +1008,11 @@ class HistoricalPlanProductionMigrationTest {
         }
     }
 
+    private fun assertHistoricalMonth(expected: PlanEntry) {
+        assertEquals(listOf(expected), plans().getMonthPlans(YearMonth.of(2020, 10)))
+        assertTrue(plans().getMonthPlans(YearMonth.of(2020, 9)).isEmpty())
+    }
+
     private fun plans(zone: ZoneId = tokyo) =
         PlanRepository(
             database,
@@ -964,7 +1036,10 @@ class HistoricalPlanProductionMigrationTest {
         now: Instant,
     ) = DailyReadRepository(database, CurrentZoneIdProvider { zone }).getDaily(DailyQuery(date, now, 10))
 
-    private fun migrate(seed: SupportSQLiteDatabase.() -> Unit) {
+    private fun migrate(
+        expectedMonth: PlanEntry? = null,
+        seed: SupportSQLiteDatabase.() -> Unit,
+    ) {
         LifeTracingMigrationTestDatabaseFactory.createVersion9(helper, name).use { source ->
             assertEquals(9, source.version)
             source
@@ -984,8 +1059,10 @@ class HistoricalPlanProductionMigrationTest {
         assertTrue(context.getDatabasePath(name).isFile)
         reopen() // Production builder upgrades the SAME physical file.
         assertOriginalFacts()
+        expectedMonth?.let(::assertHistoricalMonth)
         reopen() // Separate connection and newly acquired repositories after the upgrade.
         assertOriginalFacts()
+        expectedMonth?.let(::assertHistoricalMonth)
     }
 
     private fun facts() = database.openHelper.readableDatabase.historicalPlanFacts()
