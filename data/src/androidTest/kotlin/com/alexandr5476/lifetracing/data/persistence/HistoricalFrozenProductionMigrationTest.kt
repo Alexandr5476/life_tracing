@@ -623,7 +623,10 @@ class HistoricalFrozenProductionMigrationTest {
             },
             history.getLatestCompletedPrimaryLocalDate(instant, ZoneId.of("America/Los_Angeles")),
         )
-        val plan = PlanReadRepository(database, deviceZone).getWeek(WeekPlanQuery(date, date, instant))
+        val plan =
+            PlanReadRepository(database, deviceZone).getWeek(
+                WeekPlanQuery(LocalDate.of(2019, 12, 30), date, instant),
+            )
         assertTrue(plan.selectedDayPlans.isEmpty())
         assertTrue(plan.weekPlans.isEmpty())
         assertTrue(plan.dayPresence.all { it.count == 0 })
