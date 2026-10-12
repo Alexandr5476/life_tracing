@@ -617,6 +617,7 @@
     <string name="archived_templates_retry">Повторить восстановление</string>
     <string name="plan_invalid_date">Введите корректную дату (ГГГГ-ММ-ДД).</string>
     <string name="plan_invalid_time">Введите корректное местное время (ЧЧ:мм).</string>
+    <string name="plan_unsupported_time_precision">Укажите время с точностью до целых миллисекунд, например 10:00:00.123.</string>
     <string name="plan_nonexistent_time">Такого местного времени нет в указанном часовом поясе. Выберите другое время.</string>
     <string name="plan_ambiguous_time">Это местное время встречается дважды. Выберите один из вариантов.</string>
     <string name="plan_invalid_offset">Выбранное смещение UTC больше не подходит для этой даты, времени и часового пояса. Выберите заново.</string>

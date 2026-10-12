@@ -10,6 +10,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.DailyQuery
 import com.alexandr5476.lifetracing.domain.LocalDateTimeResolutionException
 import com.alexandr5476.lifetracing.domain.PlanEntry
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -24,6 +25,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.UnsupportedPlanTimePrecisionException
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import org.junit.After
@@ -66,6 +68,53 @@ class PlanExactDayCommandTest(
     fun tearDown() {
         database.close()
         ApplicationProvider.getApplicationContext<Context>().deleteDatabase(databaseName)
+    }
+
+    @Test
+    fun finerFractionCreationHasNoDurableEffects() {
+        for (fraction in listOf("123456789", "123001", "000000001")) {
+            val existing = create(schedule("2026-10-26T10:00:00.123"))
+            val before = durableFacts()
+            assertThrows(UnsupportedPlanTimePrecisionException::class.java) {
+                create(schedule("2026-10-26T10:00:00.$fraction"))
+            }
+            reopenDatabase()
+            assertEquals(before, durableFacts())
+            assertCanonicalPlanAndDaily(existing)
+        }
+    }
+
+    @Test
+    fun finerFractionRescheduleCannotMutateAnyDurableFactOrMasqueradeAsANoOp() {
+        val original = create(schedule("2026-10-26T10:00:00.123"))
+        val before = durableFacts()
+        for (fraction in listOf("123456789", "123001", "000000001")) {
+            assertThrows(UnsupportedPlanTimePrecisionException::class.java) {
+                plans.reschedulePlanEntry(
+                    original.actionIdentity(),
+                    schedule("2026-10-26T10:00:00.$fraction"),
+                    instant(2),
+                )
+            }
+            assertEquals(before, durableFacts())
+        }
+        reopenDatabase()
+        assertEquals(before, durableFacts())
+        assertCanonicalPlanAndDaily(original)
+    }
+
+    @Test
+    fun millisecondFractionsCreateAndReloadWithoutChangingTheAcceptedInstant() {
+        for (fraction in listOf("001", "123", "999", "123000000")) {
+            assertCreation(schedule("2026-10-26T10:00:00.$fraction"), "2026-10-26T09:00:00.${fraction}Z")
+        }
+    }
+
+    @Test
+    fun millisecondFractionsRescheduleAndReloadWithoutChangingTheAcceptedInstant() {
+        for (fraction in listOf("001", "123", "999", "123000000")) {
+            assertChanged(schedule("2026-10-26T10:00:00.$fraction"), "2026-10-26T09:00:00.${fraction}Z", BERLIN)
+        }
     }
 
     @Test
@@ -236,6 +285,7 @@ class PlanExactDayCommandTest(
         val before = durableFacts()
         reopenDatabase()
         assertEquals(created, plans.getPlan(created.id))
+        assertCanonicalPlanAndDaily(created)
         assertEquals(expected, reads.getFocusedAction(created.id).identity.target)
         assertEquals(focused, reads.getFocusedAction(created.id))
         assertEquals(before, durableFacts())
@@ -264,6 +314,7 @@ class PlanExactDayCommandTest(
         reopenDatabase()
         assertEquals(original, plans.getPlan(created.id))
         assertEquals(row, database.planEntryDao().getById(created.id.value))
+        assertCanonicalPlanAndDaily(original)
         assertEquals(focused, reads.getFocusedAction(created.id))
         assertEquals(Instant.parse("2026-10-25T01:30:27.123Z"), (original.target as PlanTarget.ExactDay).scheduledAt)
         assertEquals(before, durableFacts())
@@ -307,6 +358,7 @@ class PlanExactDayCommandTest(
         assertEquals(expected, changed)
         reopenDatabase()
         assertEquals(expected, plans.getPlan(original.id))
+        assertCanonicalPlanAndDaily(expected)
         assertEquals(expected.actionIdentity(), reads.getFocusedAction(original.id).identity)
         assertEquals(focused.snapshot, reads.getFocusedAction(original.id).snapshot)
         assertEquals(before, durableFacts().minus("plan_entries"))
@@ -321,6 +373,29 @@ class PlanExactDayCommandTest(
                 .getWeek(WeekPlanQuery(weekStart, day, instant(3)))
                 .selectedDayPlans
         assertEquals(expected, rows.single { it.plan.id == original.id }.plan)
+    }
+
+    private fun assertCanonicalPlanAndDaily(expected: PlanEntry) {
+        val target = expected.target as PlanTarget.ExactDay
+        val local = target.scheduledAt.atZone(zone)
+        val date = local.toLocalDate()
+        val weekStart = date.with(java.time.DayOfWeek.MONDAY)
+        val planRow =
+            reads
+                .getWeek(WeekPlanQuery(weekStart, date, instant(3)))
+                .selectedDayPlans
+                .single { it.plan.id == expected.id }
+        val dailyRow =
+            DailyReadRepository(database, CurrentZoneIdProvider { zone })
+                .getDaily(DailyQuery(date, instant(3), 10))
+                .dayPlans
+                .single { it.plan.id == expected.id }
+        assertEquals(expected, planRow.plan)
+        assertEquals(expected, dailyRow.plan)
+        assertEquals(local.toLocalTime(), planRow.exactLocalTime)
+        assertEquals(local.toLocalTime(), dailyRow.exactLocalTime)
+        assertEquals(local.offset, planRow.exactUtcOffset)
+        assertEquals(local.offset, dailyRow.exactUtcOffset)
     }
 
     private fun assertGuard(state: String) {

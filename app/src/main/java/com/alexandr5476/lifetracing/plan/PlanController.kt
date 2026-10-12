@@ -25,6 +25,7 @@ import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem
 import com.alexandr5476.lifetracing.domain.StalePlanActionException
+import com.alexandr5476.lifetracing.domain.UnsupportedPlanTimePrecisionException
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.domain.actionIdentity
@@ -61,6 +62,7 @@ enum class PlanMessage {
     INVALID_SCHEDULE,
     INVALID_DATE,
     INVALID_TIME,
+    UNSUPPORTED_TIME_PRECISION,
     NONEXISTENT_TIME,
     AMBIGUOUS_TIME,
     INVALID_OFFSET,
@@ -668,6 +670,15 @@ class PlanController internal constructor(
                     state.copy(
                         isMutating = false,
                         form = state.form?.let { PlanScheduleInput.failed(it, invalid.failure) },
+                    )
+                }
+                return@launch
+            } catch (_: UnsupportedPlanTimePrecisionException) {
+                mutationInFlight.set(false)
+                mutableState.update { state ->
+                    state.copy(
+                        isMutating = false,
+                        form = state.form?.copy(error = PlanMessage.UNSUPPORTED_TIME_PRECISION),
                     )
                 }
                 return@launch

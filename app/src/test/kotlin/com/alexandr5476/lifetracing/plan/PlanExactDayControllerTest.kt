@@ -17,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.domain.UnsupportedPlanTimePrecisionException
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,63 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 class PlanExactDayControllerTest {
+    @Test
+    fun finerFractionsNeverDispatchCreationOrReschedulingAndCorrectionKeepsMilliseconds() =
+        runBlocking {
+            for (sequence in listOf(false, true)) {
+                for (existing in listOf(false, true)) {
+                    val fixture = Fixture(this)
+                    try {
+                        if (existing) {
+                            fixture.controller.dispatch(PlanAction.Reschedule(existingRow()))
+                            fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26"))
+                        } else {
+                            fixture.newExact(sequence, "2026-10-26", "10:00")
+                        }
+                        for (fraction in listOf("123456789", "123001", "000000001")) {
+                            fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.$fraction"))
+                            fixture.controller.dispatch(PlanAction.SubmitForm)
+                            assertEquals(PlanMessage.UNSUPPORTED_TIME_PRECISION, fixture.form.error)
+                            assertTrue(fixture.mutations.isEmpty())
+                            assertFalse(fixture.controller.state.value.isMutating)
+                        }
+                        fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.123"))
+                        fixture.submit()
+                        assertEquals(
+                            Instant.parse("2026-10-26T09:00:00.123Z"),
+                            (fixture.schedule.toTarget() as PlanTarget.ExactDay).scheduledAt,
+                        )
+                    } finally {
+                        fixture.controller.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun commandPrecisionFailureKeepsTheFormAndAllowsCorrectionWithoutCanonicalRecovery() =
+        runBlocking {
+            var fail = true
+            val fixture = Fixture(this) { if (fail) throw UnsupportedPlanTimePrecisionException() }
+            try {
+                fixture.ready()
+                fixture.newExact(false, "2026-10-26", "10:00:00.123")
+                val reads = fixture.readCount
+                fixture.submit()
+                assertEquals(PlanMessage.UNSUPPORTED_TIME_PRECISION, fixture.form.error)
+                assertEquals("10:00:00.123", fixture.form.time)
+                assertEquals(reads, fixture.readCount)
+                assertFalse(fixture.controller.state.value.isMutating)
+                fail = false
+                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.124"))
+                fixture.submit()
+                assertNull(fixture.controller.state.value.form)
+                assertEquals(2, fixture.mutations.size)
+            } finally {
+                fixture.controller.close()
+            }
+        }
+
     @Test
     fun gapInputDoesNotDispatchAndLeavesAnEditableForm() =
         runBlocking {

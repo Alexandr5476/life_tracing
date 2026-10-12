@@ -111,6 +111,21 @@ class PlanExactDayPresentationTest {
     }
 
     @Test
+    fun unsupportedFractionsShowARecoverableLocalizedError() {
+        withForm { _, commands ->
+            compose.onNodeWithText(context.getString(R.string.plan_date)).performTextReplacement("2026-10-26")
+            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("10:00:00.123456789")
+            compose.onNodeWithText(context.getString(R.string.plan_unsupported_time_precision)).assertIsDisplayed()
+            compose.onNodeWithTag("plan-schedule-form").assertIsDisplayed()
+            compose.onNodeWithText(context.getString(R.string.plan_save)).assertIsNotEnabled()
+            compose.runOnIdle { assertTrue(commands.isEmpty()) }
+            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("10:00:00.123")
+            compose.onNodeWithText(context.getString(R.string.plan_save)).performClick()
+            compose.waitUntil { commands.size == 1 }
+        }
+    }
+
+    @Test
     fun localizedGapAndMalformedInputFeedbackRemainInsideTheEditableDialog() {
         withForm { controller, commands ->
             compose.runOnIdle {
@@ -166,6 +181,7 @@ class PlanExactDayPresentationTest {
             russian.getString(R.string.plan_second_occurrence, "02:30", "UTC+01:00"),
         )
         for (id in listOf(
+            R.string.plan_unsupported_time_precision,
             R.string.plan_nonexistent_time,
             R.string.plan_ambiguous_time,
             R.string.plan_invalid_offset,

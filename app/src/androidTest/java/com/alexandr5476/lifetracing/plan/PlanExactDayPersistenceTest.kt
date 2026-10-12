@@ -54,6 +54,37 @@ class PlanExactDayPersistenceTest(
     private val sequence: Boolean,
 ) {
     @Test
+    fun unsupportedPrecisionKeepsAllFactsAndAllowsExactMillisecondCorrection() =
+        runBlocking {
+            for (existing in listOf(false, true)) {
+                Fixture(sequence).use { fixture ->
+                    fixture.ready()
+                    val original = if (existing) fixture.seed("2026-10-25T02:30:27.123", 1) else null
+                    val before = fixture.store.durableFacts()
+                    if (original != null) fixture.open(original) else fixture.newExact()
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26"))
+                    for (fraction in listOf("123456789", "123001", "000000001")) {
+                        fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.$fraction"))
+                        fixture.submit()
+                        assertEquals(PlanMessage.UNSUPPORTED_TIME_PRECISION, fixture.form.error)
+                        assertTrue(fixture.commands.isEmpty())
+                        assertEquals(before, fixture.store.durableFacts())
+                    }
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.123"))
+                    fixture.clock = fixture.clock.plusSeconds(1)
+                    fixture.submit()
+                    fixture.reopen()
+                    val persisted = fixture.onlyPlan("2026-10-26")
+                    fixture.assertExact(persisted, "2026-10-26T09:00:00.123Z")
+                    if (original != null) {
+                        assertEquals(original.copy(target = persisted.target, updatedAt = fixture.clock), persisted)
+                        assertEquals(before.minus("plan_entries"), fixture.store.durableFacts().minus("plan_entries"))
+                    }
+                }
+            }
+        }
+
+    @Test
     fun rejectedCreationHasNoDispatcherOrDurableEffectsAndCanBeCorrected() =
         runBlocking {
             for ((date, offset, error) in listOf(

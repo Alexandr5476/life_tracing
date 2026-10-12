@@ -16,6 +16,33 @@ class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
 
     @Test
+    fun `new ExactDay input rejects fractions that cannot round trip through millisecond storage`() {
+        for (fraction in listOf("123456789", "123001", "000000001", "999999999")) {
+            val local = LocalDateTime.parse("2026-10-26T10:00:00.$fraction")
+            val zone = ZoneId.of("Europe/Berlin")
+            val schedule = PlanSchedule.ExactDay(local, zone)
+            assertThrows(UnsupportedPlanTimePrecisionException::class.java) { schedule.toTarget() }
+            assertEquals(
+                Instant.parse("2026-10-26T09:00:00.${fraction}Z"),
+                StrictLocalDateTimeResolver.requireInstant(local, zone),
+            )
+        }
+    }
+
+    @Test
+    fun `millisecond representable ExactDay input retains its exact Instant`() {
+        for (fraction in listOf("000", "001", "123", "999", "123000000")) {
+            val schedule =
+                PlanSchedule.ExactDay(
+                    LocalDateTime.parse("2026-10-26T10:00:00.$fraction"),
+                    ZoneId.of("Europe/Berlin"),
+                )
+            val target = schedule.toTarget()
+            assertEquals(Instant.parse("2026-10-26T09:00:00.${fraction}Z"), target.scheduledAt)
+        }
+    }
+
+    @Test
     fun `new ExactDay input rejects DST gap and unresolved overlap`() {
         val zone = ZoneId.of("Europe/Berlin")
         listOf("2026-03-29T02:30", "2026-10-25T02:30").forEach { local ->

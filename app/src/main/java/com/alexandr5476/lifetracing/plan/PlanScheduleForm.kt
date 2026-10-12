@@ -87,6 +87,18 @@ internal object PlanScheduleInput {
             runCatching { LocalTime.parse(form.time) }.getOrNull()
                 ?: return form.copy(error = PlanMessage.INVALID_TIME, offsetChoices = emptyList())
         val local = LocalDateTime.of(date, time)
+        val schedule = PlanSchedule.ExactDay(local, form.schedulingZoneId, form.selectedOffset)
+        return if (!schedule.isMillisecondRepresentable) {
+            form.copy(error = PlanMessage.UNSUPPORTED_TIME_PRECISION, offsetChoices = emptyList())
+        } else {
+            evaluateOffsets(form, local)
+        }
+    }
+
+    private fun evaluateOffsets(
+        form: PlanScheduleForm,
+        local: LocalDateTime,
+    ): PlanScheduleForm {
         val unselected = StrictLocalDateTimeResolver.resolve(local, form.schedulingZoneId)
         val choices =
             (unselected as? LocalDateTimeResolution.Ambiguous)?.validOffsets.orEmpty().sortedBy {

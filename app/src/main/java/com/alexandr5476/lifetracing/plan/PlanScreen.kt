@@ -418,6 +418,7 @@ private fun CancelledDialog(
             PlanMessage.ACTION_UNAVAILABLE -> R.string.plan_action_unavailable
             PlanMessage.INVALID_DATE -> R.string.plan_invalid_date
             PlanMessage.INVALID_TIME -> R.string.plan_invalid_time
+            PlanMessage.UNSUPPORTED_TIME_PRECISION -> R.string.plan_unsupported_time_precision
             PlanMessage.NONEXISTENT_TIME -> R.string.plan_nonexistent_time
             PlanMessage.AMBIGUOUS_TIME -> R.string.plan_ambiguous_time
             PlanMessage.INVALID_OFFSET -> R.string.plan_invalid_offset

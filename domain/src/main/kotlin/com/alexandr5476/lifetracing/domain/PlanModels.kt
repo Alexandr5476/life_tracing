@@ -60,6 +60,8 @@ sealed interface PlanTarget {
     }
 }
 
+class UnsupportedPlanTimePrecisionException : IllegalArgumentException("ExactDay requires whole milliseconds")
+
 sealed interface PlanSchedule {
     fun toTarget(): PlanTarget
 
@@ -74,11 +76,20 @@ sealed interface PlanSchedule {
         val currentZoneId: ZoneId,
         val selectedOffset: ZoneOffset? = null,
     ) : PlanSchedule {
-        override fun toTarget() =
-            PlanTarget.ExactDay(
+        val isMillisecondRepresentable: Boolean
+            get() = localDateTime.nano % NANOS_PER_MILLISECOND == 0
+
+        override fun toTarget(): PlanTarget.ExactDay {
+            if (!isMillisecondRepresentable) throw UnsupportedPlanTimePrecisionException()
+            return PlanTarget.ExactDay(
                 StrictLocalDateTimeResolver.requireInstant(localDateTime, currentZoneId, selectedOffset),
                 currentZoneId,
             )
+        }
+
+        private companion object {
+            const val NANOS_PER_MILLISECOND = 1_000_000
+        }
     }
 
     data class Week(

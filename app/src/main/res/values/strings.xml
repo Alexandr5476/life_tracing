@@ -617,6 +617,7 @@
     <string name="archived_templates_retry">Retry Restore</string>
     <string name="plan_invalid_date">Enter a valid date (YYYY-MM-DD).</string>
     <string name="plan_invalid_time">Enter a valid local time (HH:mm).</string>
+    <string name="plan_unsupported_time_precision">Use whole milliseconds for the time, for example 10:00:00.123.</string>
     <string name="plan_nonexistent_time">This local time does not exist in the displayed timezone. Choose another time.</string>
     <string name="plan_ambiguous_time">This local time occurs twice. Choose an occurrence.</string>
     <string name="plan_invalid_offset">The selected UTC offset is no longer valid for this date, time and timezone. Choose again.</string>
