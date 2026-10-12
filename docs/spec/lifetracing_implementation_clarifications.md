@@ -24,6 +24,12 @@ start, No-live completion, Sequence start), not every endpoint. Invalid zone IDs
 inconsistent non-null primary offset fail at canonical mapping/validation. Legacy null
 offsets remain valid. Stored `primaryLocalDate` remains the selector/grouping authority.
 
+Daily completed timed Activity and terminal Sequence ranges include localized calendar
+dates on both endpoints when their actual Instants fall on different local dates in the
+stored original ZoneId. Same-original-day ranges retain compact time-only labels with
+endpoint-specific offsets. No-live completion remains one original-zone timestamp.
+This presentation does not change primary-date attribution or any durable fact.
+
 Sequence child Activity timestamps use the child's stored zone. Sequence-owned occurrence
 and interval timestamps retain the root zone because those rows store no independent zone.
 Deletion/tombstone visibility, identity, duration accounting, Statistics, paging and all

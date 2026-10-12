@@ -58,6 +58,7 @@ import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.historicalTimestamp
+import com.alexandr5476.lifetracing.ui.historicalTimestampRange
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -647,11 +648,7 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                 val startedAt = root.startedAt
                 if (startedAt != null) {
                     Text(
-                        stringResource(
-                            R.string.daily_time_range,
-                            historicalTimestamp(startedAt, root.originalZoneId, includeDate = false),
-                            historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
-                        ),
+                        historicalTimestampRange(startedAt, root.completedAt, root.originalZoneId),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -671,11 +668,7 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 Text(durationText(root.activeDuration), style = MaterialTheme.typography.labelLarge)
                 Text(
-                    stringResource(
-                        R.string.daily_time_range,
-                        historicalTimestamp(root.startedAt, root.originalZoneId, includeDate = false),
-                        historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
-                    ),
+                    historicalTimestampRange(root.startedAt, root.completedAt, root.originalZoneId),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )

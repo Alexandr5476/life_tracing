@@ -43,5 +43,31 @@ internal fun historicalTimestamp(
     includeDate: Boolean,
 ): String {
     val parts = historicalTimestampParts(instant, zoneId, LocalConfiguration.current.locales[0], includeDate)
-    return stringResource(R.string.history_timestamp_context, parts.localText, parts.utcOffset, parts.zoneId)
+    return historicalTimestamp(parts)
 }
+
+internal fun historicalTimestampRangeParts(
+    startedAt: Instant,
+    completedAt: Instant,
+    zoneId: ZoneId,
+    locale: Locale,
+): Pair<HistoricalTimestamp, HistoricalTimestamp> {
+    val includeDate = startedAt.atZone(zoneId).toLocalDate() != completedAt.atZone(zoneId).toLocalDate()
+    return historicalTimestampParts(startedAt, zoneId, locale, includeDate) to
+        historicalTimestampParts(completedAt, zoneId, locale, includeDate)
+}
+
+@Composable
+internal fun historicalTimestampRange(
+    startedAt: Instant,
+    completedAt: Instant,
+    zoneId: ZoneId,
+): String {
+    val (start, end) =
+        historicalTimestampRangeParts(startedAt, completedAt, zoneId, LocalConfiguration.current.locales[0])
+    return stringResource(R.string.daily_time_range, historicalTimestamp(start), historicalTimestamp(end))
+}
+
+@Composable
+private fun historicalTimestamp(parts: HistoricalTimestamp): String =
+    stringResource(R.string.history_timestamp_context, parts.localText, parts.utcOffset, parts.zoneId)
