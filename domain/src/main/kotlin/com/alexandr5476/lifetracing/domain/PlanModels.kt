@@ -192,6 +192,19 @@ object PlanEntryValidator {
     }
 }
 
+/** Reject indistinguishable optimistic tokens rather than inventing a command timestamp. */
+object PlanMutationTimestampPolicy {
+    fun requireAdvancing(
+        plan: PlanEntry,
+        at: Instant,
+    ) {
+        require(at >= plan.updatedAt) { "Plan update time is out of order" }
+        require(at.toEpochMilli() > plan.updatedAt.toEpochMilli()) {
+            "Plan change must advance the persisted millisecond update token"
+        }
+    }
+}
+
 object PlanEntryTransitions {
     fun cancel(
         plan: PlanEntry,
@@ -199,6 +212,7 @@ object PlanEntryTransitions {
     ): PlanEntry =
         plan
             .requirePlanned(at)
+            .also { PlanMutationTimestampPolicy.requireAdvancing(it, at) }
             .copy(
                 status = PlanEntryStatus.CANCELLED,
                 cancelledAt = at,
@@ -210,7 +224,7 @@ object PlanEntryTransitions {
         at: Instant,
     ): PlanEntry {
         require(plan.status == PlanEntryStatus.CANCELLED) { "Only a cancelled Plan can be restored" }
-        require(at >= plan.updatedAt) { "Plan update time is out of order" }
+        PlanMutationTimestampPolicy.requireAdvancing(plan, at)
         return plan.copy(status = PlanEntryStatus.PLANNED, cancelledAt = null, updatedAt = at).validated()
     }
 
@@ -221,7 +235,9 @@ object PlanEntryTransitions {
     ): PlanEntry {
         val current = preserveSchedule(plan, at)
         val changed = current.copy(target = target, updatedAt = at).validated()
-        return if (current.target.hasEquivalentSchedule(target)) current else changed
+        if (current.target.hasEquivalentSchedule(target)) return current
+        PlanMutationTimestampPolicy.requireAdvancing(current, at)
+        return changed
     }
 
     fun preserveSchedule(

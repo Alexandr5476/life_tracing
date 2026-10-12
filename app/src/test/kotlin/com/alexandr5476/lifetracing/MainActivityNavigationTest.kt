@@ -1,7 +1,10 @@
 package com.alexandr5476.lifetracing
 
 import androidx.navigation3.runtime.NavKey
+import com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
+import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
@@ -14,17 +17,24 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
+import com.alexandr5476.lifetracing.domain.WeekPlanQuery
+import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.history.HistoryDetailLoad
 import com.alexandr5476.lifetracing.history.SequenceHistoryMutationAction
 import com.alexandr5476.lifetracing.history.SequenceHistoryMutationController
 import com.alexandr5476.lifetracing.history.SequenceHistoryMutationRouteSessionOwner
 import com.alexandr5476.lifetracing.history.SequenceHistoryTimestampTarget
+import com.alexandr5476.lifetracing.plan.PlanController
+import com.alexandr5476.lifetracing.plan.PlanControllerOwner
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
+import com.alexandr5476.lifetracing.plan.PlanLoad
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -36,9 +46,129 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 class MainActivityNavigationTest {
+    @Test
+    @Suppress("LongMethod")
+    fun planExecutionNavigationInvalidatesDeferredReadsAndBoundariesAcrossEveryReturnPath() =
+        runBlocking {
+            for (returnPath in listOf("back", "normalize", "complete", "live")) {
+                val stack: MutableList<NavKey> = mutableListOf(DailyRoot, PlanRoot)
+                val owner = PlanControllerOwner()
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+                val semantic = MutableStateFlow(0L)
+                var zone = ZoneId.of("Europe/Berlin")
+                var now = Instant.parse("2026-10-25T00:30:00Z")
+                val queries = mutableListOf<WeekPlanQuery>()
+                val pending =
+                    Channel<CompletableDeferred<Unit>>(
+                        Channel.UNLIMITED,
+                    )
+                var arms = 0
+                var cancels = 0
+                var boundary: (() -> Unit)? = null
+                val scheduler =
+                    object : LocalDateBoundaryScheduler {
+                        override fun arm(
+                            now: Instant,
+                            zoneId: ZoneId,
+                            exactBoundary: Instant?,
+                            onBoundary: () -> Unit,
+                        ) {
+                            arms++
+                            boundary = onBoundary
+                        }
+
+                        override fun cancel() {
+                            cancels++
+                        }
+                    }
+                val controller =
+                    owner.get {
+                        PlanController(
+                            scope,
+                            { query ->
+                                queries += query
+                                val release = CompletableDeferred<Unit>()
+                                pending.send(release)
+                                release.await()
+                                WeekPlanRead(
+                                    query.weekStart,
+                                    query.selectedDate,
+                                    emptyList(),
+                                    emptyList(),
+                                    emptyList(),
+                                    CalendarTemporalContext(
+                                        query.now,
+                                        requireNotNull(query.zoneId),
+                                    ),
+                                )
+                            },
+                            { _, _, _ -> emptyList() },
+                            { CancelledPlanPage(emptyList(), false) },
+                            {},
+                            { now },
+                            { zone },
+                            semantic,
+                            scheduler,
+                            initiallyVisible = false,
+                        )
+                    }
+                try {
+                    owner.onRouteVisibilityChanged(stack.lastOrNull() is PlanRoot)
+                    owner.onRouteVisibilityChanged(stack.lastOrNull() is PlanRoot)
+                    val obsolete = withTimeout(2_000) { pending.receive() }
+                    assertEquals(1, queries.size)
+                    val selected = controller.state.value.selectedDate
+                    val captured = requireNotNull(boundary)
+                    stack.add(PlanExecutionRoot(emptyList(), "PLAN"))
+                    owner.onRouteVisibilityChanged(stack.lastOrNull() is PlanRoot)
+                    owner.onRouteVisibilityChanged(stack.lastOrNull() is PlanRoot)
+                    assertEquals(1, cancels)
+                    val hiddenArms = arms
+                    zone = ZoneId.of("Pacific/Auckland")
+                    now = now.plusSeconds(86_400)
+                    semantic.value++
+                    obsolete.complete(Unit)
+                    captured()
+                    assertEquals(1, queries.size)
+                    assertEquals(hiddenArms, arms)
+                    assertTrue(controller.state.value.week is PlanLoad.Loading)
+                    when (returnPath) {
+                        "normalize" -> stack.normalizeRestoredPlanExecution()
+                        "live" -> {
+                            stack.removeAt(stack.lastIndex)
+                            stack.removePlan()
+                        }
+                        else -> stack.removeAt(stack.lastIndex)
+                    }
+                    owner.onRouteVisibilityChanged(stack.lastOrNull() is PlanRoot)
+                    if (returnPath == "live") {
+                        assertEquals(1, queries.size)
+                    } else {
+                        val fresh = withTimeout(2_000) { pending.receive() }
+                        owner.onRouteVisibilityChanged(true)
+                        assertEquals(2, queries.size)
+                        assertEquals(zone, queries.last().zoneId)
+                        assertEquals(selected, queries.last().selectedDate)
+                        fresh.complete(Unit)
+                        assertTrue(controller.state.value.week is PlanLoad.Content)
+                        assertEquals(selected, controller.state.value.selectedDate)
+                        stack.removePlan()
+                        owner.onRouteVisibilityChanged(false)
+                        semantic.value++
+                        captured()
+                        assertEquals(2, queries.size)
+                    }
+                } finally {
+                    controller.close()
+                    scope.cancel()
+                }
+            }
+        }
+
     @Test
     fun archives_is_a_secondary_settings_entry_and_back_preserves_the_surrounding_stack() {
         val stack: MutableList<NavKey> = mutableListOf(DailyRoot, LibraryRoot, SettingsRoot)

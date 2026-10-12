@@ -55,6 +55,27 @@ Production scheduling forms consume this strict resolution policy for preflight 
 
 New and edited ExactDay drafts capture and display one applicable device zone. Semantic invalidation and final submission both compare it with the current device zone. A mismatch clears offset authority and blocks submission until explicit review adopts the current zone for the retained local text; returning the device to the earlier zone does not silently clear that review requirement. Untouched existing targets need no zone review or overlap choice. Recoverable typed temporal failures keep the form editable and release the mutation lock without canonical mutation recovery. Stale or forbidden actions and unexpected persistence failures retain canonical recovery and never replay a mutation implicitly. Sharing the pure policy with historical-time handling preserves its parsing and manual historical Activity semantics.
 
+### Plan optimistic-token admission and ephemeral form ownership
+
+Accepted semantic changes through the Plan writer (changed reschedule, cancellation,
+restoration, and frozen-snapshot replacement) must strictly advance `updated_at_ms`.
+The command timestamp must be ordered and map to a later persisted millisecond than
+its current token; otherwise the command rejects atomically before any write. No
+synthetic timestamp or second revision source is introduced. Equivalent schedules
+and guarded preservation remain write-free and retain their existing token. Terminal
+fulfillment and runtime logical event timestamps retain their existing semantics.
+
+Every creation/reschedule form receives a fresh controller-owned ephemeral UUID.
+Edits preserve it; offset events carry it alongside the local tuple and input revision.
+An event from a dismissed/replaced form is ignored and cannot authorize another draft,
+including another source or another Plan with identical visible scheduling input.
+This identity is never persisted.
+
+Plan calendar visibility follows the top navigation entry, including PlanExecution
+navigation, normalization, completion, and Back. Outgoing transition content does not
+own lifecycle admission. Hidden reads and boundaries lose publication authority;
+returning admits one fresh canonical projection and retains the selected date.
+
 ## First coded Plan UI scope
 
 The older product-spec section 35 wording that makes Month selectable is narrowed for the first coded production Plan UI. Actionable production precision is Day and Week only.

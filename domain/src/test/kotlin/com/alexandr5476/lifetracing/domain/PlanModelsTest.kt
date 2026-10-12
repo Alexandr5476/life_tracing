@@ -16,6 +16,28 @@ class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
 
     @Test
+    fun `semantic changes reject timestamps sharing the persisted optimistic token`() {
+        val original = activityPlan()
+        val changedTarget = PlanTarget.FloatingDay(LocalDate.parse("2026-08-22"))
+        for (at in listOf(createdAt, createdAt.plusNanos(999_999))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.reschedule(original, changedTarget, at)
+            }
+            assertThrows(IllegalArgumentException::class.java) { PlanEntryTransitions.cancel(original, at) }
+            assertEquals(original, PlanEntryTransitions.reschedule(original, original.target, at))
+            assertEquals(original, PlanEntryTransitions.preserveSchedule(original, at))
+        }
+        val cancelled = PlanEntryTransitions.cancel(original, createdAt.plusMillis(1))
+        for (at in listOf(cancelled.updatedAt, cancelled.updatedAt.plusNanos(999_999))) {
+            assertThrows(IllegalArgumentException::class.java) { PlanEntryTransitions.restore(cancelled, at) }
+        }
+        val restored = PlanEntryTransitions.restore(cancelled, createdAt.plusMillis(2))
+        assertEquals(createdAt.plusMillis(2), restored.updatedAt)
+        val changed = PlanEntryTransitions.reschedule(restored, changedTarget, createdAt.plusMillis(3))
+        assertEquals(createdAt.plusMillis(3), changed.updatedAt)
+    }
+
+    @Test
     fun `new ExactDay input rejects fractions that cannot round trip through millisecond storage`() {
         for (fraction in listOf("123456789", "123001", "000000001", "999999999")) {
             val local = LocalDateTime.parse("2026-10-26T10:00:00.$fraction")

@@ -42,6 +42,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.temporal.TemporalAdjusters
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -145,6 +146,7 @@ sealed interface PlanAction {
         val time: String,
         val zoneId: ZoneId,
         val inputRevision: Long,
+        val formId: UUID,
     ) : PlanAction
 
     data object RevalidateScheduleZone : PlanAction
@@ -223,6 +225,7 @@ class PlanController internal constructor(
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
     private val semanticGeneration: StateFlow<Long> = MutableStateFlow(0L),
     private val boundaryScheduler: LocalDateBoundaryScheduler = CoroutineLocalDateBoundaryScheduler(scope),
+    initiallyVisible: Boolean = true,
 ) {
     private val readGeneration = AtomicLong()
     private val catalogGeneration = AtomicLong()
@@ -235,7 +238,7 @@ class PlanController internal constructor(
 
     @Volatile private var closed = false
 
-    @Volatile private var visible = true
+    @Volatile private var visible = initiallyVisible
 
     @Volatile private var recovery: MutationRecovery? = null
 
@@ -549,6 +552,7 @@ class PlanController internal constructor(
                         state.selectedDate.toString(),
                         "09:00",
                         schedulingZoneId = zoneId(),
+                        formId = UUID.randomUUID(),
                     ),
             )
         }
@@ -560,7 +564,16 @@ class PlanController internal constructor(
         val (kind, date, time) = row.plan.target.toForm(zone)
         mutableState.update {
             it.copy(
-                form = PlanScheduleForm(null, row.plan.actionIdentity(), kind, date, time, zone),
+                form =
+                    PlanScheduleForm(
+                        null,
+                        row.plan.actionIdentity(),
+                        kind,
+                        date,
+                        time,
+                        zone,
+                        formId = UUID.randomUUID(),
+                    ),
             )
         }
     }
@@ -593,6 +606,7 @@ class PlanController internal constructor(
         if (closed || mutationInFlight.get()) return
         mutableState.update { state ->
             val form = state.form ?: return@update state
+            if (form.formId != action.formId) return@update state
             val checked = PlanScheduleInput.checkZone(form, zoneId())
             if (checked.zoneReviewRequired) return@update state.copy(form = checked)
             val currentTuple =
@@ -913,8 +927,20 @@ class PlanController internal constructor(
 
 internal class PlanControllerOwner : ViewModel() {
     private var controller: PlanController? = null
+    private var routeVisible = false
 
-    fun get(factory: () -> PlanController) = controller ?: factory().also { controller = it }
+    fun get(factory: () -> PlanController) =
+        controller ?: factory().also {
+            controller = it
+            if (routeVisible) it.onRouteEntered()
+        }
+
+    /** The top navigation entry owns visibility, independently of outgoing Compose transition content. */
+    fun onRouteVisibilityChanged(visible: Boolean) {
+        if (routeVisible == visible) return
+        routeVisible = visible
+        controller?.let { if (visible) it.onRouteEntered() else it.onRouteExited() }
+    }
 
     override fun onCleared() {
         controller?.close()

@@ -13,6 +13,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -248,6 +249,11 @@ internal fun LifeTracingApp(
                 activityHistoryMutationRouteSessions ?: remember { ActivityHistoryMutationRouteSessionOwner() }
             val sequenceHistorySessions =
                 sequenceHistoryMutationRouteSessions ?: remember { SequenceHistoryMutationRouteSessionOwner() }
+            val planVisible = backStack.lastOrNull() is PlanRoot
+            DisposableEffect(planOwner, planVisible) {
+                planOwner.onRouteVisibilityChanged(planVisible)
+                onDispose { planOwner.onRouteVisibilityChanged(false) }
+            }
             val closeExpanded: (String) -> Unit = { expectedExecutionId ->
                 expandedSequenceSessions.release(
                     com.alexandr5476.lifetracing.domain
@@ -263,10 +269,7 @@ internal fun LifeTracingApp(
                 when (session.origin) {
                     PlanExecutionOrigin.DAILY ->
                         controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
-                    PlanExecutionOrigin.PLAN ->
-                        planOwner.get(runtimeGraph::createPlanController).dispatch(
-                            com.alexandr5476.lifetracing.plan.PlanAction.Refresh,
-                        )
+                    PlanExecutionOrigin.PLAN -> Unit // Returning to Plan admits one fresh visible read.
                 }
                 closePlanExecution(session)
             }
@@ -283,12 +286,8 @@ internal fun LifeTracingApp(
                         closePlanExecution(session)
                     }
                     PlanExecutionOrigin.PLAN -> {
-                        planOwner.get(runtimeGraph::createPlanController).dispatch(
-                            com.alexandr5476.lifetracing.plan.PlanAction.Refresh,
-                        )
                         closePlanExecution(session)
                         if (result.isLive) {
-                            planOwner.get(runtimeGraph::createPlanController).onRouteExited()
                             backStack.removePlan()
                             controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
                         }
@@ -358,10 +357,7 @@ internal fun LifeTracingApp(
                                 )
                             }
                         }
-                        backStack.lastOrNull() is PlanRoot -> {
-                            planOwner.get(runtimeGraph::createPlanController).onRouteExited()
-                            backStack.removePlan()
-                        }
+                        backStack.lastOrNull() is PlanRoot -> backStack.removePlan()
                         backStack.lastOrNull() is HistoryRoot -> {
                             historyOwner.onRouteExited()
                             backStack.removeHistory()
@@ -512,10 +508,7 @@ internal fun LifeTracingApp(
                             val planController = planOwner.get(runtimeGraph::createPlanController)
                             PlanRoute(
                                 planController,
-                                onBack = {
-                                    planController.onRouteExited()
-                                    backStack.removePlan()
-                                },
+                                onBack = backStack::removePlan,
                                 onExecute = { identity ->
                                     planExecutionSessions
                                         .acquire(identity, PlanExecutionOrigin.PLAN) {

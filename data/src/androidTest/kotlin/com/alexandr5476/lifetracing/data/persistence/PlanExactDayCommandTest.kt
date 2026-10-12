@@ -71,6 +71,89 @@ class PlanExactDayCommandTest(
     }
 
     @Test
+    fun changedReschedulesCannotReusePersistedTokensOrRestoreAnObsoleteIdentity() {
+        val scheduleA = secondOccurrence()
+        val scheduleB = schedule("2026-10-26T10:00:00.123")
+        val original = create(scheduleA)
+        val originalAction = reads.getFocusedAction(original.id)
+        val nonPlanFacts = durableFacts().minus("plan_entries")
+        for (at in listOf(original.updatedAt, original.updatedAt.plusNanos(999_999))) {
+            assertRejectedWithoutWrites(original) {
+                plans.reschedulePlanEntry(originalAction.identity, scheduleB, at)
+            }
+            assertEquals(original, plans.preservePlanSchedule(originalAction.identity, at))
+            assertEquals(original, plans.reschedulePlanEntry(originalAction.identity, scheduleA, at))
+        }
+        val changed = plans.reschedulePlanEntry(originalAction.identity, scheduleB, instant(2))
+        for (at in listOf(changed.updatedAt, changed.updatedAt.plusNanos(999_999))) {
+            assertRejectedWithoutWrites(changed) {
+                plans.reschedulePlanEntry(changed.actionIdentity(), scheduleA, at)
+            }
+        }
+        val restoredTarget = plans.reschedulePlanEntry(changed.actionIdentity(), scheduleA, instant(3))
+        assertEquals(original.copy(updatedAt = instant(3)), restoredTarget)
+        reopenDatabase()
+        assertCanonicalPlanAndDaily(restoredTarget)
+        assertEquals(restoredTarget.actionIdentity(), reads.getFocusedAction(original.id).identity)
+        assertRejectedWithoutWrites(restoredTarget) { plans.cancelPlan(originalAction.identity, instant(4)) }
+        assertEquals(originalAction.snapshot, reads.getFocusedAction(original.id).snapshot)
+        assertEquals(nonPlanFacts, durableFacts().minus("plan_entries"))
+    }
+
+    @Test
+    fun cancelRestoreCannotReusePersistedTokensOrRestoreAnObsoleteIdentity() {
+        val original = create(secondOccurrence())
+        val originalAction = reads.getFocusedAction(original.id)
+        val nonPlanFacts = durableFacts().minus("plan_entries")
+        for (at in listOf(original.updatedAt, original.updatedAt.plusNanos(999_999))) {
+            assertRejectedWithoutWrites(original) { plans.cancelPlan(originalAction.identity, at) }
+        }
+        val cancelled = plans.cancelPlan(originalAction.identity, instant(2))
+        for (at in listOf(cancelled.updatedAt, cancelled.updatedAt.plusNanos(999_999))) {
+            assertRejectedWithoutWrites(cancelled) { plans.restoreCancelledPlan(cancelled.actionIdentity(), at) }
+        }
+        val restored = plans.restoreCancelledPlan(cancelled.actionIdentity(), instant(3))
+        assertEquals(original.copy(updatedAt = instant(3)), restored)
+        reopenDatabase()
+        assertCanonicalPlanAndDaily(restored)
+        assertEquals(restored.actionIdentity(), reads.getFocusedAction(original.id).identity)
+        assertRejectedWithoutWrites(restored) { plans.cancelPlan(originalAction.identity, instant(4)) }
+        assertEquals(originalAction.snapshot, reads.getFocusedAction(original.id).snapshot)
+        assertEquals(nonPlanFacts, durableFacts().minus("plan_entries"))
+    }
+
+    @Test
+    fun snapshotReplacementRejectsAnIndistinguishableTokenBeforeAnyDurableEffect() {
+        val original = create(secondOccurrence())
+        for (at in listOf(original.updatedAt, original.updatedAt.plusNanos(999_999))) {
+            assertRejectedWithoutWrites(original) { plans.updatePlanFromTemplate(original.actionIdentity(), at) }
+        }
+        val changed = plans.updatePlanFromTemplate(original.actionIdentity(), instant(2))
+        assertEquals(instant(2), changed.updatedAt)
+        reopenDatabase()
+        assertCanonicalPlanAndDaily(changed)
+        assertRejectedWithoutWrites(changed) { plans.cancelPlan(original.actionIdentity(), instant(3)) }
+    }
+
+    private fun assertRejectedWithoutWrites(
+        expected: PlanEntry,
+        command: () -> Unit,
+    ) {
+        val before = durableFacts()
+        forbidPlanUpdates()
+        try {
+            assertThrows(IllegalArgumentException::class.java) { command() }
+        } finally {
+            database.openHelper.writableDatabase.execSQL("DROP TRIGGER forbid_plan_updates")
+        }
+        assertEquals(before, durableFacts())
+        reopenDatabase()
+        assertEquals(before, durableFacts())
+        assertEquals(expected, plans.getPlan(expected.id))
+        assertEquals(expected.actionIdentity(), reads.getFocusedAction(expected.id).identity)
+    }
+
+    @Test
     fun finerFractionCreationHasNoDurableEffects() {
         for (fraction in listOf("123456789", "123001", "000000001")) {
             val existing = create(schedule("2026-10-26T10:00:00.123"))

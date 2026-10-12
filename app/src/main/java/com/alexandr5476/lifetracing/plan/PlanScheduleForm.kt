@@ -11,6 +11,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.UUID
 
 /** The identity owns the persisted target; display text only becomes input after an actual edit. */
 data class PlanScheduleForm(
@@ -26,6 +27,7 @@ data class PlanScheduleForm(
     val zoneReviewRequired: Boolean = false,
     val error: PlanMessage? = null,
     val inputRevision: Long = 0,
+    val formId: UUID,
 ) {
     val preservesExistingSchedule: Boolean get() = identity != null && !scheduleEdited
 }

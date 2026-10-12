@@ -37,6 +37,64 @@ import java.time.ZoneOffset
 
 class PlanExactDayControllerTest {
     @Test
+    fun dismissedCreationChoicesCannotAuthorizeMatchingCrossSourceOrReopenedDrafts() =
+        runBlocking {
+            for (nextSequence in listOf(false, true)) {
+                val fixture = Fixture(this)
+                try {
+                    fixture.newExact(false)
+                    val obsolete = fixture.selection(ZoneOffset.ofHours(1))
+                    fixture.controller.dispatch(PlanAction.DismissForm)
+                    fixture.newExact(nextSequence)
+                    assertEquals(obsolete.inputRevision, fixture.form.inputRevision)
+                    fixture.controller.dispatch(obsolete)
+                    assertNull(fixture.form.selectedOffset)
+                    assertEquals(PlanMessage.AMBIGUOUS_TIME, fixture.form.error)
+                    fixture.controller.dispatch(PlanAction.SubmitForm)
+                    assertEquals(PlanMessage.AMBIGUOUS_TIME, fixture.form.error)
+                    assertTrue(fixture.mutations.isEmpty())
+                    fixture.choose(ZoneOffset.ofHours(1))
+                    fixture.submit()
+                    assertEquals(nextSequence, fixture.mutations.single() is PlanMutation.CreateSequence)
+                } finally {
+                    fixture.controller.close()
+                }
+            }
+        }
+
+    @Test
+    fun dismissedRescheduleChoicesCannotAuthorizeMatchingCrossPlanOrReopenedDrafts() =
+        runBlocking {
+            for (nextId in listOf("plan", "another-plan")) {
+                val fixture = Fixture(this)
+                try {
+                    fixture.controller.dispatch(PlanAction.Reschedule(existingRow()))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31"))
+                    val obsolete = fixture.selection(ZoneOffset.ofHours(1))
+                    fixture.controller.dispatch(PlanAction.DismissForm)
+                    val next = existingRow().let { it.copy(plan = it.plan.copy(id = PlanEntryId(nextId))) }
+                    fixture.controller.dispatch(PlanAction.Reschedule(next))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31"))
+                    assertEquals(obsolete.inputRevision, fixture.form.inputRevision)
+                    fixture.controller.dispatch(obsolete)
+                    assertNull(fixture.form.selectedOffset)
+                    assertEquals(PlanMessage.AMBIGUOUS_TIME, fixture.form.error)
+                    fixture.controller.dispatch(PlanAction.SubmitForm)
+                    assertEquals(PlanMessage.AMBIGUOUS_TIME, fixture.form.error)
+                    assertTrue(fixture.mutations.isEmpty())
+                    fixture.choose(ZoneOffset.ofHours(1))
+                    fixture.submit()
+                    assertEquals(
+                        next.plan.id,
+                        (fixture.mutations.single() as PlanMutation.Reschedule).identity.planEntryId,
+                    )
+                } finally {
+                    fixture.controller.close()
+                }
+            }
+        }
+
+    @Test
     fun finerFractionsNeverDispatchCreationOrReschedulingAndCorrectionKeepsMilliseconds() =
         runBlocking {
             for (sequence in listOf(false, true)) {
@@ -214,7 +272,9 @@ class PlanExactDayControllerTest {
                 try {
                     fixture.newExact(false)
                     fixture.choose(ZoneOffset.ofHours(1))
+                    val formId = fixture.form.formId
                     fixture.controller.dispatch(edit)
+                    assertEquals(formId, fixture.form.formId)
                     assertNull(fixture.form.selectedOffset)
                     assertTrue(fixture.form.scheduleEdited)
                     fixture.controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
@@ -477,7 +537,14 @@ class PlanExactDayControllerTest {
         }
 
         fun selection(offset: ZoneOffset) =
-            PlanAction.SelectScheduleOffset(offset, form.date, form.time, form.schedulingZoneId, form.inputRevision)
+            PlanAction.SelectScheduleOffset(
+                offset,
+                form.date,
+                form.time,
+                form.schedulingZoneId,
+                form.inputRevision,
+                form.formId,
+            )
 
         fun choose(offset: ZoneOffset) = controller.dispatch(selection(offset))
 

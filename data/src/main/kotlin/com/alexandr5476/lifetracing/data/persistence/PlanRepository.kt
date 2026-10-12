@@ -20,6 +20,7 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanEntryTransitions
 import com.alexandr5476.lifetracing.domain.PlanEntryValidator
 import com.alexandr5476.lifetracing.domain.PlanListEntry
+import com.alexandr5476.lifetracing.domain.PlanMutationTimestampPolicy
 import com.alexandr5476.lifetracing.domain.PlanOverdueCalculator
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanSourceState
@@ -270,7 +271,7 @@ class PlanRepository internal constructor(
     ): PlanEntry =
         transaction {
             val plan = requireMutablePlan(id, expected)
-            require(updatedAt >= plan.updatedAt) { "Plan update time is out of order" }
+            PlanMutationTimestampPolicy.requireAdvancing(plan, updatedAt)
             when (plan.kind) {
                 PlanTrackableKind.ACTIVITY -> updateActivityPlan(plan, updatedAt)
                 PlanTrackableKind.SEQUENCE -> updateSequencePlan(plan, updatedAt)

@@ -609,6 +609,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         java.time.Instant::now,
                         ZoneId::systemDefault,
                         coordinator.semanticGeneration,
+                        initiallyVisible = false,
                     )
                 },
                 {
