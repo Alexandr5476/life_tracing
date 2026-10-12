@@ -3,11 +3,14 @@ package com.alexandr5476.lifetracing.domain
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 data class DailyQuery(
     val selectedDate: LocalDate,
     val now: Instant,
     val completedHistoryLimit: Int,
+    val zoneId: ZoneId? = null,
 ) {
     init {
         require(completedHistoryLimit > 0) { "Daily completed-history limit must be positive" }
@@ -19,6 +22,8 @@ data class DailyRead(
     val weekPlans: List<DailyPlan>,
     val completedHistory: List<CompletedHistoryRoot>,
     val active: DailyActive?,
+    // Nullable for legacy read adapters; canonical repositories always supply their captured context.
+    val temporalContext: CalendarTemporalContext? = null,
 )
 
 data class DailyPlan(
@@ -29,6 +34,7 @@ data class DailyPlan(
     val sourceState: PlanSourceState,
     val engaged: Boolean,
     val overdue: Boolean,
+    val exactUtcOffset: ZoneOffset? = null,
 )
 
 sealed interface DailyPlanSnapshot {

@@ -4,13 +4,24 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 private const val WEEK_LAST_DAY_OFFSET = 6L
+
+/** Ephemeral attribution shared by every part of one calendar projection. */
+data class CalendarTemporalContext(
+    val now: Instant,
+    val zoneId: ZoneId,
+) {
+    val today: LocalDate get() = now.atZone(zoneId).toLocalDate()
+}
 
 data class WeekPlanQuery(
     val weekStart: LocalDate,
     val selectedDate: LocalDate,
     val now: Instant,
+    val zoneId: ZoneId? = null,
 ) {
     init {
         require(weekStart.dayOfWeek == java.time.DayOfWeek.MONDAY) { "Plan week must start on Monday" }
@@ -26,6 +37,8 @@ data class WeekPlanRead(
     val selectedDayPlans: List<PlanReadRow>,
     val weekPlans: List<PlanReadRow>,
     val dayPresence: List<PlanDayPresence>,
+    // Nullable for legacy read adapters; canonical repositories always supply their captured context.
+    val temporalContext: CalendarTemporalContext? = null,
 )
 
 data class PlanDayPresence(
@@ -43,6 +56,7 @@ data class PlanReadRow(
     val engaged: Boolean,
     val overdue: Boolean,
     val activityMetadata: PlanActivityRowMetadata?,
+    val exactUtcOffset: ZoneOffset? = null,
 )
 
 data class PlanActivityRowMetadata(

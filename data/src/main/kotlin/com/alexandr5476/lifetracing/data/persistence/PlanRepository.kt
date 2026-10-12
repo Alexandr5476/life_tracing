@@ -20,6 +20,7 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanEntryTransitions
 import com.alexandr5476.lifetracing.domain.PlanEntryValidator
 import com.alexandr5476.lifetracing.domain.PlanListEntry
+import com.alexandr5476.lifetracing.domain.PlanMutationTimestampPolicy
 import com.alexandr5476.lifetracing.domain.PlanOverdueCalculator
 import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.PlanSourceState
@@ -79,6 +80,16 @@ class PlanRepository internal constructor(
         schedule: PlanSchedule,
         at: Instant,
     ): PlanEntry = reschedulePlanEntry(expected.planEntryId, schedule.toTarget(), at, expected)
+
+    /** Preserve the authoritative stored target without interpreting displayed local input. */
+    fun preservePlanSchedule(
+        expected: PlanActionIdentity,
+        at: Instant,
+    ): PlanEntry =
+        transaction {
+            val plan = requireMutablePlan(expected.planEntryId, expected)
+            PlanEntryTransitions.preserveSchedule(plan, at)
+        }
 
     fun updatePlanFromTemplate(
         expected: PlanActionIdentity,
@@ -229,8 +240,9 @@ class PlanRepository internal constructor(
     ): PlanEntry =
         transaction {
             val plan = requireMutablePlan(id, expected)
-            PlanEntryTransitions.reschedule(plan, target, at)
-            val shape = target.persistenceShape()
+            val rescheduled = PlanEntryTransitions.reschedule(plan, target, at)
+            if (rescheduled === plan) return@transaction plan
+            val shape = rescheduled.target.persistenceShape()
             check(
                 database.planEntryDao().reschedule(
                     id.value,
@@ -259,7 +271,7 @@ class PlanRepository internal constructor(
     ): PlanEntry =
         transaction {
             val plan = requireMutablePlan(id, expected)
-            require(updatedAt >= plan.updatedAt) { "Plan update time is out of order" }
+            PlanMutationTimestampPolicy.requireAdvancing(plan, updatedAt)
             when (plan.kind) {
                 PlanTrackableKind.ACTIVITY -> updateActivityPlan(plan, updatedAt)
                 PlanTrackableKind.SEQUENCE -> updateSequencePlan(plan, updatedAt)
@@ -286,8 +298,14 @@ class PlanRepository internal constructor(
                         plan,
                         zoned?.toLocalDate() ?: (plan.target as PlanTarget.FloatingDay).date,
                         zoned?.toLocalTime(),
+                        zone,
+                        zoned?.offset,
                     )
-                }.sortedWith(compareBy(PlanCalendarEntry::effectiveLocalDate, PlanCalendarEntry::exactLocalTime))
+                }.sortedWith(
+                    compareBy(PlanCalendarEntry::effectiveLocalDate, PlanCalendarEntry::exactLocalTime)
+                        .thenBy { (it.plan.target as? PlanTarget.ExactDay)?.scheduledAt }
+                        .thenBy { it.plan.id.value },
+                )
         }
     }
 

@@ -16,6 +16,120 @@ class PlanModelsTest {
     private val createdAt = Instant.parse("2026-08-20T09:00:00Z")
 
     @Test
+    fun `semantic changes reject timestamps sharing the persisted optimistic token`() {
+        val original = activityPlan()
+        val changedTarget = PlanTarget.FloatingDay(LocalDate.parse("2026-08-22"))
+        for (at in listOf(createdAt, createdAt.plusNanos(999_999))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.reschedule(original, changedTarget, at)
+            }
+            assertThrows(IllegalArgumentException::class.java) { PlanEntryTransitions.cancel(original, at) }
+            assertEquals(original, PlanEntryTransitions.reschedule(original, original.target, at))
+            assertEquals(original, PlanEntryTransitions.preserveSchedule(original, at))
+        }
+        val cancelled = PlanEntryTransitions.cancel(original, createdAt.plusMillis(1))
+        for (at in listOf(cancelled.updatedAt, cancelled.updatedAt.plusNanos(999_999))) {
+            assertThrows(IllegalArgumentException::class.java) { PlanEntryTransitions.restore(cancelled, at) }
+        }
+        val restored = PlanEntryTransitions.restore(cancelled, createdAt.plusMillis(2))
+        assertEquals(createdAt.plusMillis(2), restored.updatedAt)
+        val changed = PlanEntryTransitions.reschedule(restored, changedTarget, createdAt.plusMillis(3))
+        assertEquals(createdAt.plusMillis(3), changed.updatedAt)
+    }
+
+    @Test
+    fun `new ExactDay input rejects fractions that cannot round trip through millisecond storage`() {
+        for (fraction in listOf("123456789", "123001", "000000001", "999999999")) {
+            val local = LocalDateTime.parse("2026-10-26T10:00:00.$fraction")
+            val zone = ZoneId.of("Europe/Berlin")
+            val schedule = PlanSchedule.ExactDay(local, zone)
+            assertThrows(UnsupportedPlanTimePrecisionException::class.java) { schedule.toTarget() }
+            assertEquals(
+                Instant.parse("2026-10-26T09:00:00.${fraction}Z"),
+                StrictLocalDateTimeResolver.requireInstant(local, zone),
+            )
+        }
+    }
+
+    @Test
+    fun `millisecond representable ExactDay input retains its exact Instant`() {
+        for (fraction in listOf("000", "001", "123", "999", "123000000")) {
+            val schedule =
+                PlanSchedule.ExactDay(
+                    LocalDateTime.parse("2026-10-26T10:00:00.$fraction"),
+                    ZoneId.of("Europe/Berlin"),
+                )
+            val target = schedule.toTarget()
+            assertEquals(Instant.parse("2026-10-26T09:00:00.${fraction}Z"), target.scheduledAt)
+        }
+    }
+
+    @Test
+    fun `new ExactDay input rejects DST gap and unresolved overlap`() {
+        val zone = ZoneId.of("Europe/Berlin")
+        listOf("2026-03-29T02:30", "2026-10-25T02:30").forEach { local ->
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanSchedule.ExactDay(LocalDateTime.parse(local), zone).toTarget()
+            }
+        }
+    }
+
+    @Test
+    fun `equivalent exact reschedule retains original identity precision and provenance`() {
+        val instant = Instant.parse("2026-10-25T01:30:27.123Z")
+        val original = activityPlan(PlanTarget.ExactDay(instant, null))
+        val result =
+            PlanEntryTransitions.reschedule(
+                original,
+                PlanTarget.ExactDay(instant, ZoneId.of("Pacific/Auckland")),
+                createdAt.plusSeconds(1),
+            )
+
+        assertEquals(original, result)
+        assertEquals(original.actionIdentity(), result.actionIdentity())
+    }
+
+    @Test
+    fun `literal target equivalence preserves all Plan facts while target class changes do not`() {
+        listOf(
+            PlanTarget.FloatingDay(LocalDate.parse("2026-08-20")),
+            PlanTarget.Week(LocalDate.parse("2026-08-17")),
+            PlanTarget.ExactDay(createdAt, ZoneId.of("UTC")),
+        ).forEach { target ->
+            val original = activityPlan(target)
+            assertEquals(original, PlanEntryTransitions.reschedule(original, target, createdAt.plusSeconds(1)))
+            assertEquals(original, PlanEntryTransitions.preserveSchedule(original, createdAt.plusSeconds(1)))
+        }
+        val original = activityPlan(PlanTarget.ExactDay(createdAt, null))
+        val floating = PlanTarget.FloatingDay(LocalDate.parse("2026-08-20"))
+        assertEquals(
+            original.copy(target = floating, updatedAt = createdAt.plusSeconds(1)),
+            PlanEntryTransitions.reschedule(original, floating, createdAt.plusSeconds(1)),
+        )
+    }
+
+    @Test
+    fun `no-op domain transitions still reject terminal states and out of order time`() {
+        val original = activityPlan()
+        val cancelled = PlanEntryTransitions.cancel(original, createdAt.plusSeconds(1))
+        val fulfilled = PlanEntryTransitions.fulfill(original, ActivityExecutionId("execution"), null, createdAt)
+        listOf(cancelled, fulfilled).forEach { terminal ->
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.preserveSchedule(terminal, createdAt.plusSeconds(2))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                PlanEntryTransitions.reschedule(terminal, terminal.target, createdAt.plusSeconds(2))
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanEntryTransitions.preserveSchedule(original, createdAt.minusMillis(1))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlanEntryTransitions.reschedule(original, original.target, createdAt.minusMillis(1))
+        }
+    }
+
+    @Test
     fun `production schedules resolve only supported day and Monday week targets`() {
         val zone = ZoneId.of("Asia/Kolkata")
         val local = LocalDateTime.parse("2026-08-20T15:30:00")
@@ -181,6 +295,27 @@ class PlanModelsTest {
             )
 
         assertEquals(identities.size, identities.toSet().size)
+    }
+
+    @Test
+    fun `overlap occurrence overdue follows its absolute Instant in every zone`() {
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        val zones = listOf(ZoneId.of("Europe/Berlin"), ZoneId.of("America/New_York"))
+        for (scheduled in listOf(first, second)) {
+            val plan = activityPlan(PlanTarget.ExactDay(scheduled, ZoneId.of("UTC")))
+            for (zone in zones) {
+                assertFalse(PlanOverdueCalculator.isOverdue(plan, scheduled.minusMillis(1), zone))
+                assertFalse(PlanOverdueCalculator.isOverdue(plan, scheduled, zone))
+                assertTrue(PlanOverdueCalculator.isOverdue(plan, scheduled.plusMillis(1), zone))
+            }
+        }
+        assertTrue(
+            PlanOverdueCalculator.isOverdue(activityPlan(PlanTarget.ExactDay(first, null)), second, zones.first()),
+        )
+        assertFalse(
+            PlanOverdueCalculator.isOverdue(activityPlan(PlanTarget.ExactDay(second, null)), second, zones.first()),
+        )
     }
 
     private fun activityPlan(

@@ -107,4 +107,6 @@ data class SequenceHistoryChildActivity(
     val completedAt: Instant?,
     val activeDuration: Duration?,
     val fields: List<ActivityHistoryField>,
+    val originalZoneId: ZoneId,
+    val originalUtcOffsetMinutes: Int?,
 )

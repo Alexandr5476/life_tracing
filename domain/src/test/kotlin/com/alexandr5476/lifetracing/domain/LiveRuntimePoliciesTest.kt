@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 class LiveRuntimePoliciesTest {
@@ -371,6 +372,182 @@ class LiveRuntimePoliciesTest {
             }
 
         assertTrue(reads[1] <= reads[0] * 4 + 8, "Four times the due suffix must not cause quadratic hydration work")
+    }
+
+    @Test
+    @Suppress("LongMethod") // Keep each logical boundary and its resulting frozen facts in one scenario.
+    fun realBerlinDstChainsAgreeWithStepwiseAbsoluteReconciliation() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        for (start in listOf(
+            Instant.parse("2026-03-29T00:59:30Z"),
+            Instant.parse("2026-10-25T00:59:30Z"),
+        )) {
+            val timer = activity("dst-timer", TimeTrackingMode.TIMER, 60)
+            val activities = mapOf(timer.id to timer)
+            val base = sequence(listOf(timer.id), autoAdvance = true, countdownSeconds = 10)
+            val snapshot =
+                base.copy(
+                    nodes =
+                        listOf(
+                            SequenceSnapshotRepeatBlock(
+                                SequenceSnapshotNodeId("dst-repeat"),
+                                0,
+                                3,
+                                base.nodes.filterIsInstance<SequenceSnapshotActivityStep>(),
+                            ),
+                        ),
+                )
+            val stepwiseEngine = engine()
+            val delayedEngine = engine()
+            var stepwise = stepwiseEngine.start(snapshot, activities, start, start, berlin)
+            val initial = delayedEngine.start(snapshot, activities, start, start, berlin)
+            for (seconds in listOf(60L, 70L, 130L, 140L, 200L)) {
+                val deadline = start.plusSeconds(seconds)
+                assertEquals(
+                    stepwise,
+                    stepwiseEngine.reconcile(stepwise, snapshot, activities, deadline.minusMillis(1)),
+                )
+                stepwise = stepwiseEngine.reconcile(stepwise, snapshot, activities, deadline)
+                assertEquals(stepwise, stepwiseEngine.reconcile(stepwise, snapshot, activities, deadline.plusMillis(1)))
+            }
+            val delayed = delayedEngine.reconcile(initial, snapshot, activities, start.plusSeconds(7_200))
+            assertEquals(stepwise, delayed)
+            assertEquals(
+                listOf(0L, 70L, 140L).map(start::plusSeconds),
+                delayed.execution.occurrences.map { it.enteredAt },
+            )
+            assertEquals(
+                listOf(60L, 130L, 200L).map(start::plusSeconds),
+                delayed.execution.occurrences.map { it.completedAt },
+            )
+            assertEquals(listOf(1, 2, 3), delayed.execution.occurrences.map { it.repeatIteration })
+            assertTrue(
+                delayed.execution.occurrences.all {
+                    it.repeatSourceSnapshotNodeId == SequenceSnapshotNodeId("dst-repeat") &&
+                        it.sourceSequenceSnapshotNodeId == SequenceSnapshotNodeId("step-0") &&
+                        !it.isRuntimeAdded
+                },
+            )
+            assertEquals(initial.execution.occurrences.map { it.id }, delayed.execution.occurrences.map { it.id })
+            assertEquals(
+                initial.currentChild!!.id,
+                delayed.children.values
+                    .minBy { requireNotNull(it.startedAt) }
+                    .id,
+            )
+            assertEquals(Duration.ofSeconds(180), delayed.execution.activeDuration)
+            assertEquals(Duration.ofSeconds(20), delayed.execution.pauseDuration)
+            assertEquals(start.plusSeconds(200), delayed.execution.endedAt)
+            assertEquals(berlin, delayed.execution.originalZoneId)
+            assertEquals(initial.execution.originalUtcOffsetMinutes, delayed.execution.originalUtcOffsetMinutes)
+            assertEquals(initial.execution.primaryLocalDate, delayed.execution.primaryLocalDate)
+            assertEquals(delayed, delayedEngine.reconcile(delayed, snapshot, activities, start.minusSeconds(1)))
+        }
+    }
+
+    @Test
+    fun repeatedBerlin0230LabelsDoNotRepeatTimerProgressOrHistoricalAttribution() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        assertEquals(first.atZone(berlin).toLocalDateTime(), second.atZone(berlin).toLocalDateTime())
+        val timer = activity("overlap", TimeTrackingMode.TIMER, 3_600)
+        val started =
+            ActivityExecutionFactory { ActivityExecutionId("overlap-execution") }
+                .startTimed(timer, first, first, berlin)
+        assertEquals(second, TimerDeadlineCalculator.deadline(started, timer.timerTarget!!, TimerZeroBehavior.FINISH))
+        val completed = ActivityExecutionTransitions.complete(started, second)
+        assertEquals(Duration.ofHours(1), completed.activeDuration)
+        assertEquals(120, completed.originalUtcOffsetMinutes)
+        assertEquals(ZoneOffset.ofHours(1), second.atZone(berlin).offset)
+        assertEquals(started.snapshotId, completed.snapshotId)
+        assertEquals(started.primaryLocalDate, completed.primaryLocalDate)
+    }
+
+    @Test
+    fun pauseAcrossDstUsesPersistedDurationAndDisplayUsesOnlyItsCurrentAnchor() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        for (start in listOf(
+            Instant.parse("2026-03-29T00:59:30Z"),
+            Instant.parse("2026-10-25T00:59:30Z"),
+        )) {
+            val timer = activity("paused-dst", TimeTrackingMode.TIMER, 60)
+            val started =
+                ActivityExecutionFactory { ActivityExecutionId("paused-dst") }
+                    .startTimed(timer, start, start, berlin)
+            val paused =
+                ActivityExecutionTransitions.pause(started, ActivityExecutionPauseId("pause"), start.plusSeconds(10))
+            assertNull(TimerDeadlineCalculator.deadline(paused, timer.timerTarget!!, TimerZeroBehavior.FINISH))
+            val resumed = ActivityExecutionTransitions.resume(paused, start.plusSeconds(7_200))
+            val deadline = start.plusSeconds(7_250)
+            assertEquals(
+                deadline,
+                TimerDeadlineCalculator.deadline(resumed, timer.timerTarget, TimerZeroBehavior.FINISH),
+            )
+            val runtime =
+                ActiveActivityRuntime(
+                    ActiveSession(
+                        ActiveSessionKind.ACTIVITY,
+                        ActiveSessionState.RUNNING,
+                        resumed.id,
+                        null,
+                        resumed.updatedAt,
+                    ),
+                    resumed,
+                    timer,
+                )
+            val anchor = WallMonotonicAnchor(start.plusSeconds(7_200), 500_000)
+            val display = RuntimeDisplayBaseline.capture(runtime, anchor, 500_000)
+            assertEquals(Duration.ofSeconds(10), display.activeElapsed(500_000))
+            assertEquals(Duration.ofSeconds(11), display.activeElapsed(501_000))
+            assertEquals(Duration.ofSeconds(49), display.timerRemaining(501_000))
+            assertEquals(550_000L, anchor.elapsedAt(deadline))
+            val replacement = WallMonotonicAnchor(start.plusSeconds(7_210), 501_000)
+            val fresh = RuntimeDisplayBaseline.capture(runtime, replacement, 501_000)
+            assertEquals(Duration.ofSeconds(20), fresh.activeElapsed(501_000))
+            assertEquals(Duration.ofSeconds(11), display.activeElapsed(501_000))
+            assertEquals(resumed.pauses, runtime.execution.pauses)
+        }
+    }
+
+    @Test
+    fun transitionCountdownDeadlineCrossesRealDstWithoutACurrentChildUntilExactlyDue() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        for (start in listOf(
+            Instant.parse("2026-03-29T00:59:57Z"),
+            Instant.parse("2026-10-25T00:59:57Z"),
+        )) {
+            val timer = activity("short", TimeTrackingMode.TIMER, 1)
+            val stopwatch = activity("target", TimeTrackingMode.STOPWATCH)
+            val activities = listOf(timer, stopwatch).associateBy { it.id }
+            val snapshot = sequence(activities.keys.toList(), autoAdvance = true, countdownSeconds = 10)
+            val runtime = engine()
+            val started = runtime.start(snapshot, activities, start, start, berlin)
+            val countdown = runtime.reconcile(started, snapshot, activities, start.plusSeconds(1))
+            val target =
+                countdown.execution.occurrences
+                    .last()
+                    .id
+            assertNull(countdown.execution.currentOccurrenceId)
+            assertNull(countdown.currentChild)
+            val deadline = start.plusSeconds(11)
+            assertEquals(countdown, runtime.reconcile(countdown, snapshot, activities, deadline.minusMillis(1)))
+            val entered = runtime.reconcile(countdown, snapshot, activities, deadline)
+            assertEquals(target, entered.execution.currentOccurrenceId)
+            assertEquals(deadline, entered.currentChild!!.startedAt)
+            assertEquals(2, entered.children.size)
+            assertEquals(entered, runtime.reconcile(entered, snapshot, activities, deadline.plusMillis(1)))
+            val delayedEngine = engine()
+            val delayedInitial = delayedEngine.start(snapshot, activities, start, start, berlin)
+            assertEquals(
+                entered,
+                delayedEngine.reconcile(delayedInitial, snapshot, activities, deadline.plusSeconds(7_200)),
+            )
+            val interval = entered.execution.intervals.single { it.kind == SequenceIntervalKind.TRANSITION_COUNTDOWN }
+            assertEquals(start.plusSeconds(1), interval.startedAt)
+            assertEquals(deadline, interval.endedAt)
+            assertEquals(target, interval.occurrenceId)
+        }
     }
 
     private class CountingList<T>(

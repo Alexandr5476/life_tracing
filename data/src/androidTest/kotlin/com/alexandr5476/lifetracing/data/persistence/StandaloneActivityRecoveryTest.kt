@@ -2,7 +2,6 @@ package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecution
@@ -24,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
@@ -41,15 +41,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
 import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
+import java.util.TimeZone
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 
-@RunWith(AndroidJUnit4::class)
-class StandaloneActivityRecoveryTest {
+@RunWith(Parameterized::class)
+class StandaloneActivityRecoveryTest(
+    private val origin: Instant,
+    private val eventZone: ZoneId,
+) {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val databaseName = "standalone-recovery-" + System.nanoTime()
     private val observedSql = CopyOnWriteArrayList<String>()
@@ -57,17 +63,23 @@ class StandaloneActivityRecoveryTest {
     private var repositoryReference: LiveSessionRepository? = null
     private val database get() = requireNotNull(databaseReference)
     private val repository get() = requireNotNull(repositoryReference)
+    private val previousZone = TimeZone.getDefault()
 
     @Before
     fun setUp() {
+        TimeZone.setDefault(TimeZone.getTimeZone(eventZone))
         open()
         LiveRuntimeTestFixtures(database).seedSeries()
     }
 
     @After
     fun tearDown() {
-        discard()
-        context.deleteDatabase(databaseName)
+        try {
+            discard()
+            context.deleteDatabase(databaseName)
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
     }
 
     @Test
@@ -200,6 +212,114 @@ class StandaloneActivityRecoveryTest {
         database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_recovery_fulfillment")
         assertNaturalCompletion(before, 1_000)
         assertCanonicalTerminalFact(before)
+    }
+
+    @Test
+    fun millisecondDeadlineBoundarySurvivesRelocationAndColdRecovery() {
+        val before = runningWithClosedPause(TimeTrackingMode.TIMER)
+        val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(before))
+        reopen()
+        assertTrue(repository.reconcileActiveSession(deadline.at.minusMillis(1)).appliedEvents.isEmpty())
+        assertEquals(before, active())
+        val display =
+            RuntimeDisplayBaseline.capture(active(), WallMonotonicAnchor(deadline.at.minusMillis(1), 0), 0)
+        assertEquals(Duration.ofMillis(1), display.timerRemaining(0))
+        assertEquals(listOf(deadline), repository.reconcileActiveSession(deadline.at).appliedEvents.map { it.deadline })
+        val completed = execution(before.execution)
+        assertEquals(deadline.at, completed.completedAt)
+        assertEquals(Duration.ofSeconds(60), completed.activeDuration)
+        assertEquals(before.execution.originalZoneId, completed.originalZoneId)
+        assertEquals(before.execution.originalUtcOffsetMinutes, completed.originalUtcOffsetMinutes)
+        assertEquals(before.execution.primaryLocalDate, completed.primaryLocalDate)
+        assertTrue(repository.reconcileActiveSession(deadline.at.plusMillis(1)).appliedEvents.isEmpty())
+        reopen()
+        assertNoActiveRuntime()
+        assertEquals(completed, execution(completed))
+        assertOnlyOriginalExecution(completed)
+    }
+
+    @Test
+    fun terminalActivityCannotRewindOrBecomeLiveAfterClockRollback() {
+        val started = start(snapshot(TimeTrackingMode.TIMER))
+        repository.completeActiveActivity(at(30))
+        val completed = execution(started)
+        reopen()
+        assertTrue(repository.reconcileActiveSession(at(10)).appliedEvents.isEmpty())
+        assertNull(repository.getActiveRuntime())
+        assertEquals(completed, execution(started))
+        assertOnlyOriginalExecution(completed)
+    }
+
+    @Test
+    fun missingActualValueSurvivesColdTemporalRecoveryAsMissing() {
+        assertActualValueRecovery(null)
+    }
+
+    @Test
+    fun zeroActualValueSurvivesColdTemporalRecoveryAsZero() {
+        assertActualValueRecovery(0)
+    }
+
+    @Test
+    fun exactPlanRetainsInstantAndFrozenHistoryWhileCalendarUsesTheCurrentZone() {
+        val frozen = snapshot(TimeTrackingMode.TIMER)
+        database.planEntryDao().insert(
+            plan(frozen).copy(
+                plannedDay = null,
+                scheduledInstantMs = at(0).toEpochMilli(),
+                creationZoneId = eventZone.id,
+            ),
+        )
+        val started = repository.startActivityFromPlan(PlanEntryId("plan"), at(0), at(0), eventZone)
+        val originalPlan = readPlan(eventZone)
+        val before = active()
+        reopen()
+        val relocated = ZoneId.of("America/New_York")
+        TimeZone.setDefault(TimeZone.getTimeZone(relocated))
+        assertTrue(repository.reconcileActiveSession(at(60).minusMillis(1)).appliedEvents.isEmpty())
+        assertEquals(before, active())
+        assertEquals(originalPlan, readPlan(relocated))
+        assertEquals(at(0), (readPlan(relocated).target as PlanTarget.ExactDay).scheduledAt)
+        repository.reconcileActiveSession(at(100))
+        reopen()
+        val fulfilled = readPlan(relocated)
+        assertEquals(originalPlan.target, fulfilled.target)
+        assertEquals(originalPlan.activitySnapshotId, fulfilled.activitySnapshotId)
+        assertEquals(PlanEntryStatus.FULFILLED, fulfilled.status)
+        val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(started.id))
+        assertEquals(eventZone, detail.root.originalZoneId)
+        assertEquals(started.originalUtcOffsetMinutes, detail.root.originalUtcOffsetMinutes)
+        assertEquals(started.primaryLocalDate, detail.root.primaryLocalDate)
+        assertEquals(started.statisticsSeriesId, execution(started).statisticsSeriesId)
+        assertOnlyOriginalExecution(execution(started))
+    }
+
+    private fun readPlan(zone: ZoneId) =
+        at(0).atZone(zone).toLocalDate().let { date ->
+            PlanReadRepository(database, CurrentZoneIdProvider { zone })
+                .getWeek(WeekPlanQuery(date.with(DayOfWeek.MONDAY), date, at(100)))
+                .selectedDayPlans
+                .single()
+                .plan
+        }
+
+    private fun assertActualValueRecovery(numberScaled: Long?) {
+        val started = start(snapshot(TimeTrackingMode.TIMER), numberScaled = numberScaled)
+        val before = active()
+        reopen()
+        assertEquals(before, active())
+        repository.reconcileActiveSession(at(100))
+        reopen()
+        val detail = requireNotNull(HistoryReadRepository(database).getActivityDetail(started.id))
+        assertEquals(
+            numberScaled?.let(ActivityHistoryActualValue::Number) ?: ActivityHistoryActualValue.Missing,
+            detail.fields.single().actualValue,
+        )
+        assertEquals(started.snapshotId, detail.root.snapshotId)
+        assertEquals(started.statisticsSeriesId, execution(started).statisticsSeriesId)
+        assertEquals(eventZone, detail.root.originalZoneId)
+        assertOnlyOriginalExecution(execution(started))
+        assertNull(repository.getActiveRuntime())
     }
 
     private fun assertPausedRecovery(mode: TimeTrackingMode) {
@@ -344,17 +464,19 @@ class StandaloneActivityRecoveryTest {
     private fun start(
         snapshot: ActivityConfigSnapshot,
         planLinked: Boolean = false,
+        numberScaled: Long? = 7_000,
     ): ActivityExecution {
         val fieldId = snapshot.fields.single().id
-        val values = listOf(ActivityExecutionValueOverride(fieldId, NumberExecutionValue(fieldId, 7_000)))
+        val actual = numberScaled?.let { NumberExecutionValue(fieldId, it) }
+        val values = listOf(ActivityExecutionValueOverride(fieldId, actual))
         val execution =
             if (planLinked) {
                 database.planEntryDao().insert(plan(snapshot))
-                repository.startActivityFromPlan(PlanEntryId("plan"), at(0), at(0), ZoneOffset.UTC, values)
+                repository.startActivityFromPlan(PlanEntryId("plan"), at(0), at(0), eventZone, values)
             } else {
-                repository.startStandaloneTimedActivityFromSnapshot(snapshot.id, at(0), at(0), ZoneOffset.UTC, values)
+                repository.startStandaloneTimedActivityFromSnapshot(snapshot.id, at(0), at(0), eventZone, values)
             }
-        assertEquals(NumberExecutionValue(fieldId, 7_000), execution.values.single())
+        assertEquals(listOfNotNull(actual), execution.values)
         return execution
     }
 
@@ -422,7 +544,7 @@ class StandaloneActivityRecoveryTest {
             activitySnapshotId = snapshot.id.value,
             sequencePlanSnapshotId = null,
             precision = "DAY",
-            plannedDay = "1970-01-01",
+            plannedDay = at(0).atZone(eventZone).toLocalDate().toString(),
             plannedWeekStart = null,
             plannedMonth = null,
             scheduledInstantMs = null,
@@ -480,6 +602,7 @@ class StandaloneActivityRecoveryTest {
 
     private fun reopen() {
         discard()
+        TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Auckland"))
         assertNull(databaseReference)
         assertNull(repositoryReference)
         open()
@@ -503,5 +626,16 @@ class StandaloneActivityRecoveryTest {
         repositoryReference = LiveSessionRepository.create(database)
     }
 
-    private fun at(seconds: Long): Instant = Instant.ofEpochSecond(seconds)
+    private fun at(seconds: Long): Instant = origin.plusSeconds(seconds)
+
+    companion object {
+        @JvmStatic
+        @Parameterized.Parameters(name = "context={index}")
+        fun temporalContexts(): List<Array<Any>> =
+            listOf(
+                arrayOf(Instant.EPOCH, ZoneOffset.UTC),
+                arrayOf(Instant.parse("2026-03-29T00:59:30Z"), ZoneId.of("Europe/Berlin")),
+                arrayOf(Instant.parse("2026-10-25T00:59:30Z"), ZoneId.of("Europe/Berlin")),
+            )
+    }
 }

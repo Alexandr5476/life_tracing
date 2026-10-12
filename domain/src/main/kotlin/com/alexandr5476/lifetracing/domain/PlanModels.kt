@@ -7,6 +7,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.YearMonth
 import java.time.ZoneId
+import java.time.ZoneOffset
 
 @JvmInline
 value class PlanEntryId(
@@ -59,6 +60,8 @@ sealed interface PlanTarget {
     }
 }
 
+class UnsupportedPlanTimePrecisionException : IllegalArgumentException("ExactDay requires whole milliseconds")
+
 sealed interface PlanSchedule {
     fun toTarget(): PlanTarget
 
@@ -71,8 +74,22 @@ sealed interface PlanSchedule {
     data class ExactDay(
         val localDateTime: LocalDateTime,
         val currentZoneId: ZoneId,
+        val selectedOffset: ZoneOffset? = null,
     ) : PlanSchedule {
-        override fun toTarget() = PlanTarget.ExactDay(localDateTime.atZone(currentZoneId).toInstant(), currentZoneId)
+        val isMillisecondRepresentable: Boolean
+            get() = localDateTime.nano % NANOS_PER_MILLISECOND == 0
+
+        override fun toTarget(): PlanTarget.ExactDay {
+            if (!isMillisecondRepresentable) throw UnsupportedPlanTimePrecisionException()
+            return PlanTarget.ExactDay(
+                StrictLocalDateTimeResolver.requireInstant(localDateTime, currentZoneId, selectedOffset),
+                currentZoneId,
+            )
+        }
+
+        private companion object {
+            const val NANOS_PER_MILLISECOND = 1_000_000
+        }
     }
 
     data class Week(
@@ -175,6 +192,19 @@ object PlanEntryValidator {
     }
 }
 
+/** Reject indistinguishable optimistic tokens rather than inventing a command timestamp. */
+object PlanMutationTimestampPolicy {
+    fun requireAdvancing(
+        plan: PlanEntry,
+        at: Instant,
+    ) {
+        require(at >= plan.updatedAt) { "Plan update time is out of order" }
+        require(at.toEpochMilli() > plan.updatedAt.toEpochMilli()) {
+            "Plan change must advance the persisted millisecond update token"
+        }
+    }
+}
+
 object PlanEntryTransitions {
     fun cancel(
         plan: PlanEntry,
@@ -182,6 +212,7 @@ object PlanEntryTransitions {
     ): PlanEntry =
         plan
             .requirePlanned(at)
+            .also { PlanMutationTimestampPolicy.requireAdvancing(it, at) }
             .copy(
                 status = PlanEntryStatus.CANCELLED,
                 cancelledAt = at,
@@ -193,7 +224,7 @@ object PlanEntryTransitions {
         at: Instant,
     ): PlanEntry {
         require(plan.status == PlanEntryStatus.CANCELLED) { "Only a cancelled Plan can be restored" }
-        require(at >= plan.updatedAt) { "Plan update time is out of order" }
+        PlanMutationTimestampPolicy.requireAdvancing(plan, at)
         return plan.copy(status = PlanEntryStatus.PLANNED, cancelledAt = null, updatedAt = at).validated()
     }
 
@@ -201,7 +232,26 @@ object PlanEntryTransitions {
         plan: PlanEntry,
         target: PlanTarget,
         at: Instant,
-    ): PlanEntry = plan.requirePlanned(at).copy(target = target, updatedAt = at).validated()
+    ): PlanEntry {
+        val current = preserveSchedule(plan, at)
+        val changed = current.copy(target = target, updatedAt = at).validated()
+        if (current.target.hasEquivalentSchedule(target)) return current
+        PlanMutationTimestampPolicy.requireAdvancing(current, at)
+        return changed
+    }
+
+    fun preserveSchedule(
+        plan: PlanEntry,
+        at: Instant,
+    ): PlanEntry = plan.requirePlanned(at).validated()
+
+    private fun PlanTarget.hasEquivalentSchedule(other: PlanTarget): Boolean =
+        when (this) {
+            is PlanTarget.ExactDay -> other is PlanTarget.ExactDay && scheduledAt == other.scheduledAt
+            is PlanTarget.FloatingDay -> this == other
+            is PlanTarget.Week -> this == other
+            is PlanTarget.Month -> false
+        }
 
     fun fulfill(
         plan: PlanEntry,
@@ -272,6 +322,8 @@ data class PlanCalendarEntry(
     val plan: PlanEntry,
     val effectiveLocalDate: LocalDate,
     val exactLocalTime: LocalTime?,
+    val effectiveZoneId: ZoneId? = null,
+    val exactUtcOffset: ZoneOffset? = null,
 )
 
 data class PlanListEntry(

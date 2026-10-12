@@ -48,6 +48,110 @@ import java.time.ZoneOffset
 @Suppress("LargeClass") // Existing coordinator boundary scenarios share one focused harness.
 class AndroidRuntimeCoordinatorTest {
     @Test
+    @Suppress("LongMethod")
+    fun noActiveRuntimeSystemTimeAndForegroundSignalsRefreshBothVisibleCalendars() =
+        runBlocking {
+            var zone: java.time.ZoneId = ZoneOffset.UTC
+            var now = Instant.parse("2026-10-25T23:30:00Z")
+            var dailyReads = 0
+            var planReads = 0
+            var reconciliations = 0
+            val calendarWall = MutableWallClock(now)
+            val coordinator =
+                coordinator(
+                    load = { null },
+                    reconcile = {
+                        reconciliations++
+                        RuntimeReconciliationResult(null, emptyList())
+                    },
+                    wall = calendarWall,
+                )
+            val daily =
+                com.alexandr5476.lifetracing.daily.DailyController(
+                    this,
+                    { query ->
+                        dailyReads++
+                        com.alexandr5476.lifetracing.domain.DailyRead(
+                            emptyList(),
+                            emptyList(),
+                            emptyList(),
+                            null,
+                            com.alexandr5476.lifetracing.domain.CalendarTemporalContext(
+                                query.now,
+                                requireNotNull(query.zoneId),
+                            ),
+                        )
+                    },
+                    {},
+                    {},
+                    coordinator.semanticGeneration,
+                    { null },
+                    WallClock { now },
+                    { zone },
+                    {
+                        com.alexandr5476.lifetracing.domain
+                            .ActivityExecutionPauseId("unused")
+                    },
+                    com.alexandr5476.lifetracing.daily
+                        .LocalDateBoundaryScheduler { _, _, _, _ -> },
+                )
+            val plan =
+                com.alexandr5476.lifetracing.plan.PlanController(
+                    this,
+                    { query ->
+                        planReads++
+                        com.alexandr5476.lifetracing.domain.WeekPlanRead(
+                            query.weekStart,
+                            query.selectedDate,
+                            emptyList(),
+                            emptyList(),
+                            emptyList(),
+                            com.alexandr5476.lifetracing.domain.CalendarTemporalContext(
+                                query.now,
+                                requireNotNull(query.zoneId),
+                            ),
+                        )
+                    },
+                    { _, _, _ -> emptyList() },
+                    {
+                        com.alexandr5476.lifetracing.domain
+                            .CancelledPlanPage(emptyList(), false)
+                    },
+                    {},
+                    { now },
+                    { zone },
+                    coordinator.semanticGeneration,
+                    com.alexandr5476.lifetracing.daily
+                        .LocalDateBoundaryScheduler { _, _, _, _ -> },
+                )
+
+            suspend fun awaitReads(count: Int) {
+                kotlinx.coroutines.withTimeout(2_000) {
+                    while (dailyReads < count || planReads < count) yield()
+                }
+            }
+            try {
+                awaitReads(1)
+                val selected = daily.state.value.selectedDate
+                zone = java.time.ZoneId.of("Europe/Berlin")
+                coordinator.onSystemTimeChanged()
+                awaitReads(2)
+                assertEquals(selected, daily.state.value.selectedDate)
+                assertEquals(com.alexandr5476.lifetracing.daily.DailyDateRelation.PAST, daily.state.value.dateRelation)
+                now = now.minusSeconds(86_400)
+                calendarWall.value = now
+                coordinator.onForeground()
+                awaitReads(3)
+                assertEquals(2, reconciliations)
+                assertEquals(2L, coordinator.semanticGeneration.value)
+                assertEquals(null, coordinator.displayBaseline)
+            } finally {
+                daily.close()
+                plan.close()
+            }
+        }
+
+    @Test
     fun semanticGenerationAdvancesForForegroundRuntimeAndTimeCoordination() =
         runBlocking {
             val coordinator =
@@ -771,6 +875,70 @@ class AndroidRuntimeCoordinatorTest {
                     .anchor
                     .elapsedAt(deadline.at),
             )
+        }
+
+    @Test
+    @Suppress("LongMethod") // One independent clock timeline makes obsolete callback ordering explicit.
+    fun realDstTimeSignalsReanchorPendingAbsoluteDeadlineAndOldCallbackCannotAdvanceIt() =
+        runBlocking {
+            for (origin in listOf(
+                Instant.parse("2026-03-29T00:59:30Z"),
+                Instant.parse("2026-10-25T00:59:30Z"),
+            )) {
+                val current = runningTimer(startedAtSeconds = origin.epochSecond)
+                val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(current))
+                val wall = MutableWallClock(origin)
+                val monotonic = MutableMonotonicClock(1_000)
+                val local = FakeLocalDriver()
+                val scheduler = FakeScheduler()
+                val effects = mutableListOf<RuntimeDeadlineFeedback>()
+                val reconciled = mutableListOf<Instant>()
+                val coordinator =
+                    coordinator(
+                        load = { current },
+                        reconcile = {
+                            reconciled += it
+                            RuntimeReconciliationResult(current.session, emptyList())
+                        },
+                        scheduler = scheduler,
+                        local = local,
+                        feedback = effects::add,
+                        wall = wall,
+                        monotonic = monotonic,
+                    )
+                coordinator.onRuntimeStateChanged()
+                val obsolete = local.armed.single()
+                wall.value = origin.minusSeconds(3_600)
+                monotonic.value = 61_000
+                coordinator.onSystemTimeChanged()
+                assertEquals(
+                    3_721_000L,
+                    local.armed
+                        .last()
+                        .anchor
+                        .elapsedAt(deadline.at),
+                )
+                obsolete.callback(deadline)
+                assertEquals(listOf(wall.value), reconciled)
+                assertEquals(deadline, local.armed.last().deadline)
+                wall.value = deadline.at.minusMillis(1)
+                monotonic.value = 62_000
+                coordinator.onSystemTimeChanged()
+                assertEquals(
+                    62_001L,
+                    local.armed
+                        .last()
+                        .anchor
+                        .elapsedAt(deadline.at),
+                )
+                assertEquals(Duration.ofMillis(1), coordinator.displayBaseline!!.timerRemaining(62_000))
+                assertEquals(Duration.ZERO, coordinator.displayBaseline!!.timerRemaining(62_001))
+                assertEquals(deadline, scheduler.scheduled.last())
+                assertEquals(2, scheduler.cancellations)
+                assertEquals(2, local.cancellations)
+                assertEquals(emptyList<RuntimeDeadlineFeedback>(), effects)
+                assertEquals(3L, coordinator.semanticGeneration.value)
+            }
         }
 
     @Test

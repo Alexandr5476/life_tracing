@@ -640,6 +640,8 @@ class ActivityHistoryMutationControllerTest {
                 "comment",
                 mode,
                 null,
+                BERLIN,
+                null,
             ),
             TOKEN,
             BERLIN,

@@ -609,6 +609,7 @@ class LifeTracingRuntimeGraph internal constructor(
                         java.time.Instant::now,
                         ZoneId::systemDefault,
                         coordinator.semanticGeneration,
+                        initiallyVisible = false,
                     )
                 },
                 {
@@ -792,6 +793,7 @@ internal fun executePlanMutation(
                 command.at,
             )
         is PlanMutation.Reschedule -> repository.reschedulePlanEntry(command.identity, command.schedule, command.at)
+        is PlanMutation.PreserveSchedule -> repository.preservePlanSchedule(command.identity, command.at)
         is PlanMutation.Cancel -> repository.cancelPlan(command.identity, command.at)
         is PlanMutation.Restore -> repository.restoreCancelledPlan(command.identity, command.at)
         is PlanMutation.Update -> repository.updatePlanFromTemplate(command.identity, command.at)

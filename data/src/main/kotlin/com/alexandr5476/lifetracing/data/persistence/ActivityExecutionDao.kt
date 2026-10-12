@@ -63,6 +63,8 @@ internal data class ActivityHistoryRootEntity(
     @androidx.room.ColumnInfo(name = "completed_at_ms") val completedAtMs: Long,
     @androidx.room.ColumnInfo(name = "active_duration_ms") val activeDurationMs: Long?,
     @androidx.room.ColumnInfo(name = "primary_local_date") val primaryLocalDate: String,
+    @androidx.room.ColumnInfo(name = "original_zone_id") val originalZoneId: String,
+    @androidx.room.ColumnInfo(name = "original_utc_offset_minutes") val originalUtcOffsetMinutes: Int?,
 )
 
 internal data class ExecutionPlanLinkRow(
@@ -81,7 +83,7 @@ internal abstract class ActivityExecutionDao {
 
     @Query(
         "SELECT id, snapshot_id, plan_entry_id, started_at_ms, completed_at_ms, active_duration_ms, " +
-            "primary_local_date FROM activity_executions " +
+            "primary_local_date, original_zone_id, original_utc_offset_minutes FROM activity_executions " +
             "WHERE context_type = 'STANDALONE' AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
             "AND primary_local_date BETWEEN :startDate AND :endDate " +
             "AND (:cursorDate IS NULL OR primary_local_date < :cursorDate " +

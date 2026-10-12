@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.daily
 
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
 import com.alexandr5476.lifetracing.domain.DailyActive
 import com.alexandr5476.lifetracing.domain.DailyActiveSequenceState
 import com.alexandr5476.lifetracing.domain.DailyQuery
@@ -224,6 +225,8 @@ class DailyController internal constructor(
     @Volatile
     private var visible = true
 
+    private var closed = false
+
     private val initialNow = wallClock.now()
     private val initialToday = initialNow.atZone(zoneId()).toLocalDate()
     private val mutableState =
@@ -240,7 +243,6 @@ class DailyController internal constructor(
                 if (generation != handled) {
                     handled = generation
                     if (visible) {
-                        armDateBoundary()
                         refresh()
                     }
                 }
@@ -249,83 +251,140 @@ class DailyController internal constructor(
 
     init {
         require(completedHistoryLimit > 0) { "Daily completed-history limit must be positive" }
-        armDateBoundary(initialNow)
         refresh(initialNow)
     }
 
-    fun dispatch(action: DailyAction) {
-        when (action) {
-            DailyAction.PreviousDay -> selectDate(mutableState.value.selectedDate.minusDays(1))
-            DailyAction.NextDay -> selectDate(mutableState.value.selectedDate.plusDays(1))
-            DailyAction.Today -> selectDate(today())
-            DailyAction.Retry -> refresh()
-            DailyAction.Visible -> onVisible()
-            DailyAction.Hidden -> onHidden()
-            is DailyAction.Runtime -> submitRuntimeCommand(action)
+    fun dispatch(action: DailyAction): Unit =
+        synchronized(commandCaptureLock) {
+            when (action) {
+                DailyAction.PreviousDay -> selectDate(mutableState.value.selectedDate.minusDays(1))
+                DailyAction.NextDay -> selectDate(mutableState.value.selectedDate.plusDays(1))
+                DailyAction.Today -> selectDate(today())
+                DailyAction.Retry -> refresh()
+                DailyAction.Visible -> onVisible()
+                DailyAction.Hidden -> onHidden()
+                is DailyAction.Runtime -> submitRuntimeCommand(action)
+            }
         }
-    }
 
-    fun onVisible() {
-        visible = true
-        armDateBoundary()
-        refresh()
-    }
-
-    internal fun onRouteEntered() {
-        if (!visible) onVisible()
-    }
-
-    fun onHidden() {
-        visible = false
-        dateBoundaryScheduler.cancel()
-    }
-
-    fun close() {
-        invalidationJob.cancel()
-        dateBoundaryScheduler.cancel()
-    }
-
-    private fun selectDate(date: LocalDate) {
-        mutableState.update { current ->
-            current.copy(selectedDate = date, dateRelation = relation(date, today()))
+    fun onVisible(): Unit =
+        synchronized(commandCaptureLock) {
+            if (closed) return
+            visible = true
+            refresh()
         }
-        refresh()
-    }
+
+    internal fun onRouteEntered(): Unit =
+        synchronized(commandCaptureLock) {
+            if (!visible) onVisible()
+        }
+
+    fun onHidden(): Unit =
+        synchronized(commandCaptureLock) {
+            visible = false
+            loadGeneration.incrementAndGet()
+            dateBoundaryScheduler.cancel()
+        }
+
+    fun close(): Unit =
+        synchronized(commandCaptureLock) {
+            closed = true
+            onHidden()
+            invalidationJob.cancel()
+            dateBoundaryScheduler.cancel()
+        }
+
+    private fun selectDate(date: LocalDate): Unit =
+        synchronized(commandCaptureLock) {
+            mutableState.update { current ->
+                current.copy(selectedDate = date, dateRelation = relation(date, today()))
+            }
+            refresh()
+        }
 
     @Suppress("TooGenericExceptionCaught") // Any reader failure becomes bounded presentation failure.
-    private fun refresh(now: Instant = wallClock.now()) {
-        val generation = loadGeneration.incrementAndGet()
-        val selectedDate = mutableState.value.selectedDate
-        val today = now.atZone(zoneId()).toLocalDate()
-        mutableState.update {
-            it.copy(
-                dateRelation = relation(selectedDate, today),
-                load = DailyLoadState.Loading,
-                runtimeDisplayBaseline = null,
+    private fun refresh(now: Instant = wallClock.now()): Unit =
+        synchronized(commandCaptureLock) {
+            if (closed || !visible) return
+            val generation = loadGeneration.incrementAndGet()
+            val selectedDate = mutableState.value.selectedDate
+            val context = CalendarTemporalContext(now, zoneId())
+            val semantic = semanticGeneration.value
+            mutableState.update {
+                it.copy(
+                    dateRelation = relation(selectedDate, context.today),
+                    load = DailyLoadState.Loading,
+                    runtimeDisplayBaseline = null,
+                )
+            }
+            armDateBoundary(
+                context = context,
+                generation = generation,
+                semantic = semantic,
+                selectedDate = selectedDate,
             )
-        }
-        scope.launch {
-            try {
-                val daily = readDaily(DailyQuery(selectedDate, now, completedHistoryLimit))
-                if (loadGeneration.get() == generation) publish(daily, selectedDate, today, now)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                if (loadGeneration.get() == generation) {
-                    mutableState.update {
-                        it.copy(load = DailyLoadState.Failure(failure.message()), runtimeDisplayBaseline = null)
+            scope.launch {
+                try {
+                    val daily = readDaily(DailyQuery(selectedDate, now, completedHistoryLimit, context.zoneId))
+                    synchronized(commandCaptureLock) {
+                        if (ownsRead(generation, selectedDate, context, semantic)) {
+                            if (daily.temporalContext != null && daily.temporalContext != context) {
+                                refresh()
+                            } else {
+                                publish(daily, selectedDate, context, generation, semantic)
+                            }
+                        } else {
+                            retryChangedZone(generation, semantic, context)
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    synchronized(commandCaptureLock) {
+                        if (ownsRead(generation, selectedDate, context, semantic)) {
+                            mutableState.update {
+                                it.copy(load = DailyLoadState.Failure(failure.message()), runtimeDisplayBaseline = null)
+                            }
+                        } else {
+                            retryChangedZone(generation, semantic, context)
+                        }
                     }
                 }
             }
+        }
+
+    private fun ownsRead(
+        generation: Long,
+        selectedDate: LocalDate,
+        context: CalendarTemporalContext,
+        semantic: Long,
+    ): Boolean =
+        !closed &&
+            visible &&
+            loadGeneration.get() == generation &&
+            mutableState.value.selectedDate == selectedDate &&
+            semanticGeneration.value == semantic &&
+            zoneId() == context.zoneId
+
+    private fun retryChangedZone(
+        generation: Long,
+        semantic: Long,
+        context: CalendarTemporalContext,
+    ) {
+        val ownsGeneration = !closed && visible && loadGeneration.get() == generation
+        if (ownsGeneration && semanticGeneration.value == semantic && zoneId() != context.zoneId) {
+            refresh()
         }
     }
 
     private fun publish(
         daily: DailyRead,
         selectedDate: LocalDate,
-        today: LocalDate,
-        readAt: Instant,
+        context: CalendarTemporalContext,
+        generation: Long,
+        semantic: Long,
     ) {
+        val today = context.today
         val empty =
             daily.dayPlans.isEmpty() &&
                 daily.weekPlans.isEmpty() &&
@@ -337,13 +396,20 @@ class DailyController internal constructor(
                 ?.takeIf { selectedDate == today }
                 ?.let { runtime -> displayBaseline()?.takeIf { it.matches(runtime) } }
         mutableState.update {
+            if (!ownsRead(generation, selectedDate, context, semantic)) return@update it
             it.copy(
                 dateRelation = relation(selectedDate, today),
                 load = if (empty) DailyLoadState.Empty(daily) else DailyLoadState.Content(daily),
                 runtimeDisplayBaseline = baseline,
             )
         }
-        armDateBoundary(daily = daily, projectionAt = readAt)
+        armDateBoundary(
+            daily = daily,
+            context = context,
+            generation = generation,
+            semantic = semantic,
+            selectedDate = selectedDate,
+        )
     }
 
     @Suppress("TooGenericExceptionCaught") // The boundary must distinguish both failure phases without crashing UI.
@@ -464,26 +530,23 @@ class DailyController internal constructor(
         }
     }
 
-    private fun onLocalDateBoundary() {
-        if (!visible) return
-        armDateBoundary()
-        refresh()
-    }
-
     private fun armDateBoundary(
-        now: Instant = wallClock.now(),
         daily: DailyRead? = null,
-        projectionAt: Instant = now,
+        context: CalendarTemporalContext,
+        generation: Long,
+        semantic: Long,
+        selectedDate: LocalDate,
     ) {
-        if (visible) {
-            val zone = zoneId()
-            val plans = daily?.let { it.dayPlans.map { plan -> plan.plan } + it.weekPlans.map { plan -> plan.plan } }
-            dateBoundaryScheduler.arm(
-                now,
-                zone,
-                plans?.let { nextPlanTemporalBoundary(it, projectionAt, zone) },
-                ::onLocalDateBoundary,
-            )
+        if (!ownsRead(generation, selectedDate, context, semantic)) return
+        val plans = daily?.let { it.dayPlans.map { plan -> plan.plan } + it.weekPlans.map { plan -> plan.plan } }
+        dateBoundaryScheduler.arm(
+            wallClock.now(),
+            context.zoneId,
+            plans?.let { nextPlanTemporalBoundary(it, context.now, context.zoneId) },
+        ) {
+            synchronized(commandCaptureLock) {
+                if (ownsRead(generation, selectedDate, context, semantic)) refresh()
+            }
         }
     }
 

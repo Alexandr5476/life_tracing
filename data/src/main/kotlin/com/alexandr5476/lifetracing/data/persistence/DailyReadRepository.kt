@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityHistoricalSnapshotPolicy
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.DailyActive
@@ -55,7 +56,7 @@ class DailyReadRepository internal constructor(
     fun getDaily(query: DailyQuery): DailyRead =
         database.runInTransaction(
             Callable {
-                val zone = zoneIdProvider.currentZoneId()
+                val zone = query.zoneId ?: zoneIdProvider.currentZoneId()
                 val today = query.now.atZone(zone).toLocalDate()
                 val activeRuntime = liveSessionRepository.getActiveRuntimeLocked()
                 val plans = loadPlans(query.selectedDate, query.now, zone, activeRuntime)
@@ -78,6 +79,7 @@ class DailyReadRepository internal constructor(
                             ),
                         ),
                     active = activeRuntime?.takeIf { query.selectedDate == today }?.toDailyActive(),
+                    temporalContext = CalendarTemporalContext(query.now, zone),
                 )
             },
         )
@@ -175,10 +177,12 @@ class DailyReadRepository internal constructor(
                     sourceStates.getValue(plan.id),
                     engagement[plan.id] == true,
                     PlanOverdueCalculator.isOverdue(plan, now, zone),
+                    exact?.offset,
                 )
             }.sortedWith(
                 compareBy<DailyPlan> { it.plan.target.precision }
                     .thenBy { it.exactLocalTime ?: LocalTime.MAX }
+                    .thenBy { (it.plan.target as? PlanTarget.ExactDay)?.scheduledAt }
                     .thenBy { it.plan.createdAt }
                     .thenBy { it.plan.id.value },
             )

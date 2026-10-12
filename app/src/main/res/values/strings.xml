@@ -615,4 +615,20 @@
     <string name="archived_templates_restoring_row">Restoring…</string>
     <string name="archived_templates_restore_failure">The template could not be restored. Try again.</string>
     <string name="archived_templates_retry">Retry Restore</string>
+    <string name="plan_invalid_date">Enter a valid date (YYYY-MM-DD).</string>
+    <string name="plan_invalid_time">Enter a valid local time (HH:mm).</string>
+    <string name="plan_unsupported_time_precision">Use whole milliseconds for the time, for example 10:00:00.123.</string>
+    <string name="plan_nonexistent_time">This local time does not exist in the displayed timezone. Choose another time.</string>
+    <string name="plan_ambiguous_time">This local time occurs twice. Choose an occurrence.</string>
+    <string name="plan_invalid_offset">The selected UTC offset is no longer valid for this date, time and timezone. Choose again.</string>
+    <string name="plan_zone_changed">The device timezone changed. Review this date and time in the current timezone before saving.</string>
+    <string name="plan_review_current_zone">Use current timezone and review</string>
+    <string name="plan_scheduling_zone">Scheduling timezone: %1$s</string>
+    <string name="plan_preserved_schedule">Until you edit the schedule, saving keeps the original exact instant.</string>
+    <string name="plan_utc_offset">UTC%1$s</string>
+    <string name="plan_first_occurrence">%1$s · %2$s · first occurrence</string>
+    <string name="plan_second_occurrence">%1$s · %2$s · second occurrence</string>
+    <string name="plan_persistence_failed">Could not save the Plan. Reload before trying again.</string>
+    <string name="calendar_time_with_offset">%1$s · UTC%2$s</string>
+    <string name="history_timestamp_context">%1$s (UTC%2$s, %3$s)</string>
 </resources>

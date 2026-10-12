@@ -57,15 +57,15 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
+import com.alexandr5476.lifetracing.ui.historicalTimestamp
+import com.alexandr5476.lifetracing.ui.historicalTimestampRange
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.math.BigDecimal
 import java.time.Duration
-import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -588,7 +588,17 @@ private fun PlannedRow(
 private fun planContext(plan: DailyPlan): String =
     when (val target = plan.plan.target) {
         is PlanTarget.ExactDay ->
-            plan.exactLocalTime?.let { stringResource(R.string.daily_exact_time, localizedTime(it)) }
+            plan.exactLocalTime?.let { time ->
+                val clock =
+                    plan.exactUtcOffset?.let { offset ->
+                        stringResource(
+                            R.string.calendar_time_with_offset,
+                            localizedTime(time),
+                            if (offset.totalSeconds == 0) "+00:00" else offset.id,
+                        )
+                    } ?: localizedTime(time)
+                stringResource(R.string.daily_exact_time, clock)
+            }
                 ?: stringResource(R.string.daily_exact_time_unavailable)
         is PlanTarget.FloatingDay -> stringResource(R.string.daily_floating_day)
         is PlanTarget.Week -> stringResource(R.string.daily_week_of, localizedDate(target.weekStart))
@@ -638,17 +648,16 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                 val startedAt = root.startedAt
                 if (startedAt != null) {
                     Text(
-                        stringResource(
-                            R.string.daily_time_range,
-                            localizedTime(startedAt),
-                            localizedTime(root.completedAt),
-                        ),
+                        historicalTimestampRange(startedAt, root.completedAt, root.originalZoneId),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
                     Text(
-                        stringResource(R.string.daily_completed_at, localizedTime(root.completedAt)),
+                        stringResource(
+                            R.string.daily_completed_at,
+                            historicalTimestamp(root.completedAt, root.originalZoneId, includeDate = false),
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -659,11 +668,7 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 Text(durationText(root.activeDuration), style = MaterialTheme.typography.labelLarge)
                 Text(
-                    stringResource(
-                        R.string.daily_time_range,
-                        localizedTime(root.startedAt),
-                        localizedTime(root.completedAt),
-                    ),
+                    historicalTimestampRange(root.startedAt, root.completedAt, root.originalZoneId),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -759,18 +764,6 @@ private fun localizedTime(time: LocalTime): String {
     val locale = LocalConfiguration.current.locales[0]
     return remember(time, locale) {
         DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(time)
-    }
-}
-
-@Composable
-private fun localizedTime(instant: Instant): String {
-    val locale = LocalConfiguration.current.locales[0]
-    val zoneId = ZoneId.systemDefault()
-    return remember(instant, locale, zoneId) {
-        DateTimeFormatter
-            .ofLocalizedTime(FormatStyle.SHORT)
-            .withLocale(locale)
-            .format(instant.atZone(zoneId))
     }
 }
 

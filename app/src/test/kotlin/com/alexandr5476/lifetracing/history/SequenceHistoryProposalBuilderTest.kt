@@ -146,6 +146,22 @@ class SequenceHistoryProposalBuilderTest {
     }
 
     @Test
+    fun sharedResolverRetainsHistoricalParsingAndOffsetChoiceCompatibility() {
+        assertEquals(
+            HistoricalLocalDateTimeResolution.Resolved(Instant.parse("2026-10-25T02:30:27.123Z")),
+            resolveHistoricalLocalDateTime(" 2026-10-25 03:30:27.123 ", BERLIN, ZoneOffset.ofHours(2)),
+        )
+        assertEquals(
+            HistoricalLocalDateTimeResolution.Ambiguous(listOf(ZoneOffset.ofHours(2), ZoneOffset.ofHours(1))),
+            resolveHistoricalLocalDateTime("2026-10-25T02:30", BERLIN, ZoneOffset.ofHours(3)),
+        )
+        assertEquals(
+            HistoricalLocalDateTimeResolution.Invalid,
+            resolveHistoricalLocalDateTime("2026-02-30T03:30", BERLIN, null),
+        )
+    }
+
+    @Test
     fun mutationPreviewDisambiguatesDstOccurrencesEvenWhenLocalWallTimeMatches() {
         val earlier = Instant.parse("2026-10-25T00:30:00Z")
         val later = Instant.parse("2026-10-25T01:30:00Z")
@@ -1210,6 +1226,8 @@ class SequenceHistoryProposalBuilderTest {
                 null,
                 "Sequence",
                 null,
+                java.time.ZoneOffset.UTC,
+                null,
             ),
             TOKEN,
             ZoneId.of("UTC"),
@@ -1282,6 +1300,8 @@ class SequenceHistoryProposalBuilderTest {
                     completed,
                     Duration.ofMinutes(9),
                     emptyList(),
+                    java.time.ZoneOffset.UTC,
+                    null,
                 )
             },
             facts,

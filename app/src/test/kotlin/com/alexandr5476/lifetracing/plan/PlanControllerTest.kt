@@ -371,7 +371,10 @@ class PlanControllerTest {
                 controller.dispatch(PlanAction.Reschedule(freshRow))
                 controller.dispatch(PlanAction.SubmitForm)
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
-                assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Reschedule).identity.updatedAt)
+                assertEquals(
+                    freshRow.plan.updatedAt,
+                    (mutations.last() as PlanMutation.PreserveSchedule).identity.updatedAt,
+                )
             } finally {
                 releaseRecovery.complete(Unit)
                 controller.close()
@@ -417,7 +420,10 @@ class PlanControllerTest {
                 controller.dispatch(PlanAction.Reschedule(freshRow))
                 controller.dispatch(PlanAction.SubmitForm)
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
-                assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Reschedule).identity.updatedAt)
+                assertEquals(
+                    freshRow.plan.updatedAt,
+                    (mutations.last() as PlanMutation.PreserveSchedule).identity.updatedAt,
+                )
             } finally {
                 controller.close()
             }

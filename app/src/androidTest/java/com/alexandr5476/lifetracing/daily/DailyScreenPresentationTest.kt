@@ -98,10 +98,41 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import java.util.TimeZone
 
 class DailyScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun repeated_hour_labels_use_canonical_occurrence_offsets() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val date = LocalDate.parse("2026-10-25")
+        val entries =
+            listOf("2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z").mapIndexed { index, text ->
+                val instant = Instant.parse(text)
+                val occurrence = instant.atZone(zone)
+                plan(
+                    "Overlap $index",
+                    target = PlanTarget.ExactDay(instant, ZoneOffset.UTC),
+                    exactTime = occurrence.toLocalTime(),
+                ).copy(
+                    effectiveLocalDate = occurrence.toLocalDate(),
+                    exactUtcOffset = occurrence.offset,
+                )
+            }
+        screen(state(DailyDateRelation.TODAY, DailyRead(entries, emptyList(), emptyList(), null), selectedDate = date))
+        val clock =
+            LocalTime
+                .of(
+                    2,
+                    30,
+                ).format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(effectiveLocale()))
+        for (offset in listOf("+02:00", "+01:00")) {
+            val attributed = string(R.string.calendar_time_with_offset, clock, offset)
+            composeTestRule.onNodeWithText(string(R.string.daily_exact_time, attributed)).assertExists()
+        }
+    }
 
     @Test
     fun header_empty_idle_failure_and_temporal_order_are_explicit() {
@@ -293,6 +324,97 @@ class DailyScreenPresentationTest {
             .performClick()
 
         assertEquals(listOf(day.plan.actionIdentity(), week.plan.actionIdentity()), clicked)
+    }
+
+    @Test
+    fun completedOverlapClocksStayOriginalAndLocalizedAfterDeviceZoneChange() {
+        val previousZone = TimeZone.getDefault()
+        val locale = mutableStateOf(Locale.US)
+        val generation = mutableStateOf(0)
+        val zone = ZoneId.of("Europe/Berlin")
+        val first = Instant.parse("2026-10-25T00:30:00Z")
+        val second = Instant.parse("2026-10-25T01:30:00Z")
+        val date = LocalDate.parse("2026-10-25")
+        val timed =
+            completedActivity("Crossing timed", Duration.ofHours(1)).copy(
+                primaryLocalDate = date,
+                startedAt = first,
+                completedAt = second,
+                originalZoneId = zone,
+                originalUtcOffsetMinutes = 120,
+            )
+        val noLive =
+            completedActivity("Second completion", null, TimeTrackingMode.NO_LIVE_TRACKING).copy(
+                primaryLocalDate = date,
+                completedAt = second,
+                originalZoneId = zone,
+                originalUtcOffsetMinutes = 60,
+            )
+        val sequence =
+            completedSequence("Crossing sequence", SequenceExecutionStatus.ENDED_EARLY).copy(
+                primaryLocalDate = date,
+                startedAt = first,
+                completedAt = second,
+                originalZoneId = zone,
+                originalUtcOffsetMinutes = 120,
+                activeDuration = Duration.ofHours(1),
+                pauseDuration = Duration.ZERO,
+                wallDuration = Duration.ofHours(1),
+            )
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
+            composeTestRule.setContent {
+                val configuration = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
+                configuration.setLocale(locale.value)
+                val context = composeTestRule.activity.createConfigurationContext(configuration)
+                CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                    LifeTracingTheme {
+                        DailyScreen(
+                            state(
+                                DailyDateRelation.PAST,
+                                DailyRead(
+                                    emptyList(),
+                                    emptyList(),
+                                    listOf(timed.copy(title = "Crossing timed ${generation.value}"), noLive, sequence),
+                                    null,
+                                ),
+                                date,
+                            ),
+                            onAction = {},
+                        )
+                    }
+                }
+            }
+            for (language in listOf(Locale.US, Locale.forLanguageTag("ru"))) {
+                composeTestRule.runOnIdle { locale.value = language }
+                val clock =
+                    DateTimeFormatter
+                        .ofLocalizedTime(FormatStyle.SHORT)
+                        .withLocale(language)
+                        .format(LocalTime.of(2, 30))
+                val earlier = "$clock (UTC+02:00, Europe/Berlin)"
+                val later = "$clock (UTC+01:00, Europe/Berlin)"
+                val range = localizedString(language, R.string.daily_time_range, earlier, later)
+                composeTestRule.onAllNodesWithText(range).assertCountEquals(2)
+                composeTestRule.onAllNodesWithText(range)[0].performScrollTo().assertIsDisplayed()
+                composeTestRule
+                    .onNodeWithText(localizedString(language, R.string.daily_completed_at, later))
+                    .performScrollTo()
+                    .assertIsDisplayed()
+                composeTestRule
+                    .onNodeWithText(localizedString(language, R.string.daily_ended_early))
+                    .performScrollTo()
+                    .assertIsDisplayed()
+                composeTestRule.runOnIdle {
+                    TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
+                    generation.value++
+                }
+                composeTestRule.onAllNodesWithText(range).assertCountEquals(2)
+                composeTestRule.onNodeWithText("0:00").assertDoesNotExist()
+            }
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
     }
 
     @Test
@@ -784,6 +906,8 @@ class DailyScreenPresentationTest {
             null,
             mode,
             null,
+            java.time.ZoneOffset.UTC,
+            null,
         )
 
     private fun completedSequence(
@@ -809,6 +933,8 @@ class DailyScreenPresentationTest {
             Duration.ofMinutes(10),
             null,
             title,
+            null,
+            java.time.ZoneOffset.UTC,
             null,
         )
     }
@@ -1090,7 +1216,7 @@ class DailyScreenPresentationTest {
         DateTimeFormatter
             .ofLocalizedTime(FormatStyle.SHORT)
             .withLocale(locale)
-            .format(instant.atZone(ZoneId.systemDefault()))
+            .format(instant.atZone(ZoneOffset.UTC)) + " (UTC+00:00, Z)"
 
     private fun effectiveLocale(): Locale = composeTestRule.activity.resources.configuration.locales[0]
 

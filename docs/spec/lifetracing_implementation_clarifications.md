@@ -10,6 +10,31 @@ History navigation derives its reachable newest date from the latest persisted c
 
 The v10 index-only migration adds bounded exact newest-root access paths: `(context_type, status, deleted_at_ms, primary_local_date)` for standalone nondeleted completed Activity roots and `(status, primary_local_date)` for Sequence roots. The latter uses one lookup per terminal status. These indexes change neither durable History semantics nor stored values.
 
+## Original-zone completed-History presentation
+
+Canonical completed roots project the existing non-null `original_zone_id` and optional
+`original_utc_offset_minutes` directly from bounded root discovery rows. Detail roots and
+performed Sequence children retain the same stored provenance. No device-zone fallback,
+persistence normalization, migration, or additional temporal lookup is permitted.
+
+History and Daily completed timestamps show the original ZoneId and the actual UTC offset
+of each displayed Instant in that zone. Each endpoint is interpreted independently across
+DST transitions; the stored original offset describes the primary instant (timed Activity
+start, No-live completion, Sequence start), not every endpoint. Invalid zone IDs or an
+inconsistent non-null primary offset fail at canonical mapping/validation. Legacy null
+offsets remain valid. Stored `primaryLocalDate` remains the selector/grouping authority.
+
+Daily completed timed Activity and terminal Sequence ranges include localized calendar
+dates on both endpoints when their actual Instants fall on different local dates in the
+stored original ZoneId. Same-original-day ranges retain compact time-only labels with
+endpoint-specific offsets. No-live completion remains one original-zone timestamp.
+This presentation does not change primary-date attribution or any durable fact.
+
+Sequence child Activity timestamps use the child's stored zone. Sequence-owned occurrence
+and interval timestamps retain the root zone because those rows store no independent zone.
+Deletion/tombstone visibility, identity, duration accounting, Statistics, paging and all
+live-runtime/Plan timezone policies remain unchanged.
+
 ## Exact historical-overlap preflight performance exception
 
 `overlapsCompletedHistory` remains the canonical exact in-database overlap predicate for completed standalone timed Activities: `started_at_ms <= proposedEnd` and `completed_at_ms >= proposedStart`. It uses the existing `(context_type, completed_at_ms)` access path, `EXISTS`, and short-circuit behavior; it neither loads History into application/UI memory nor performs an application-side History scan.
@@ -17,6 +42,45 @@ The v10 index-only migration adds bounded exact newest-root access paths: `(cont
 The frozen v1 schema has no interval-aware persisted access structure. Because valid historical Activities have no maximum duration, the predicate may examine an unbounded number of rows in a worst-case negative case: completion ordering can leave arbitrarily many later non-overlapping rows to test `started_at_ms`, while start ordering would analogously leave arbitrarily many earlier rows to test `completed_at_ms`. This is an explicit exception to the Parent's bounded/no-global-history-scan overlap-warning requirement. It does not permit a calendar cutoff, duration bound, false negative, or approximate overlap result.
 
 A future schema/performance change may introduce an exact interval-aware persisted index (such as an R-tree-backed design). Until then, the current exact database predicate is intentional and must not be represented as worst-case bounded.
+
+## Strict ExactDay scheduling and unchanged-target commands
+
+New ExactDay scheduling input is the exact LocalDateTime, applicable ZoneId, and optional explicitly selected ZoneOffset committed by the command. Both Activity and Sequence creation and explicit rescheduling resolve that tuple again at the public command boundary using ZoneRules.getValidOffsets(), never LocalDateTime.atZone() default adjustment/selection or a trusted preview Instant.
+
+New ExactDay local input must be exactly representable by the existing millisecond storage: its nanosecond fraction must be an integer multiple of 1,000,000. Form preflight and the public scheduling command conversion enforce the same policy for Activity/Sequence creation and explicit rescheduling before any durable effect. Finer fractions produce a specific localized, recoverable input error; they are never rounded or truncated. Millisecond fractions, including textual trailing zeros, retain their exact resolved Instant after persistence and database recreation. This admission rule does not revalidate an untouched existing absolute target or change the shared historical-time resolver, historical semantics, schema, or temporal source of truth.
+
+Zero valid offsets rejects a DST gap. One valid offset resolves without selection, but any supplied offset must equal it. Two valid offsets require explicit selection of one of those offsets; absence returns ambiguity with both choices and an invalid or obsolete choice is rejected. Unsupported cardinality fails explicitly. Resolution exposes typed semantic outcomes suitable for later localized presentation. Invalid input produces no durable scheduling, snapshot-owned metadata, source, Recent, or linkage effects.
+
+Persisted ExactDay scheduledAt is the authoritative absolute Instant, including existing seconds and milliseconds and legacy null creationZoneId. Reads never revalidate it as new local input. An explicit preserve-existing-schedule command accepts only the expected PlanActionIdentity and command timestamp, reloads the current Plan transactionally, and returns it unchanged without reconstructing local values or requiring offset selection.
+
+Preservation and equivalent explicit rescheduling still enforce optimistic action identity, PLANNED status, absence of RUNNING/PAUSED linked root Execution, deferred Month actions, and command timestamp ordering. Invalid explicit temporal input is rejected before equivalence can produce success. FloatingDay equivalence is literal date equality; Week equivalence is literal weekStart equality; ExactDay equivalence is scheduledAt Instant equality regardless of proposed creation zone. Different target classes are never equivalent. An equivalent proposal returns the original Plan without executing a DAO reschedule update, retaining the original creationZoneId (including null), target precision, timestamps, identity, frozen snapshot, source revision, Statistics provenance, and all lifecycle/linkage facts. A changed device zone alone cannot revise the target.
+
+A genuinely changed reschedule updates only the same Plan's target, creation-zone context for a new ExactDay target, and command timestamp within the existing transactional writer. It does not replace the frozen snapshot, source identity/revision, or unrelated durable facts and creates no reschedule-history record. Storage remains scheduled_instant_ms with no offset-choice column or schema change.
+
+Production scheduling forms consume this strict resolution policy for preflight and retain the expected action identity as immutable existing-target provenance. Opening or dismissing a form is read-only. Submitting an untouched existing schedule dispatches the guarded preservation command, including after device-zone changes and for Instants with seconds or milliseconds omitted from the display. Any actual kind, date, or time edit permanently makes that form a new-input proposal, even if the visible value is subsequently restored. Overlap choices have no default; first/second labels follow the order of their resolved Instants, with visible UTC offsets. Edits to kind, date, time, or applicable zone clear the prior selection. Commands carry the exact local tuple and selected offset for authoritative repository revalidation.
+
+New and edited ExactDay drafts capture and display one applicable device zone. Semantic invalidation and final submission both compare it with the current device zone. A mismatch clears offset authority and blocks submission until explicit review adopts the current zone for the retained local text; returning the device to the earlier zone does not silently clear that review requirement. Untouched existing targets need no zone review or overlap choice. Recoverable typed temporal failures keep the form editable and release the mutation lock without canonical mutation recovery. Stale or forbidden actions and unexpected persistence failures retain canonical recovery and never replay a mutation implicitly. Sharing the pure policy with historical-time handling preserves its parsing and manual historical Activity semantics.
+
+### Plan optimistic-token admission and ephemeral form ownership
+
+Accepted semantic changes through the Plan writer (changed reschedule, cancellation,
+restoration, and frozen-snapshot replacement) must strictly advance `updated_at_ms`.
+The command timestamp must be ordered and map to a later persisted millisecond than
+its current token; otherwise the command rejects atomically before any write. No
+synthetic timestamp or second revision source is introduced. Equivalent schedules
+and guarded preservation remain write-free and retain their existing token. Terminal
+fulfillment and runtime logical event timestamps retain their existing semantics.
+
+Every creation/reschedule form receives a fresh controller-owned ephemeral UUID.
+Edits preserve it; offset events carry it alongside the local tuple and input revision.
+An event from a dismissed/replaced form is ignored and cannot authorize another draft,
+including another source or another Plan with identical visible scheduling input.
+This identity is never persisted.
+
+Plan calendar visibility follows the top navigation entry, including PlanExecution
+navigation, normalization, completion, and Back. Outgoing transition content does not
+own lifecycle admission. Hidden reads and boundaries lose publication authority;
+returning admits one fresh canonical projection and retains the selected date.
 
 ## First coded Plan UI scope
 
@@ -177,3 +241,11 @@ In-process display progression uses an immutable baseline built from a wall/`ela
 When exact-alarm special access is unavailable, the adapter uses one `setAndAllowWhileIdle()` `RTC_WAKEUP` fallback. Delivery may be delayed, while later reconciliation still persists exact logical event timestamps. No background component opens Settings or requests notification permission.
 
 Deadline feedback is a non-durable effect. Alarm and user-present foreground recovery, including foreground process start, emit at most the latest applied semantic deadline from that bounded reconciliation; earlier catch-up events are suppressed. Boot and time-change recovery reconcile and reschedule without sound or vibration. The sound contract is currently backed by a no-op adapter until a product-owned cue asset is selected; vibration is implemented through the platform vibrator API.
+
+## Daily and Plan temporal projection ownership
+
+Canonical Day/Week reads capture one effective ZoneId and query timestamp. The resulting ephemeral calendar context governs half-open local-date Instant windows, ExactDay placement/time/UTC offset, overdue, Daily today/active eligibility, and week density. Application callers may supply the captured zone with the query; direct repository callers capture the provider once. Canonical results retain that context. ExactDay rows carry the actual occurrence offset in that zone; ordinary calendar clock labels include it, and equal local clock labels order by absolute scheduled Instant before stable identity. Creation-zone context is never a display-offset authority.
+
+Visible controllers serialize request admission, calendar navigation, route lifecycle, final read publication, and boundary arming. Publication requires the current request, selected calendar context, semantic generation, and effective zone. Obsolete successes and failures cannot replace newer state or re-arm boundaries. Hidden routes cancel their one-shot boundary and invalidate pending reads; re-entry reads current context while preserving the selected date. A delayed projection crossing midnight or an ExactDay strict-overdue boundary schedules an immediate one-shot reread using its captured boundary. System-time/timezone and foreground signals continue through the existing runtime coordinator, including without active runtime.
+
+This changes only read-time metadata and publication: no target, snapshot, lifecycle, linkage, historical attribution, Statistics identity, or stored timestamp is rewritten, and no migration or temporal cache is introduced.

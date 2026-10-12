@@ -280,6 +280,8 @@ class HistoryReadRepository internal constructor(
             completedAt,
             activeDuration,
             snapshot.toHistoryFields(values),
+            originalZoneId,
+            originalUtcOffsetMinutes,
         )
 
     private fun ActivityExecution.toHistoryMutationFacts() =
@@ -372,6 +374,8 @@ class HistoryReadRepository internal constructor(
             planEntryId,
             snapshot.name,
             snapshot.shortComment,
+            originalZoneId,
+            originalUtcOffsetMinutes,
         )
 
     private fun requireTerminalDuration(
@@ -427,6 +431,8 @@ class HistoryReadRepository internal constructor(
             shortComment = snapshot.shortComment,
             timeTrackingMode = snapshot.timeTrackingMode,
             timerTarget = snapshot.timerTarget,
+            originalZoneId = originalZoneId,
+            originalUtcOffsetMinutes = originalUtcOffsetMinutes,
         )
 
     private fun ActivityHistoryRootEntity.toDomain(snapshot: ActivitySnapshotSummaryEntity) =
@@ -442,6 +448,8 @@ class HistoryReadRepository internal constructor(
             shortComment = snapshot.shortComment,
             timeTrackingMode = snapshot.timeTrackingMode.toTimeTrackingMode(),
             timerTarget = snapshot.timerTargetMs?.let(Duration::ofMillis),
+            originalZoneId = historicalZone(originalZoneId, originalUtcOffsetMinutes, startedAtMs ?: completedAtMs),
+            originalUtcOffsetMinutes = originalUtcOffsetMinutes,
         )
 
     private fun SequenceHistoryRootEntity.toDomain(snapshot: SequenceSnapshotSummaryEntity) =
@@ -461,7 +469,29 @@ class HistoryReadRepository internal constructor(
             planEntryId = planEntryId?.let(::PlanEntryId),
             title = snapshot.name,
             shortComment = snapshot.shortComment,
+            originalZoneId = historicalZone(originalZoneId, originalUtcOffsetMinutes, startedAtMs),
+            originalUtcOffsetMinutes = originalUtcOffsetMinutes,
         )
+
+    // Same anchor-offset invariant as full execution validation; dates remain stored selector facts.
+    private fun historicalZone(
+        zoneId: String,
+        offsetMinutes: Int?,
+        primaryInstantMs: Long,
+    ): ZoneId =
+        ZoneId.of(zoneId).also { zone ->
+            offsetMinutes?.let { offset ->
+                require(
+                    offset ==
+                        Instant
+                            .ofEpochMilli(primaryInstantMs)
+                            .atZone(zone)
+                            .offset.totalSeconds / SECONDS_PER_MINUTE,
+                ) {
+                    "Stored UTC offset must match the original event timezone at its primary instant"
+                }
+            }
+        }
 
     private fun terminalDuration(
         milliseconds: Long?,
@@ -485,6 +515,7 @@ class HistoryReadRepository internal constructor(
     companion object {
         const val MAXIMUM_RESULT_LIMIT = 500
         private const val SQLITE_BIND_CHUNK_SIZE = 900
+        private const val SECONDS_PER_MINUTE = 60
 
         private val HISTORY_ORDER =
             compareByDescending<CompletedHistoryRoot> { it.primaryLocalDate }

@@ -65,6 +65,33 @@ import java.time.ZoneOffset
 
 class DailyControllerTest {
     @Test
+    fun hiddenRouteRejectsPendingReadFailure() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val harness = Harness()
+            harness.reader = {
+                entered.complete(Unit)
+                release.await()
+                finished.complete(Unit)
+                error("obsolete failure")
+            }
+            val controller = harness.controller(this)
+            try {
+                withTimeout(2_000) { entered.await() }
+                controller.onHidden()
+                release.complete(Unit)
+                withTimeout(2_000) { finished.await() }
+                kotlinx.coroutines.yield()
+                assertEquals(DailyLoadState.Loading, controller.state.value.load)
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
     fun exactPlanBoundaryRefreshesBeforeExactlyAtAndAfterTheScheduledInstant() =
         runBlocking {
             val scheduledAt = Instant.parse("2026-08-20T10:00:00Z")
@@ -204,7 +231,7 @@ class DailyControllerTest {
             assertEquals(LocalDate.parse("2026-03-08"), controller.state.value.selectedDate)
             assertEquals(DailyDateRelation.TODAY, controller.state.value.dateRelation)
             assertEquals(
-                listOf(DailyQuery(LocalDate.parse("2026-03-08"), harness.wall.value, 100)),
+                listOf(DailyQuery(LocalDate.parse("2026-03-08"), harness.wall.value, 100, harness.zone)),
                 harness.queries,
             )
             controller.close()

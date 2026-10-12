@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -16,12 +17,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
 import com.alexandr5476.lifetracing.R
@@ -43,7 +46,6 @@ fun PlanRoute(
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
 ) {
-    LaunchedEffect(controller) { controller.onRouteEntered() }
     val state by controller.state.collectAsState()
     PlanScreen(state, controller::dispatch, onBack, onExecute)
 }
@@ -235,27 +237,83 @@ private fun ScheduleDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).semantics { testTag = "plan-schedule-form" },
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+            ) {
                 form.source?.let { Text(it.name) }
                 Row {
                     PlanScheduleKind.entries.forEach { kind ->
-                        TextButton(onClick = { onAction(PlanAction.ChangeScheduleKind(kind)) }) { Text(kind.label()) }
+                        TextButton(
+                            enabled = !isMutating,
+                            onClick = { onAction(PlanAction.ChangeScheduleKind(kind)) },
+                        ) { Text(kind.label()) }
                     }
                 }
                 LifeTracingOutlinedTextField(form.date, {
                     onAction(PlanAction.ChangeScheduleDate(it))
-                }, label = { Text(stringResource(R.string.plan_date)) })
-                if (form.kind ==
-                    PlanScheduleKind.EXACT_DAY
-                ) {
+                }, enabled = !isMutating, label = { Text(stringResource(R.string.plan_date)) })
+                if (form.kind == PlanScheduleKind.EXACT_DAY) {
+                    Text(stringResource(R.string.plan_scheduling_zone, form.schedulingZoneId.id))
                     LifeTracingOutlinedTextField(form.time, {
                         onAction(PlanAction.ChangeScheduleTime(it))
-                    }, label = { Text(stringResource(R.string.plan_time)) })
+                    }, enabled = !isMutating, label = { Text(stringResource(R.string.plan_time)) })
+                    if (form.preservesExistingSchedule) Text(stringResource(R.string.plan_preserved_schedule))
+                    Column(Modifier.selectableGroup()) {
+                        form.offsetChoices.forEachIndexed { index, offset ->
+                            val offsetLabel =
+                                stringResource(
+                                    R.string.plan_utc_offset,
+                                    if (offset.id ==
+                                        "Z"
+                                    ) {
+                                        "+00:00"
+                                    } else {
+                                        offset.id
+                                    },
+                                )
+                            val label =
+                                stringResource(
+                                    if (index == 0) R.string.plan_first_occurrence else R.string.plan_second_occurrence,
+                                    form.time,
+                                    offsetLabel,
+                                )
+                            val modifier =
+                                Modifier.fillMaxWidth().semantics {
+                                    selected = form.selectedOffset == offset
+                                    role = Role.RadioButton
+                                    contentDescription = label
+                                }
+                            val select = {
+                                onAction(
+                                    PlanAction.SelectScheduleOffset(
+                                        offset,
+                                        form.date,
+                                        form.time,
+                                        form.schedulingZoneId,
+                                        form.inputRevision,
+                                        form.formId,
+                                    ),
+                                )
+                            }
+                            if (form.selectedOffset == offset) {
+                                LifeTracingPrimaryButton(select, modifier, enabled = !isMutating) { Text(label) }
+                            } else {
+                                LifeTracingSecondaryButton(select, modifier, enabled = !isMutating) { Text(label) }
+                            }
+                        }
+                    }
+                    if (form.zoneReviewRequired) {
+                        LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
+                            onAction(PlanAction.RevalidateScheduleZone)
+                        }) { Text(stringResource(R.string.plan_review_current_zone)) }
+                    }
                 }
+                form.error?.let { Text(it.label(), color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            TextButton(enabled = !isMutating, onClick = {
+            TextButton(enabled = !isMutating && form.error == null, onClick = {
                 onAction(PlanAction.SubmitForm)
             }) { Text(stringResource(R.string.plan_save)) }
         },
@@ -332,7 +390,13 @@ private fun CancelledDialog(
         is com.alexandr5476.lifetracing.domain.PlanTarget.ExactDay ->
             stringResource(
                 R.string.plan_exact_at,
-                requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
+                exactUtcOffset?.let { offset ->
+                    stringResource(
+                        R.string.calendar_time_with_offset,
+                        requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
+                        if (offset.totalSeconds == 0) "+00:00" else offset.id,
+                    )
+                } ?: requireNotNull(exactLocalTime).format(DateTimeFormatter.ofPattern("HH:mm")),
             )
         is com.alexandr5476.lifetracing.domain.PlanTarget.Week -> null
         is com.alexandr5476.lifetracing.domain.PlanTarget.Month -> error("Month Plans are not rendered")
@@ -351,6 +415,14 @@ private fun CancelledDialog(
             PlanMessage.LOAD_FAILED -> R.string.plan_load_failed
             PlanMessage.INVALID_SCHEDULE -> R.string.plan_invalid_schedule
             PlanMessage.ACTION_UNAVAILABLE -> R.string.plan_action_unavailable
+            PlanMessage.INVALID_DATE -> R.string.plan_invalid_date
+            PlanMessage.INVALID_TIME -> R.string.plan_invalid_time
+            PlanMessage.UNSUPPORTED_TIME_PRECISION -> R.string.plan_unsupported_time_precision
+            PlanMessage.NONEXISTENT_TIME -> R.string.plan_nonexistent_time
+            PlanMessage.AMBIGUOUS_TIME -> R.string.plan_ambiguous_time
+            PlanMessage.INVALID_OFFSET -> R.string.plan_invalid_offset
+            PlanMessage.ZONE_CHANGED -> R.string.plan_zone_changed
+            PlanMessage.PERSISTENCE_FAILED -> R.string.plan_persistence_failed
         },
     )
 

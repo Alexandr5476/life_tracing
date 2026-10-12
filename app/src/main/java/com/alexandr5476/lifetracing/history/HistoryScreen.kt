@@ -62,6 +62,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
+import com.alexandr5476.lifetracing.ui.historicalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.math.BigDecimal
 import java.time.Duration
@@ -230,6 +231,7 @@ private fun HistoryRootRow(
             is CompletedActivityHistoryRoot -> {
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                Text(historyRootTimingInZone(root.startedAt, root.completedAt, root.originalZoneId))
                 Text(
                     stringResource(R.string.history_active_duration, durationOrMissing(root.activeDuration)),
                     style = MaterialTheme.typography.bodyMedium,
@@ -242,6 +244,7 @@ private fun HistoryRootRow(
             is CompletedSequenceHistoryRoot -> {
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                Text(historyRootTimingInZone(root.startedAt, root.completedAt, root.originalZoneId))
                 Text(
                     stringResource(R.string.history_active_duration, durationText(root.activeDuration)),
                     style = MaterialTheme.typography.bodyMedium,
@@ -1105,10 +1108,10 @@ private fun Occurrence(
         } else {
             occurrence.child?.let { child ->
                 child.startedAt?.let {
-                    Text(stringResource(R.string.history_child_started, historyInstant(it, zoneId)))
+                    Text(stringResource(R.string.history_child_started, historyInstant(it, child.originalZoneId)))
                 }
                 child.completedAt?.let {
-                    Text(stringResource(R.string.history_child_completed, historyInstant(it, zoneId)))
+                    Text(stringResource(R.string.history_child_completed, historyInstant(it, child.originalZoneId)))
                 }
                 Text(stringResource(R.string.history_actual_duration, durationOrMissing(child.activeDuration)))
                 child.fields.forEach { HistoryField(it) }
@@ -1308,15 +1311,7 @@ private fun historyRootTimingInZone(
 private fun historyInstant(
     instant: Instant,
     zoneId: ZoneId,
-): String {
-    val locale = LocalConfiguration.current.locales[0]
-    return DateTimeFormatter
-        .ofLocalizedDateTime(
-            FormatStyle.MEDIUM,
-            FormatStyle.SHORT,
-        ).withLocale(locale)
-        .format(instant.atZone(zoneId))
-}
+): String = historicalTimestamp(instant, zoneId, includeDate = true)
 
 @Composable
 private fun mutationPreviewInstant(

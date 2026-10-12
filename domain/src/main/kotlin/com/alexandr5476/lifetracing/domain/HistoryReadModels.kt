@@ -37,6 +37,8 @@ data class CompletedHistoryCursor(
 sealed interface CompletedHistoryRoot {
     val primaryLocalDate: LocalDate
     val completedAt: Instant
+    val originalZoneId: ZoneId
+    val originalUtcOffsetMinutes: Int?
 }
 
 fun CompletedHistoryRoot.cursor(): CompletedHistoryCursor =
@@ -59,6 +61,8 @@ data class CompletedActivityHistoryRoot(
     val shortComment: String?,
     val timeTrackingMode: TimeTrackingMode,
     val timerTarget: Duration?,
+    override val originalZoneId: ZoneId,
+    override val originalUtcOffsetMinutes: Int?,
 ) : CompletedHistoryRoot
 
 data class CompletedSequenceHistoryRoot(
@@ -74,6 +78,8 @@ data class CompletedSequenceHistoryRoot(
     val planEntryId: PlanEntryId?,
     val title: String,
     val shortComment: String?,
+    override val originalZoneId: ZoneId,
+    override val originalUtcOffsetMinutes: Int?,
 ) : CompletedHistoryRoot
 
 data class ActivityHistoryDetail(
