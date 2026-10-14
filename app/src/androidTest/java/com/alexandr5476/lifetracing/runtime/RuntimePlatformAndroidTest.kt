@@ -35,18 +35,26 @@ class RuntimePlatformAndroidTest {
     }
 
     @Test
-    fun pendingIntentIdentityIsStableWhileExtrasCarryExpectedRuntimeIdentity() {
+    fun pendingIntentReplacementDeliversUpdatedPayloadAndNoUpdateControlRetainsObsoletePayload() {
         val first = deadline("execution-1", "occurrence-1", 60)
         val replacement = deadline("execution-2", "occurrence-2", 120)
 
         assertEquals(first, RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, first)))
+        AndroidRuntimeDeadlineScheduler(context).cancel()
         val token = RuntimeDeadlineIntentCodec.pendingIntent(context, first)
+        // A real no-update control demonstrates why token equality alone is insufficient.
+        val unchanged =
+            android.app.PendingIntent.getBroadcast(
+                context,
+                0,
+                RuntimeDeadlineIntentCodec.intent(context, replacement),
+                android.app.PendingIntent.FLAG_IMMUTABLE,
+            )
+        assertEquals(token, unchanged)
+        assertEquals(first, deliveredDeadline(unchanged))
         assertEquals(token, RuntimeDeadlineIntentCodec.pendingIntent(context, replacement))
         assertEquals(token, RuntimeDeadlineIntentCodec.existingPendingIntent(context))
-        assertEquals(
-            replacement,
-            RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, replacement)),
-        )
+        assertEquals(replacement, deliveredDeadline(token))
     }
 
     @Test

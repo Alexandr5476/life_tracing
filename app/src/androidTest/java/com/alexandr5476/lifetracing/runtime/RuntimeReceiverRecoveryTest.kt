@@ -26,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
@@ -107,6 +108,53 @@ class RuntimeReceiverRecoveryTest {
                     assertEquals(at(60), reopened.activity(original.id).completedAt)
                     assertNull(reopened.live.getActiveSession())
                 }
+            }
+        }
+
+    @Test
+    fun deliveredReplacementTargetsCurrentSequenceAndObsoletePayloadCannotAdvanceIt() =
+        runBlocking {
+            val seed = seed(sequence = true)
+            val replacement = seed.deadline
+            val obsolete =
+                replacement.copy(
+                    executionId = "obsolete-execution",
+                    expectedOccurrenceId = SequenceOccurrenceId("obsolete-occurrence"),
+                    at = replacement.at.minusSeconds(1),
+                )
+            AndroidRuntimeDeadlineScheduler(context).cancel()
+            try {
+                val token = RuntimeDeadlineIntentCodec.pendingIntent(context, obsolete)
+                val obsoletePayload = requireNotNull(deliveredDeadline(token))
+                assertEquals(obsolete, obsoletePayload)
+                assertEquals(token, RuntimeDeadlineIntentCodec.pendingIntent(context, replacement))
+                val replacementPayload = requireNotNull(deliveredDeadline(token))
+                assertEquals(replacement, replacementPayload)
+                ColdProcess(context, seed.name, replacement.at).use { process ->
+                    val coordinator = process.graph(context).coordinator
+                    val original = process.store!!.durableFacts()
+                    coordinator.onDeadlineSignal(obsoletePayload)
+                    assertEquals(original, process.store!!.durableFacts())
+                    assertEquals(seed.runtime, process.store!!.live.getActiveRuntime())
+                    assertTrue(process.feedback.isEmpty())
+                    coordinator.onDeadlineSignal(replacementPayload)
+                    val advanced = process.store!!.live.getActiveRuntime() as ActiveSequenceRuntime
+                    assertEquals(replacement.at, advanced.execution.occurrences[0].completedAt)
+                    assertEquals(1L to 1L, process.store!!.executionCounts())
+                    assertEquals(listOf(replacement), process.feedback.map { it.deadline })
+                    val facts = process.store!!.durableFacts()
+                    coordinator.onDeadlineSignal(obsoletePayload)
+                    coordinator.onDeadlineSignal(replacementPayload)
+                    assertEquals(facts, process.store!!.durableFacts())
+                    assertEquals(1, process.feedback.size)
+                }
+                RuntimeRecoveryStore(context, seed.name).use { reopened ->
+                    val runtime = reopened.live.getActiveRuntime() as ActiveSequenceRuntime
+                    assertEquals(replacement.at, runtime.execution.occurrences[0].completedAt)
+                    assertEquals(1L to 1L, reopened.executionCounts())
+                }
+            } finally {
+                AndroidRuntimeDeadlineScheduler(context).cancel()
             }
         }
 

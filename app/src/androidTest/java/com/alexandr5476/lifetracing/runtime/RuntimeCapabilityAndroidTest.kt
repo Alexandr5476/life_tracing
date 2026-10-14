@@ -60,10 +60,7 @@ class RuntimeCapabilityAndroidTest {
         val replacement = deadline.copy(executionId = "replacement-smoke", at = deadline.at.plusSeconds(60))
         scheduler.schedule(replacement)
         assertEquals(token, RuntimeDeadlineIntentCodec.existingPendingIntent(context))
-        assertEquals(
-            replacement,
-            RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, replacement)),
-        )
+        assertEquals(replacement, deliveredDeadline(requireNotNull(token)))
         scheduler.cancel()
         assertNull(RuntimeDeadlineIntentCodec.existingPendingIntent(context))
     }
@@ -113,8 +110,12 @@ class RuntimeCapabilityAndroidTest {
     }
 
     @Test
-    fun vibratorInitializesOnBothApiPathsWithoutRequiringHardwareAndFlagsRemainIndependent() {
-        assertNotNull(AndroidRuntimeVibrator(context))
+    fun realVibratorInvokesTheSupportedPlatformApiWithoutRequiringHardware() {
+        AndroidRuntimeVibrator(context).vibrate()
+    }
+
+    @Test
+    fun soundAndVibrationFlagsRemainIndependent() {
         for (sound in listOf(false, true)) {
             for (vibration in listOf(false, true)) {
                 var sounds = 0
