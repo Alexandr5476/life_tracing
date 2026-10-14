@@ -39,14 +39,22 @@ subprojects {
     }
 }
 
-fun CommonExtension<*, *, *, *, *, *>.configureManagedDevice() {
+val compatibilityApiLevels = listOf(26, 31, 33, 35, 36)
+
+fun CommonExtension<*, *, *, *, *, *>.configureManagedDevices() {
+    providers.gradleProperty("lifetracing.compatibility.expectedApi").orNull?.let { expectedApi ->
+        require(expectedApi.toInt() in compatibilityApiLevels)
+        defaultConfig.testInstrumentationRunnerArguments["compatibilityExpectedApi"] = expectedApi
+    }
     testOptions {
         managedDevices {
             allDevices {
-                create<ManagedVirtualDevice>("pixel2Api35") {
-                    device = "Pixel 2"
-                    apiLevel = 35
-                    systemImageSource = "aosp"
+                compatibilityApiLevels.forEach { api ->
+                    create<ManagedVirtualDevice>("pixel2Api$api") {
+                        device = "Pixel 2"
+                        apiLevel = api
+                        systemImageSource = "aosp"
+                    }
                 }
             }
         }
@@ -56,20 +64,22 @@ fun CommonExtension<*, *, *, *, *, *>.configureManagedDevice() {
 subprojects {
     pluginManager.withPlugin("com.android.application") {
         extensions.configure<ApplicationExtension> {
-            configureManagedDevice()
+            configureManagedDevices()
         }
     }
     pluginManager.withPlugin("com.android.library") {
         extensions.configure<LibraryExtension> {
-            configureManagedDevice()
+            configureManagedDevices()
         }
     }
 }
 
 project(":app") {
-    tasks.matching { it.name == "pixel2Api35Setup" }.configureEach {
-        // Both modules use the same named AVD; concurrent setup races for its single emulator.
-        mustRunAfter(":data:pixel2Api35DebugAndroidTest")
+    compatibilityApiLevels.forEach { api ->
+        tasks.matching { it.name == "pixel2Api${api}Setup" }.configureEach {
+            // Both modules use the same named AVD; concurrent setup races for its single emulator.
+            mustRunAfter(":data:pixel2Api${api}DebugAndroidTest")
+        }
     }
 }
 

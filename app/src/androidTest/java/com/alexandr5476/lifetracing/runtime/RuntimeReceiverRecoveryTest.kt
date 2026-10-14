@@ -157,6 +157,34 @@ class RuntimeReceiverRecoveryTest {
         }
 
     @Test
+    fun deniedCapabilitiesThroughColdGraphAndForegroundRetainEveryFactAfterAnotherPhysicalReopen() =
+        runBlocking {
+            val seed = seed()
+            val originalFacts = RuntimeRecoveryStore(context, seed.name).use { it.durableFacts() }
+            ColdProcess(context, seed.name, at(10), capabilitiesDenied = true).use { process ->
+                deliver(process) { attempt ->
+                    assertPending(attempt)
+                    process.dispatcher.runNext()
+                }
+                process.graph(context).coordinator.onForeground()
+                assertEquals(seed.runtime, process.store!!.live.getActiveRuntime())
+                assertEquals(originalFacts, process.store!!.durableFacts())
+                assertEquals(listOf(seed.deadline, seed.deadline), process.deniedAlarms.inexact)
+                assertTrue(process.deniedAlarms.exact.isEmpty())
+                assertEquals(0, process.deniedNotifications.posts)
+                assertTrue(process.deniedNotifications.checks >= 2)
+                assertEquals(1, process.creations)
+                assertTrue(process.errors.tryReceive().isFailure)
+            }
+            RuntimeRecoveryStore(context, seed.name).use { reopened ->
+                assertEquals(seed.runtime, reopened.live.getActiveRuntime())
+                assertEquals(seed.deadline, NextRuntimeDeadlineResolver.resolve(reopened.live.getActiveRuntime()!!))
+                assertEquals(originalFacts, reopened.durableFacts())
+                assertEquals(1L to 0L, reopened.executionCounts())
+            }
+        }
+
+    @Test
     fun bothReceiversFinishRealPendingResultWhenColdGraphAcquisitionFails() =
         runBlocking {
             for (deadlineSignal in listOf(true, false)) {
@@ -379,6 +407,7 @@ class RuntimeReceiverRecoveryTest {
         private val context: Context,
         private val name: String,
         var now: Instant,
+        private val capabilitiesDenied: Boolean = false,
     ) : AutoCloseable {
         val dispatcher = QueuedDispatcher()
         val errors = Channel<Throwable>(Channel.UNLIMITED)
@@ -390,6 +419,8 @@ class RuntimeReceiverRecoveryTest {
                     },
             )
         val scheduler = RecordingScheduler()
+        val deniedAlarms = RecordingCapabilityAlarmBackend()
+        val deniedNotifications = DeniedCapabilityNotificationBackend()
         val local = RecordingLocalDriver()
         val feedback = mutableListOf<RuntimeDeadlineFeedback>()
         val notifications = mutableListOf<RuntimeDeadlineFeedback>()
@@ -410,18 +441,22 @@ class RuntimeReceiverRecoveryTest {
                         reopened.live,
                         WallClock { now },
                         MonotonicClock { 1_000 },
-                        scheduler,
+                        if (capabilitiesDenied) AndroidRuntimeDeadlineScheduler(deniedAlarms) else scheduler,
                         local,
                         RuntimeFeedbackDispatcher(feedback::add),
-                        object : RuntimeNotificationPublisher {
-                            override fun publish(
-                                runtime: ActiveRuntime?,
-                                completion: RuntimeDeadlineFeedback?,
-                            ) {
-                                completion?.let(notifications::add)
-                            }
+                        if (capabilitiesDenied) {
+                            AndroidRuntimeNotificationPublisher(applicationContext, deniedNotifications)
+                        } else {
+                            object : RuntimeNotificationPublisher {
+                                override fun publish(
+                                    runtime: ActiveRuntime?,
+                                    completion: RuntimeDeadlineFeedback?,
+                                ) {
+                                    completion?.let(notifications::add)
+                                }
 
-                            override fun canPostRuntimeNotifications(): Boolean = true
+                                override fun canPostRuntimeNotifications(): Boolean = true
+                            }
                         },
                     )
                 LifeTracingRuntimeGraph(
