@@ -29,7 +29,8 @@ class RuntimeCapabilityAndroidTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val deadline =
         RuntimeDeadline(
-            Instant.now().plusSeconds(86_400),
+            // Match durable runtime timestamps and the Intent's epoch-millisecond payload.
+            Instant.ofEpochMilli(Instant.now().toEpochMilli()).plusSeconds(86_400),
             RuntimeDeadlineKind.ACTIVITY_TIMER_ZERO,
             ActiveSessionKind.ACTIVITY,
             "platform-smoke-never-a-durable-execution",
