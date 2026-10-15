@@ -380,8 +380,9 @@ class HistoryReadRepositoryTest {
         observedSql.clear()
 
         assertNull(repository.getLatestCompletedPrimaryLocalDate(now, ZoneOffset.ofHours(-12)))
-        assertTrue(observedSql.any { it.contains("activity_executions_history_latest_root") })
-        assertTrue(observedSql.any { it.contains("sequence_executions_status_primary_date") })
+        val queries = synchronized(observedSql) { observedSql.toList() }
+        assertTrue(queries.any { it.contains("activity_executions_history_latest_root") })
+        assertTrue(queries.any { it.contains("sequence_executions_status_primary_date") })
         assertTrue(
             explain(
                 "SELECT primary_local_date FROM activity_executions " +

@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.editor
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasSetTextAction
@@ -9,12 +10,13 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
-import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
@@ -46,6 +48,7 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -427,6 +430,8 @@ class SequenceTemplateEditorScreenPresentationTest {
         val controller = controller(choices)
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
+        composeTestRule.runOnIdle { controller.loadActivityPicker() }
+        composeTestRule.waitUntil(5_000) { controller.state.value.availableActivities == choices }
         composeTestRule.runOnIdle {
             controller.updateDraft {
                 it.copy(
@@ -452,9 +457,11 @@ class SequenceTemplateEditorScreenPresentationTest {
         }
 
         composeTestRule.onNodeWithText("Activity 199").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Repeat ×2").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Inside Repeat ×2").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Add step to Repeat ×2").performScrollTo().assertIsDisplayed()
+        composeTestRule.onLazyNode(hasText("Repeat ×2")).assertIsDisplayed()
+        composeTestRule.onLazyNode(hasText("Activity 0")).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Activity 199").assertDoesNotExist()
+        composeTestRule.onAllNodesWithText("Inside Repeat ×2")[0].assertIsDisplayed()
+        composeTestRule.onLazyNode(hasText("Add step to Repeat ×2")).assertIsDisplayed()
         controller.close()
     }
 
@@ -665,25 +672,21 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
 
-        composeTestRule.onNodeWithText("Warmup").performTouchInput { longClick() }
+        composeTestRule.onLazyNode(hasText("Warmup")).performTouchInput { longClick() }
+        showEditorRows(stepDropTag("first"))
 
         composeTestRule.onNode(hasText("Warmup") and isSelected()).assertIsSelected()
-        assertEquals(
-            1,
-            composeTestRule
-                .onAllNodesWithContentDescription(text(R.string.sequence_editor_move_step))
-                .fetchSemanticsNodes()
-                .size,
-        )
-        assertEquals(
-            1,
-            composeTestRule
-                .onAllNodesWithContentDescription(text(R.string.sequence_editor_duplicate_step))
-                .fetchSemanticsNodes()
-                .size,
-        )
+        composeTestRule
+            .onNodeWithTag(moveTag("first"), useUnmergedTree = true)
+            .assertContentDescriptionEquals(text(R.string.sequence_editor_move_step))
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithTag(duplicateTag("first"), useUnmergedTree = true)
+            .assertContentDescriptionEquals(text(R.string.sequence_editor_duplicate_step))
+            .assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription(text(R.string.sequence_editor_move_repeat)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(text(R.string.sequence_editor_apply)).assertIsDisplayed()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_apply))).assertIsDisplayed()
+        showEditorRows(stepDropTag("first"))
 
         drag(
             moveTag("first"),
@@ -713,10 +716,10 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
-        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+        composeTestRule.onLazyNode(hasText("Top A")).performTouchInput { longClick() }
         val source = composeTestRule.onNodeWithTag(moveTag("b"), useUnmergedTree = true)
         val target = dropTarget(stepDropTag("a"))
-        source.performScrollTo()
+        showEditorRows(stepDropTag("a"))
         composeTestRule.waitForIdle()
         source.assertIsDisplayed()
         target.assertIsDisplayed()
@@ -876,8 +879,9 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
-        composeTestRule.onNodeWithText("Child C").performScrollTo().performTouchInput { longClick() }
+        composeTestRule.onLazyNode(hasText("Child C")).performTouchInput { longClick() }
 
+        showEditorRows(repeatDropTag("r1"))
         drag(moveTag("c"), dropTarget(repeatDropTag("r1")), 0.1f)
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
@@ -913,8 +917,9 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
-        composeTestRule.onNodeWithText("Child C").performScrollTo().performTouchInput { longClick() }
-        autoScrollDrag(moveTag("c"))
+        composeTestRule.onLazyNode(hasText("Child C")).performTouchInput { longClick() }
+        showEditorRows(stepDropTag("c"))
+        drag(moveTag("c"), dropTarget(repeatDropTag("r2")))
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
             assertEquals(
@@ -953,8 +958,9 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
-        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+        composeTestRule.onLazyNode(hasText("Top A")).performTouchInput { longClick() }
 
+        showEditorRows(stepDropTag("a"))
         drag(
             duplicateTag("a"),
             dropTarget(repeatDropTag("r2")),
@@ -995,8 +1001,9 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
         awaitReady(controller)
-        composeTestRule.onNodeWithText("Top A").performScrollTo().performTouchInput { longClick() }
+        composeTestRule.onLazyNode(hasText("Top A")).performTouchInput { longClick() }
 
+        showEditorRows(stepDropTag("a"))
         composeTestRule.onNodeWithTag(moveTag("r1"), useUnmergedTree = true).performTouchInput {
             down(center)
             moveTo(center.copy(y = center.y - 200f))
@@ -1012,6 +1019,7 @@ class SequenceTemplateEditorScreenPresentationTest {
             )
         }
 
+        showEditorRows(stepDropTag("a"))
         drag(moveTag("r1"), dropTarget(stepDropTag("a")), 0.1f)
         composeTestRule.runOnIdle {
             val draft = requireNotNull(controller.state.value.readyDraft())
@@ -1060,8 +1068,8 @@ class SequenceTemplateEditorScreenPresentationTest {
     ) {
         val source = composeTestRule.onNodeWithTag(sourceTag, useUnmergedTree = true)
         composeTestRule.waitForIdle()
-        val sourceBounds = source.fetchSemanticsNode().boundsInRoot
-        val targetBounds = target.fetchSemanticsNode().boundsInRoot
+        val sourceBounds = source.assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val targetBounds = target.assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val targetPoint = targetBounds.center.copy(y = targetBounds.top + targetBounds.height * targetYFraction)
         source.performTouchInput {
             swipe(center, targetPoint - sourceBounds.topLeft, 400)
@@ -1069,20 +1077,11 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.waitForIdle()
     }
 
-    private fun autoScrollDrag(sourceTag: String) {
-        val source = composeTestRule.onNodeWithTag(sourceTag, useUnmergedTree = true)
-        val page = composeTestRule.onNodeWithTag("sequence-editor-page", useUnmergedTree = true)
-        composeTestRule.waitForIdle()
-        val sourceBounds = source.fetchSemanticsNode().boundsInRoot
-        val pageBounds = page.fetchSemanticsNode().boundsInRoot
-        source.performTouchInput {
-            val edge = center.copy(y = pageBounds.bottom - sourceBounds.top - 8f)
-            down(center)
-            moveTo(edge)
-            repeat(5) { moveTo(edge.copy(y = edge.y - (it % 2))) }
-            up()
-        }
-        composeTestRule.waitForIdle()
+    private fun showEditorRows(firstRowTag: String) {
+        // Align the first participating row, not the form above it, with the viewport.
+        composeTestRule
+            .onNodeWithTag("sequence-editor-page")
+            .performScrollToKey(firstRowTag.removePrefix("sequence-drop-"))
     }
 
     private fun pointerAuthoring(

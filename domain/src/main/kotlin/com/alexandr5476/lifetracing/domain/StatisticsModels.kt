@@ -131,9 +131,13 @@ object StatisticsDistributionCalculator {
         val values = milliseconds.sorted()
         values.forEach { require(it >= 0) { "Duration samples cannot be negative" } }
         val scalar = scalar(values)
+        // Samples are nonnegative; check the upper bound before narrowing on older Android runtimes.
+        if (scalar.total > BigInteger.valueOf(Long.MAX_VALUE)) {
+            throw ArithmeticException("Duration total overflows Long milliseconds")
+        }
         return DurationDistribution(
             scalar.sampleCount,
-            Duration.ofMillis(scalar.total.longValueExact()),
+            Duration.ofMillis(scalar.total.toLong()),
             scalar.average,
             scalar.median,
             scalar.minimum?.let(Duration::ofMillis),
@@ -164,7 +168,7 @@ object StatisticsDistributionCalculator {
             } else {
                 ExactValue.of(
                     BigInteger.valueOf(values[middle - 1]) + BigInteger.valueOf(values[middle]),
-                    BigInteger.TWO,
+                    BigInteger.valueOf(2),
                 )
             }
         return ScalarDistribution(

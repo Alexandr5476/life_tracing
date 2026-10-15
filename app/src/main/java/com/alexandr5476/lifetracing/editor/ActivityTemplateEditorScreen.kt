@@ -41,6 +41,7 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -142,17 +143,11 @@ private fun EditorForm(
                         TimeTrackingMode.NO_LIVE_TRACKING -> R.string.activity_editor_none
                     },
                 )
-            if (draft.timeTrackingMode == mode) {
-                LifeTracingPrimaryButton(
-                    onClick = { controller.setTimeTrackingMode(mode) },
-                    enabled = editable,
-                ) { Text(label) }
-            } else {
-                LifeTracingSecondaryButton(
-                    onClick = { controller.setTimeTrackingMode(mode) },
-                    enabled = editable,
-                ) { Text(label) }
-            }
+            LifeTracingChoiceButton(
+                selected = draft.timeTrackingMode == mode,
+                onClick = { controller.setTimeTrackingMode(mode) },
+                enabled = editable,
+            ) { Text(label) }
         }
         if (draft.timeTrackingMode == TimeTrackingMode.TIMER) {
             LifeTracingOutlinedTextField(
@@ -271,17 +266,11 @@ private fun FieldEditor(
         CustomFieldType.entries.forEach { type ->
             val selected = field.type == type
             val action = { controller.updateDraft { it.withFieldAt(index) { value -> value.copy(type = type) } } }
-            if (selected) {
-                LifeTracingPrimaryButton(
-                    onClick = action,
-                    enabled = editable,
-                ) { Text(stringResource(fieldTypeLabel(type))) }
-            } else {
-                LifeTracingSecondaryButton(
-                    onClick = action,
-                    enabled = editable,
-                ) { Text(stringResource(fieldTypeLabel(type))) }
-            }
+            LifeTracingChoiceButton(
+                selected = selected,
+                onClick = action,
+                enabled = editable,
+            ) { Text(stringResource(fieldTypeLabel(type))) }
         }
     }
     when (field.type) {
