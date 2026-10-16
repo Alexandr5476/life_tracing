@@ -389,15 +389,23 @@ class RuntimeCoordinatorRecoveryTest(
                     android.content.Intent.ACTION_BOOT_COMPLETED,
                     android.content.Intent.ACTION_TIME_CHANGED,
                     android.content.Intent.ACTION_TIMEZONE_CHANGED,
-                    android.app.AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED,
-                )
+                ) +
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        listOf(android.app.AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED)
+                    } else {
+                        emptyList()
+                    }
             val expectedOperations =
                 listOf(
                     RuntimeBroadcastOperation.Boot,
                     RuntimeBroadcastOperation.TimeChanged,
                     RuntimeBroadcastOperation.TimeChanged,
-                    RuntimeBroadcastOperation.Reschedule,
-                )
+                ) +
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        listOf(RuntimeBroadcastOperation.Reschedule)
+                    } else {
+                        emptyList()
+                    }
             for ((index, action) in actions.withIndex()) {
                 assertEquals(expectedOperations[index], RuntimeBroadcastOperation.recovery(action))
                 val execution = startActivity()

@@ -12,6 +12,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -23,6 +25,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
 import com.alexandr5476.lifetracing.domain.ActivityTemplateField
@@ -40,6 +43,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -62,19 +66,19 @@ class StartActivityScreenPresentationTest {
         var state by mutableStateOf(homeState(recent = listOf(trackable("Sequence", sequence = true))))
         composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
 
-        composeTestRule.onNodeWithTag("launcher-new-one-off").performScrollTo().performClick()
+        composeTestRule.onLazyNode(hasTestTag("launcher-new-one-off")).performClick()
         assertEquals(StartActivityAction.OpenOneOff, actions.last())
         state = state.copy(oneOff = OneOffDraft())
-        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsNotEnabled()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-execute")).assertIsNotEnabled()
         state = state.copy(oneOff = OneOffDraft(name = "Run", mode = TimeTrackingMode.TIMER))
-        composeTestRule.onNodeWithTag("launcher-one-off-timer").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsNotEnabled()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-timer")).assertIsDisplayed()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-execute")).assertIsNotEnabled()
         state = state.copy(oneOff = OneOffDraft(name = "Run", mode = TimeTrackingMode.TIMER, timerMinutes = "5"))
-        composeTestRule.onNodeWithTag("launcher-one-off-execute").assertIsEnabled()
-        composeTestRule.onNodeWithTag("launcher-one-off-execute").performClick()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-execute")).assertIsEnabled()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-execute")).performClick()
         assertEquals(StartActivityAction.ExecuteOneOff, actions.last())
         state = state.copy(command = LauncherCommandState.Conflict("active"))
-        composeTestRule.onNodeWithTag("launcher-one-off-execute").performClick()
+        composeTestRule.onLazyNode(hasTestTag("launcher-one-off-execute")).performClick()
         assertEquals(StartActivityAction.RetryLaunch, actions.last())
     }
 
@@ -131,24 +135,25 @@ class StartActivityScreenPresentationTest {
         var state by mutableStateOf(StartActivityState())
         composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
 
-        composeTestRule.onNodeWithText(text(com.alexandr5476.lifetracing.R.string.launcher_loading)).assertIsDisplayed()
+        composeTestRule
+            .onLazyNode(hasText(text(R.string.launcher_loading)))
+            .assertIsDisplayed()
         state = state.copy(home = LauncherLoad.Failure("failed"))
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_home_failure),
-            ).assertIsDisplayed()
-        composeTestRule.onNodeWithText(text(com.alexandr5476.lifetracing.R.string.launcher_retry)).performClick()
+            .onLazyNode(hasText(text(R.string.launcher_home_failure)))
+            .assertIsDisplayed()
+        composeTestRule
+            .onLazyNode(hasText(text(R.string.launcher_retry)))
+            .performClick()
         assertEquals(StartActivityAction.Retry, actions.last())
 
         state = state.copy(home = LauncherLoad.Content(LauncherHome(emptyList(), emptyList())))
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_recent_empty),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_recent_empty)))
+            .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_pinned_empty),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_pinned_empty)))
+            .assertIsDisplayed()
 
         val activity = trackable("Mixed activity")
         val sequence = trackable("Mixed sequence", sequence = true)
@@ -158,53 +163,52 @@ class StartActivityScreenPresentationTest {
                 search = LauncherLoad.Loading,
                 browse = LauncherLoad.Loading,
             )
-        composeTestRule.onNodeWithText("Mixed activity").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Mixed sequence").assertIsDisplayed()
+        composeTestRule
+            .onLazyNode(hasText("Mixed activity"))
+            .assertIsDisplayed()
+        composeTestRule
+            .onLazyNode(hasText("Mixed sequence"))
+            .assertIsDisplayed()
         composeTestRule
             .onAllNodesWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_activity),
+                text(R.string.launcher_activity),
             ).assertCountEquals(1)
         composeTestRule
             .onAllNodesWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_sequence),
+                text(R.string.launcher_sequence),
             ).assertCountEquals(1)
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_recent_empty),
-            ).assertDoesNotExist()
+            .onNodeWithText(text(R.string.launcher_recent_empty))
+            .assertDoesNotExist()
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_pinned_empty),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_pinned_empty)))
+            .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_search_loading),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_search_loading)))
+            .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_browse_loading),
-            ).performScrollTo()
+            .onLazyNode(hasText(text(R.string.launcher_browse_loading)))
+            .performScrollTo()
             .assertIsDisplayed()
 
         state = state.copy(search = LauncherLoad.Content(listOf(trackable("Search result"))))
-        composeTestRule.onNodeWithText("Search result").assertIsDisplayed()
+        composeTestRule
+            .onLazyNode(hasText("Search result"))
+            .assertIsDisplayed()
         state = state.copy(search = LauncherLoad.Content(emptyList()), browse = LauncherLoad.Content(emptyContents()))
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_search_empty),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_search_empty)))
+            .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_browse_empty),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_browse_empty)))
+            .assertIsDisplayed()
 
         state = state.copy(search = LauncherLoad.Failure("search"), browse = LauncherLoad.Failure("browse"))
         composeTestRule
-            .onNodeWithText(
-                text(com.alexandr5476.lifetracing.R.string.launcher_search_failure),
-            ).assertIsDisplayed()
+            .onLazyNode(hasText(text(R.string.launcher_search_failure)))
+            .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(text(com.alexandr5476.lifetracing.R.string.launcher_browse_failure))
+            .onLazyNode(hasText(text(R.string.launcher_browse_failure)))
             .performScrollTo()
             .assertIsDisplayed()
     }

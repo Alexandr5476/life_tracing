@@ -3,7 +3,10 @@ package com.alexandr5476.lifetracing.plan
 import android.content.res.Configuration
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
@@ -13,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -88,7 +92,10 @@ class PlanExactDayPresentationTest {
                         ?.selectedOffset,
                 )
             }
-            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("02:31")
+            compose
+                .onNodeWithText(context.getString(R.string.plan_time))
+                .performScrollTo()
+                .performTextReplacement("02:31")
             compose
                 .onNodeWithContentDescription(
                     context.getString(R.string.plan_first_occurrence, "02:31", "UTC+02:00"),
@@ -97,6 +104,7 @@ class PlanExactDayPresentationTest {
                 .onNodeWithContentDescription(
                     context.getString(R.string.plan_second_occurrence, "02:31", "UTC+01:00"),
                 ).assertIsNotSelected()
+                .performScrollTo()
                 .performClick()
             compose.runOnIdle {
                 assertEquals(
@@ -107,6 +115,29 @@ class PlanExactDayPresentationTest {
             }
             compose.onNodeWithText(context.getString(R.string.plan_save)).performClick()
             compose.waitUntil { commands.size == 1 }
+        }
+    }
+
+    @Test
+    @Suppress("DEPRECATION") // Instrumentation restores the input mode changed by this keyboard fixture.
+    fun selectingAnOverlapOccurrenceRetainsKeyboardFocus() {
+        withForm { _, commands ->
+            val first = context.getString(R.string.plan_first_occurrence, "02:30", "UTC+02:00")
+            val choice = compose.onNodeWithContentDescription(first).performScrollTo()
+            val dialogView = (choice.fetchSemanticsNode().root as ViewRootForTest).view
+            val wasInTouchMode = compose.runOnIdle { dialogView.isInTouchMode }
+            try {
+                compose.runOnIdle { assertTrue(dialogView.requestFocusFromTouch()) }
+                choice.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+                choice
+                    .assertIsFocused()
+                    .performClick()
+                    .assertIsSelected()
+                    .assertIsFocused()
+                compose.runOnIdle { assertTrue(commands.isEmpty()) }
+            } finally {
+                compose.runOnIdle { InstrumentationRegistry.getInstrumentation().setInTouchMode(wasInTouchMode) }
+            }
         }
     }
 

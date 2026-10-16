@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.runtime
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -23,9 +24,12 @@ interface RuntimeNotificationPublisher {
     fun canPostRuntimeNotifications(): Boolean
 }
 
-class AndroidRuntimeNotificationPublisher(
+class AndroidRuntimeNotificationPublisher internal constructor(
     context: Context,
+    private val backend: RuntimeNotificationBackend,
 ) : RuntimeNotificationPublisher {
+    constructor(context: Context) : this(context, AndroidRuntimeNotificationBackend(context))
+
     private val applicationContext = context.applicationContext
     private val manager = applicationContext.getSystemService(NotificationManager::class.java)
 
@@ -49,7 +53,7 @@ class AndroidRuntimeNotificationPublisher(
     ) {
         if (!canPostRuntimeNotifications()) return
         if (runtime == null && completion == null) {
-            manager.cancel(NOTIFICATION_ID)
+            backend.cancel()
             return
         }
         val title =
@@ -79,10 +83,33 @@ class AndroidRuntimeNotificationPublisher(
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
                 .build()
-        manager.notify(NOTIFICATION_ID, notification)
+        backend.post(notification)
     }
 
-    override fun canPostRuntimeNotifications(): Boolean =
+    override fun canPostRuntimeNotifications(): Boolean = backend.canPost()
+
+    companion object {
+        const val CHANNEL_ID = "active_runtime"
+        const val NOTIFICATION_ID = 1001
+    }
+}
+
+/** Non-durable capability and delivery boundary, analogous to RuntimeAlarmBackend. */
+internal interface RuntimeNotificationBackend {
+    fun canPost(): Boolean
+
+    fun post(notification: Notification)
+
+    fun cancel()
+}
+
+private class AndroidRuntimeNotificationBackend(
+    context: Context,
+) : RuntimeNotificationBackend {
+    private val applicationContext = context.applicationContext
+    private val manager = applicationContext.getSystemService(NotificationManager::class.java)
+
+    override fun canPost(): Boolean =
         manager.areNotificationsEnabled() &&
             (
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -90,8 +117,11 @@ class AndroidRuntimeNotificationPublisher(
                     PackageManager.PERMISSION_GRANTED
             )
 
-    companion object {
-        const val CHANNEL_ID = "active_runtime"
-        const val NOTIFICATION_ID = 1001
+    override fun post(notification: Notification) {
+        manager.notify(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID, notification)
+    }
+
+    override fun cancel() {
+        manager.cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
     }
 }

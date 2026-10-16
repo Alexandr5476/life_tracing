@@ -243,15 +243,18 @@ class PlanController internal constructor(
     @Volatile private var recovery: MutationRecovery? = null
 
     private val initialSemanticGeneration = semanticGeneration.value
+    private var requestedSemanticGeneration = initialSemanticGeneration
     private val invalidationJob =
         scope.launch {
             var handled = initialSemanticGeneration
             semanticGeneration.collect { generation ->
-                if (generation != handled) {
-                    handled = generation
-                    checkDraftZone()
-                    if (visible) {
-                        loadWeek()
+                synchronized(recoveryLock) {
+                    if (generation != handled) {
+                        handled = generation
+                        checkDraftZone()
+                        if (visible && requestedSemanticGeneration != semanticGeneration.value) {
+                            loadWeek()
+                        }
                     }
                 }
             }
@@ -440,6 +443,8 @@ class PlanController internal constructor(
             val state = mutableState.value
             val context = CalendarTemporalContext(now(), zoneId())
             val semantic = semanticGeneration.value
+            // Re-entry or an explicit refresh may already consume a queued invalidation.
+            requestedSemanticGeneration = semantic
             if (!publishIfOwned(readGeneration, generation) {
                     it.copy(week = PlanLoad.Loading, mutationFailure = if (clearFailure) null else it.mutationFailure)
                 }

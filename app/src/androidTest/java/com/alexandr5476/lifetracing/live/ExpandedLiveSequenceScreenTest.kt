@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -49,6 +50,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -79,18 +81,18 @@ class ExpandedLiveSequenceScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("Activity 0").performScrollTo().assertIsDisplayed()
+        composeRule.onLazyNode(hasText("Activity 0")).assertIsDisplayed()
         composeRule
             .onNodeWithTag("expanded-sequence-value-occurrence-0-value", useUnmergedTree = true)
             .performScrollTo()
             .assertTextEquals(string(R.string.expanded_sequence_field_value, "Value", "0"))
             .assertIsDisplayed()
-        composeRule.onNodeWithText("Activity 1").performScrollTo().assertIsDisplayed()
+        composeRule.onLazyNode(hasText("Activity 1")).assertIsDisplayed()
         composeRule
             .onNodeWithText(string(R.string.expanded_sequence_repeat_iteration, 2))
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithText("Activity 2").performScrollTo().assertIsDisplayed()
+        composeRule.onLazyNode(hasText("Activity 2")).assertIsDisplayed()
         composeRule
             .onNodeWithText(string(R.string.expanded_sequence_runtime_added))
             .performScrollTo()

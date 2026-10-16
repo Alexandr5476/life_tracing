@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import kotlinx.coroutines.launch
@@ -69,11 +70,15 @@ internal sealed interface RuntimeBroadcastOperation {
         fun deadline(intent: Intent): RuntimeBroadcastOperation? =
             RuntimeDeadlineIntentCodec.decode(intent)?.let(::Deadline)
 
-        fun recovery(action: String?): RuntimeBroadcastOperation? =
+        fun recovery(
+            action: String?,
+            sdkInt: Int = Build.VERSION.SDK_INT,
+        ): RuntimeBroadcastOperation? =
             when (action) {
                 Intent.ACTION_BOOT_COMPLETED -> Boot
                 Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> TimeChanged
-                AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED -> Reschedule
+                AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED ->
+                    Reschedule.takeIf { sdkInt >= Build.VERSION_CODES.S }
                 else -> null
             }
     }

@@ -26,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
@@ -111,6 +112,53 @@ class RuntimeReceiverRecoveryTest {
         }
 
     @Test
+    fun deliveredReplacementTargetsCurrentSequenceAndObsoletePayloadCannotAdvanceIt() =
+        runBlocking {
+            val seed = seed(sequence = true)
+            val replacement = seed.deadline
+            val obsolete =
+                replacement.copy(
+                    executionId = "obsolete-execution",
+                    expectedOccurrenceId = SequenceOccurrenceId("obsolete-occurrence"),
+                    at = replacement.at.minusSeconds(1),
+                )
+            AndroidRuntimeDeadlineScheduler(context).cancel()
+            try {
+                val token = RuntimeDeadlineIntentCodec.pendingIntent(context, obsolete)
+                val obsoletePayload = requireNotNull(deliveredDeadline(token))
+                assertEquals(obsolete, obsoletePayload)
+                assertEquals(token, RuntimeDeadlineIntentCodec.pendingIntent(context, replacement))
+                val replacementPayload = requireNotNull(deliveredDeadline(token))
+                assertEquals(replacement, replacementPayload)
+                ColdProcess(context, seed.name, replacement.at).use { process ->
+                    val coordinator = process.graph(context).coordinator
+                    val original = process.store!!.durableFacts()
+                    coordinator.onDeadlineSignal(obsoletePayload)
+                    assertEquals(original, process.store!!.durableFacts())
+                    assertEquals(seed.runtime, process.store!!.live.getActiveRuntime())
+                    assertTrue(process.feedback.isEmpty())
+                    coordinator.onDeadlineSignal(replacementPayload)
+                    val advanced = process.store!!.live.getActiveRuntime() as ActiveSequenceRuntime
+                    assertEquals(replacement.at, advanced.execution.occurrences[0].completedAt)
+                    assertEquals(1L to 1L, process.store!!.executionCounts())
+                    assertEquals(listOf(replacement), process.feedback.map { it.deadline })
+                    val facts = process.store!!.durableFacts()
+                    coordinator.onDeadlineSignal(obsoletePayload)
+                    coordinator.onDeadlineSignal(replacementPayload)
+                    assertEquals(facts, process.store!!.durableFacts())
+                    assertEquals(1, process.feedback.size)
+                }
+                RuntimeRecoveryStore(context, seed.name).use { reopened ->
+                    val runtime = reopened.live.getActiveRuntime() as ActiveSequenceRuntime
+                    assertEquals(replacement.at, runtime.execution.occurrences[0].completedAt)
+                    assertEquals(1L to 1L, reopened.executionCounts())
+                }
+            } finally {
+                AndroidRuntimeDeadlineScheduler(context).cancel()
+            }
+        }
+
+    @Test
     fun bootReceiverColdCatchUpRearmsRemainingDeadlineAndTerminalRecoveryIsSilent() =
         runBlocking {
             val seed = seed(sequence = true)
@@ -153,6 +201,34 @@ class RuntimeReceiverRecoveryTest {
                 assertEquals(at(29), reopened.sequence(original.id).endedAt)
                 assertEquals(3L to 1L, reopened.executionCounts())
                 assertNull(reopened.live.getActiveSession())
+            }
+        }
+
+    @Test
+    fun deniedCapabilitiesThroughColdGraphAndForegroundRetainEveryFactAfterAnotherPhysicalReopen() =
+        runBlocking {
+            val seed = seed()
+            val originalFacts = RuntimeRecoveryStore(context, seed.name).use { it.durableFacts() }
+            ColdProcess(context, seed.name, at(10), capabilitiesDenied = true).use { process ->
+                deliver(process) { attempt ->
+                    assertPending(attempt)
+                    process.dispatcher.runNext()
+                }
+                process.graph(context).coordinator.onForeground()
+                assertEquals(seed.runtime, process.store!!.live.getActiveRuntime())
+                assertEquals(originalFacts, process.store!!.durableFacts())
+                assertEquals(listOf(seed.deadline, seed.deadline), process.deniedAlarms.inexact)
+                assertTrue(process.deniedAlarms.exact.isEmpty())
+                assertEquals(0, process.deniedNotifications.posts)
+                assertTrue(process.deniedNotifications.checks >= 2)
+                assertEquals(1, process.creations)
+                assertTrue(process.errors.tryReceive().isFailure)
+            }
+            RuntimeRecoveryStore(context, seed.name).use { reopened ->
+                assertEquals(seed.runtime, reopened.live.getActiveRuntime())
+                assertEquals(seed.deadline, NextRuntimeDeadlineResolver.resolve(reopened.live.getActiveRuntime()!!))
+                assertEquals(originalFacts, reopened.durableFacts())
+                assertEquals(1L to 0L, reopened.executionCounts())
             }
         }
 
@@ -379,6 +455,7 @@ class RuntimeReceiverRecoveryTest {
         private val context: Context,
         private val name: String,
         var now: Instant,
+        private val capabilitiesDenied: Boolean = false,
     ) : AutoCloseable {
         val dispatcher = QueuedDispatcher()
         val errors = Channel<Throwable>(Channel.UNLIMITED)
@@ -390,6 +467,8 @@ class RuntimeReceiverRecoveryTest {
                     },
             )
         val scheduler = RecordingScheduler()
+        val deniedAlarms = RecordingCapabilityAlarmBackend()
+        val deniedNotifications = DeniedCapabilityNotificationBackend()
         val local = RecordingLocalDriver()
         val feedback = mutableListOf<RuntimeDeadlineFeedback>()
         val notifications = mutableListOf<RuntimeDeadlineFeedback>()
@@ -410,18 +489,22 @@ class RuntimeReceiverRecoveryTest {
                         reopened.live,
                         WallClock { now },
                         MonotonicClock { 1_000 },
-                        scheduler,
+                        if (capabilitiesDenied) AndroidRuntimeDeadlineScheduler(deniedAlarms) else scheduler,
                         local,
                         RuntimeFeedbackDispatcher(feedback::add),
-                        object : RuntimeNotificationPublisher {
-                            override fun publish(
-                                runtime: ActiveRuntime?,
-                                completion: RuntimeDeadlineFeedback?,
-                            ) {
-                                completion?.let(notifications::add)
-                            }
+                        if (capabilitiesDenied) {
+                            AndroidRuntimeNotificationPublisher(applicationContext, deniedNotifications)
+                        } else {
+                            object : RuntimeNotificationPublisher {
+                                override fun publish(
+                                    runtime: ActiveRuntime?,
+                                    completion: RuntimeDeadlineFeedback?,
+                                ) {
+                                    completion?.let(notifications::add)
+                                }
 
-                            override fun canPostRuntimeNotifications(): Boolean = true
+                                override fun canPostRuntimeNotifications(): Boolean = true
+                            }
                         },
                     )
                 LifeTracingRuntimeGraph(

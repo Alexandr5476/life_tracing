@@ -34,6 +34,7 @@ import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -296,11 +297,12 @@ private fun ScheduleDialog(
                                     ),
                                 )
                             }
-                            if (form.selectedOffset == offset) {
-                                LifeTracingPrimaryButton(select, modifier, enabled = !isMutating) { Text(label) }
-                            } else {
-                                LifeTracingSecondaryButton(select, modifier, enabled = !isMutating) { Text(label) }
-                            }
+                            LifeTracingChoiceButton(
+                                selected = form.selectedOffset == offset,
+                                onClick = select,
+                                modifier = modifier,
+                                enabled = !isMutating,
+                            ) { Text(label) }
                         }
                     }
                     if (form.zoneReviewRequired) {

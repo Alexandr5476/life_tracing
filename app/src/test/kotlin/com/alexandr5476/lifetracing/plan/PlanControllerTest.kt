@@ -19,6 +19,10 @@ import com.alexandr5476.lifetracing.domain.StalePlanActionException
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -31,8 +35,67 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.ArrayDeque
+import java.util.concurrent.Executor
 
 class PlanControllerTest {
+    @Test
+    fun reentryConsumesQueuedInvalidationWithoutRepeatingItsBlockedRead() {
+        val tasks = ArrayDeque<Runnable>()
+        val dispatcher = Executor { tasks.addLast(it) }.asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val semantic = MutableStateFlow(0L)
+        val release = CompletableDeferred<Unit>()
+        var reads = 0
+        val controller =
+            PlanController(
+                scope,
+                { query ->
+                    if (++reads == 2) release.await()
+                    week(query)
+                },
+                { _, _, _ -> emptyList() },
+                { CancelledPlanPage(emptyList(), false) },
+                {},
+                { Instant.parse("2026-09-15T10:00:00Z") },
+                { ZoneOffset.UTC },
+                semantic,
+                FakeBoundary(),
+                initiallyVisible = false,
+            )
+
+        fun drain() {
+            while (tasks.isNotEmpty()) tasks.removeFirst().run()
+        }
+        try {
+            controller.onRouteEntered()
+            drain()
+            assertEquals(1, reads)
+            controller.onRouteExited()
+            semantic.value++
+            controller.onRouteEntered()
+            drain()
+            assertEquals(2, reads)
+            assertTrue(controller.state.value.week is PlanLoad.Loading)
+            release.complete(Unit)
+            drain()
+            assertEquals(2, reads)
+            assertTrue(controller.state.value.week is PlanLoad.Content)
+            semantic.value++
+            drain()
+            assertEquals(3, reads)
+            semantic.value++
+            controller.dispatch(PlanAction.Refresh)
+            drain()
+            assertEquals(4, reads)
+        } finally {
+            release.complete(Unit)
+            controller.close()
+            scope.cancel()
+            drain()
+        }
+    }
+
     @Test
     fun visiblePlanRefreshesAfterRuntimeSemanticInvalidationAndReprojectsExactDay() =
         runBlocking {
