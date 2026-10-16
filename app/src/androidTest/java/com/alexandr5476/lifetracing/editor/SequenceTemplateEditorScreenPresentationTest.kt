@@ -1,11 +1,19 @@
 package com.alexandr5476.lifetracing.editor
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -20,6 +28,7 @@ import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionDraft
@@ -948,6 +957,175 @@ class SequenceTemplateEditorScreenPresentationTest {
     }
 
     @Test
+    fun edgeHeldHandleDragScrollsToOffscreenRepeatAndMovesFrozenChildOnce() {
+        val authoring =
+            pointerAuthoring(
+                SequenceRepeatBlock(
+                    SequenceNodeId("r1"),
+                    0,
+                    2,
+                    listOf(
+                        ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                        ActivityStep(SequenceNodeId("b"), 1, ActivitySnapshotId("snapshot-b")),
+                        ActivityStep(
+                            SequenceNodeId("c"),
+                            2,
+                            ActivitySnapshotId("snapshot-c"),
+                            SequenceStepOverrides(timerEndVibration = false, keepScreenAwake = true),
+                        ),
+                    ),
+                ),
+                SequenceRepeatBlock(SequenceNodeId("r2"), 1, 3, emptyList()),
+            ).let { state ->
+                val id = ActivitySnapshotId("snapshot-c")
+                val frozen =
+                    state.activitySnapshots.getValue(id).copy(
+                        sourceTemplateId = ActivityTemplateId("frozen-source"),
+                        sourceRevision = 7,
+                        statisticsSeriesId = StatisticsSeriesId("frozen-series"),
+                        locallyModified = true,
+                    )
+                state.copy(activitySnapshots = state.activitySnapshots + (id to frozen))
+            }
+        val controller = existingController(authoring)
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                // Keep the viewport deterministic across the API matrix, with the target below the source.
+                Box(Modifier.fillMaxWidth().height(360.dp)) { SequenceTemplateEditorRoute(controller) {} }
+            }
+        }
+        awaitReady(controller)
+        composeTestRule.onLazyNode(hasText("Child C")).performTouchInput { longClick() }
+        // Only arrange the source. No scrolling action is issued after the pointer goes down.
+        showEditorRows(stepDropTag("b"))
+        composeTestRule.onNodeWithTag(moveTag("c"), useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        dropTarget(repeatDropTag("r2")).assertIsNotDisplayed()
+        val before = requireNotNull(controller.state.value.readyDraft())
+        val scrollBefore = editorScrollPosition()
+        val page = editorPage()
+        val pageBounds = page.fetchSemanticsNode().boundsInRoot
+        val edge = Offset(pageBounds.width / 2, pageBounds.height - 8f)
+        var released = false
+        startHandleDrag("c")
+        try {
+            // Separate event batches allow real LazyColumn layout between edge events. Event time,
+            // not sleeps, crosses the production rate limit; a one-pixel horizontal wobble keeps
+            // generating drag events while holding the same vertical edge position.
+            for (attempt in 0 until 40) {
+                page.performTouchInput { moveTo(edge.copy(x = edge.x + attempt % 2), delayMillis = 32) }
+                composeTestRule.waitForIdle()
+                val bounds =
+                    composeTestRule
+                        .onAllNodes(hasTestTag(repeatDropTag("r2")), useUnmergedTree = true)
+                        .fetchSemanticsNodes()
+                        .singleOrNull()
+                        ?.boundsInRoot
+                val inset = with(composeTestRule.density) { 64.dp.toPx() }
+                if (bounds != null && bounds.height >= inset && bounds.bottom <= pageBounds.bottom - inset) break
+            }
+            assertTrue("Edge-held drag must scroll the actual list", editorScrollPosition() > scrollBefore)
+            val targetBounds = dropTarget(repeatDropTag("r2")).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue("Offscreen Repeat must become reachable", targetBounds.height > 0f)
+            composeTestRule.runOnIdle {
+                assertEquals(before, controller.state.value.readyDraft())
+                assertEquals(
+                    0,
+                    controller.state.value.manipulation
+                        ?.operationCount,
+                )
+            }
+            page.performTouchInput {
+                moveTo(targetBounds.center - pageBounds.topLeft, delayMillis = 32)
+                up()
+            }
+            released = true
+        } finally {
+            if (!released) page.performTouchInput { cancel() }
+        }
+        composeTestRule.runOnIdle {
+            val first = before.nodes[0] as SequenceNodeDraft.Repeat
+            val second = before.nodes[1] as SequenceNodeDraft.Repeat
+            val child = first.value.children.last()
+            val expected =
+                before.copy(
+                    nodes =
+                        listOf(
+                            first.copy(value = first.value.copy(children = first.value.children.dropLast(1))),
+                            second.copy(value = second.value.copy(children = listOf(child.copy(position = 0)))),
+                        ),
+                )
+            // Full equality includes Step/snapshot IDs, frozen configuration, source revision,
+            // StatisticsSeries, local-modification flag, explicit overrides, container and order.
+            assertEquals(expected, controller.state.value.readyDraft())
+            assertEquals(
+                1,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+            controller.undoManipulation()
+            assertEquals(before, controller.state.value.readyDraft())
+            assertEquals(
+                0,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+        controller.close()
+    }
+
+    @Test
+    fun edgeHeldHandleDragAtFirstRowBoundaryDoesNotScrollOrMoveOnCancel() {
+        val controller =
+            existingController(
+                pointerAuthoring(
+                    ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+                    ActivityStep(SequenceNodeId("b"), 1, ActivitySnapshotId("snapshot-b")),
+                    ActivityStep(SequenceNodeId("c"), 2, ActivitySnapshotId("snapshot-c")),
+                ),
+            )
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                Box(Modifier.fillMaxWidth().height(360.dp)) { SequenceTemplateEditorRoute(controller) {} }
+            }
+        }
+        awaitReady(controller)
+        composeTestRule.onLazyNode(hasText("Top A")).performTouchInput { longClick() }
+        showEditorRows(stepDropTag("a"))
+        val before = requireNotNull(controller.state.value.readyDraft())
+        val scrollBefore = editorScrollPosition()
+        // The form above the first Step could still scroll: this specifically checks the editor
+        // row boundary, rather than relying on LazyColumn already being at absolute scroll zero.
+        assertTrue(scrollBefore > 0f)
+        val page = editorPage()
+        val edge = Offset(page.fetchSemanticsNode().boundsInRoot.width / 2, 8f)
+        startHandleDrag("a")
+        try {
+            repeat(8) { attempt ->
+                page.performTouchInput { moveTo(edge.copy(x = edge.x + attempt % 2), delayMillis = 32) }
+                composeTestRule.waitForIdle()
+                assertEquals(scrollBefore, editorScrollPosition(), 0.001f)
+                assertEquals(before, controller.state.value.readyDraft())
+                assertEquals(
+                    0,
+                    controller.state.value.manipulation
+                        ?.operationCount,
+                )
+            }
+        } finally {
+            page.performTouchInput { cancel() }
+        }
+        composeTestRule.runOnIdle {
+            assertEquals(before, controller.state.value.readyDraft())
+            assertEquals(
+                0,
+                controller.state.value.manipulation
+                    ?.operationCount,
+            )
+        }
+        controller.close()
+    }
+
+    @Test
     fun pointerDuplicateMovesDirectlyAcrossContainersAsOneOperation() {
         val controller =
             existingController(
@@ -1082,6 +1260,25 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule
             .onNodeWithTag("sequence-editor-page")
             .performScrollToKey(firstRowTag.removePrefix("sequence-drop-"))
+    }
+
+    private fun editorPage() = composeTestRule.onNodeWithTag("sequence-editor-page", useUnmergedTree = true)
+
+    private fun editorScrollPosition() =
+        editorPage().fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+
+    private fun startHandleDrag(id: String) {
+        val page = editorPage()
+        val origin = page.fetchSemanticsNode().boundsInRoot.topLeft
+        val handle = composeTestRule.onNodeWithTag(moveTag(id), useUnmergedTree = true)
+        val handleBounds = handle.assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val start = handleBounds.center - origin
+        val horizontalSlop = with(composeTestRule.density) { 32.dp.toPx() }
+        page.performTouchInput {
+            down(start)
+            // Cross touch slop horizontally first so drag recognition does not overshoot pointerY.
+            moveTo(start + Offset(horizontalSlop, 0f), delayMillis = 32)
+        }
     }
 
     private fun pointerAuthoring(
