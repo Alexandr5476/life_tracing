@@ -61,6 +61,9 @@ def main():
                     event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={})
     failed = False
     try:
+        if args.api == 26:
+            # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
+            subprocess.run(["sdkmanager", "--install", "emulator"], check=True)
         for module in ("data", "app"):
             command = ["./gradlew", f":{module}:pixel2Api{args.api}DebugAndroidTest",
                        f"-Plifetracing.compatibility.expectedApi={args.api}",
