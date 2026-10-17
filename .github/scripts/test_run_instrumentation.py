@@ -45,6 +45,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                        GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
             with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci, "sdkmanager_command", return_value=["sdkmanager", "--install", "emulator"]), \
                     patch.object(ci.subprocess, "run") as install, \
                     patch.object(ci.subprocess, "Popen", Process), patch("sys.argv", ["ci", "--api", "26"]):
                 self.assertEqual(ci.main(), 1)
@@ -67,6 +68,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                            GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
                 with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
                         patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci, "sdkmanager_command", return_value=["sdkmanager", "--install", "emulator"]), \
                         patch.object(ci.subprocess, "run", side_effect=install), \
                         patch.object(ci.subprocess, "Popen") as worker, \
                         patch.object(ci, "collect_reports", side_effect=reports), \
@@ -87,12 +89,90 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                        GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
             with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci, "sdkmanager_command", return_value=["sdkmanager", "--install", "emulator"]), \
                     patch.object(ci.subprocess, "run", side_effect=ci.subprocess.CalledProcessError(1, "sdkmanager")), \
                     patch.object(ci.subprocess, "Popen") as worker, patch("sys.argv", ["ci", "--api", "26"]):
                 with self.assertRaises(ci.subprocess.CalledProcessError):
                     ci.main()
                 worker.assert_not_called()
             evidence = json.loads((Path(temporary) / "ci-evidence/api26/evidence.json").read_text())
+            self.assertEqual(evidence["modules"], {})
+            self.assertIn("finished_at", evidence)
+
+    def test_api26_finds_sdkmanager_without_path_and_installs_into_the_configured_sdk(self):
+        for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+            with self.subTest(variable=variable), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sdk = root / "android sdk"
+                manager = sdk / "cmdline-tools/latest/bin/sdkmanager"
+                manager.parent.mkdir(parents=True)
+                manager.touch()
+                command = [str(manager), f"--sdk_root={sdk}", "--install", "emulator"]
+                def install(actual, **kwargs):
+                    if actual[0] != str(manager):
+                        raise FileNotFoundError("sdkmanager is not on PATH")
+                    self.assertEqual(actual, command)
+                    self.assertEqual(kwargs, {"check": True})
+                env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request", PATH="")
+                env[variable] = str(sdk)
+                with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env, clear=True), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci.shutil, "which", return_value=None), \
+                        patch.object(ci.subprocess, "run", side_effect=install) as installation, \
+                        patch.object(ci.subprocess, "Popen") as worker, \
+                        patch.object(ci, "collect_reports", return_value=dict(
+                            total=1, failures=0, errors=0, observed_apis=[26], reports=[])), \
+                        patch("sys.argv", ["ci", "--api", "26"]):
+                    worker.return_value.__enter__.return_value.stdout = []
+                    worker.return_value.__enter__.return_value.wait.return_value = 0
+                    self.assertEqual(ci.main(), 0)
+                installation.assert_called_once_with(command, check=True)
+                self.assertEqual([call.args[0][1] for call in worker.call_args_list],
+                                 [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest"])
+                evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+                self.assertEqual(set(evidence["modules"]), {"data", "app"})
+                self.assertEqual(evidence["tested_sha"], "a" * 40)
+
+    def test_sdkmanager_supports_installed_sdk_layouts_and_prefers_android_home(self):
+        for layout in ("cmdline-tools/latest/bin", "cmdline-tools/19.0/bin", "tools/bin"):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sdk = root / "sdk"
+                manager = sdk / layout / "sdkmanager"
+                manager.parent.mkdir(parents=True)
+                manager.touch()
+                env = dict(ANDROID_HOME=str(sdk), ANDROID_SDK_ROOT=str(root / "other-sdk"))
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(ci.shutil, "which", return_value="/different-sdk/bin/sdkmanager"):
+                    self.assertEqual(ci.sdkmanager_command(),
+                                     [str(manager), f"--sdk_root={sdk}", "--install", "emulator"])
+
+    def test_sdkmanager_path_fallback_preserves_an_explicit_sdk_root(self):
+        for sdk_root in (None, "/configured/android sdk"):
+            with self.subTest(sdk_root=sdk_root):
+                env = {} if sdk_root is None else {"ANDROID_SDK_ROOT": sdk_root}
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(ci.Path, "is_file", return_value=False), \
+                        patch.object(ci.shutil, "which", return_value="/tools/bin/sdkmanager"):
+                    self.assertEqual(ci.sdkmanager_command(), ["/tools/bin/sdkmanager"] +
+                                     ([f"--sdk_root={sdk_root}"] if sdk_root else []) + ["--install", "emulator"])
+
+    def test_missing_sdkmanager_fails_with_actionable_error_and_preserves_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request", PATH="")
+            with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env, clear=True), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci.shutil, "which", return_value=None), \
+                    patch.object(ci.subprocess, "run") as installation, \
+                    patch.object(ci.subprocess, "Popen") as worker, patch("sys.argv", ["ci", "--api", "26"]):
+                with self.assertRaisesRegex(FileNotFoundError, "ANDROID_HOME.*ANDROID_SDK_ROOT.*PATH"):
+                    ci.main()
+                installation.assert_not_called()
+                worker.assert_not_called()
+            evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
             self.assertEqual(evidence["modules"], {})
             self.assertIn("finished_at", evidence)
 

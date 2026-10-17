@@ -17,6 +17,26 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def sdkmanager_command():
+    """Use the configured SDK even when its command-line tools are absent from PATH."""
+    sdk_root = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    manager = None
+    if sdk_root:
+        root = Path(sdk_root)
+        candidates = [root / "cmdline-tools/latest/bin/sdkmanager"]
+        candidates.extend(sorted((root / "cmdline-tools").glob("*/bin/sdkmanager")))
+        candidates.append(root / "tools/bin/sdkmanager")
+        manager = next((str(path) for path in candidates if path.is_file()), None)
+    if manager is None:
+        manager = shutil.which("sdkmanager")
+    if manager is None:
+        raise FileNotFoundError(
+            "Cannot locate sdkmanager: set ANDROID_HOME or ANDROID_SDK_ROOT to an SDK with "
+            "Android command-line tools, or add sdkmanager to PATH."
+        )
+    return [manager] + ([f"--sdk_root={sdk_root}"] if sdk_root else []) + ["--install", "emulator"]
+
+
 def collect_reports(repo, directory, module, api):
     reports, counts, observed = [], dict(total=0, failures=0, errors=0, skipped=0), set()
     source = repo / module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
@@ -63,7 +83,7 @@ def main():
     try:
         if args.api == 26:
             # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
-            subprocess.run(["sdkmanager", "--install", "emulator"], check=True)
+            subprocess.run(sdkmanager_command(), check=True)
         for module in ("data", "app"):
             command = ["./gradlew", f":{module}:pixel2Api{args.api}DebugAndroidTest",
                        f"-Plifetracing.compatibility.expectedApi={args.api}",
