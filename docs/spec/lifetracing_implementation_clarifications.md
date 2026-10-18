@@ -249,3 +249,16 @@ Canonical Day/Week reads capture one effective ZoneId and query timestamp. The r
 Visible controllers serialize request admission, calendar navigation, route lifecycle, final read publication, and boundary arming. Publication requires the current request, selected calendar context, semantic generation, and effective zone. Obsolete successes and failures cannot replace newer state or re-arm boundaries. Hidden routes cancel their one-shot boundary and invalidate pending reads; re-entry reads current context while preserving the selected date. A delayed projection crossing midnight or an ExactDay strict-overdue boundary schedules an immediate one-shot reread using its captured boundary. System-time/timezone and foreground signals continue through the existing runtime coordinator, including without active runtime.
 
 This changes only read-time metadata and publication: no target, snapshot, lifecycle, linkage, historical attribution, Statistics identity, or stored timestamp is rewritten, and no migration or temporal cache is introduced.
+
+## Exact individual Number Field aggregation (S2)
+
+Database schema v0.6 sections 26.4 and 44 describe ordinary integer SUM and application
+median computation. For individual Number Field Statistics, signed scaled Long inputs
+require exact BigInteger totals even beyond either Long boundary and through mixed-sign
+cancellation. SQLite SUM(number_scaled), TOTAL and floating AVG cannot supply that total.
+The S2 reader instead counts set bits at all 64 positions, reconstructs the signed
+two's-complement sum in BigInteger, and selects at most two exact ordered median values
+in SQL. All facts remain within the existing repository read transaction. Statistical
+eligibility, stable source Field/Series identities, scaling, missing/coverage and
+original-zone date attribution are unchanged. The combined Series Detail Number reader
+remains deferred and retains its existing sample collection path. No schema/index change.

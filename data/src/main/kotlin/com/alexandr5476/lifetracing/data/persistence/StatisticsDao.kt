@@ -76,6 +76,26 @@ internal data class StatisticsCategoryCountRow(
     val count: Long,
 )
 
+internal data class StatisticsNumberBitCountRow(
+    @ColumnInfo(name = "bit_index") val bitIndex: Int,
+    @ColumnInfo(name = "sample_count") val sampleCount: Long,
+    @ColumnInfo(name = "set_bit_count") val setBitCount: Long,
+    @ColumnInfo(name = "invalid_count") val invalidCount: Long,
+    @ColumnInfo(name = "minimum_scaled") val minimumScaled: Long?,
+    @ColumnInfo(name = "maximum_scaled") val maximumScaled: Long?,
+) {
+    init {
+        require(invalidCount == 0L) { "Number samples must be SQLite integers" }
+    }
+}
+
+internal data class StatisticsNumberSelectionRow(
+    @ColumnInfo(name = "sample_count") val sampleCount: Long,
+    @ColumnInfo(name = "selected_count") val selectedCount: Long,
+    @ColumnInfo(name = "lower_median_scaled") val lowerMedianScaled: Long?,
+    @ColumnInfo(name = "upper_median_scaled") val upperMedianScaled: Long?,
+)
+
 internal data class StatisticsNumberSampleRow(
     @ColumnInfo(name = "source_field_id") val sourceFieldId: String,
     @ColumnInfo(name = "number_scaled") val numberScaled: Long,
@@ -383,37 +403,106 @@ internal interface StatisticsDao {
     fun sequenceFieldMetadata(seriesId: String): List<StatisticsFieldMetadataRow>
 
     @Query(
-        "SELECT recorded_values.number_scaled FROM activity_executions AS executions " +
-            "INNER JOIN activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
-            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
-            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
-            "AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
-            "AND recorded_values.number_scaled IS NOT NULL " +
-            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
-            "ORDER BY recorded_values.number_scaled",
+        "WITH RECURSIVE bits(bit_index) AS (SELECT 0 UNION ALL SELECT bit_index + 1 FROM bits WHERE bit_index < 63), " +
+            "eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions INNER JOIN " +
+            "activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status = " +
+            "'COMPLETED' AND executions.deleted_at_ms IS NULL AND recorded_values.number_scaled IS NOT NULL AND (:startDate " +
+            "IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), summary AS (SELECT COUNT(*) AS " +
+            "sample_count, COUNT(CASE WHEN typeof(number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +
+            "MIN(number_scaled) AS minimum_scaled, MAX(number_scaled) AS maximum_scaled FROM eligible) SELECT bit_index, " +
+            "sample_count, (SELECT COUNT(*) FROM eligible WHERE ((number_scaled >> bit_index) & 1) = 1) AS set_bit_count, " +
+            "invalid_count, minimum_scaled, maximum_scaled FROM bits CROSS JOIN summary ORDER BY bit_index",
     )
-    fun activityNumberValues(
+    fun activityNumberBitCounts(
         seriesId: String,
         fieldId: String,
         startDate: String?,
         endDate: String?,
-    ): List<Long>
+    ): List<StatisticsNumberBitCountRow>
 
     @Query(
-        "SELECT recorded_values.number_scaled FROM sequence_executions AS executions " +
-            "INNER JOIN sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
-            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
-            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
-            "AND executions.status IN ('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL " +
-            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate) " +
-            "ORDER BY recorded_values.number_scaled",
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions INNER JOIN " +
+            "activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status = " +
+            "'COMPLETED' AND executions.deleted_at_ms IS NULL AND recorded_values.number_scaled IS NOT NULL AND (:startDate " +
+            "IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), median_values AS (SELECT " +
+            "number_scaled FROM eligible ORDER BY number_scaled LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN " +
+            ":expectedCount % 2 = 0 THEN 2 ELSE 1 END OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / " +
+            "2 END) SELECT (SELECT COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, MIN(number_scaled) AS " +
+            "lower_median_scaled, MAX(number_scaled) AS upper_median_scaled FROM median_values",
     )
-    fun sequenceNumberValues(
+    fun activityNumberSelection(
         seriesId: String,
         fieldId: String,
         startDate: String?,
         endDate: String?,
-    ): List<Long>
+        expectedCount: Long,
+    ): StatisticsNumberSelectionRow
+
+    @Query(
+        "SELECT COUNT(*) FROM activity_executions AS executions WHERE executions.statistics_series_id = :seriesId AND " +
+            "executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL AND (:startDate IS NULL OR " +
+            "executions.primary_local_date BETWEEN :startDate AND :endDate)",
+    )
+    fun activityNumberExecutionCount(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): Long
+
+    @Query(
+        "WITH RECURSIVE bits(bit_index) AS (SELECT 0 UNION ALL SELECT bit_index + 1 FROM bits WHERE bit_index < 63), " +
+            "eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions INNER JOIN " +
+            "sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status IN " +
+            "('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL AND (:startDate IS NULL OR " +
+            "executions.primary_local_date BETWEEN :startDate AND :endDate)), summary AS (SELECT COUNT(*) AS sample_count, " +
+            "COUNT(CASE WHEN typeof(number_scaled) != 'integer' THEN 1 END) AS invalid_count, MIN(number_scaled) AS " +
+            "minimum_scaled, MAX(number_scaled) AS maximum_scaled FROM eligible) SELECT bit_index, sample_count, (SELECT " +
+            "COUNT(*) FROM eligible WHERE ((number_scaled >> bit_index) & 1) = 1) AS set_bit_count, invalid_count, " +
+            "minimum_scaled, maximum_scaled FROM bits CROSS JOIN summary ORDER BY bit_index",
+    )
+    fun sequenceNumberBitCounts(
+        seriesId: String,
+        fieldId: String,
+        startDate: String?,
+        endDate: String?,
+    ): List<StatisticsNumberBitCountRow>
+
+    @Query(
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions INNER JOIN " +
+            "sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status IN " +
+            "('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL AND (:startDate IS NULL OR " +
+            "executions.primary_local_date BETWEEN :startDate AND :endDate)), median_values AS (SELECT number_scaled FROM " +
+            "eligible ORDER BY number_scaled LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 " +
+            "ELSE 1 END OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / 2 END) SELECT (SELECT " +
+            "COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, MIN(number_scaled) AS lower_median_scaled, " +
+            "MAX(number_scaled) AS upper_median_scaled FROM median_values",
+    )
+    fun sequenceNumberSelection(
+        seriesId: String,
+        fieldId: String,
+        startDate: String?,
+        endDate: String?,
+        expectedCount: Long,
+    ): StatisticsNumberSelectionRow
+
+    @Query(
+        "SELECT COUNT(*) FROM sequence_executions AS executions WHERE executions.statistics_series_id = :seriesId AND " +
+            "executions.status IN ('COMPLETED', 'ENDED_EARLY') AND (:startDate IS NULL OR executions.primary_local_date " +
+            "BETWEEN :startDate AND :endDate)",
+    )
+    fun sequenceNumberExecutionCount(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): Long
 
     @Query(
         "SELECT options.id AS source_option_id, NULL AS snapshot_option_id, options.label AS current_label, NULL AS fallback_label " +

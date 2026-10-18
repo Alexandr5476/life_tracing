@@ -1906,6 +1906,412 @@ class StatisticsRepositoryTest {
         }
     }
 
+    @Test
+    fun boundedNumberReadersPreserveSignedEligibilityAndPeriods() {
+        numberHistorySources()
+        val values = listOf(Long.MIN_VALUE, Long.MAX_VALUE, -9L, 0L, 11L)
+        values.forEachIndexed { index, value ->
+            completedActivity(
+                "number-$index",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values = listOf(numberValue("number-$index", "number-history-number", value)),
+            )
+            completedSequence(
+                "number-root-$index",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = value,
+            )
+        }
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'COMPLETED' WHERE id = 'number-root-0'",
+        )
+        completedActivity("number-missing", "number-history", "activity-series", null, AUG_20)
+        completedSequence("number-root-missing", "sequence-series", "number-history", 1, 0, AUG_20)
+        for ((date, value) in listOf(AUG_21 to Long.MAX_VALUE, "2026-08-24" to Long.MIN_VALUE)) {
+            val performedAtMs = millis("${date}T10:00:00Z")
+            repeat(2) { index ->
+                val id = "number-extreme-$date-$index"
+                completedActivity(
+                    id,
+                    "number-history",
+                    "activity-series",
+                    null,
+                    date,
+                    startedAtMs = performedAtMs,
+                    values = listOf(numberValue(id, "number-history-number", value)),
+                )
+                completedSequence(
+                    "$id-root",
+                    "sequence-series",
+                    "number-history",
+                    1,
+                    0,
+                    date,
+                    withNumberField = true,
+                    numberValue = value,
+                    startedAtMs = performedAtMs,
+                )
+            }
+        }
+        series("other-activity", "ACTIVITY", "Other")
+        series("other-sequence", "SEQUENCE", "Other")
+        activitySnapshot("other-number-history", "other-activity", mode = "NO_LIVE_TRACKING", fields = true)
+        completedActivity(
+            "other-number",
+            "other-number-history",
+            "other-activity",
+            null,
+            AUG_20,
+            values = listOf(numberValue("other-number", "other-number-history-number", 999)),
+        )
+        completedSequence(
+            "other-number-root",
+            "other-sequence",
+            "number-history",
+            1,
+            0,
+            AUG_20,
+            withNumberField = true,
+            numberValue = 999,
+        )
+        // A second stable Number identity with the same display label must stay separate.
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_template_fields SET name = 'Distnace' WHERE id = 'calories-source'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_snapshot_fields " +
+                "(id,snapshot_id,source_field_id,position,name_at_creation,field_type,unit,display_precision) " +
+                "VALUES ('other-number-field','number-history','calories-source',2,'Distnace','NUMBER','kcal',0)",
+        )
+        database.activityExecutionDao().upsertValue(numberValue("number-0", "other-number-field", 999))
+        activitySnapshot("number-live-history", "activity-series", fields = true)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedActivity(
+                "number-$status",
+                "number-live-history",
+                "activity-series",
+                null,
+                AUG_20,
+                status = status,
+                values = listOf(numberValue("number-$status", "number-live-history-number", 100)),
+            )
+            completedSequence(
+                "number-root-$status",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = 100,
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET status = ?, ended_at_ms = NULL, active_duration_ms = NULL, " +
+                    "pause_duration_ms = NULL, wall_duration_ms = NULL WHERE id = ?",
+                arrayOf(status, "number-root-$status"),
+            )
+        }
+        completedActivity(
+            "number-deleted",
+            "number-history",
+            "activity-series",
+            null,
+            AUG_20,
+            values = listOf(numberValue("number-deleted", "number-history-number", 100)),
+        )
+        database.activityExecutionDao().softDelete("number-deleted", START_2330 + 100)
+        // Both eligible child values and tombstone exclusion are also pinned by the existing
+        // deletedSequenceChildLeavesDurableValuesButExitsActivityStatisticsOnly case.
+        // Archiving sources and Fields preserves the frozen historical contribution.
+        for (kind in listOf("activity", "sequence")) {
+            database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 1")
+            database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_template_fields SET deleted_at_ms = 1")
+        }
+        val expectations =
+            listOf(
+                StatisticsPeriod.Day(LocalDate.parse(AUG_20)) to values,
+                StatisticsPeriod.Day(LocalDate.parse(AUG_21)) to listOf(Long.MAX_VALUE, Long.MAX_VALUE),
+                StatisticsPeriod.Day(LocalDate.parse("2026-08-24")) to listOf(Long.MIN_VALUE, Long.MIN_VALUE),
+                StatisticsPeriod.AllTime to
+                    (values + listOf(Long.MAX_VALUE, Long.MAX_VALUE, Long.MIN_VALUE, Long.MIN_VALUE)),
+            )
+        for ((period, expected) in expectations) {
+            val missing = if (period == StatisticsPeriod.AllTime || period == expectations.first().first) 1L else 0L
+            val reference =
+                com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                    .numbers(expected)
+            for ((series, field) in numberHistoryIdentities()) {
+                val actual = repository.numberFieldStatistics(series, field, period)
+                assertEquals(reference, actual.values)
+                assertEquals(expected.size.toLong() + missing, actual.relevantExecutionCount)
+                assertEquals(missing, actual.missingCount)
+                assertEquals(
+                    actual,
+                    (
+                        repository.seriesDetail(series, period).fields.single {
+                            it.field.id == field
+                        } as StatisticsFieldDetail.Number
+                    ).statistics,
+                )
+            }
+        }
+        for ((series, field) in numberHistoryIdentities()) {
+            val empty =
+                repository.numberFieldStatistics(
+                    series,
+                    field,
+                    StatisticsPeriod.Day(LocalDate.parse("2026-08-22")),
+                )
+            assertEquals(0L, empty.recordedCount)
+            assertEquals(0L, empty.missingCount)
+            assertNull(empty.coverage.exactValue)
+        }
+    }
+
+    @Test
+    fun numberReadersBoundResultsAndQueriesAcrossGrowingHistory() {
+        numberHistorySources()
+        completedSequence("bulk-root", "sequence-series", "number-history", 1, 0, AUG_20, withNumberField = true)
+        val reference = mutableListOf<Long>()
+        var previous = 0
+        for (size in listOf(1, 100, 4_000)) {
+            database.runInTransaction {
+                for (index in previous until size) {
+                    val value =
+                        when (index % 7) {
+                            0 -> Long.MIN_VALUE
+                            1 -> Long.MAX_VALUE
+                            2 -> 0L
+                            3 -> -7L
+                            else -> index * 1_000_000_007L
+                        }
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO activity_executions " +
+                            "(id,snapshot_id,context_type,statistics_series_id,status,completed_at_ms," +
+                            "original_zone_id,primary_local_date,created_at_ms,updated_at_ms) " +
+                            "VALUES (?, 'number-history', 'STANDALONE', 'activity-series', 'COMPLETED', " +
+                            "0, 'UTC', ?, 0, 0)",
+                        arrayOf("bulk-$index", AUG_20),
+                    )
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO sequence_executions " +
+                            "(id,snapshot_id,statistics_series_id,status,started_at_ms,ended_at_ms," +
+                            "active_duration_ms,pause_duration_ms,wall_duration_ms,original_zone_id," +
+                            "primary_local_date,created_at_ms,updated_at_ms) " +
+                            "VALUES (?, 'bulk-root-snapshot', 'sequence-series', 'COMPLETED', " +
+                            "0, 1, 1, 0, 1, 'UTC', ?, 0, 1)",
+                        arrayOf("bulk-sequence-$index", AUG_20),
+                    )
+                    // Sparse rows coexist with dense, repeated, distinct and extreme signed values.
+                    if (index % 5 != 4) {
+                        reference.add(value)
+                        database.activityExecutionDao().upsertValue(
+                            numberValue("bulk-$index", "number-history-number", value),
+                        )
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO sequence_execution_field_values" +
+                                "(sequence_execution_id,snapshot_field_id,number_scaled) " +
+                                "VALUES (?, 'bulk-root-snapshot-number', ?)",
+                            arrayOf<Any>("bulk-sequence-$index", value),
+                        )
+                    }
+                }
+            }
+            previous = size
+            for ((series, field) in numberHistoryIdentities()) {
+                observedSql.clear()
+                val actual = repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                val reads =
+                    synchronized(observedSql) {
+                        observedSql.filter {
+                            val statement = it.trimStart()
+                            val isRead = statement.startsWith("SELECT") || statement.startsWith("WITH")
+                            isRead && !statement.contains("room_table_modification_log", ignoreCase = true)
+                        }
+                    }
+                assertEquals(5, reads.size)
+                assertTrue(reads.none { it.contains("active_duration_ms") })
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(reference),
+                    actual.values,
+                )
+                val relevant = size.toLong() + if (field is StatisticsFieldId.Sequence) 1 else 0
+                assertEquals(relevant, actual.relevantExecutionCount)
+                assertEquals(relevant - reference.size, actual.missingCount)
+                val dao = database.statisticsDao()
+                val bits =
+                    if (field is StatisticsFieldId.Activity) {
+                        dao.activityNumberBitCounts(series.value, field.value, null, null)
+                    } else {
+                        dao.sequenceNumberBitCounts(series.value, field.value, null, null)
+                    }
+                assertEquals(64, bits.size)
+                val selection =
+                    if (field is StatisticsFieldId.Activity) {
+                        dao.activityNumberSelection(series.value, field.value, null, null, actual.recordedCount)
+                    } else {
+                        dao.sequenceNumberSelection(series.value, field.value, null, null, actual.recordedCount)
+                    }
+                assertEquals(actual.recordedCount, selection.sampleCount)
+                assertEquals(if (actual.recordedCount % 2 == 0L) 2L else 1L, selection.selectedCount)
+                assertEquals(actual.values, ExactNumberSummary.read(bits).distribution(selection))
+            }
+        }
+    }
+
+    @Test
+    fun numberReadersSurvivePhysicalReopenAndHistoricalDeletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-number-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            numberHistorySources()
+            completedActivity(
+                "physical-number",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values = listOf(numberValue("physical-number", "number-history-number", Long.MIN_VALUE)),
+            )
+            completedSequence(
+                "physical-root",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = Long.MAX_VALUE,
+            )
+            val identities = numberHistoryIdentities()
+            val before =
+                identities.map { (series, field) ->
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            assertEquals(
+                before,
+                identities.map { (series, field) ->
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                },
+            )
+            database.activityExecutionDao().softDeleteCompletedStandalone(
+                "physical-number",
+                START_2330,
+                START_2330 + 100,
+            )
+            val (series, field) = identities.first()
+            val after = repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+            assertEquals(before.first().field.id, after.field.id)
+            assertEquals(0L, after.recordedCount)
+            assertEquals(BigInteger.ZERO, after.values.totalScaled)
+            assertEquals(
+                before.last(),
+                repository.numberFieldStatistics(
+                    identities.last().first,
+                    identities.last().second,
+                    StatisticsPeriod.AllTime,
+                ),
+            )
+            assertEquals(
+                "activity-series",
+                database.activityExecutionDao().getById("physical-number")!!.statisticsSeriesId,
+            )
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun numberReadersRejectNonIntegerStorage() {
+        numberHistorySources()
+        completedActivity(
+            "malformed-number",
+            "number-history",
+            "activity-series",
+            null,
+            AUG_20,
+            values = listOf(numberValue("malformed-number", "number-history-number", 1)),
+        )
+        completedSequence(
+            "malformed-root",
+            "sequence-series",
+            "number-history",
+            1,
+            0,
+            AUG_20,
+            withNumberField = true,
+            numberValue = 1,
+        )
+        for (literal in listOf("0.5", "'corrupt'")) {
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE activity_execution_field_values SET number_scaled = $literal",
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_execution_field_values SET number_scaled = $literal",
+            )
+            for ((series, field) in numberHistoryIdentities()) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+            }
+        }
+    }
+
+    private fun numberHistorySources() {
+        series("activity-series", "ACTIVITY", "Activity")
+        series("sequence-series", "SEQUENCE", "Sequence")
+        activityTemplateWithFields()
+        sequenceTemplate(
+            "sequence",
+            "Sequence",
+            "sequence-series",
+            fields =
+                listOf(
+                    SequenceTemplateFieldEntity(
+                        "sequence-number-source",
+                        "sequence",
+                        0,
+                        "Effort",
+                        "NUMBER",
+                        "points",
+                        0,
+                        null,
+                        null,
+                        null,
+                        true,
+                        0,
+                        0,
+                        null,
+                    ),
+                ),
+        )
+        activitySnapshot("number-history", "activity-series", mode = "NO_LIVE_TRACKING", fields = true)
+    }
+
+    private fun numberHistoryIdentities(): List<Pair<StatisticsSeriesId, StatisticsFieldId>> =
+        listOf(
+            StatisticsSeriesId("activity-series") to
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+            StatisticsSeriesId("sequence-series") to
+                StatisticsFieldId.Sequence(SequenceTemplateFieldId("sequence-number-source")),
+        )
+
     private fun series(
         id: String,
         kind: String,

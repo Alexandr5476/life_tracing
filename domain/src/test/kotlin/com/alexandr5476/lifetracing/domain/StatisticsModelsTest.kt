@@ -13,6 +13,96 @@ import java.time.YearMonth
 
 class StatisticsModelsTest {
     @Test
+    fun signedNumberSummaryMatchesIndependentBigIntegerReference() {
+        val fixtures =
+            listOf(
+                emptyList(),
+                listOf(0L),
+                listOf(-7L),
+                listOf(7L),
+                listOf(-5L, 0L, 9L),
+                listOf(-3L, -3L, 0L, 8L),
+                listOf(Long.MIN_VALUE),
+                listOf(Long.MAX_VALUE),
+                listOf(Long.MIN_VALUE, Long.MIN_VALUE),
+                listOf(Long.MAX_VALUE, Long.MAX_VALUE),
+                listOf(Long.MIN_VALUE, Long.MAX_VALUE),
+                listOf(Long.MAX_VALUE, Long.MIN_VALUE, 1L, 0L),
+            ) + List(50) { seed -> List(101) { java.util.Random((seed * 101L) + it).nextLong() } }
+        fixtures.forEach { values ->
+            val sorted = values.sorted()
+            val count = values.size.toLong()
+            val bits = List(Long.SIZE_BITS) { bit -> values.count { (it ushr bit) and 1L == 1L }.toLong() }
+            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+            assertEquals(total, ExactSignedLongSum.fromBitCounts(count, bits))
+            val endpoints =
+                when {
+                    sorted.isEmpty() -> emptyList()
+                    count % 2 == 1L -> listOf(sorted[sorted.size / 2])
+                    else -> listOf(sorted[sorted.size / 2 - 1], sorted[sorted.size / 2])
+                }
+            val actual =
+                StatisticsDistributionCalculator.numbers(
+                    count,
+                    total,
+                    sorted.firstOrNull(),
+                    sorted.lastOrNull(),
+                    endpoints,
+                )
+            assertEquals(StatisticsDistributionCalculator.numbers(values), actual)
+            assertEquals(total, actual.totalScaled)
+            if (count > 0) {
+                assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), actual.averageScaled)
+                val midpoint = endpoints.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                assertEquals(ExactValue.of(midpoint, BigInteger.valueOf(endpoints.size.toLong())), actual.medianScaled)
+            }
+        }
+        // Counts, as well as values, may reach the full positive signed-Long boundary.
+        for (value in listOf(Long.MIN_VALUE, -1L, 0L, 1L, Long.MAX_VALUE)) {
+            val bits = List(Long.SIZE_BITS) { if ((value ushr it) and 1L == 1L) Long.MAX_VALUE else 0 }
+            assertEquals(
+                BigInteger.valueOf(value) * BigInteger.valueOf(Long.MAX_VALUE),
+                ExactSignedLongSum.fromBitCounts(Long.MAX_VALUE, bits),
+            )
+        }
+    }
+
+    @Test
+    fun signedNumberSummaryRejectsMalformedProjections() {
+        for (bits in listOf(emptyList(), List(63) { 0L }, List(65) { 0L }, List(64) { -1L }, List(64) { 2L })) {
+            assertThrows(IllegalArgumentException::class.java) { ExactSignedLongSum.fromBitCounts(1, bits) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { ExactSignedLongSum.fromBitCounts(-1, List(64) { 0L }) }
+        assertThrows(IllegalArgumentException::class.java) { ExactSignedLongSum.fromBitCounts(0, List(64) { 1L }) }
+        val invalid =
+            listOf(
+                { StatisticsDistributionCalculator.numbers(-1, BigInteger.ZERO, null, null, emptyList()) },
+                { StatisticsDistributionCalculator.numbers(0, BigInteger.ONE, null, null, emptyList()) },
+                { StatisticsDistributionCalculator.numbers(0, BigInteger.ZERO, 0, 0, emptyList()) },
+                { StatisticsDistributionCalculator.numbers(1, BigInteger.ZERO, null, 0, listOf(0)) },
+                { StatisticsDistributionCalculator.numbers(3, BigInteger.ZERO, 1, -1, listOf(0)) },
+                { StatisticsDistributionCalculator.numbers(3, BigInteger.TEN, -1, 1, listOf(0)) },
+                { StatisticsDistributionCalculator.numbers(3, BigInteger.valueOf(4), 1, 3, listOf(2)) },
+                { StatisticsDistributionCalculator.numbers(4, BigInteger.valueOf(5), 0, 4, listOf(1, 2)) },
+                { StatisticsDistributionCalculator.numbers(1, BigInteger.ONE, 0, 1, listOf(0)) },
+                { StatisticsDistributionCalculator.numbers(2, BigInteger.ZERO, -1, 2, listOf(-1, 2)) },
+            )
+        invalid.forEach { invalidSummary -> assertThrows(IllegalArgumentException::class.java) { invalidSummary() } }
+        for (endpoints in listOf(
+            emptyList(),
+            listOf(0L),
+            listOf(1L, -1L),
+            listOf(-2L, 1L),
+            listOf(-1L, 2L),
+            listOf(-1L, 0L, 1L),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                StatisticsDistributionCalculator.numbers(4, BigInteger.ZERO, -1, 1, endpoints)
+            }
+        }
+    }
+
+    @Test
     fun durationSummaryPreservesExactReferenceDistributions() {
         val fixtures =
             listOf(

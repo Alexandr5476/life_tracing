@@ -644,6 +644,10 @@
       "zeroActualValueSurvivesColdTemporalRecoveryAsZero[context=2]"
     ],
     "com.alexandr5476.lifetracing.data.persistence.StatisticsRepositoryTest": [
+      "boundedNumberReadersPreserveSignedEligibilityAndPeriods",
+      "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
+      "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
+      "numberReadersRejectNonIntegerStorage",
       "activityCategoryOptionsStayWithinTheirSeriesLineageAfterSplit",
       "activityFieldsUseStableIdentityMissingSemanticsAndSqlCategoryGrouping",
       "boundedLargeHistoryUsesFreshAggregateQueries",

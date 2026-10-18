@@ -15,6 +15,7 @@ import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DurationDistribution
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.GlobalStatistics
+import com.alexandr5476.lifetracing.domain.NumberDistribution
 import com.alexandr5476.lifetracing.domain.NumberFieldStatistics
 import com.alexandr5476.lifetracing.domain.SequenceSeriesStatistics
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
@@ -321,7 +322,14 @@ class StatisticsRepository internal constructor(
             val series = requireSeries(seriesId)
             val field = requireField(series, seriesId, fieldId, CustomFieldType.NUMBER)
             val (start, end) = period.bounds()
-            val relevant = executionCount(series.kind, seriesId, start, end)
+            val relevant =
+                when (series.kind) {
+                    StatisticsSeriesKind.ACTIVITY ->
+                        database.statisticsDao().activityNumberExecutionCount(seriesId.value, start, end)
+                    StatisticsSeriesKind.SEQUENCE ->
+                        database.statisticsDao().sequenceNumberExecutionCount(seriesId.value, start, end)
+                    StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off reusable Field Statistics are not supported")
+                }
             numberFieldStatisticsLocked(series, field, relevant, start, end)
         }
 
@@ -345,22 +353,46 @@ class StatisticsRepository internal constructor(
         start: String?,
         end: String?,
     ): NumberFieldStatistics {
-        val values =
+        val dao = database.statisticsDao()
+        val bits =
             when (field.id) {
                 is StatisticsFieldId.Activity ->
-                    database.statisticsDao().activityNumberValues(series.id.value, field.id.value, start, end)
+                    dao.activityNumberBitCounts(
+                        series.id.value,
+                        field.id.value,
+                        start,
+                        end,
+                    )
                 is StatisticsFieldId.Sequence ->
-                    database.statisticsDao().sequenceNumberValues(series.id.value, field.id.value, start, end)
+                    dao.sequenceNumberBitCounts(
+                        series.id.value,
+                        field.id.value,
+                        start,
+                        end,
+                    )
             }
-        return numberStatistics(field, relevant, values)
+        val summary = ExactNumberSummary.read(bits)
+        val selection =
+            when (field.id) {
+                is StatisticsFieldId.Activity ->
+                    dao.activityNumberSelection(series.id.value, field.id.value, start, end, summary.sampleCount)
+                is StatisticsFieldId.Sequence ->
+                    dao.sequenceNumberSelection(series.id.value, field.id.value, start, end, summary.sampleCount)
+            }
+        return numberStatistics(field, relevant, summary.distribution(selection))
     }
 
     private fun numberStatistics(
         field: StatisticsFieldDescriptor,
         relevant: Long,
         values: List<Long>,
+    ): NumberFieldStatistics = numberStatistics(field, relevant, StatisticsDistributionCalculator.numbers(values))
+
+    private fun numberStatistics(
+        field: StatisticsFieldDescriptor,
+        relevant: Long,
+        distribution: NumberDistribution,
     ): NumberFieldStatistics {
-        val distribution = StatisticsDistributionCalculator.numbers(values)
         require(distribution.sampleCount <= relevant) { "Recorded Number values exceed relevant executions" }
         return NumberFieldStatistics(
             field,
