@@ -24,6 +24,22 @@ plugins {
     alias(libs.plugins.kover)
 }
 
+// This invocation uses the framework-selected Application in a disposable installation.
+val productionStartup = providers.gradleProperty("lifetracing.compatibility.productionStartup").orNull == "true"
+val startupSources =
+    listOf(
+        "**/AndroidCompatibilityDeviceTest.kt",
+        "**/InstalledApplicationTestSupport.kt",
+        "**/RuntimePlatformFixture.kt",
+        "**/RuntimeSystemTestSupport.kt",
+    )
+
+// Keep the original fixtures shared without compiling the isolated runner or other app tests.
+val startupTestSupport by tasks.registering(Sync::class) {
+    from("src/androidTest/java") { include(startupSources) }
+    into(layout.buildDirectory.dir("generated/productionStartupTestSupport"))
+}
+
 android {
     namespace = "com.alexandr5476.lifetracing"
     compileSdk = 36
@@ -34,12 +50,18 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner =
+            if (productionStartup) {
+                "androidx.test.runner.AndroidJUnitRunner"
+            } else {
+                "com.alexandr5476.lifetracing.runtime.RuntimeIsolationTestRunner"
+            }
     }
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            // Never acquire the ordinary installation's database or platform resources.
+            applicationIdSuffix = if (productionStartup) ".debug.startup" else ".debug"
             versionNameSuffix = "-debug"
         }
         release {
@@ -66,6 +88,21 @@ android {
         }
     }
 
+    if (productionStartup) {
+        // Isolate foreground lifecycle recovery from boot/time/permission broadcasts during install.
+        sourceSets.named("debug") {
+            manifest.srcFile("src/productionStartup/AndroidManifest.xml")
+        }
+    }
+
+    sourceSets.named("androidTest") {
+        if (productionStartup) {
+            java.setSrcDirs(
+                listOf("src/productionStartupTest/java", startupTestSupport.map { it.destinationDir }),
+            )
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -78,6 +115,15 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// AGP resolves source roots to Files, so preserve the generating task dependency explicitly.
+if (productionStartup) {
+    tasks.configureEach {
+        if (name.contains("AndroidTest") || name.startsWith("lint") || name.startsWith("detekt")) {
+            dependsOn(startupTestSupport)
+        }
     }
 }
 

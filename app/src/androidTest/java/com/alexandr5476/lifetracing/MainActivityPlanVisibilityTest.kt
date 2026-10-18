@@ -150,21 +150,27 @@ class MainActivityPlanVisibilityTest {
             val read = (controller.state.value.week as PlanLoad.Content).value
             assertEquals(zone, requireNotNull(read.temporalContext).zoneId)
             val beforeCompletion = queries.size
+            val cancelsBeforeExecution = cancels
             compose.onNodeWithTag("plan-plan-action-${plan.id.value}").performScrollTo().performClick()
             compose.waitUntil(5_000) {
-                activity.planExecutionRouteSessions.activeSession
-                    ?.controller
-                    ?.state
-                    ?.value
-                    ?.prepared is
-                    com.alexandr5476.lifetracing.plan.PlanExecutionLoad.Content
+                cancels > cancelsBeforeExecution &&
+                    activity.planExecutionRouteSessions.activeSession
+                        ?.controller
+                        ?.state
+                        ?.value
+                        ?.prepared is
+                        com.alexandr5476.lifetracing.plan.PlanExecutionLoad.Content
             }
+            // Preparation can finish before Compose commits the route's visibility effect.
+            compose.waitForIdle()
+            assertEquals(beforeCompletion, queries.size)
             compose.runOnUiThread { deferCompletionRead = true }
             compose.onNodeWithTag("plan-execution-submit").performScrollTo().performClick()
             compose.waitUntil(5_000) {
                 activity.planExecutionRouteSessions.activeSession == null &&
                     completionReadStarted.isCompleted
             }
+            compose.waitForIdle()
             assertEquals(beforeCompletion + 1, queries.size)
             assertTrue(controller.state.value.week is PlanLoad.Loading)
             compose.runOnUiThread { releaseCompletionRead.complete(Unit) }

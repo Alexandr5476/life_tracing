@@ -5,17 +5,22 @@ import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.LifeTracingApplication
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
 import java.time.Instant
 
@@ -23,43 +28,71 @@ import java.time.Instant
 class RuntimePlatformAndroidTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
+    @get:Rule
+    val platformFixture: TestRule = RuntimePlatformFixtureRule(context)
+
     @Test
-    fun pendingIntentIdentityIsStableWhileExtrasCarryExpectedRuntimeIdentity() {
+    fun pendingIntentReplacementDeliversUpdatedPayloadAndNoUpdateControlRetainsObsoletePayload() {
         val first = deadline("execution-1", "occurrence-1", 60)
         val replacement = deadline("execution-2", "occurrence-2", 120)
 
+        assertManifestDeadlineIntent(context, RuntimeDeadlineIntentCodec.intent(context, first))
         assertEquals(first, RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, first)))
-        assertEquals(
-            RuntimeDeadlineIntentCodec.pendingIntent(context, first),
-            RuntimeDeadlineIntentCodec.pendingIntent(context, replacement),
-        )
+        val token = RuntimeDeadlineIntentCodec.pendingIntent(context, first)
+        // A real no-update control demonstrates why token equality alone is insufficient.
+        val unchanged =
+            android.app.PendingIntent.getBroadcast(
+                context,
+                0,
+                RuntimeDeadlineIntentCodec.intent(context, replacement),
+                android.app.PendingIntent.FLAG_IMMUTABLE,
+            )
+        assertEquals(token, unchanged)
+        assertEquals(first, deliveredDeadline(unchanged))
+        assertEquals(token, RuntimeDeadlineIntentCodec.pendingIntent(context, replacement))
+        assertEquals(token, RuntimeDeadlineIntentCodec.existingPendingIntent(context))
+        assertEquals(replacement, deliveredDeadline(token))
     }
 
     @Test
     fun manifestDeclaresOnlyRuntimePermissionsAndReceiversNeededByTheAdapters() {
+        assertEquals(LifeTracingApplication::class.java.name, installedApplicationClassName(context))
         val info =
-            context.packageManager.getPackageInfo(
-                context.packageName,
-                PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()),
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+            }
         val permissions = info.requestedPermissions.orEmpty().toSet()
 
         assertTrue(Manifest.permission.SCHEDULE_EXACT_ALARM in permissions)
         assertTrue(Manifest.permission.RECEIVE_BOOT_COMPLETED in permissions)
         assertTrue(Manifest.permission.VIBRATE in permissions)
         assertTrue(Manifest.permission.POST_NOTIFICATIONS in permissions)
-        assertNotNull(
-            context.packageManager.getReceiverInfo(
-                ComponentName(context, RuntimeDeadlineReceiver::class.java),
-                PackageManager.ComponentInfoFlags.of(0),
-            ),
-        )
-        assertNotNull(
-            context.packageManager.getReceiverInfo(
-                ComponentName(context, RuntimeRecoveryReceiver::class.java),
-                PackageManager.ComponentInfoFlags.of(0),
-            ),
-        )
+        // Keep the same receiver assertions on both sides of the API-33 overload boundary.
+        for (receiver in listOf(RuntimeDeadlineReceiver::class.java, RuntimeRecoveryReceiver::class.java)) {
+            val component = ComponentName(context, receiver)
+            val receiverInfo =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.packageManager.getReceiverInfo(component, PackageManager.ComponentInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getReceiverInfo(component, 0)
+                }
+            assertNotNull(receiverInfo)
+            assertFalse(receiverInfo.exported)
+            assertTrue(receiverInfo.enabled)
+        }
+        @Suppress("DEPRECATION")
+        val legacyPermissions =
+            context.packageManager
+                .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+                .requestedPermissions
+        assertEquals(legacyPermissions.orEmpty().toSet(), permissions)
     }
 
     @Test

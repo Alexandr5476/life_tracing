@@ -75,6 +75,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -1486,11 +1487,7 @@ private fun ChoiceButton(
             this.selected = selected
             role = Role.RadioButton
         }
-    if (selected) {
-        LifeTracingPrimaryButton(onClick, modifier, enabled, content)
-    } else {
-        LifeTracingSecondaryButton(onClick, modifier, enabled, content)
-    }
+    LifeTracingChoiceButton(selected, onClick, modifier, enabled, content)
 }
 
 @Composable private fun DurationField(

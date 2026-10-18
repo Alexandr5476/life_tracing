@@ -19,6 +19,9 @@ import androidx.datastore.preferences.core.PreferencesSerializer
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.alexandr5476.lifetracing.daily.DailyAction
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
@@ -39,11 +42,13 @@ import okio.FileSystem
 import okio.Path.Companion.toOkioPath
 import okio.buffer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 
 @Suppress("TooManyFunctions")
@@ -78,7 +83,9 @@ class SettingsProductionRouteTest {
                 ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                     val originalLanguage = readLanguage(scenario)
                     try {
-                        scenario.onActivity { AppLanguageController.apply(AppLanguage.SYSTEM) }
+                        changeLocalesAndAwaitRecreation(scenario, AppLanguage.SYSTEM.languageTag) {
+                            scenario.onActivity { AppLanguageController.apply(AppLanguage.SYSTEM) }
+                        }
                         compose.waitUntil(5_000) { readLanguage(scenario) == AppLanguage.SYSTEM }
                         awaitDestination("daily-settings")
                         val daily = LifeTracingRuntimeGraph.from(context).dailyController
@@ -106,7 +113,9 @@ class SettingsProductionRouteTest {
                             appearanceStorage.keys.map { it.name }.toSet(),
                         )
                         listOf(AppLanguage.ENGLISH, AppLanguage.RUSSIAN, AppLanguage.SYSTEM).forEach { language ->
-                            click("settings-language-$language")
+                            changeLocalesAndAwaitRecreation(scenario, language.languageTag) {
+                                click("settings-language-$language")
+                            }
                             compose.waitUntil(5_000) { readLanguage(scenario) == language }
                             awaitSelected("settings-language-$language")
                             assertPlatformLocales(scenario, language)
@@ -128,8 +137,11 @@ class SettingsProductionRouteTest {
                         scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
                         awaitDestination("daily-settings")
                         listOf("fr", "fr,en").forEach { unsupported ->
-                            scenario.onActivity {
-                                AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(unsupported))
+                            changeLocalesAndAwaitRecreation(scenario, unsupported) {
+                                val locales = LocaleListCompat.forLanguageTags(unsupported)
+                                scenario.onActivity {
+                                    AppCompatDelegate.setApplicationLocales(locales)
+                                }
                             }
                             scenario.recreate()
                             awaitDestination("daily-settings")
@@ -138,7 +150,9 @@ class SettingsProductionRouteTest {
                                 seeded.set(AppCompatDelegate.getApplicationLocales().toLanguageTags())
                             }
                             assertEquals(unsupported, seeded.get())
-                            click("daily-settings")
+                            changeLocalesAndAwaitRecreation(scenario, AppLanguage.SYSTEM.languageTag) {
+                                click("daily-settings")
+                            }
                             awaitSelected("settings-language-SYSTEM")
                             assertPlatformLocales(scenario, AppLanguage.SYSTEM)
                             scenario.recreate()
@@ -162,9 +176,11 @@ class SettingsProductionRouteTest {
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
                     } finally {
-                        scenario.onActivity {
-                            LifeTracingRuntimeGraph.from(context).dailyController.dispatch(DailyAction.Today)
-                            AppLanguageController.apply(originalLanguage)
+                        changeLocalesAndAwaitRecreation(scenario, originalLanguage.languageTag) {
+                            scenario.onActivity {
+                                LifeTracingRuntimeGraph.from(context).dailyController.dispatch(DailyAction.Today)
+                                AppLanguageController.apply(originalLanguage)
+                            }
                         }
                         compose.waitUntil(5_000) { readLanguage(scenario) == originalLanguage }
                     }
@@ -222,6 +238,49 @@ class SettingsProductionRouteTest {
                     it.config.getOrNull(SemanticsProperties.Selected) == true &&
                         it.config.getOrNull(SemanticsProperties.Disabled) == null
                 } == true
+        }
+    }
+
+    private fun changeLocalesAndAwaitRecreation(
+        scenario: ActivityScenario<MainActivity>,
+        expectedTags: String,
+        change: () -> Unit,
+    ) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+        val previous = AtomicReference<MainActivity>()
+        val previousTags = AtomicReference<String>()
+        scenario.onActivity {
+            previous.set(it)
+            previousTags.set(AppCompatDelegate.getApplicationLocales().toLanguageTags())
+        }
+        val resumedReplacement = CountDownLatch(1)
+        val callback =
+            ActivityLifecycleCallback { activity, stage ->
+                if (
+                    activity is MainActivity &&
+                    activity !== previous.get() &&
+                    stage == Stage.RESUMED &&
+                    AppCompatDelegate.getApplicationLocales().toLanguageTags() == expectedTags
+                ) {
+                    resumedReplacement.countDown()
+                }
+            }
+        // The platform override and selected chip can change before locale-triggered recreation
+        // finishes. Register before the command, and await its replacement before an explicit
+        // scenario.recreate(), another locale command, or scenario.close() can race that transition.
+        instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+        try {
+            change()
+            val changed = previousTags.get() != expectedTags
+            if (changed) compose.waitUntil(10_000) { resumedReplacement.count == 0L }
+            scenario.onActivity {
+                assertEquals(expectedTags, AppCompatDelegate.getApplicationLocales().toLanguageTags())
+                assertEquals(Stage.RESUMED, monitor.getLifecycleStageOf(it))
+                if (changed) assertNotSame(previous.get(), it)
+            }
+        } finally {
+            instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) }
         }
     }
 

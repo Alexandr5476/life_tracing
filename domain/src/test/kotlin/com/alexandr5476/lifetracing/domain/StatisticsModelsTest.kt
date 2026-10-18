@@ -61,6 +61,31 @@ class StatisticsModelsTest {
     }
 
     @Test
+    fun durationTotalsPreserveTheLongBoundaryAndRejectOverflow() {
+        assertEquals(Duration.ZERO, StatisticsDistributionCalculator.durations(listOf(0L, 0L)).total)
+        assertEquals(
+            Duration.ofMillis(Long.MAX_VALUE),
+            StatisticsDistributionCalculator.durations(listOf(Long.MAX_VALUE - 1, 1L)).total,
+        )
+        assertThrows(ArithmeticException::class.java) {
+            StatisticsDistributionCalculator.durations(listOf(Long.MAX_VALUE, 1L))
+        }
+        assertThrows(ArithmeticException::class.java) {
+            StatisticsDistributionCalculator.durations(listOf(Long.MAX_VALUE, Long.MAX_VALUE))
+        }
+    }
+
+    @Test
+    fun numberTotalsRemainExactBeyondTheLongRange() {
+        for (value in listOf(Long.MIN_VALUE, Long.MAX_VALUE)) {
+            val distribution = StatisticsDistributionCalculator.numbers(listOf(value, value))
+            assertEquals(BigInteger.valueOf(value) * BigInteger.valueOf(2), distribution.totalScaled)
+            assertEquals(ExactValue.of(value, 1), distribution.averageScaled)
+            assertEquals(ExactValue.of(value, 1), distribution.medianScaled)
+        }
+    }
+
+    @Test
     fun numberDistributionAndRatiosRemainExact() {
         val values = StatisticsDistributionCalculator.numbers(listOf(10, 20, 30, 101))
         assertEquals(BigInteger.valueOf(161), values.totalScaled)

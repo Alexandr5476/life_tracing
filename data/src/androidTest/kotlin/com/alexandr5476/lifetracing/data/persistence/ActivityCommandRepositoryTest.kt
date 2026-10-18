@@ -77,6 +77,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -1165,7 +1166,7 @@ class ActivityCommandRepositoryTest {
                 StatisticsPeriod.AllTime,
             )
         assertEquals(1L, number.recordedCount)
-        assertEquals(0L, number.values.totalScaled.longValueExact())
+        assertEquals(BigInteger.ZERO, number.values.totalScaled)
         val category =
             statistics.categoryFieldStatistics(
                 StatisticsSeriesId("projected-no-live-series"),
@@ -1969,14 +1970,13 @@ class ActivityCommandRepositoryTest {
             requireNotNull(database.activityTemplateDao().getAggregate("correction")).toDomain(),
         )
         assertEquals(
-            0L,
+            BigInteger.ZERO,
             StatisticsRepository(database) { StatisticsSeriesId("unused") }
                 .numberFieldStatistics(
                     StatisticsSeriesId("correction-series"),
                     StatisticsFieldId.Activity(ActivityTemplateFieldId("correction-number")),
                     StatisticsPeriod.AllTime,
-                ).values.totalScaled
-                .longValueExact(),
+                ).values.totalScaled,
         )
         assertEquals(
             "B",

@@ -84,7 +84,7 @@ internal data class LivePlanLink(
 )
 
 class LiveSessionRepository internal constructor(
-    private val database: LifeTracingDatabase,
+    internal val database: LifeTracingDatabase,
     nextActivityExecutionId: () -> ActivityExecutionId,
     nextActivityPauseId: () -> ActivityExecutionPauseId,
     nextSequenceExecutionId: () -> SequenceExecutionId,

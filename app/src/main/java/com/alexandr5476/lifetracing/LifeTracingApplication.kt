@@ -70,7 +70,11 @@ import kotlinx.coroutines.withContext
 import java.time.ZoneId
 import java.util.UUID
 
-class LifeTracingApplication : Application() {
+open class LifeTracingApplication : Application() {
+    /** Instrumentation may scope acquisition; normal application/process ownership remains shared. */
+    internal open val runtimeGraphOwner: RuntimeGraphOwner
+        get() = LifeTracingRuntimeGraph.processOwner
+
     private val runtimeGraph by lazy { LifeTracingRuntimeGraph.from(this) }
 
     override fun onCreate() {
@@ -196,17 +200,27 @@ class LifeTracingRuntimeGraph internal constructor(
     ): StatisticsSeriesDetailController = statisticsSeriesDetailControllerFactory(seriesId, initialPeriod)
 
     companion object {
-        private val processOwner = RuntimeGraphOwner(::create)
+        internal val processOwner = RuntimeGraphOwner(::create)
 
-        fun from(context: Context): LifeTracingRuntimeGraph = from(context, processOwner)
+        fun from(context: Context): LifeTracingRuntimeGraph {
+            val application = context.applicationContext
+            val owner = (application as? LifeTracingApplication)?.runtimeGraphOwner ?: processOwner
+            return from(application, owner)
+        }
 
         internal fun from(
             context: Context,
             owner: RuntimeGraphOwner,
         ): LifeTracingRuntimeGraph = owner.get(context.applicationContext)
 
+        private fun create(context: Context): LifeTracingRuntimeGraph = create(context) {}
+
+        /** Observe the real repository owner for isolated instrumentation cleanup; no dependency substitution. */
         @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
-        private fun create(context: Context): LifeTracingRuntimeGraph {
+        internal fun create(
+            context: Context,
+            observeRuntimeRepository: (LiveSessionRepository) -> Unit,
+        ): LifeTracingRuntimeGraph {
             val exceptionHandler =
                 kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
                     Log.e("LifeTracingRuntime", "runtime_recovery_failed", error)
@@ -225,6 +239,7 @@ class LifeTracingRuntimeGraph internal constructor(
                 )
             val wallClock = AndroidWallClock()
             val repository = LiveSessionRepository.create(context)
+            observeRuntimeRepository(repository)
             val libraryRepository = LibraryRepository.create(context)
             val templateAuthoringRepository = TemplateAuthoringRepository.create(context)
             val activityCommandRepository = ActivityCommandRepository.create(context)

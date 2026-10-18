@@ -51,6 +51,34 @@ fun LifeTracingSecondaryButton(
     )
 }
 
+/** Keeps the pressed/focused surface alive when only its selected appearance changes. */
+@Composable
+@Suppress("FunctionNaming")
+fun LifeTracingChoiceButton(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = MaterialTheme.shapes.small,
+        colors =
+            if (selected) {
+                ButtonDefaults.buttonColors()
+            } else {
+                ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                )
+            },
+        content = content,
+    )
+}
+
 @Composable
 @Suppress("FunctionNaming", "LongParameterList")
 fun LifeTracingOutlinedTextField(

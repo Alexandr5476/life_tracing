@@ -42,9 +42,9 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
-import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
 
 @Composable
@@ -180,11 +180,10 @@ private fun FilterRow(
                         LibraryKindFilter.SEQUENCES -> R.string.library_filter_sequences
                     },
                 )
-            if (filter == selected) {
-                LifeTracingPrimaryButton(onClick = { onSelect(filter) }) { Text(label) }
-            } else {
-                LifeTracingSecondaryButton(onClick = { onSelect(filter) }) { Text(label) }
-            }
+            LifeTracingChoiceButton(
+                selected = filter == selected,
+                onClick = { onSelect(filter) },
+            ) { Text(label) }
         }
     }
 }

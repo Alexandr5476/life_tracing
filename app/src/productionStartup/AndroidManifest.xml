@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only the disposable startup debug package excludes unsolicited recovery broadcasts.
+         The manifest-selected Application and its Activity lifecycle callback stay unchanged. -->
+    <application>
+        <receiver
+            android:name="com.alexandr5476.lifetracing.runtime.RuntimeRecoveryReceiver"
+            android:enabled="false" />
+    </application>
+</manifest>

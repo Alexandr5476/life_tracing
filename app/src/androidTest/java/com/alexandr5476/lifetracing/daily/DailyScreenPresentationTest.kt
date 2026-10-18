@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -1141,13 +1142,13 @@ class DailyScreenPresentationTest {
         val firstTop =
             composeTestRule
                 .onAllNodesWithText(string(first))[0]
-                .fetchSemanticsNode()
-                .boundsInRoot.top
+                .getUnclippedBoundsInRoot()
+                .top
         val secondTop =
             composeTestRule
                 .onAllNodesWithText(string(second))[0]
-                .fetchSemanticsNode()
-                .boundsInRoot.top
+                .getUnclippedBoundsInRoot()
+                .top
         assertTrue("Expected ${string(first)} above ${string(second)}", firstTop < secondTop)
     }
 

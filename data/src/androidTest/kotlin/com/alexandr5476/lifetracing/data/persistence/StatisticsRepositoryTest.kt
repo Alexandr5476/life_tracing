@@ -877,7 +877,7 @@ class StatisticsRepositoryTest {
         assertEquals(4L, number.relevantExecutionCount)
         assertEquals(1L, number.recordedCount)
         assertEquals(3L, number.missingCount)
-        assertEquals(0L, number.values.totalScaled.longValueExact())
+        assertEquals(BigInteger.ZERO, number.values.totalScaled)
         assertEquals(ExactValue.of(0, 1), number.values.averageScaled)
         assertEquals(0L, number.values.minimumScaled)
         assertEquals(
@@ -933,14 +933,13 @@ class StatisticsRepositoryTest {
                 "WHERE activity_execution_id = 'c' AND snapshot_field_id = 'no-live-fields-category'",
         )
         assertEquals(
-            30L,
+            BigInteger.valueOf(30),
             repository
                 .numberFieldStatistics(
                     StatisticsSeriesId("activity-series"),
                     StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
                     StatisticsPeriod.AllTime,
-                ).values.totalScaled
-                .longValueExact(),
+                ).values.totalScaled,
         )
         val editedCategory =
             repository.categoryFieldStatistics(
@@ -1042,7 +1041,7 @@ class StatisticsRepositoryTest {
         assertEquals(2L, statistics.relevantExecutionCount)
         assertEquals(1L, statistics.recordedCount)
         assertEquals(1L, statistics.missingCount)
-        assertEquals(7L, statistics.values.totalScaled.longValueExact())
+        assertEquals(BigInteger.valueOf(7), statistics.values.totalScaled)
         val detail =
             repository.seriesDetail(
                 StatisticsSeriesId("sequence-series"),
