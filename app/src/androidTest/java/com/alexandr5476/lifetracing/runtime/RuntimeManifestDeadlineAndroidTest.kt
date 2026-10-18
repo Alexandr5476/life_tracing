@@ -9,23 +9,32 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
 import com.alexandr5476.lifetracing.RuntimeGraphOwner
+import com.alexandr5476.lifetracing.data.persistence.PlanSchedulingStore
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
-import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityExecution
+import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSchedule
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -37,56 +46,172 @@ import java.util.UUID
 @RunWith(AndroidJUnit4::class)
 class RuntimeManifestDeadlineAndroidTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
+    private val application = context as RuntimeIsolationApplication
 
     @Test(timeout = 60_000)
     fun productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen() =
         runBlocking {
-            // The actual manifest receiver owns the normal application graph and database. Do not
-            // inject a launcher, register another receiver, or depend on another test's live slot.
-            val graph = LifeTracingRuntimeGraph.from(context)
-            try {
-                val persisted =
-                    RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { store ->
-                        graph.coordinator.mutationGate.admit().run {
-                            clearLiveSlot(store)
-                        }
-                        graph.coordinator.onRuntimeStateChanged() // Cancel any preceding in-process timer.
-                        val future = seed(store, Instant.ofEpochMilli(Instant.now().toEpochMilli()), Duration.ofDays(1))
-                        val futureDeadline = deadline(store)
-                        val before = store.durableFacts()
-                        send(futureDeadline.copy(executionId = "obsolete-" + UUID.randomUUID()))
-                        assertEquals(before, store.durableFacts())
-                        assertEquals(future, (store.live.getActiveRuntime() as ActiveActivityRuntime).execution)
-                        graph.coordinator.mutationGate.admit().run {
-                            store.live.completeActiveActivity(future.startedAt!!.plusSeconds(1))
-                        }
-                        graph.coordinator.onRuntimeStateChanged()
+            assertDatabaseUnchanged { runManifestAcceptance() }
+        }
 
-                        // No foreground recovery or local driver is armed for this overdue fixture.
-                        // Only the unsuppressed production token can trigger the matching transition.
-                        val original = seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
-                        val expected = deadline(store)
-                        send(expected)
-                        awaitRuntimeSystemState("manifest receiver durable completion") {
-                            store.live.getActiveSession() == null
+    @Test(timeout = 60_000)
+    fun repeatedManifestFixturePreservesUnrelatedRunningPlanAndEveryDurableTable() =
+        runBlocking { assertUnrelatedPlanPreserved(paused = false, failAfterSeed = false) }
+
+    @Test(timeout = 60_000)
+    fun repeatedManifestFixturePreservesUnrelatedPausedPlanAndEveryDurableTable() =
+        runBlocking { assertUnrelatedPlanPreserved(paused = true, failAfterSeed = false) }
+
+    @Test(timeout = 60_000)
+    fun failedManifestFixturePreservesUnrelatedPlanAndDeletesItsLiveFixture() =
+        runBlocking { assertUnrelatedPlanPreserved(paused = true, failAfterSeed = true) }
+
+    private suspend fun assertUnrelatedPlanPreserved(
+        paused: Boolean,
+        failAfterSeed: Boolean,
+    ) {
+        assertDatabaseUnchanged {
+            application.withDisposableRuntime { baselineEnvironment ->
+                val startedAt = Instant.ofEpochMilli(Instant.now().minusSeconds(60).toEpochMilli())
+                val originalPlan =
+                    planStore().use { store ->
+                        val template =
+                            store.authoring.createActivityTemplate(
+                                ActivityTemplateDraft(
+                                    "Unrelated Plan",
+                                    null,
+                                    TimeTrackingMode.TIMER,
+                                    Duration.ofDays(1),
+                                ),
+                                createdAt = startedAt,
+                            )
+                        val plan =
+                            store.plans.createActivityPlanFromTemplate(
+                                template.id,
+                                PlanSchedule.FloatingDay(startedAt.atOffset(ZoneOffset.UTC).toLocalDate()),
+                                startedAt,
+                            )
+                        store.live.startActivityFromPlan(plan.actionIdentity(), startedAt, startedAt, ZoneOffset.UTC)
+                        if (paused) {
+                            store.live.pauseActiveActivity(
+                                ActivityExecutionPauseId(UUID.randomUUID().toString()),
+                                startedAt.plusSeconds(1),
+                            )
                         }
-                        assertCompleted(store, original, expected)
-                        val completed = store.durableFacts()
-                        send(expected) // The completed transition cancelled the original system token.
-                        send(expected.copy(executionId = "obsolete-" + UUID.randomUUID()))
-                        assertEquals(completed, store.durableFacts())
-                        Triple(original, expected, completed)
+                        plan
                     }
-                // New physical Room connection and canonical History/active-runtime readers.
-                RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { reopened ->
-                    assertCompleted(reopened, persisted.first, persisted.second)
-                    assertEquals(persisted.third, reopened.durableFacts())
+                val originalRuntime =
+                    RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { it.live.getActiveRuntime() }
+                assertEquals(PlanEntryStatus.PLANNED, originalPlan.status)
+                assertNotNull(originalRuntime)
+                // The exact helper exercised by the acceptance testcase runs twice against a
+                // nonempty baseline. Comparing all tables detects both retained rows and cleanup
+                // that terminates a non-owned session or fulfills its Plan.
+                repeat(2) { attempt ->
+                    assertDatabaseUnchanged {
+                        if (failAfterSeed) {
+                            val failure = IllegalStateException("injected after fixture live write")
+                            try {
+                                if (attempt == 0) {
+                                    runManifestAcceptance(afterSeed = { throw failure })
+                                } else {
+                                    runManifestAcceptance(afterDelivery = { throw failure })
+                                }
+                                fail("Fixture must reach the injected failure")
+                            } catch (actual: IllegalStateException) {
+                                assertSame(failure, actual)
+                            }
+                        } else {
+                            runManifestAcceptance()
+                        }
+                    }
+                    RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { reopened ->
+                        assertEquals(originalRuntime, reopened.live.getActiveRuntime())
+                    }
+                    planStore().use { reopened ->
+                        assertEquals(originalPlan, reopened.plans.getPlan(originalPlan.id))
+                    }
+                    assertEquals("Unrelated graph must remain cold", 0, baselineEnvironment.acquisitions)
                 }
-            } finally {
-                RuntimeRecoveryStore(context, APPLICATION_DATABASE).use(::clearLiveSlot)
-                graph.coordinator.onRuntimeStateChanged()
             }
         }
+    }
+
+    /** Includes every source/snapshot/interval/Plan/Statistics table and physical-file retention. */
+    private suspend fun assertDatabaseUnchanged(block: suspend () -> Unit) {
+        val path = context.getDatabasePath(APPLICATION_DATABASE)
+        // A baseline read must not migrate or initialize an existing application database.
+        val before = RuntimeRecoveryStore.readOnlyDurableFacts(context, APPLICATION_DATABASE)
+        val filesBefore = databaseFiles()
+        val ownerBefore = application.runtimeGraphOwner
+        try {
+            block()
+        } finally {
+            assertSame(ownerBefore, application.runtimeGraphOwner)
+            assertEquals(filesBefore, databaseFiles())
+            if (before == null) {
+                assertFalse("Fixture must not create the ordinary application database", path.exists())
+            } else {
+                assertEquals(before, RuntimeRecoveryStore.readOnlyDurableFacts(context, APPLICATION_DATABASE))
+            }
+        }
+    }
+
+    private fun databaseFiles(): Set<String> =
+        context
+            .databaseList()
+            .filterNot { it.endsWith("-wal") || it.endsWith("-shm") || it.endsWith("-journal") }
+            .toSet()
+
+    private fun planStore(): PlanSchedulingStore =
+        PlanSchedulingStore(context, APPLICATION_DATABASE, CurrentZoneIdProvider { ZoneOffset.UTC })
+
+    private suspend fun runManifestAcceptance(
+        afterSeed: () -> Unit = {},
+        afterDelivery: () -> Unit = {},
+    ) {
+        application.withDisposableRuntime { environment ->
+            val persisted =
+                RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { store ->
+                    assertNull(store.live.getActiveSession())
+                    assertEquals(0, environment.acquisitions)
+                    val future = seed(store, Instant.ofEpochMilli(Instant.now().toEpochMilli()), Duration.ofDays(1))
+                    afterSeed()
+                    val futureDeadline = deadline(store)
+                    val before = store.durableFacts()
+                    // First graph acquisition is cold and belongs to the actual manifest receiver.
+                    send(futureDeadline.copy(executionId = "obsolete-" + UUID.randomUUID()))
+                    assertEquals(1, environment.acquisitions)
+                    assertEquals(before, store.durableFacts())
+                    assertEquals(future, (store.live.getActiveRuntime() as ActiveActivityRuntime).execution)
+                    afterDelivery()
+                    val graph = LifeTracingRuntimeGraph.from(context)
+                    graph.coordinator.mutationGate.admit().run {
+                        store.live.completeActiveActivity(future.startedAt!!.plusSeconds(1))
+                    }
+                    graph.coordinator.onRuntimeStateChanged()
+
+                    // No foreground recovery or local driver is armed for this overdue fixture.
+                    // Only the unsuppressed production token can trigger the matching transition.
+                    val original = seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
+                    val expected = deadline(store)
+                    send(expected)
+                    awaitRuntimeSystemState("manifest receiver durable completion") {
+                        store.live.getActiveSession() == null
+                    }
+                    assertCompleted(store, original, expected)
+                    val completed = store.durableFacts()
+                    send(expected)
+                    send(expected.copy(executionId = "obsolete-" + UUID.randomUUID()))
+                    assertEquals(completed, store.durableFacts())
+                    Triple(original, expected, completed)
+                }
+            RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { reopened ->
+                assertCompleted(reopened, persisted.first, persisted.second)
+                assertEquals(persisted.third, reopened.durableFacts())
+            }
+        }
+    }
 
     @Test(timeout = 60_000)
     fun coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture() =
@@ -185,16 +310,6 @@ class RuntimeManifestDeadlineAndroidTest {
         assertEquals(ActivityExecutionStatus.COMPLETED, store.activity(original.id).status)
         assertNull(store.live.getActiveSession())
         assertNull(store.live.getActiveRuntime())
-    }
-
-    private fun clearLiveSlot(store: RuntimeRecoveryStore) {
-        // Explicit singleton prerequisite/cleanup even if a preceding unrelated test left live state.
-        val cleanupAt = Instant.now().plus(Duration.ofDays(36_525))
-        when (store.live.getActiveSession()?.kind) {
-            ActiveSessionKind.ACTIVITY -> store.live.completeActiveActivity(cleanupAt)
-            ActiveSessionKind.SEQUENCE -> store.live.endSequenceEarly(cleanupAt)
-            null -> Unit
-        }
     }
 
     private companion object {

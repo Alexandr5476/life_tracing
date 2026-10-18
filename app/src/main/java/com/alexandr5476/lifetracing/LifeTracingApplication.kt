@@ -70,7 +70,11 @@ import kotlinx.coroutines.withContext
 import java.time.ZoneId
 import java.util.UUID
 
-class LifeTracingApplication : Application() {
+open class LifeTracingApplication : Application() {
+    /** Instrumentation may scope acquisition; normal application/process ownership remains shared. */
+    internal open val runtimeGraphOwner: RuntimeGraphOwner
+        get() = LifeTracingRuntimeGraph.processOwner
+
     private val runtimeGraph by lazy { LifeTracingRuntimeGraph.from(this) }
 
     override fun onCreate() {
@@ -196,9 +200,13 @@ class LifeTracingRuntimeGraph internal constructor(
     ): StatisticsSeriesDetailController = statisticsSeriesDetailControllerFactory(seriesId, initialPeriod)
 
     companion object {
-        private val processOwner = RuntimeGraphOwner(::create)
+        internal val processOwner = RuntimeGraphOwner(::create)
 
-        fun from(context: Context): LifeTracingRuntimeGraph = from(context, processOwner)
+        fun from(context: Context): LifeTracingRuntimeGraph {
+            val application = context.applicationContext
+            val owner = (application as? LifeTracingApplication)?.runtimeGraphOwner ?: processOwner
+            return from(application, owner)
+        }
 
         internal fun from(
             context: Context,

@@ -1,6 +1,8 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import android.database.Cursor
+import android.database.sqlite.SQLiteDatabase
 import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
@@ -57,38 +59,53 @@ class RuntimeRecoveryStore(
         }
 
     /** Complete bounded fixture comparison covers snapshots, provenance, intervals and source state. */
-    fun durableFacts(): Map<String, List<List<String?>>> {
-        val db = database.openHelper.readableDatabase
-        val tables =
-            db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").use { cursor ->
-                buildList {
-                    while (cursor.moveToNext()) {
-                        val table = cursor.getString(0)
-                        if (!table.startsWith("sqlite_") && !table.startsWith("room_") && table != "android_metadata") {
-                            add(table)
-                        }
-                    }
-                }
-            }
-        return tables.associateWith { table ->
-            db.query("SELECT * FROM \"$table\" ORDER BY rowid").use { cursor ->
-                buildList {
-                    while (cursor.moveToNext()) {
-                        add(List(cursor.columnCount) { if (cursor.isNull(it)) null else cursor.getString(it) })
-                    }
-                }
-            }
-        }
-    }
+    fun durableFacts(): Map<String, List<List<String?>>> =
+        readDurableFacts { database.openHelper.readableDatabase.query(it) }
 
     override fun close() {
         database.close()
     }
 
     companion object {
+        /** Inspect preexisting app state without Room callbacks, migration or creating an absent file. */
+        fun readOnlyDurableFacts(
+            context: Context,
+            name: String,
+        ): Map<String, List<List<String?>>>? {
+            val file = context.getDatabasePath(name)
+            if (!file.exists()) return null
+            return SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
+                readDurableFacts { database.rawQuery(it, null) }
+            }
+        }
+
         /** Close the actual production Room owner without exposing Room models to application tests. */
         fun closeProductionRuntimeRepository(repository: LiveSessionRepository) {
             repository.database.close()
+        }
+    }
+}
+
+/** Shared bounded fixture capture; a read-only baseline cannot initialize or migrate its database. */
+private fun readDurableFacts(query: (String) -> Cursor): Map<String, List<List<String?>>> {
+    val tables =
+        query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    val table = cursor.getString(0)
+                    if (!table.startsWith("sqlite_") && !table.startsWith("room_") && table != "android_metadata") {
+                        add(table)
+                    }
+                }
+            }
+        }
+    return tables.associateWith { table ->
+        query("SELECT * FROM \"$table\" ORDER BY rowid").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(List(cursor.columnCount) { if (cursor.isNull(it)) null else cursor.getString(it) })
+                }
+            }
         }
     }
 }

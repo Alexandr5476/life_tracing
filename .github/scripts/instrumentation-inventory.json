@@ -1039,7 +1039,10 @@
     ],
     "com.alexandr5476.lifetracing.runtime.RuntimeManifestDeadlineAndroidTest": [
       "coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture",
-      "productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen"
+      "failedManifestFixturePreservesUnrelatedPlanAndDeletesItsLiveFixture",
+      "productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen",
+      "repeatedManifestFixturePreservesUnrelatedPausedPlanAndEveryDurableTable",
+      "repeatedManifestFixturePreservesUnrelatedRunningPlanAndEveryDurableTable"
     ],
     "com.alexandr5476.lifetracing.runtime.RuntimePlatformAndroidTest": [
       "manifestDeclaresOnlyRuntimePermissionsAndReceiversNeededByTheAdapters",
