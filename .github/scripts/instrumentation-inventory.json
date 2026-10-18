@@ -651,7 +651,7 @@
       "catalogRetainsArchivedSourcelessAndZeroExecutionSeries",
       "deletedSequenceChildLeavesDurableValuesButExitsActivityStatisticsOnly",
       "durationReadersSurvivePhysicalReopenAndHistoricalDeletion",
-      "durationTraversalClosesRealRoomCursorsOnCancellationAndCountMismatch",
+      "durationSelectionRejectsCountMismatchAndInvalidCachedValues",
       "globalAccountingUsesOnlyTopLevelTerminalRowsAndPrimaryDate",
       "orderedDurationReadersPreserveEligibilityPeriodsAndDetail",
       "overviewMatchesCanonicalReadersAndPreservesEveryCatalogSeries",

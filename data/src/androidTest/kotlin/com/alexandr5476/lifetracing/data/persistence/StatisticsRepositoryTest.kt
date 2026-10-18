@@ -3,7 +3,6 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
-import android.database.CursorWrapper
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -45,7 +44,6 @@ import java.time.YearMonth
 import java.time.ZoneOffset
 import java.util.Collections
 import java.util.UUID
-import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
@@ -1622,8 +1620,11 @@ class StatisticsRepositoryTest {
         fun selectCount(): Int =
             synchronized(observedSql) {
                 observedSql.count {
-                    it.trimStart().startsWith("SELECT", ignoreCase = true) &&
-                        !it.contains("room_table_modification_log", ignoreCase = true)
+                    val statement = it.trimStart()
+                    val isRead =
+                        statement.startsWith("SELECT", ignoreCase = true) ||
+                            statement.startsWith("WITH", ignoreCase = true)
+                    isRead && !statement.contains("room_table_modification_log", ignoreCase = true)
                 }
             }
         observedSql.clear()
@@ -1681,6 +1682,19 @@ class StatisticsRepositoryTest {
             assertEquals(ExactValue.of(1_000, 1), activity.durations.averageMilliseconds)
             assertEquals(Duration.ofSeconds(1), activity.durations.minimum)
             assertEquals(Duration.ofSeconds(1), activity.durations.maximum)
+            val dao = database.statisticsDao()
+            val start = if (period is StatisticsPeriod.Day) AUG_20 else null
+            val selections =
+                listOf(
+                    dao.activityDurationSelection("large-series", start, start, expected),
+                    dao.sequenceDurationSelection("large-sequence-series", start, start, expected),
+                )
+            selections.forEach {
+                assertEquals(expected, it.sampleCount)
+                assertEquals(2L, it.selectedCount)
+                assertEquals(1_000L, it.lowerMedianMs)
+                assertEquals(1_000L, it.upperMedianMs)
+            }
         }
     }
 
@@ -1698,6 +1712,14 @@ class StatisticsRepositoryTest {
         val day = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
         assertEquals(0L, repository.activitySeries(activityId, day).durations.sampleCount)
         assertEquals(0L, repository.sequenceSeries(sequenceId, day).activeDurations.sampleCount)
+        completedActivity("duration-missing", "duration-no-live", activityId.value, null, AUG_20)
+        val noLive = repository.activitySeries(activityId, day)
+        assertEquals(1L, noLive.executionCount)
+        assertEquals(0L, noLive.durations.sampleCount)
+        assertEquals(Duration.ZERO, noLive.durations.total)
+        assertNull(noLive.durations.minimum)
+        assertNull(noLive.durations.maximum)
+        assertNull(noLive.durations.medianMilliseconds)
         listOf(0L, 2L, 9L).forEachIndexed { index, duration ->
             completedActivity("duration-$index", "duration-snapshot", activityId.value, duration, AUG_20)
         }
@@ -1712,7 +1734,6 @@ class StatisticsRepositoryTest {
             sequenceExecutionId = child.first,
             occurrenceId = child.second,
         )
-        completedActivity("duration-missing", "duration-no-live", activityId.value, null, AUG_20)
         completedActivity(
             "duration-outside",
             "duration-snapshot",
@@ -1773,29 +1794,81 @@ class StatisticsRepositoryTest {
         assertEquals(ExactValue.of(3, 1), allSequence.activeDurations.medianMilliseconds)
         assertEquals(activity, (repository.seriesDetail(activityId, day) as StatisticsSeriesDetail.Activity).statistics)
         assertEquals(sequence, (repository.seriesDetail(sequenceId, day) as StatisticsSeriesDetail.Sequence).statistics)
+        activitySnapshot("duration-one-off", null)
+        activitySnapshot("duration-one-off-no-live", null, mode = "NO_LIVE_TRACKING")
+        completedActivity("duration-one-off-row", "duration-one-off", ONE_OFF, 7, AUG_20)
+        completedActivity("duration-one-off-missing", "duration-one-off-no-live", ONE_OFF, null, AUG_20)
+        val overview = repository.overview(day)
+        assertEquals(repository.seriesSummaries(day), overview.series)
+        assertEquals(repository.global(day), overview.global)
+        val oneOff = overview.series.single { it.series.id.value == ONE_OFF }
+        assertEquals(2L, oneOff.executionCount)
+        assertEquals(1L, oneOff.durationSampleCount)
+        assertEquals(Duration.ofMillis(7), oneOff.totalDuration)
+        val aggregate = requireNotNull(database.statisticsDao().oneOffAggregate(ONE_OFF, AUG_20, AUG_20))
+        assertEquals(7L, aggregate.minimumDurationMs)
+        assertEquals(7L, aggregate.maximumDurationMs)
     }
 
     @Test
-    fun durationTraversalClosesRealRoomCursorsOnCancellationAndCountMismatch() {
-        series("cursor-series", "ACTIVITY", "Cursor")
-        activitySnapshot("cursor-snapshot", "cursor-series")
-        completedActivity("cursor-row", "cursor-snapshot", "cursor-series", 3, AUG_20)
-        val before = repository.activitySeries(StatisticsSeriesId("cursor-series"), StatisticsPeriod.AllTime)
-        database.runInTransaction {
-            val cancelled =
-                object : CursorWrapper(database.statisticsDao().activityDurationValues("cursor-series", null, null)) {
-                    override fun getLong(columnIndex: Int): Long = throw CancellationException("test traversal")
-                }
-            assertThrows(CancellationException::class.java) { cancelled.readDurationDistribution(1) }
-            assertTrue(cancelled.isClosed)
-            val mismatched = database.statisticsDao().activityDurationValues("cursor-series", null, null)
-            assertThrows(IllegalArgumentException::class.java) { mismatched.readDurationDistribution(0) }
-            assertTrue(mismatched.isClosed)
-            val successful = database.statisticsDao().activityDurationValues("cursor-series", null, null)
-            assertEquals(before.durations, successful.readDurationDistribution(1))
-            assertTrue(successful.isClosed)
+    fun durationSelectionRejectsCountMismatchAndInvalidCachedValues() {
+        series("selection-series", "ACTIVITY", "Selection")
+        series("selection-sequence", "SEQUENCE", "Sequence")
+        activitySnapshot("selection-snapshot", "selection-series")
+        completedActivity("selection-row", "selection-snapshot", "selection-series", 3, AUG_20)
+        completedSequence("selection-root", "selection-sequence", "selection-snapshot", 3, 0, AUG_20)
+        val dao = database.statisticsDao()
+        val aggregate = dao.activitySeriesAggregates("selection-series", null, null).single()
+        val selected = dao.activityDurationSelection("selection-series", null, null, 1)
+        assertEquals(1L, selected.sampleCount)
+        assertEquals(1L, selected.selectedCount)
+        assertEquals(
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime).durations,
+            selected.readDurationDistribution(aggregate),
+        )
+        assertThrows(IllegalArgumentException::class.java) { selected.readDurationDistribution(null) }
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(sampleCount = 0).readDurationDistribution(aggregate)
         }
-        assertEquals(before, repository.activitySeries(StatisticsSeriesId("cursor-series"), StatisticsPeriod.AllTime))
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(selectedCount = 0).readDurationDistribution(aggregate)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(lowerMedianMs = null).readDurationDistribution(aggregate)
+        }
+        val wrongRank = dao.activityDurationSelection("selection-series", null, null, 0)
+        assertEquals(1L, wrongRank.sampleCount)
+        assertEquals(0L, wrongRank.selectedCount)
+        assertThrows(IllegalArgumentException::class.java) { wrongRank.readDurationDistribution(null) }
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("PRAGMA ignore_check_constraints = ON")
+        try {
+            sql.execSQL("UPDATE activity_executions SET active_duration_ms = -1 WHERE id = 'selection-row'")
+            sql.execSQL("UPDATE sequence_executions SET active_duration_ms = -1 WHERE id = 'selection-root'")
+        } finally {
+            sql.execSQL("PRAGMA ignore_check_constraints = OFF")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.sequenceSeries(StatisticsSeriesId("selection-sequence"), StatisticsPeriod.AllTime)
+        }
+        assertEquals(-1L, database.activityExecutionDao().getById("selection-row")?.activeDurationMs)
+        assertEquals(-1L, database.sequenceExecutionDao().getById("selection-root")?.activeDurationMs)
+        sql.execSQL("PRAGMA ignore_check_constraints = ON")
+        try {
+            sql.execSQL("UPDATE activity_executions SET active_duration_ms = 0.5 WHERE id = 'selection-row'")
+            sql.execSQL("UPDATE sequence_executions SET active_duration_ms = 0.5 WHERE id = 'selection-root'")
+        } finally {
+            sql.execSQL("PRAGMA ignore_check_constraints = OFF")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.sequenceSeries(StatisticsSeriesId("selection-sequence"), StatisticsPeriod.AllTime)
+        }
     }
 
     @Test

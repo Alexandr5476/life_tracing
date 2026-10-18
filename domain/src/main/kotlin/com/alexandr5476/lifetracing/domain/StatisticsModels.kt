@@ -127,46 +127,48 @@ data class NumberDistribution(
 )
 
 object StatisticsDistributionCalculator {
-    /** Consumes an ascending, forward-only source, retaining only scalar distribution state. */
-    fun orderedDurations(
-        expectedCount: Long,
-        milliseconds: Iterator<Long>,
+    /** Builds an exact duration result from an integral summary and at most two median endpoints. */
+    fun durations(
+        sampleCount: Long,
+        totalMilliseconds: BigInteger,
+        minimumMilliseconds: Long?,
+        maximumMilliseconds: Long?,
+        medianEndpoints: List<Long>,
     ): DurationDistribution {
-        require(expectedCount >= 0) { "Duration sample count cannot be negative" }
-        val lowerIndex = if (expectedCount == 0L) 0 else (expectedCount - 1) / 2
-        val upperIndex = expectedCount / 2
-        var count = 0L
-        var total = BigInteger.ZERO
-        var minimum: Long? = null
-        var maximum: Long? = null
-        var lowerMiddle: Long? = null
-        var upperMiddle: Long? = null
-        while (milliseconds.hasNext()) {
-            val value = milliseconds.next()
-            require(value >= 0) { "Duration samples cannot be negative" }
-            require(maximum == null || value >= maximum) { "Duration samples must be ascending" }
-            require(count < expectedCount) { "Duration aggregate disagrees with its scalar samples" }
-            if (count == 0L) minimum = value
-            if (count == lowerIndex) lowerMiddle = value
-            if (count == upperIndex) upperMiddle = value
-            maximum = value
-            total += BigInteger.valueOf(value)
-            count++ // Bounded above by the nonnegative expectedCount, including Long.MAX_VALUE.
+        require(sampleCount >= 0 && totalMilliseconds.signum() >= 0) { "Invalid duration summary" }
+        if (sampleCount == 0L) {
+            require(totalMilliseconds == BigInteger.ZERO && minimumMilliseconds == null && maximumMilliseconds == null)
+            require(medianEndpoints.isEmpty()) { "Empty duration summary has median samples" }
+            return durationDistribution(ScalarDistribution.EMPTY)
         }
-        require(count == expectedCount) { "Duration aggregate disagrees with its scalar samples" }
-        val median =
-            lowerMiddle?.let {
-                ExactValue.of(
-                    BigInteger.valueOf(it) + BigInteger.valueOf(requireNotNull(upperMiddle)),
-                    BigInteger.valueOf(2),
-                )
-            }
+        val minimum = requireNotNull(minimumMilliseconds) { "Missing duration minimum" }
+        val maximum = requireNotNull(maximumMilliseconds) { "Missing duration maximum" }
+        require(minimum >= 0 && maximum >= minimum) { "Invalid duration bounds" }
+        val endpointCount = if (sampleCount % 2 == 0L) 2 else 1
+        require(medianEndpoints.size == endpointCount) { "Duration median selection disagrees with sample count" }
+        val lower = medianEndpoints.first()
+        val upper = medianEndpoints.last()
+        require(lower >= minimum && upper >= lower && upper <= maximum) { "Invalid duration median endpoints" }
+        val count = BigInteger.valueOf(sampleCount)
+        require(totalMilliseconds >= BigInteger.valueOf(minimum) * count)
+        require(totalMilliseconds <= BigInteger.valueOf(maximum) * count)
+        if (sampleCount <= 2) {
+            require(lower == minimum && upper == maximum) { "Small distribution endpoints disagree with bounds" }
+            val expectedTotal =
+                if (sampleCount == 1L) {
+                    BigInteger.valueOf(lower)
+                } else {
+                    BigInteger.valueOf(lower) + BigInteger.valueOf(upper)
+                }
+            require(totalMilliseconds == expectedTotal) { "Small distribution total disagrees with endpoints" }
+        }
+        val midpointTotal = medianEndpoints.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
         return durationDistribution(
             ScalarDistribution(
-                count,
-                total,
-                if (count == 0L) null else ExactValue.of(total, BigInteger.valueOf(count)),
-                median,
+                sampleCount,
+                totalMilliseconds,
+                ExactValue.of(totalMilliseconds, count),
+                ExactValue.of(midpointTotal, BigInteger.valueOf(endpointCount.toLong())),
                 minimum,
                 maximum,
             ),

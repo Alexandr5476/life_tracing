@@ -2,7 +2,6 @@
 
 package com.alexandr5476.lifetracing.data.persistence
 
-import android.database.Cursor
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Query
@@ -34,10 +33,24 @@ internal data class StatisticsSeriesAggregateRow(
     @ColumnInfo(name = "execution_count") val executionCount: Long,
     @ColumnInfo(name = "duration_sample_count") val durationSampleCount: Long,
     @ColumnInfo(name = "total_duration_ms") val totalDurationMs: Long,
+    @ColumnInfo(name = "invalid_duration_count") val invalidDurationCount: Long,
+    @ColumnInfo(name = "minimum_duration_ms") val minimumDurationMs: Long?,
+    @ColumnInfo(name = "maximum_duration_ms") val maximumDurationMs: Long?,
     @ColumnInfo(name = "total_pause_ms") val totalPauseMs: Long,
     @ColumnInfo(name = "active_day_count") val activeDayCount: Long,
     @ColumnInfo(name = "first_performed_at_ms") val firstPerformedAtMs: Long?,
     @ColumnInfo(name = "last_performed_at_ms") val lastPerformedAtMs: Long?,
+) {
+    init {
+        require(invalidDurationCount == 0L) { "Duration samples must be nonnegative SQLite integers" }
+    }
+}
+
+internal data class StatisticsDurationSelectionRow(
+    @ColumnInfo(name = "sample_count") val sampleCount: Long,
+    @ColumnInfo(name = "selected_count") val selectedCount: Long,
+    @ColumnInfo(name = "lower_median_ms") val lowerMedianMs: Long?,
+    @ColumnInfo(name = "upper_median_ms") val upperMedianMs: Long?,
 )
 
 internal data class StatisticsFieldMetadataRow(
@@ -227,6 +240,11 @@ internal interface StatisticsDao {
     @Query(
         "SELECT executions.statistics_series_id AS series_id, COUNT(*) AS execution_count, " +
             "COUNT(executions.active_duration_ms) AS duration_sample_count, " +
+            "COUNT(CASE WHEN executions.active_duration_ms IS NOT NULL AND " +
+            "(typeof(executions.active_duration_ms) != 'integer' OR executions.active_duration_ms < 0) " +
+            "THEN 1 END) AS invalid_duration_count, " +
+            "MIN(executions.active_duration_ms) AS minimum_duration_ms, " +
+            "MAX(executions.active_duration_ms) AS maximum_duration_ms, " +
             "COALESCE(SUM(executions.active_duration_ms), 0) AS total_duration_ms, 0 AS total_pause_ms, " +
             "COUNT(DISTINCT executions.primary_local_date) AS active_day_count, " +
             "MIN(executions.completed_at_ms) AS first_performed_at_ms, MAX(executions.completed_at_ms) AS last_performed_at_ms " +
@@ -246,6 +264,11 @@ internal interface StatisticsDao {
     @Query(
         "SELECT executions.statistics_series_id AS series_id, COUNT(*) AS execution_count, " +
             "COUNT(executions.active_duration_ms) AS duration_sample_count, " +
+            "COUNT(CASE WHEN executions.active_duration_ms IS NOT NULL AND " +
+            "(typeof(executions.active_duration_ms) != 'integer' OR executions.active_duration_ms < 0) " +
+            "THEN 1 END) AS invalid_duration_count, " +
+            "MIN(executions.active_duration_ms) AS minimum_duration_ms, " +
+            "MAX(executions.active_duration_ms) AS maximum_duration_ms, " +
             "COALESCE(SUM(executions.active_duration_ms), 0) AS total_duration_ms, " +
             "COALESCE(SUM(executions.pause_duration_ms), 0) AS total_pause_ms, " +
             "COUNT(DISTINCT executions.primary_local_date) AS active_day_count, " +
@@ -266,6 +289,11 @@ internal interface StatisticsDao {
     @Query(
         "SELECT executions.statistics_series_id AS series_id, COUNT(*) AS execution_count, " +
             "COUNT(executions.active_duration_ms) AS duration_sample_count, " +
+            "COUNT(CASE WHEN executions.active_duration_ms IS NOT NULL AND " +
+            "(typeof(executions.active_duration_ms) != 'integer' OR executions.active_duration_ms < 0) " +
+            "THEN 1 END) AS invalid_duration_count, " +
+            "MIN(executions.active_duration_ms) AS minimum_duration_ms, " +
+            "MAX(executions.active_duration_ms) AS maximum_duration_ms, " +
             "COALESCE(SUM(executions.active_duration_ms), 0) AS total_duration_ms, 0 AS total_pause_ms, " +
             "COUNT(DISTINCT executions.primary_local_date) AS active_day_count, " +
             "MIN(executions.completed_at_ms) AS first_performed_at_ms, MAX(executions.completed_at_ms) AS last_performed_at_ms " +
@@ -282,26 +310,40 @@ internal interface StatisticsDao {
     ): StatisticsSeriesAggregateRow?
 
     @Query(
-        "SELECT active_duration_ms FROM activity_executions WHERE statistics_series_id = :seriesId " +
-            "AND status = 'COMPLETED' AND deleted_at_ms IS NULL AND active_duration_ms IS NOT NULL " +
-            "AND (:startDate IS NULL OR primary_local_date BETWEEN :startDate AND :endDate) ORDER BY active_duration_ms",
+        "WITH eligible AS (SELECT active_duration_ms FROM activity_executions " +
+            "WHERE statistics_series_id = :seriesId AND status = 'COMPLETED' AND deleted_at_ms IS NULL " +
+            "AND active_duration_ms IS NOT NULL " +
+            "AND (:startDate IS NULL OR primary_local_date BETWEEN :startDate AND :endDate)), " +
+            "median_values AS (SELECT active_duration_ms FROM eligible ORDER BY active_duration_ms " +
+            "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
+            "OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / 2 END) " +
+            "SELECT (SELECT COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, " +
+            "MIN(active_duration_ms) AS lower_median_ms, MAX(active_duration_ms) AS upper_median_ms FROM median_values",
     )
-    fun activityDurationValues(
+    fun activityDurationSelection(
         seriesId: String,
         startDate: String?,
         endDate: String?,
-    ): Cursor
+        expectedCount: Long,
+    ): StatisticsDurationSelectionRow
 
     @Query(
-        "SELECT active_duration_ms FROM sequence_executions WHERE statistics_series_id = :seriesId " +
-            "AND status IN ('COMPLETED', 'ENDED_EARLY') AND active_duration_ms IS NOT NULL " +
-            "AND (:startDate IS NULL OR primary_local_date BETWEEN :startDate AND :endDate) ORDER BY active_duration_ms",
+        "WITH eligible AS (SELECT active_duration_ms FROM sequence_executions " +
+            "WHERE statistics_series_id = :seriesId AND status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND active_duration_ms IS NOT NULL " +
+            "AND (:startDate IS NULL OR primary_local_date BETWEEN :startDate AND :endDate)), " +
+            "median_values AS (SELECT active_duration_ms FROM eligible ORDER BY active_duration_ms " +
+            "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
+            "OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / 2 END) " +
+            "SELECT (SELECT COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, " +
+            "MIN(active_duration_ms) AS lower_median_ms, MAX(active_duration_ms) AS upper_median_ms FROM median_values",
     )
-    fun sequenceDurationValues(
+    fun sequenceDurationSelection(
         seriesId: String,
         startDate: String?,
         endDate: String?,
-    ): Cursor
+        expectedCount: Long,
+    ): StatisticsDurationSelectionRow
 
     @Query(
         "SELECT fields.id AS source_field_id, fields.field_type, fields.unit, fields.display_precision, " +

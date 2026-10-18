@@ -3,7 +3,6 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
-import android.database.Cursor
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivitySeriesStatistics
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
@@ -36,20 +35,46 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import com.alexandr5476.lifetracing.domain.dateRangeOrNull
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.Callable
 
-// Own the Cursor for the complete traversal, including validation failures and cancellation exceptions.
-internal fun Cursor.readDurationDistribution(expectedCount: Long): DurationDistribution =
-    use { cursor ->
-        StatisticsDistributionCalculator.orderedDurations(
-            expectedCount,
-            generateSequence { if (cursor.moveToNext()) cursor.getLong(0) else null }.iterator(),
-        )
-    }
+// The selection independently counts all eligible samples but returns only scalar order statistics.
+internal fun StatisticsDurationSelectionRow.readDurationDistribution(
+    aggregate: StatisticsSeriesAggregateRow?,
+): DurationDistribution {
+    val expectedCount = aggregate?.durationSampleCount ?: 0
+    require(sampleCount == expectedCount) { "Duration aggregate disagrees with eligible sample count" }
+    val expectedSelection =
+        when {
+            expectedCount == 0L -> 0
+            expectedCount % 2 == 0L -> 2
+            else -> 1
+        }
+    require(selectedCount == expectedSelection.toLong()) { "Duration median selection is incomplete" }
+    val endpoints =
+        when (expectedSelection) {
+            0 -> {
+                require(lowerMedianMs == null && upperMedianMs == null) { "Unexpected empty median endpoints" }
+                emptyList()
+            }
+            1 -> {
+                require(lowerMedianMs == upperMedianMs) { "Odd median endpoints disagree" }
+                listOf(requireNotNull(lowerMedianMs) { "Missing median endpoint" })
+            }
+            else -> listOf(requireNotNull(lowerMedianMs), requireNotNull(upperMedianMs))
+        }
+    return StatisticsDistributionCalculator.durations(
+        expectedCount,
+        BigInteger.valueOf(aggregate?.totalDurationMs ?: 0),
+        aggregate?.minimumDurationMs,
+        aggregate?.maximumDurationMs,
+        endpoints,
+    )
+}
 
 class StatisticsRepository internal constructor(
     private val database: LifeTracingDatabase,
@@ -245,8 +270,8 @@ class StatisticsRepository internal constructor(
         val distribution =
             database
                 .statisticsDao()
-                .activityDurationValues(series.id.value, start, end)
-                .readDurationDistribution(row?.durationSampleCount ?: 0)
+                .activityDurationSelection(series.id.value, start, end, row?.durationSampleCount ?: 0)
+                .readDurationDistribution(row)
         return ActivitySeriesStatistics(
             series,
             row?.executionCount ?: 0,
@@ -267,8 +292,8 @@ class StatisticsRepository internal constructor(
         val distribution =
             database
                 .statisticsDao()
-                .sequenceDurationValues(series.id.value, start, end)
-                .readDurationDistribution(row?.durationSampleCount ?: 0)
+                .sequenceDurationSelection(series.id.value, start, end, row?.durationSampleCount ?: 0)
+                .readDurationDistribution(row)
         val count = row?.executionCount ?: 0
         val pause = row?.totalPauseMs ?: 0
         return SequenceSeriesStatistics(

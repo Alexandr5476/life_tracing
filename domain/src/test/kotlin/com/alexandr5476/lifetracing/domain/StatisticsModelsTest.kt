@@ -13,83 +13,97 @@ import java.time.YearMonth
 
 class StatisticsModelsTest {
     @Test
-    fun orderedDurationsConsumeOnePassAndMatchExactReferenceDistributions() {
+    fun durationSummaryPreservesExactReferenceDistributions() {
         val fixtures =
             listOf(
                 emptyList(),
                 listOf(0L),
                 listOf(17L),
                 listOf(0L, 0L, 3L),
-                listOf(0L, 2L, 2L, 9L),
+                listOf(0L, 2L, 3L, 9L),
                 listOf(1L, 20L, 300L, 4_000L, 50_000L),
                 listOf(Long.MAX_VALUE),
                 listOf(1L, Long.MAX_VALUE - 1),
             )
         fixtures.forEach { values ->
-            val distribution =
-                StatisticsDistributionCalculator.orderedDurations(values.size.toLong(), onePass(values))
-            assertEquals(StatisticsDistributionCalculator.durations(values.reversed()), distribution)
+            val endpoints =
+                when {
+                    values.isEmpty() -> emptyList()
+                    values.size % 2 == 1 -> listOf(values[values.size / 2])
+                    else -> listOf(values[values.size / 2 - 1], values[values.size / 2])
+                }
+            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+            val actual =
+                StatisticsDistributionCalculator.durations(
+                    values.size.toLong(),
+                    total,
+                    values.firstOrNull(),
+                    values.lastOrNull(),
+                    endpoints,
+                )
+            assertEquals(StatisticsDistributionCalculator.durations(values.reversed()), actual)
         }
-        val even = StatisticsDistributionCalculator.orderedDurations(4, onePass(listOf(0L, 2L, 3L, 9L)))
-        assertEquals(Duration.ofMillis(14), even.total)
+        val even = StatisticsDistributionCalculator.durations(4, BigInteger.valueOf(14), 0, 9, listOf(2, 3))
         assertEquals(ExactValue.of(7, 2), even.averageMilliseconds)
         assertEquals(ExactValue.of(5, 2), even.medianMilliseconds)
         assertEquals(Duration.ZERO, even.minimum)
         assertEquals(Duration.ofMillis(9), even.maximum)
         val boundary =
-            StatisticsDistributionCalculator.orderedDurations(2, onePass(listOf(1L, Long.MAX_VALUE - 1)))
+            StatisticsDistributionCalculator.durations(
+                2,
+                BigInteger.valueOf(Long.MAX_VALUE),
+                1,
+                Long.MAX_VALUE - 1,
+                listOf(1, Long.MAX_VALUE - 1),
+            )
         assertEquals(Duration.ofMillis(Long.MAX_VALUE), boundary.total)
         assertEquals(ExactValue.of(Long.MAX_VALUE, 2), boundary.medianMilliseconds)
     }
 
     @Test
-    fun orderedDurationsRejectInvalidCountsNegativeAndUnorderedSamples() {
-        listOf(-1L to emptyList(), 0L to listOf(1L), 2L to listOf(1L), 1L to listOf(1L, 2L))
-            .forEach { (count, values) ->
-                assertThrows(IllegalArgumentException::class.java) {
-                    StatisticsDistributionCalculator.orderedDurations(count, onePass(values))
-                }
-            }
-        for (values in listOf(listOf(-1L), listOf(2L, 1L))) {
+    fun durationSummaryRejectsInvalidCountsAndEndpoints() {
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(-1, BigInteger.ZERO, null, null, emptyList())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(0, BigInteger.ONE, null, null, emptyList())
+        }
+        for (endpoints in listOf(emptyList(), listOf(1L), listOf(2L, 1L), listOf(0L, 4L), listOf(1L, 2L, 3L))) {
             assertThrows(IllegalArgumentException::class.java) {
-                StatisticsDistributionCalculator.orderedDurations(values.size.toLong(), onePass(values))
+                StatisticsDistributionCalculator.durations(2, BigInteger.valueOf(4), 1, 3, endpoints)
             }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(1, BigInteger.ONE, null, 1, listOf(1))
         }
     }
 
     @Test
-    fun orderedDurationsAccumulateBeforeNarrowingAndRejectPositiveTotalOverflow() {
-        for (values in listOf(listOf(1L, Long.MAX_VALUE), listOf(Long.MAX_VALUE - 1, Long.MAX_VALUE))) {
-            // The second fixture overflows a Long midpoint sum; total overflow must still reject it.
-            assertThrows(ArithmeticException::class.java) {
-                StatisticsDistributionCalculator.orderedDurations(2, onePass(values))
-            }
+    fun durationSummaryRejectsNegativeDurationsAndInconsistentTotals() {
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(3, BigInteger.ONE, -1, 2, listOf(0))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(3, BigInteger.valueOf(100), 1, 3, listOf(2))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StatisticsDistributionCalculator.durations(1, BigInteger.valueOf(-1), -1, -1, listOf(-1))
         }
     }
 
     @Test
-    fun orderedDurationsAcceptGeneratedHistoryWithoutRandomAccessOrRepeatedTraversal() {
-        var next = 0L
-        val samples =
-            object : Iterator<Long> {
-                override fun hasNext() = next < 100_000
-
-                override fun next(): Long {
-                    if (!hasNext()) throw NoSuchElementException()
-                    return next++
-                }
-            }
-        val distribution = StatisticsDistributionCalculator.orderedDurations(100_000, samples)
-        assertEquals(100_000L, next)
-        assertEquals(100_000L, distribution.sampleCount)
-        assertEquals(Duration.ofMillis(4_999_950_000), distribution.total)
-        assertEquals(ExactValue.of(99_999, 2), distribution.medianMilliseconds)
+    fun durationSummaryRejectsTotalAndMidpointOverflowWithoutNarrowing() {
+        val total = BigInteger.valueOf(Long.MAX_VALUE) * BigInteger.valueOf(2)
+        assertThrows(ArithmeticException::class.java) {
+            StatisticsDistributionCalculator.durations(
+                2,
+                total,
+                Long.MAX_VALUE,
+                Long.MAX_VALUE,
+                listOf(Long.MAX_VALUE, Long.MAX_VALUE),
+            )
+        }
     }
-
-    private fun onePass(values: List<Long>): Iterator<Long> =
-        sequence {
-            values.forEach { yield(it) }
-        }.constrainOnce().iterator()
 
     @Test
     fun periodsResolveInclusiveCalendarRanges() {
