@@ -1091,5 +1091,13 @@
       "numberCategoryAndTextFieldsUseStableIdentityAndCanonicalSamples",
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ]
+  },
+  "startup": {
+    "com.alexandr5476.lifetracing.runtime.AndroidCompatibilityDeviceTest": [
+      "recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi={api}]"
+    ],
+    "com.alexandr5476.lifetracing.runtime.ProductionApplicationStartupTest": [
+      "manifestApplicationForegroundRecoversOverdueTimerAtLogicalDeadlineAndPreservesPausedTimer"
+    ]
   }
 }

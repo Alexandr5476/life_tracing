@@ -22,8 +22,9 @@ class InstrumentationEvidenceTests(unittest.TestCase):
         for classname, names in inventory[module].items():
             for name in names:
                 ET.SubElement(suite, "testcase", classname=classname, name=name.format(api=api))
-        source = root / module / f"build/outputs/androidTest-results/managedDevice/debug/pixel2Api{api}/TEST-suite.xml"
-        source.parent.mkdir(parents=True)
+        target_module = "app" if module == "startup" else module
+        source = root / target_module / f"build/outputs/androidTest-results/managedDevice/debug/pixel2Api{api}/TEST-suite.xml"
+        source.parent.mkdir(parents=True, exist_ok=True)
         self.save_report(source, suite)
         return source, suite
 
@@ -56,7 +57,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 ci.collect_reports(root, root / "evidence", "data", 26)
 
     def test_missing_skipped_failed_error_duplicate_and_malformed_mandatory_cases_are_rejected(self):
-        for module in ("data", "app"):
+        for module in ("data", "app", "startup"):
             for defect in ("missing", "skipped", "failure", "error", "duplicate", "malformed"):
                 with self.subTest(module=module, defect=defect), tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -75,7 +76,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         ci.collect_reports(root, root / "evidence", module, 26)
 
     def test_complete_inventory_accepts_nonmandatory_ignored_fixtures_on_every_api(self):
-        for module in ("data", "app"):
+        for module in ("data", "app", "startup"):
             for api in (26, 31, 33, 35, 36):
                 with self.subTest(module=module, api=api), tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -112,9 +113,15 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 if not case.get("name").startswith("recordsActualApi"):
                     suite.remove(case)
             self.save_report(source, suite)
+            original_collect = ci.collect_reports
+            def reports(repo, directory, module, api):
+                if module == "startup":
+                    self.write_inventory(repo, module, api)
+                return original_collect(repo, directory, module, api)
             env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
                        GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
-            with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+            with patch.object(ci, "collect_reports", side_effect=reports), \
+                    patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
                     patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
                     patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "Popen") as worker, \
@@ -127,7 +134,8 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertIn("mandatory", evidence["modules"]["data"]["evidence_error"])
             self.assertTrue(evidence["modules"]["app"]["mandatory_inventory_passed"])
             self.assertEqual((root / "ci-evidence/api26" / source.relative_to(root)).read_bytes(), source.read_bytes())
-            self.assertEqual(worker.call_count, 2)
+            self.assertTrue(evidence["modules"]["startup"]["mandatory_inventory_passed"])
+            self.assertEqual(worker.call_count, 3)
 
     def test_malformed_original_xml_is_retained_and_rejected(self):
         for malformed in (b"<testsuite>", b"<unknown/> "):
@@ -161,7 +169,8 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     patch.object(ci.subprocess, "Popen", Process), patch("sys.argv", ["ci", "--api", "26"]):
                 self.assertEqual(ci.main(), 1)
             install.assert_called_once_with(["sdkmanager", "--install", "emulator"], check=True)
-            self.assertEqual([c[1] for c in commands], [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest"])
+            self.assertEqual([c[1] for c in commands], [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest",
+                                  ":app:pixel2Api26DebugAndroidTest"])
             evidence = json.loads((Path(temporary) / "ci-evidence/api26/evidence.json").read_text())
             self.assertEqual(evidence["modules"]["app"]["exit_code"], 1)
             self.assertNotEqual(evidence["event_sha"], evidence["tested_sha"])
@@ -188,10 +197,14 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     worker.return_value.__enter__.return_value.wait.return_value = 0
                     self.assertEqual(ci.main(), 0)
                 self.assertEqual(calls, ([("install", ["sdkmanager", "--install", "emulator"])]
-                                         if api == 26 else []) + [("suite", "data"), ("suite", "app")])
+                                         if api == 26 else []) + [("suite", "data"), ("suite", "app"), ("suite", "startup")])
                 commands = [call.args[0] for call in worker.call_args_list]
                 self.assertEqual([c[1] for c in commands],
-                                 [f":data:pixel2Api{api}DebugAndroidTest", f":app:pixel2Api{api}DebugAndroidTest"])
+                                 [f":data:pixel2Api{api}DebugAndroidTest", f":app:pixel2Api{api}DebugAndroidTest",
+                                  f":app:pixel2Api{api}DebugAndroidTest"])
+                startup_property = "-Plifetracing.compatibility.productionStartup=true"
+                self.assertTrue(all(startup_property not in c for c in commands[:2]))
+                self.assertIn(startup_property, commands[2])
                 self.assertTrue(all(not any("Arguments.class" in arg for arg in c) for c in commands))
 
     def test_emulator_install_failure_is_observable_and_keeps_failed_evidence(self):
@@ -240,9 +253,10 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     self.assertEqual(ci.main(), 0)
                 installation.assert_called_once_with(command, check=True)
                 self.assertEqual([call.args[0][1] for call in worker.call_args_list],
-                                 [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest"])
+                                 [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest",
+                                  ":app:pixel2Api26DebugAndroidTest"])
                 evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
-                self.assertEqual(set(evidence["modules"]), {"data", "app"})
+                self.assertEqual(set(evidence["modules"]), {"data", "app", "startup"})
                 self.assertEqual(evidence["tested_sha"], "a" * 40)
 
     def test_sdkmanager_supports_installed_sdk_layouts_and_prefers_android_home(self):
@@ -286,6 +300,37 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
             self.assertEqual(evidence["modules"], {})
             self.assertIn("finished_at", evidence)
+
+    def test_failed_startup_rejects_gate_even_when_both_full_suites_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+            def reports(repo, directory, module, api):
+                return dict(total=2, failures=int(module == "startup"), errors=0,
+                            observed_apis=[api], reports=[], mandatory_inventory_passed=module != "startup")
+            with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci.subprocess, "Popen") as worker, \
+                    patch.object(ci, "collect_reports", side_effect=reports), \
+                    patch("sys.argv", ["ci", "--api", "35"]), contextlib.redirect_stdout(io.StringIO()):
+                worker.return_value.__enter__.return_value.stdout = []
+                worker.return_value.__enter__.return_value.wait.return_value = 0
+                self.assertEqual(ci.main(), 1)
+            evidence = json.loads((Path(temporary) / "ci-evidence/api35/evidence.json").read_text())
+            self.assertTrue(evidence["modules"]["data"]["mandatory_inventory_passed"])
+            self.assertTrue(evidence["modules"]["app"]["mandatory_inventory_passed"])
+            self.assertFalse(evidence["modules"]["startup"]["mandatory_inventory_passed"])
+
+    def test_startup_evidence_does_not_overwrite_full_app_original_xml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.write_inventory(root, "app")
+            original = source.read_bytes()
+            ci.collect_reports(root, root / "evidence", "app", 26)
+            self.write_inventory(root, "startup")
+            ci.collect_reports(root, root / "evidence", "startup", 26)
+            self.assertEqual((root / "evidence" / source.relative_to(root)).read_bytes(), original)
+            self.assertEqual((root / "evidence/startup" / source.relative_to(root)).read_bytes(), source.read_bytes())
 
     def test_merge_checkout_is_rejected_before_running_gradle(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -9,19 +9,19 @@ Delivery-plan item 7 and the S5 Parent contract define this gate. Product v0.16,
 | Required check name | API | Managed device | Required modules |
 | --- | --- | --- | --- |
 | Build, test, and static analysis | JVM/build | — | domain, data, app |
-| Managed-device instrumentation tests | 35 | pixel2Api35 | data then app |
-| Managed-device instrumentation tests (API 26) | 26 | pixel2Api26 | data then app |
-| Managed-device instrumentation tests (API 31) | 31 | pixel2Api31 | data then app |
-| Managed-device instrumentation tests (API 33) | 33 | pixel2Api33 | data then app |
-| Managed-device instrumentation tests (API 36) | 36 | pixel2Api36 | data then app |
+| Managed-device instrumentation tests | 35 | pixel2Api35 | data, app, startup |
+| Managed-device instrumentation tests (API 26) | 26 | pixel2Api26 | data, app, startup |
+| Managed-device instrumentation tests (API 31) | 31 | pixel2Api31 | data, app, startup |
+| Managed-device instrumentation tests (API 33) | 33 | pixel2Api33 | data, app, startup |
+| Managed-device instrumentation tests (API 36) | 36 | pixel2Api36 | data, app, startup |
 
-The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data and app in separate sequential Gradle invocations, even after module failure, avoiding shared AVD setup/teardown races. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
+The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data, the full isolated app suite, and the independent production-startup app suite in separate sequential Gradle invocations, even after module failure, avoiding shared AVD setup/teardown races. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
 
 Checkout and runner verification use the PR head SHA (or github.sha for other events). The runner rejects a checkout mismatch before Gradle. evidence.json distinguishes tested SHA from GitHub event SHA, which may identify a merge ref.
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 606 data and 323 app cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 606 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -55,6 +55,46 @@ The separate cold-acquisition test starts with a closed, uniquely named physical
 
 Controller must execute three independent fail-first mutations in disposable checkouts: add FLAG_RECEIVER_REGISTERED_ONLY in RuntimeDeadlineIntentCodec.intent(); replace setExactAndAllowWhileIdle() with setExact() at API 31; replace setAndAllowWhileIdle() with set() at API 35. The manifest test and realAlarmManagerRegistersTheAuthorizedModeAndCancellationRemovesIt respectively must fail. Restore all production calls/flags, retain original XML/log evidence, then run all five clean API jobs and exact-head CI. This correction turn adds assertions; device and mutation results remain Controller-owned and are not inferred from compilation.
 
+## Manifest-selected Application startup (checkpoint 61 F1)
+
+The ordinary app suite retains RuntimeIsolationTestRunner and its disposable receiver/database fixtures.
+Its installed-target metadata assertion now requires LifeTracingApplication independently of the substituted
+Application instance, using the API-appropriate PackageManager overload. Metadata alone is insufficient:
+every API row also runs a separate app invocation with
+`-Plifetracing.compatibility.productionStartup=true`. That invocation uses unmodified AndroidJUnitRunner,
+which instantiates the manifest-selected Application; no newApplication override or Application subclass
+participates. Gradle selects only ProductionApplicationStartupTest, the device API marker, and existing
+platform-isolation helpers copied by a tracked-input Sync task into a generated source directory. There are no method/class runner filters. The debug package suffix is
+`.debug.startup` for this invocation only, so its ordinary `lifetracing.db` and platform slots belong to
+a disposable installation, independently of the regular `.debug` package.
+
+The test requires the installed declaration and actual framework Application to be exactly
+LifeTracingApplication. It requires a fresh database and vacant platform slots before acquiring the
+existing package-wide lease. Production repositories persist an overdue RUNNING Timer, close their
+physical Room connection, then launch the real MainActivity. Only the production Application lifecycle
+callback triggers recovery: the test never calls onForeground(), dispatches a receiver, or arms an alarm.
+A bounded semantic-generation observation waits for lifecycle reconciliation to finish before reading the committed state. After closing the Activity, a new physical
+Room connection verifies canonical History identity, snapshot, original zone, completion at the stored
+logical deadline, duration, and cleared active ownership. A second foreground launch preserves an overdue
+but PAUSED Timer and its active slot, observed after bounded semantic-generation publication. Both
+fixtures establish their own explicit prerequisites within this single isolated acceptance case.
+
+Finally the graph scope is cancelled and joined before the existing platform lease releases its slots.
+Seed/verification connections are closed; the framework-owned production graph's connections remain
+owned by the dedicated process until teardown. The test never deletes an open production database.
+The GMD invocation owns installation/uninstall; a manual retry must use a fresh dedicated installation.
+This is framework lifecycle and physical connection-reopen evidence, not a process-kill test.
+
+The CI script retains the startup log, original JUnit XML under `startup/`, and a separately mandatory
+`startup` record in evidence.json. It must pass even when the full isolated suite succeeds. To reproduce,
+run the ordinary API command above, then run the same app GMD task in a separate invocation with the
+productionStartup property (and the same expectedApi/device flags). To compile without a device:
+`./gradlew :app:assembleDebugAndroidTest -Plifetracing.compatibility.productionStartup=true`.
+Controller must mutate only the production manifest Application to `android.app.Application` in a
+disposable checkout, run this startup invocation and retain its failing original XML/log. Restore the
+correct declaration, then rerun the clean five-API exact-head gate. Compilation does not establish
+mutation or device execution evidence. Canonical finding: finding-030f00ac-7ce7-52a3-9fc4-0923e33ae898.
+
 ## Package-wide platform isolation (checkpoint 57 W1)
 
 Disposable database ownership does not isolate AlarmManager or NotificationManager. Before installing a manifest environment, a test-only platform lease checks the production token with FLAG_NO_CREATE and checks the untagged runtime notification slot. Either existing resource fails closed before database redirection, graph creation, token update, permission changes or teardown. Failed acquisition performs no cancellation. The lease also rejects concurrent fixture ownership; accepted fixtures require an exclusively leased installation with no concurrent foreground/application runtime producer. Cleanup runs after graph cancellation and repository closure, and cancels only slots found empty at acquisition and reserved for that fixture. Production identities, codecs, schedulers, publishers and manifest receiver routing are unchanged.
@@ -69,10 +109,10 @@ Controller must retain fail-first device evidence by removing only the requireVa
 
 Each API uploads these artifacts even on failure, retained for 30 days:
 
-- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log and byte-for-byte original per-module TEST-*.xml with SHA-256 digests.
+- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log, startup.log and byte-for-byte original per-invocation TEST-*.xml with SHA-256 digests.
 - `instrumentation-reports-api<API>-attempt<ATTEMPT>`: the same evidence plus each module's build/reports, build/outputs/androidTest-results and managed-device additional output.
 
-Original per-device XML is under `<module>/build/outputs/androidTest-results/managedDevice/debug/pixel2Api<API>/`. HTML is under `<module>/build/reports/androidTests/managedDevice/debug/pixel2Api<API>/`. Each module's AndroidCompatibilityDeviceTest name records actual SDK; system output/logs record fingerprint. evidence.json records commands, timestamps, exit codes, API observation, mandatory inventory certification, counts, SHA and report hashes. Compare both module observations with the selected API. Combined allDevices reports, compilation and cached ignored outputs are insufficient evidence.
+Original per-device XML is under `<module>/build/outputs/androidTest-results/managedDevice/debug/pixel2Api<API>/`. HTML is under `<module>/build/reports/androidTests/managedDevice/debug/pixel2Api<API>/`. Each module's AndroidCompatibilityDeviceTest name records actual SDK; system output/logs record fingerprint. evidence.json records commands, timestamps, exit codes, API observation, mandatory inventory certification, counts, SHA and report hashes. Compare all three invocation observations with the selected API. Combined allDevices reports, compilation and cached ignored outputs are insufficient evidence.
 
 Controller independently inspected [CI run 39078394582](https://github.com/Alexandr5476/life_tracing/actions/runs/39078394582) at reviewed head 29d8d5458e7d5d2c694b6b7fb5a3132f3751b6a2: every API ran both modules; data had 611 cases including five nonmandatory skips, app had 312, with zero failures/errors. This historical complete execution keeps original B1 closed. It predates the two new system-service assertions.
 
@@ -82,12 +122,18 @@ For each subsequent head, inspect the latest exact-head GitHub Actions jobs and 
 
 ## Controller responsibilities and reproduction
 
-Controller owns commit/push, device leases/provisioning/cleanup, canonical local execution, mutation evidence, exact-head GitHub checks and final Parent closure review. Require all six named CI checks and all ten module/API results on the corrected SHA. No approval or merge is authorized here. Preserve the precise API/image/ABI and error for provisioning failures. Failures after application/testcase entry are executed failures; a module never reached has no execution result.
+Controller owns commit/push, device leases/provisioning/cleanup, canonical local execution, mutation evidence, exact-head GitHub checks and final Parent closure review. Require all six named CI checks and all fifteen invocation/API results (data, app, startup at each API) on the corrected SHA. No approval or merge is authorized here. Preserve the precise API/image/ABI and error for provisioning failures. Failures after application/testcase entry are executed failures; a module never reached has no execution result.
 
 Prerequisites are JDK 21, Android SDK platform 36/build tools, accepted licenses, hardware virtualization (KVM/WHPX), sufficient disk/network for each AOSP image and exclusive leases. For local execution run one API at a time, replacing 31 below with 26/33/35/36:
 
 ```powershell
-.\gradlew.bat :data:pixel2Api31DebugAndroidTest :app:pixel2Api31DebugAndroidTest -Plifetracing.compatibility.expectedApi=31 -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect -Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5 --no-daemon --no-parallel --max-workers=2 --console=plain --no-configuration-cache --rerun-tasks --no-build-cache --stacktrace
+cmd.exe /d /s /c "gradlew.bat :data:pixel2Api31DebugAndroidTest :app:pixel2Api31DebugAndroidTest -Plifetracing.compatibility.expectedApi=31 -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect -Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5 --no-daemon --no-parallel --max-workers=2 --console=plain --no-configuration-cache --rerun-tasks --no-build-cache --stacktrace"
+```
+
+Run the independent startup path in a **separate** invocation on the same selected API:
+
+```powershell
+cmd.exe /d /s /c "gradlew.bat :app:pixel2Api31DebugAndroidTest -Plifetracing.compatibility.productionStartup=true -Plifetracing.compatibility.expectedApi=31 -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect -Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5 --no-daemon --no-parallel --max-workers=2 --console=plain --no-configuration-cache --rerun-tasks --no-build-cache --stacktrace"
 ```
 
 For automatic Linux certification the workflow supplies EXPECTED_TEST_SHA and GitHub metadata and executes `python3 .github/scripts/run-instrumentation.py --api <API>`. Preserve original results and apply the same inventory and API/SHA checks to local results. Do not use filters for release acceptance.

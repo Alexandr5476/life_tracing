@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.LifeTracingApplication
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
@@ -55,6 +56,7 @@ class RuntimePlatformAndroidTest {
 
     @Test
     fun manifestDeclaresOnlyRuntimePermissionsAndReceiversNeededByTheAdapters() {
+        assertEquals(LifeTracingApplication::class.java.name, installedApplicationClassName(context))
         val info =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.packageManager.getPackageInfo(

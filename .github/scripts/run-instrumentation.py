@@ -1,4 +1,4 @@
-"""Run the two full GMD suites sequentially and retain original JUnit evidence."""
+"""Run full GMD suites and independent manifest startup sequentially and retain original JUnit evidence."""
 
 import argparse
 from datetime import datetime, timezone
@@ -43,10 +43,12 @@ def collect_reports(repo, directory, module, api):
     inventory = json.loads(Path(__file__).with_name("instrumentation-inventory.json").read_text(encoding="utf-8"))
     required = {(suite, name.format(api=api)) for suite, names in inventory[module].items() for name in names}
     executed = {}
-    source = repo / module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
+    target_module = "app" if module == "startup" else module
+    source = repo / target_module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
     for path in sorted(source.glob("TEST-*.xml")):
         # Retain original evidence even if parsing or mandatory inventory validation fails.
-        destination = directory / path.relative_to(repo)
+        # Startup reuses app's AGP output path. Preserve both original invocations independently.
+        destination = directory / ("startup" if module == "startup" else "") / path.relative_to(repo)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, destination)
         reports.append({"path": destination.relative_to(directory).as_posix(),
@@ -111,13 +113,16 @@ def main():
         if args.api == 26:
             # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
             subprocess.run(sdkmanager_command(), check=True)
-        for module in ("data", "app"):
-            command = ["./gradlew", f":{module}:pixel2Api{args.api}DebugAndroidTest",
+        for module in ("data", "app", "startup"):
+            target_module = "app" if module == "startup" else module
+            command = ["./gradlew", f":{target_module}:pixel2Api{args.api}DebugAndroidTest",
                        f"-Plifetracing.compatibility.expectedApi={args.api}",
                        "-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect",
                        "-Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5",
                        "--no-parallel", "--max-workers=2", "--no-daemon", "--no-configuration-cache",
                        "--rerun-tasks", "--no-build-cache", "--console=plain", "--stacktrace"]
+            if module == "startup":
+                command.append("-Plifetracing.compatibility.productionStartup=true")
             record = dict(command=command, started_at=timestamp(), exit_code=None)
             evidence["modules"][module] = record
             print("command: " + " ".join(command), flush=True)
