@@ -1037,6 +1037,10 @@
       "waitingNextRemainsWithoutCurrentChildOrDeadlineAcrossTemporalRecovery[context=1]",
       "waitingNextRemainsWithoutCurrentChildOrDeadlineAcrossTemporalRecovery[context=2]"
     ],
+    "com.alexandr5476.lifetracing.runtime.RuntimeManifestDeadlineAndroidTest": [
+      "coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture",
+      "productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen"
+    ],
     "com.alexandr5476.lifetracing.runtime.RuntimePlatformAndroidTest": [
       "manifestDeclaresOnlyRuntimePermissionsAndReceiversNeededByTheAdapters",
       "pendingIntentReplacementDeliversUpdatedPayloadAndNoUpdateControlRetainsObsoletePayload",

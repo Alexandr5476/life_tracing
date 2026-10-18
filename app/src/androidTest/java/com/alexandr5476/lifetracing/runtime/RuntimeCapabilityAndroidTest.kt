@@ -89,6 +89,7 @@ class RuntimeCapabilityAndroidTest {
         assertTrue(record, Regex("(?:origWhen|when) ${deadline.at.toEpochMilli()}\\b").containsMatchIn(record))
         val window = requireNotNull(Regex("\\bwindow=(\\S+)").find(record)) { record }.groupValues[1]
         assertEquals("Actual AlarmManager batching window: $record", exact, window == "0")
+        assertRuntimeAlarmAllowsIdle(record, exact)
         assertTrue(record, record.contains("repeatInterval=0"))
         println("LifeTracing AlarmManager api=${Build.VERSION.SDK_INT} exact=$exact pending=$record")
         scheduler.cancel()

@@ -36,6 +36,7 @@ class RuntimeRecoveryStore(
     val statistics: StatisticsRepository =
         StatisticsRepository(database) { StatisticsSeriesId(UUID.randomUUID().toString()) }
     val library: LibraryRepository = LibraryRepository.create(database)
+    val history: HistoryReadRepository = HistoryReadRepository(database)
     val authoring: TemplateAuthoringRepository = TemplateAuthoringRepository(database, TemplateAuthoringIds.random())
 
     fun activity(id: ActivityExecutionId): ActivityExecution =
@@ -82,5 +83,12 @@ class RuntimeRecoveryStore(
 
     override fun close() {
         database.close()
+    }
+
+    companion object {
+        /** Close the actual production Room owner without exposing Room models to application tests. */
+        fun closeProductionRuntimeRepository(repository: LiveSessionRepository) {
+            repository.database.close()
+        }
     }
 }

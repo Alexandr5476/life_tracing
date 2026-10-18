@@ -91,6 +91,20 @@ internal fun withRuntimeNotificationsEnabled(
     }
 }
 
+/** AOSP AlarmManager flags printed by Alarm.dump(), independent of the batching window. */
+internal fun assertRuntimeAlarmAllowsIdle(
+    record: String,
+    exact: Boolean,
+) {
+    val encoded = requireNotNull(Regex("\\bflags=0x([0-9a-fA-F]+)\\b").find(record)) { record }.groupValues[1]
+    val flags = encoded.toInt(16)
+    // FLAG_ALLOW_WHILE_IDLE = 1<<2. Since S, the service converts inexact AWI to
+    // FLAG_ALLOW_WHILE_IDLE_COMPAT = 1<<5. Reject unrestricted exemptions (1<<3)
+    // that could otherwise hide a regression to set()/setExact().
+    val expected = if (!exact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0x20 else 0x04
+    assertEquals("Actual idle allowance api=${Build.VERSION.SDK_INT}: $record", expected, flags and 0x2c)
+}
+
 private fun notificationAppOp(context: Context): String {
     val output = runtimeShell("appops get ${context.packageName} POST_NOTIFICATION")
     val mode = Regex("POST_NOTIFICATION: (allow|ignore|deny|default|foreground)").find(output)?.groupValues?.get(1)

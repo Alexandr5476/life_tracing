@@ -39,6 +39,7 @@ class RuntimePlatformAndroidTest {
         val first = deadline("execution-1", "occurrence-1", 60)
         val replacement = deadline("execution-2", "occurrence-2", 120)
 
+        assertManifestDeadlineIntent(context, RuntimeDeadlineIntentCodec.intent(context, first))
         assertEquals(first, RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, first)))
         AndroidRuntimeDeadlineScheduler(context).cancel()
         val token = RuntimeDeadlineIntentCodec.pendingIntent(context, first)
