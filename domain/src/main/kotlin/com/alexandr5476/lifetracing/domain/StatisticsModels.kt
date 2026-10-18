@@ -127,10 +127,59 @@ data class NumberDistribution(
 )
 
 object StatisticsDistributionCalculator {
+    /** Consumes an ascending, forward-only source, retaining only scalar distribution state. */
+    fun orderedDurations(
+        expectedCount: Long,
+        milliseconds: Iterator<Long>,
+    ): DurationDistribution {
+        require(expectedCount >= 0) { "Duration sample count cannot be negative" }
+        val lowerIndex = if (expectedCount == 0L) 0 else (expectedCount - 1) / 2
+        val upperIndex = expectedCount / 2
+        var count = 0L
+        var total = BigInteger.ZERO
+        var minimum: Long? = null
+        var maximum: Long? = null
+        var lowerMiddle: Long? = null
+        var upperMiddle: Long? = null
+        while (milliseconds.hasNext()) {
+            val value = milliseconds.next()
+            require(value >= 0) { "Duration samples cannot be negative" }
+            require(maximum == null || value >= maximum) { "Duration samples must be ascending" }
+            require(count < expectedCount) { "Duration aggregate disagrees with its scalar samples" }
+            if (count == 0L) minimum = value
+            if (count == lowerIndex) lowerMiddle = value
+            if (count == upperIndex) upperMiddle = value
+            maximum = value
+            total += BigInteger.valueOf(value)
+            count++ // Bounded above by the nonnegative expectedCount, including Long.MAX_VALUE.
+        }
+        require(count == expectedCount) { "Duration aggregate disagrees with its scalar samples" }
+        val median =
+            lowerMiddle?.let {
+                ExactValue.of(
+                    BigInteger.valueOf(it) + BigInteger.valueOf(requireNotNull(upperMiddle)),
+                    BigInteger.valueOf(2),
+                )
+            }
+        return durationDistribution(
+            ScalarDistribution(
+                count,
+                total,
+                if (count == 0L) null else ExactValue.of(total, BigInteger.valueOf(count)),
+                median,
+                minimum,
+                maximum,
+            ),
+        )
+    }
+
     fun durations(milliseconds: Iterable<Long>): DurationDistribution {
         val values = milliseconds.sorted()
         values.forEach { require(it >= 0) { "Duration samples cannot be negative" } }
-        val scalar = scalar(values)
+        return durationDistribution(scalar(values))
+    }
+
+    private fun durationDistribution(scalar: ScalarDistribution): DurationDistribution {
         // Samples are nonnegative; check the upper bound before narrowing on older Android runtimes.
         if (scalar.total > BigInteger.valueOf(Long.MAX_VALUE)) {
             throw ArithmeticException("Duration total overflows Long milliseconds")

@@ -3,6 +3,7 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import android.database.CursorWrapper
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -43,6 +44,8 @@ import java.time.Year
 import java.time.YearMonth
 import java.time.ZoneOffset
 import java.util.Collections
+import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 
 @RunWith(AndroidJUnit4::class)
@@ -1611,14 +1614,223 @@ class StatisticsRepositoryTest {
             }
         }
 
-        val bounded =
-            repository.activitySeries(
-                StatisticsSeriesId("large-series"),
-                StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
+        statement.close()
+        series("small-series", "ACTIVITY", "Small")
+        activitySnapshot("small-snapshot", "small-series")
+        completedActivity("small-row", "small-snapshot", "small-series", 1_000, AUG_20)
+
+        fun selectCount(): Int =
+            synchronized(observedSql) {
+                observedSql.count {
+                    it.trimStart().startsWith("SELECT", ignoreCase = true) &&
+                        !it.contains("room_table_modification_log", ignoreCase = true)
+                }
+            }
+        observedSql.clear()
+        repository.activitySeries(StatisticsSeriesId("small-series"), StatisticsPeriod.AllTime)
+        val smallActivityQueries = selectCount()
+        series("large-sequence-series", "SEQUENCE", "Large Sequence")
+        completedSequence("large-root", "large-sequence-series", "large-snapshot", 1_000, 0, AUG_20)
+        observedSql.clear()
+        repository.sequenceSeries(StatisticsSeriesId("large-sequence-series"), StatisticsPeriod.AllTime)
+        val smallSequenceQueries = selectCount()
+        val sequenceStatement =
+            database.openHelper.writableDatabase.compileStatement(
+                "INSERT INTO sequence_executions " +
+                    "(id,snapshot_id,statistics_series_id,status,started_at_ms,ended_at_ms,active_duration_ms," +
+                    "pause_duration_ms,wall_duration_ms,original_zone_id,primary_local_date," +
+                    "created_at_ms,updated_at_ms) " +
+                    "VALUES (?, 'large-root-snapshot', 'large-sequence-series', 'COMPLETED', ?, ?, " +
+                    "1000, 0, 1000, 'UTC', ?, ?, ?)",
             )
-        assertEquals(2_000L, bounded.executionCount)
-        assertEquals(Duration.ofSeconds(2_000), bounded.durations.total)
-        assertTrue(database.sequenceExecutionDao().getIntervals("missing").isEmpty())
+        sequenceStatement.use { insert ->
+            database.runInTransaction {
+                repeat(2_999) { index ->
+                    val date = if (index < 1_999) AUG_20 else "2026-07-01"
+                    val start = millis("${date}T00:00:00Z") + index * 2_000L
+                    insert.bindString(1, "large-sequence-$index")
+                    insert.bindLong(2, start)
+                    insert.bindLong(3, start + 1_000)
+                    insert.bindString(4, date)
+                    insert.bindLong(5, start)
+                    insert.bindLong(6, start + 1_000)
+                    insert.executeInsert()
+                }
+            }
+        }
+        val periods =
+            listOf(
+                StatisticsPeriod.Day(LocalDate.parse(AUG_20)) to 2_000L,
+                StatisticsPeriod.AllTime to 3_000L,
+            )
+        for ((period, expected) in periods) {
+            observedSql.clear()
+            val activity = repository.activitySeries(StatisticsSeriesId("large-series"), period)
+            assertEquals(smallActivityQueries, selectCount())
+            assertEquals(3, selectCount())
+            observedSql.clear()
+            val sequence = repository.sequenceSeries(StatisticsSeriesId("large-sequence-series"), period)
+            assertEquals(smallSequenceQueries, selectCount())
+            assertEquals(3, selectCount())
+            assertEquals(expected, activity.executionCount)
+            assertEquals(expected, sequence.executionCount)
+            assertEquals(activity.durations, sequence.activeDurations)
+            assertEquals(expected, activity.durations.sampleCount)
+            assertEquals(Duration.ofMillis(expected * 1_000), activity.durations.total)
+            assertEquals(ExactValue.of(1_000, 1), activity.durations.medianMilliseconds)
+            assertEquals(ExactValue.of(1_000, 1), activity.durations.averageMilliseconds)
+            assertEquals(Duration.ofSeconds(1), activity.durations.minimum)
+            assertEquals(Duration.ofSeconds(1), activity.durations.maximum)
+        }
+    }
+
+    @Test
+    fun orderedDurationReadersPreserveEligibilityPeriodsAndDetail() {
+        series("duration-activity", "ACTIVITY", "Activity")
+        series("duration-other", "ACTIVITY", "Other")
+        series("duration-sequence", "SEQUENCE", "Sequence")
+        series("duration-other-sequence", "SEQUENCE", "Other Sequence")
+        activitySnapshot("duration-snapshot", "duration-activity")
+        activitySnapshot("duration-no-live", "duration-activity", mode = "NO_LIVE_TRACKING")
+        activitySnapshot("duration-other-snapshot", "duration-other")
+        val activityId = StatisticsSeriesId("duration-activity")
+        val sequenceId = StatisticsSeriesId("duration-sequence")
+        val day = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        assertEquals(0L, repository.activitySeries(activityId, day).durations.sampleCount)
+        assertEquals(0L, repository.sequenceSeries(sequenceId, day).activeDurations.sampleCount)
+        listOf(0L, 2L, 9L).forEachIndexed { index, duration ->
+            completedActivity("duration-$index", "duration-snapshot", activityId.value, duration, AUG_20)
+        }
+        val child = completedSequence("duration-root", sequenceId.value, "duration-snapshot", 3, 0, AUG_20)
+        completedActivity(
+            "duration-child",
+            "duration-snapshot",
+            activityId.value,
+            3,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = child.first,
+            occurrenceId = child.second,
+        )
+        completedActivity("duration-missing", "duration-no-live", activityId.value, null, AUG_20)
+        completedActivity(
+            "duration-outside",
+            "duration-snapshot",
+            activityId.value,
+            20,
+            AUG_21,
+            startedAtMs = millis("2026-08-21T23:30:00Z"),
+        )
+        completedActivity("duration-deleted", "duration-snapshot", activityId.value, 100, AUG_20)
+        database.activityExecutionDao().softDelete("duration-deleted", START_2330 + 1_000)
+        completedActivity("duration-other-row", "duration-other-snapshot", "duration-other", 101, AUG_20)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedActivity("duration-$status", "duration-snapshot", activityId.value, null, AUG_20, status = status)
+        }
+        completedSequence("duration-second-root", sequenceId.value, "duration-snapshot", 2, 0, AUG_20)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'COMPLETED' WHERE id = 'duration-second-root'",
+        )
+        completedSequence(
+            "duration-third-root",
+            sequenceId.value,
+            "duration-snapshot",
+            9,
+            0,
+            AUG_21,
+            startedAtMs = millis("2026-08-21T23:30:00Z"),
+        )
+        completedSequence("duration-other-root", "duration-other-sequence", "duration-snapshot", 101, 0, AUG_20)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedSequence("duration-live-$status", sequenceId.value, "duration-snapshot", 100, 0, AUG_20)
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET status = ?, ended_at_ms = NULL, active_duration_ms = NULL, " +
+                    "pause_duration_ms = NULL, wall_duration_ms = NULL WHERE id = ?",
+                arrayOf(status, "duration-live-$status"),
+            )
+        }
+        val activity = repository.activitySeries(activityId, day)
+        assertEquals(5L, activity.executionCount)
+        assertEquals(4L, activity.durations.sampleCount)
+        assertEquals(Duration.ofMillis(14), activity.durations.total)
+        assertEquals(ExactValue.of(7, 2), activity.durations.averageMilliseconds)
+        assertEquals(ExactValue.of(5, 2), activity.durations.medianMilliseconds)
+        assertEquals(Duration.ZERO, activity.durations.minimum)
+        assertEquals(Duration.ofMillis(9), activity.durations.maximum)
+        val allActivity = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+        assertEquals(6L, allActivity.executionCount)
+        assertEquals(5L, allActivity.durations.sampleCount)
+        assertEquals(Duration.ofMillis(34), allActivity.durations.total)
+        assertEquals(ExactValue.of(3, 1), allActivity.durations.medianMilliseconds)
+        val sequence = repository.sequenceSeries(sequenceId, day)
+        assertEquals(2L, sequence.executionCount)
+        assertEquals(2L, sequence.activeDurations.sampleCount)
+        assertEquals(Duration.ofMillis(5), sequence.activeDurations.total)
+        assertEquals(ExactValue.of(5, 2), sequence.activeDurations.medianMilliseconds)
+        val allSequence = repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime)
+        assertEquals(3L, allSequence.executionCount)
+        assertEquals(Duration.ofMillis(14), allSequence.activeDurations.total)
+        assertEquals(ExactValue.of(3, 1), allSequence.activeDurations.medianMilliseconds)
+        assertEquals(activity, (repository.seriesDetail(activityId, day) as StatisticsSeriesDetail.Activity).statistics)
+        assertEquals(sequence, (repository.seriesDetail(sequenceId, day) as StatisticsSeriesDetail.Sequence).statistics)
+    }
+
+    @Test
+    fun durationTraversalClosesRealRoomCursorsOnCancellationAndCountMismatch() {
+        series("cursor-series", "ACTIVITY", "Cursor")
+        activitySnapshot("cursor-snapshot", "cursor-series")
+        completedActivity("cursor-row", "cursor-snapshot", "cursor-series", 3, AUG_20)
+        val before = repository.activitySeries(StatisticsSeriesId("cursor-series"), StatisticsPeriod.AllTime)
+        database.runInTransaction {
+            val cancelled =
+                object : CursorWrapper(database.statisticsDao().activityDurationValues("cursor-series", null, null)) {
+                    override fun getLong(columnIndex: Int): Long = throw CancellationException("test traversal")
+                }
+            assertThrows(CancellationException::class.java) { cancelled.readDurationDistribution(1) }
+            assertTrue(cancelled.isClosed)
+            val mismatched = database.statisticsDao().activityDurationValues("cursor-series", null, null)
+            assertThrows(IllegalArgumentException::class.java) { mismatched.readDurationDistribution(0) }
+            assertTrue(mismatched.isClosed)
+            val successful = database.statisticsDao().activityDurationValues("cursor-series", null, null)
+            assertEquals(before.durations, successful.readDurationDistribution(1))
+            assertTrue(successful.isClosed)
+        }
+        assertEquals(before, repository.activitySeries(StatisticsSeriesId("cursor-series"), StatisticsPeriod.AllTime))
+    }
+
+    @Test
+    fun durationReadersSurvivePhysicalReopenAndHistoricalDeletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-duration-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            series("reopen-activity", "ACTIVITY", "Activity")
+            series("reopen-sequence", "SEQUENCE", "Sequence")
+            activitySnapshot("reopen-snapshot", "reopen-activity")
+            completedActivity("reopen-row", "reopen-snapshot", "reopen-activity", 3, AUG_20)
+            completedSequence("reopen-root", "reopen-sequence", "reopen-snapshot", 7, 0, AUG_20)
+            val activityId = StatisticsSeriesId("reopen-activity")
+            val sequenceId = StatisticsSeriesId("reopen-sequence")
+            val activity = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+            val sequence = repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime)
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            assertEquals(activity, repository.activitySeries(activityId, StatisticsPeriod.AllTime))
+            assertEquals(sequence, repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime))
+            database.activityExecutionDao().softDelete("reopen-row", START_2330 + 100)
+            val deleted = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+            assertEquals(0L, deleted.executionCount)
+            assertEquals(0L, deleted.durations.sampleCount)
+            assertEquals(Duration.ZERO, deleted.durations.total)
+            assertNull(deleted.durations.medianMilliseconds)
+            assertEquals(sequence, repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime))
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
     }
 
     private fun series(
@@ -1921,6 +2133,12 @@ class StatisticsRepositoryTest {
                     startedAtMs,
                     if (status == "COMPLETED") completedAtMs else startedAtMs,
                 ),
+                pauses =
+                    if (status == "PAUSED") {
+                        listOf(ActivityExecutionPauseEntity("$id-pause", id, startedAtMs, null))
+                    } else {
+                        emptyList()
+                    },
                 values = values,
             ),
         )
@@ -1937,11 +2155,12 @@ class StatisticsRepositoryTest {
         numberValue: Long? = null,
         categoryFieldId: String? = null,
         categoryOptionId: String? = null,
+        startedAtMs: Long = START_2330,
     ): Pair<String, String> {
         require((categoryFieldId == null) == (categoryOptionId == null))
         val snapshotId = "$id-snapshot"
         val occurrenceId = "$id-occurrence"
-        val started = START_2330
+        val started = startedAtMs
         val ended = started + activeMs + pauseMs
         database.sequenceSnapshotDao().insertAggregate(
             SequenceSnapshotAggregateEntity(

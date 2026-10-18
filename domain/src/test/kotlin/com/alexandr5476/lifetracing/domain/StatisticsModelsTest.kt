@@ -13,6 +13,85 @@ import java.time.YearMonth
 
 class StatisticsModelsTest {
     @Test
+    fun orderedDurationsConsumeOnePassAndMatchExactReferenceDistributions() {
+        val fixtures =
+            listOf(
+                emptyList(),
+                listOf(0L),
+                listOf(17L),
+                listOf(0L, 0L, 3L),
+                listOf(0L, 2L, 2L, 9L),
+                listOf(1L, 20L, 300L, 4_000L, 50_000L),
+                listOf(Long.MAX_VALUE),
+                listOf(1L, Long.MAX_VALUE - 1),
+            )
+        fixtures.forEach { values ->
+            val distribution =
+                StatisticsDistributionCalculator.orderedDurations(values.size.toLong(), onePass(values))
+            assertEquals(StatisticsDistributionCalculator.durations(values.reversed()), distribution)
+        }
+        val even = StatisticsDistributionCalculator.orderedDurations(4, onePass(listOf(0L, 2L, 3L, 9L)))
+        assertEquals(Duration.ofMillis(14), even.total)
+        assertEquals(ExactValue.of(7, 2), even.averageMilliseconds)
+        assertEquals(ExactValue.of(5, 2), even.medianMilliseconds)
+        assertEquals(Duration.ZERO, even.minimum)
+        assertEquals(Duration.ofMillis(9), even.maximum)
+        val boundary =
+            StatisticsDistributionCalculator.orderedDurations(2, onePass(listOf(1L, Long.MAX_VALUE - 1)))
+        assertEquals(Duration.ofMillis(Long.MAX_VALUE), boundary.total)
+        assertEquals(ExactValue.of(Long.MAX_VALUE, 2), boundary.medianMilliseconds)
+    }
+
+    @Test
+    fun orderedDurationsRejectInvalidCountsNegativeAndUnorderedSamples() {
+        listOf(-1L to emptyList(), 0L to listOf(1L), 2L to listOf(1L), 1L to listOf(1L, 2L))
+            .forEach { (count, values) ->
+                assertThrows(IllegalArgumentException::class.java) {
+                    StatisticsDistributionCalculator.orderedDurations(count, onePass(values))
+                }
+            }
+        for (values in listOf(listOf(-1L), listOf(2L, 1L))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                StatisticsDistributionCalculator.orderedDurations(values.size.toLong(), onePass(values))
+            }
+        }
+    }
+
+    @Test
+    fun orderedDurationsAccumulateBeforeNarrowingAndRejectPositiveTotalOverflow() {
+        for (values in listOf(listOf(1L, Long.MAX_VALUE), listOf(Long.MAX_VALUE - 1, Long.MAX_VALUE))) {
+            // The second fixture overflows a Long midpoint sum; total overflow must still reject it.
+            assertThrows(ArithmeticException::class.java) {
+                StatisticsDistributionCalculator.orderedDurations(2, onePass(values))
+            }
+        }
+    }
+
+    @Test
+    fun orderedDurationsAcceptGeneratedHistoryWithoutRandomAccessOrRepeatedTraversal() {
+        var next = 0L
+        val samples =
+            object : Iterator<Long> {
+                override fun hasNext() = next < 100_000
+
+                override fun next(): Long {
+                    if (!hasNext()) throw NoSuchElementException()
+                    return next++
+                }
+            }
+        val distribution = StatisticsDistributionCalculator.orderedDurations(100_000, samples)
+        assertEquals(100_000L, next)
+        assertEquals(100_000L, distribution.sampleCount)
+        assertEquals(Duration.ofMillis(4_999_950_000), distribution.total)
+        assertEquals(ExactValue.of(99_999, 2), distribution.medianMilliseconds)
+    }
+
+    private fun onePass(values: List<Long>): Iterator<Long> =
+        sequence {
+            values.forEach { yield(it) }
+        }.constrainOnce().iterator()
+
+    @Test
     fun periodsResolveInclusiveCalendarRanges() {
         val monday = LocalDate.of(2026, 8, 17)
         assertEquals(StatisticsDateRange(monday, monday), StatisticsPeriod.Day(monday).dateRangeOrNull())

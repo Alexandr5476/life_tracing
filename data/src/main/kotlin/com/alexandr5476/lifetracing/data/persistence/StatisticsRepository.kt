@@ -3,6 +3,7 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import android.content.Context
+import android.database.Cursor
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivitySeriesStatistics
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
@@ -12,6 +13,7 @@ import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.CategoryValueStatistics
 import com.alexandr5476.lifetracing.domain.CountRatio
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DurationDistribution
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.GlobalStatistics
 import com.alexandr5476.lifetracing.domain.NumberFieldStatistics
@@ -39,6 +41,15 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.Callable
+
+// Own the Cursor for the complete traversal, including validation failures and cancellation exceptions.
+internal fun Cursor.readDurationDistribution(expectedCount: Long): DurationDistribution =
+    use { cursor ->
+        StatisticsDistributionCalculator.orderedDurations(
+            expectedCount,
+            generateSequence { if (cursor.moveToNext()) cursor.getLong(0) else null }.iterator(),
+        )
+    }
 
 class StatisticsRepository internal constructor(
     private val database: LifeTracingDatabase,
@@ -231,11 +242,11 @@ class StatisticsRepository internal constructor(
         end: String?,
     ): ActivitySeriesStatistics {
         val row = database.statisticsDao().activitySeriesAggregates(series.id.value, start, end).singleOrNull()
-        val values = database.statisticsDao().activityDurationValues(series.id.value, start, end)
-        val distribution = StatisticsDistributionCalculator.durations(values)
-        require(row == null || row.durationSampleCount == distribution.sampleCount) {
-            "Activity duration aggregate disagrees with its scalar samples"
-        }
+        val distribution =
+            database
+                .statisticsDao()
+                .activityDurationValues(series.id.value, start, end)
+                .readDurationDistribution(row?.durationSampleCount ?: 0)
         return ActivitySeriesStatistics(
             series,
             row?.executionCount ?: 0,
@@ -253,11 +264,11 @@ class StatisticsRepository internal constructor(
         end: String?,
     ): SequenceSeriesStatistics {
         val row = database.statisticsDao().sequenceSeriesAggregates(series.id.value, start, end).singleOrNull()
-        val values = database.statisticsDao().sequenceDurationValues(series.id.value, start, end)
-        val distribution = StatisticsDistributionCalculator.durations(values)
-        require(row == null || row.durationSampleCount == distribution.sampleCount) {
-            "Sequence duration aggregate disagrees with its scalar samples"
-        }
+        val distribution =
+            database
+                .statisticsDao()
+                .sequenceDurationValues(series.id.value, start, end)
+                .readDurationDistribution(row?.durationSampleCount ?: 0)
         val count = row?.executionCount ?: 0
         val pause = row?.totalPauseMs ?: 0
         return SequenceSeriesStatistics(

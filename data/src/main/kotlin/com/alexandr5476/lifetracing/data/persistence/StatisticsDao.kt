@@ -2,6 +2,7 @@
 
 package com.alexandr5476.lifetracing.data.persistence
 
+import android.database.Cursor
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Query
@@ -289,7 +290,7 @@ internal interface StatisticsDao {
         seriesId: String,
         startDate: String?,
         endDate: String?,
-    ): List<Long>
+    ): Cursor
 
     @Query(
         "SELECT active_duration_ms FROM sequence_executions WHERE statistics_series_id = :seriesId " +
@@ -300,7 +301,7 @@ internal interface StatisticsDao {
         seriesId: String,
         startDate: String?,
         endDate: String?,
-    ): List<Long>
+    ): Cursor
 
     @Query(
         "SELECT fields.id AS source_field_id, fields.field_type, fields.unit, fields.display_precision, " +
