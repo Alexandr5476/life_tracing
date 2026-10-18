@@ -39,7 +39,7 @@ internal fun withRuntimeNotificationsEnabled(
 ) {
     val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
     val manager = context.getSystemService(NotificationManager::class.java)
-    val previous = manager.activeNotifications.filter { it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID }
+    RuntimePlatformFixture.requireNotificationVacant(context)
     val previouslyEnabled = manager.areNotificationsEnabled()
     val previousPermission =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -66,18 +66,15 @@ internal fun withRuntimeNotificationsEnabled(
         }
         val publisher = AndroidRuntimeNotificationPublisher(context)
         assertTrue("NotificationManager must allow publication", publisher.canPostRuntimeNotifications())
-        manager.cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
-        awaitRuntimeSystemState("clean notification slot") {
-            manager.activeNotifications.none { it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID }
-        }
         assertion(publisher, manager)
     } finally {
         try {
             manager.cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
             awaitRuntimeSystemState("notification cleanup") {
-                manager.activeNotifications.none { it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID }
+                manager.activeNotifications.none {
+                    it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID && it.tag == null
+                }
             }
-            previous.forEach { manager.notify(it.tag, it.id, it.notification) }
         } finally {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 automation.dropShellPermissionIdentity()

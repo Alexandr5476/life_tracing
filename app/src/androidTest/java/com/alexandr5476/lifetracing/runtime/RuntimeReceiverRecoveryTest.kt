@@ -122,8 +122,7 @@ class RuntimeReceiverRecoveryTest {
                     expectedOccurrenceId = SequenceOccurrenceId("obsolete-occurrence"),
                     at = replacement.at.minusSeconds(1),
                 )
-            AndroidRuntimeDeadlineScheduler(context).cancel()
-            try {
+            RuntimePlatformFixture.acquire(context).use {
                 val token = RuntimeDeadlineIntentCodec.pendingIntent(context, obsolete)
                 val obsoletePayload = requireNotNull(deliveredDeadline(token))
                 assertEquals(obsolete, obsoletePayload)
@@ -153,8 +152,6 @@ class RuntimeReceiverRecoveryTest {
                     assertEquals(replacement.at, runtime.execution.occurrences[0].completedAt)
                     assertEquals(1L to 1L, reopened.executionCounts())
                 }
-            } finally {
-                AndroidRuntimeDeadlineScheduler(context).cancel()
             }
         }
 

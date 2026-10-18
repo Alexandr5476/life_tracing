@@ -1040,6 +1040,10 @@
     "com.alexandr5476.lifetracing.runtime.RuntimeManifestDeadlineAndroidTest": [
       "coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture",
       "failedManifestFixturePreservesUnrelatedPlanAndDeletesItsLiveFixture",
+      "occupiedPlanAlarmAndNotificationRejectManifestFixtureWithoutChangingPlanOrSystemState",
+      "occupiedStopwatchNotificationWithoutAlarmRejectsManifestFixtureWithoutChangingState",
+      "occupiedTimedAlarmAndNotificationRejectManifestFixtureWithoutChangingSystemOrDurableState",
+      "occupiedUnscheduledTokenRejectsManifestFixtureWithoutReplacingItsPayload",
       "productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen",
       "repeatedManifestFixturePreservesUnrelatedPausedPlanAndEveryDurableTable",
       "repeatedManifestFixturePreservesUnrelatedRunningPlanAndEveryDurableTable"

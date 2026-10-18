@@ -1,6 +1,5 @@
 package com.alexandr5476.lifetracing.runtime
 
-import android.app.NotificationManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.database.DatabaseErrorHandler
@@ -66,12 +65,50 @@ class RuntimeManifestDeadlineAndroidTest {
     fun failedManifestFixturePreservesUnrelatedPlanAndDeletesItsLiveFixture() =
         runBlocking { assertUnrelatedPlanPreserved(paused = true, failAfterSeed = true) }
 
+    @Test(timeout = 60_000)
+    fun occupiedTimedAlarmAndNotificationRejectManifestFixtureWithoutChangingSystemOrDurableState() =
+        runBlocking { assertOccupiedPlatformPreserved(TimeTrackingMode.TIMER) }
+
+    @Test(timeout = 60_000)
+    fun occupiedPlanAlarmAndNotificationRejectManifestFixtureWithoutChangingPlanOrSystemState() =
+        runBlocking { assertOccupiedPlatformPreserved(TimeTrackingMode.TIMER, planLinked = true) }
+
+    @Test(timeout = 60_000)
+    fun occupiedStopwatchNotificationWithoutAlarmRejectsManifestFixtureWithoutChangingState() =
+        runBlocking { assertOccupiedPlatformPreserved(TimeTrackingMode.STOPWATCH) }
+
+    @Test(timeout = 60_000)
+    fun occupiedUnscheduledTokenRejectsManifestFixtureWithoutReplacingItsPayload() =
+        runBlocking { assertOccupiedPlatformPreserved(TimeTrackingMode.TIMER, armAlarm = false, notify = false) }
+
+    private suspend fun assertOccupiedPlatformPreserved(
+        mode: TimeTrackingMode,
+        planLinked: Boolean = false,
+        armAlarm: Boolean = true,
+        notify: Boolean = true,
+    ) {
+        assertDatabaseUnchanged {
+            assertManifestPlatformBaselinePreserved(
+                application,
+                mode,
+                planLinked,
+                armAlarm,
+                notify,
+            ) { afterSeed, afterDelivery ->
+                runManifestAcceptance(afterSeed, afterDelivery)
+            }
+            // Rejected acquisition must release its lease; prove clean manifest acceptance here,
+            // without relying on another testcase to discover leaked ownership.
+            runManifestAcceptance()
+        }
+    }
+
     private suspend fun assertUnrelatedPlanPreserved(
         paused: Boolean,
         failAfterSeed: Boolean,
     ) {
         assertDatabaseUnchanged {
-            application.withDisposableRuntime { baselineEnvironment ->
+            application.withDisposableDatabase { baselineEnvironment ->
                 val startedAt = Instant.ofEpochMilli(Instant.now().minusSeconds(60).toEpochMilli())
                 val originalPlan =
                     planStore().use { store ->
@@ -216,56 +253,54 @@ class RuntimeManifestDeadlineAndroidTest {
     @Test(timeout = 60_000)
     fun coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture() =
         runBlocking {
-            val name = "cold-production-" + UUID.randomUUID()
-            val isolated = IsolatedRuntimeDatabaseContext(context, name)
-            var graph: LifeTracingRuntimeGraph? = null
-            var closeRuntimeDatabase: () -> Unit = {}
-            try {
-                val original =
-                    RuntimeRecoveryStore(context, name).use { store ->
-                        seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
+            RuntimePlatformFixture.acquire(context).use {
+                val name = "cold-production-" + UUID.randomUUID()
+                val isolated = IsolatedRuntimeDatabaseContext(context, name)
+                var graph: LifeTracingRuntimeGraph? = null
+                var closeRuntimeDatabase: () -> Unit = {}
+                try {
+                    val original =
+                        RuntimeRecoveryStore(context, name).use { store ->
+                            seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
+                        }
+                    val expected =
+                        RuntimeRecoveryStore(context, name).use { store -> deadline(store) }
+                    var acquisitions = 0
+                    val owner =
+                        RuntimeGraphOwner { applicationContext ->
+                            acquisitions++
+                            LifeTracingRuntimeGraph
+                                .create(applicationContext) { repository ->
+                                    closeRuntimeDatabase = {
+                                        RuntimeRecoveryStore.closeProductionRuntimeRepository(repository)
+                                    }
+                                }.also { graph = it }
+                        }
+                    assertEquals(0, acquisitions)
+                    val finished = CompletableDeferred<Unit>()
+                    // Separate cold-acquisition proof uses the real factory and all real repositories,
+                    // clocks and platform adapters. It does not claim manifest dispatch or process death.
+                    launchRuntimeBroadcast(RuntimeBroadcastOperation.Deadline(expected), { finished.complete(Unit) }) {
+                        LifeTracingRuntimeGraph.from(isolated, owner)
                     }
-                val expected =
-                    RuntimeRecoveryStore(context, name).use { store -> deadline(store) }
-                var acquisitions = 0
-                val owner =
-                    RuntimeGraphOwner { applicationContext ->
-                        acquisitions++
-                        LifeTracingRuntimeGraph
-                            .create(applicationContext) { repository ->
-                                closeRuntimeDatabase = {
-                                    RuntimeRecoveryStore.closeProductionRuntimeRepository(repository)
-                                }
-                            }.also { graph = it }
+                    withTimeout(10_000) { finished.await() }
+                    assertEquals(1, acquisitions)
+                    graph!!.scope.coroutineContext[Job]!!.cancelAndJoin()
+                    closeRuntimeDatabase() // Close the production Room owner on every supported API.
+                    closeRuntimeDatabase = {}
+                    RuntimeRecoveryStore(context, name).use { reopened ->
+                        assertCompleted(reopened, original, expected)
+                        assertEquals(1L to 0L, reopened.executionCounts())
                     }
-                assertEquals(0, acquisitions)
-                val finished = CompletableDeferred<Unit>()
-                // Separate cold-acquisition proof uses the real factory and all real repositories,
-                // clocks and platform adapters. It does not claim manifest dispatch or process death.
-                launchRuntimeBroadcast(RuntimeBroadcastOperation.Deadline(expected), { finished.complete(Unit) }) {
-                    LifeTracingRuntimeGraph.from(isolated, owner)
+                } finally {
+                    graph
+                        ?.scope
+                        ?.coroutineContext
+                        ?.get(Job)
+                        ?.cancelAndJoin()
+                    closeRuntimeDatabase()
+                    context.deleteDatabase(name)
                 }
-                withTimeout(10_000) { finished.await() }
-                assertEquals(1, acquisitions)
-                graph!!.scope.coroutineContext[Job]!!.cancelAndJoin()
-                closeRuntimeDatabase() // Close the production Room owner on every supported API.
-                closeRuntimeDatabase = {}
-                RuntimeRecoveryStore(context, name).use { reopened ->
-                    assertCompleted(reopened, original, expected)
-                    assertEquals(1L to 0L, reopened.executionCounts())
-                }
-            } finally {
-                graph
-                    ?.scope
-                    ?.coroutineContext
-                    ?.get(Job)
-                    ?.cancelAndJoin()
-                closeRuntimeDatabase()
-                AndroidRuntimeDeadlineScheduler(context).cancel()
-                context
-                    .getSystemService(NotificationManager::class.java)
-                    .cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
-                context.deleteDatabase(name)
             }
         }
 

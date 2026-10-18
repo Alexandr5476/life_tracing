@@ -13,12 +13,13 @@ import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
 import java.time.Instant
 
@@ -26,13 +27,8 @@ import java.time.Instant
 class RuntimePlatformAndroidTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
-    @After
-    fun cleanPlatformEffects() {
-        AndroidRuntimeDeadlineScheduler(context).cancel()
-        context
-            .getSystemService(NotificationManager::class.java)
-            .cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
-    }
+    @get:Rule
+    val platformFixture: TestRule = RuntimePlatformFixtureRule(context)
 
     @Test
     fun pendingIntentReplacementDeliversUpdatedPayloadAndNoUpdateControlRetainsObsoletePayload() {
@@ -41,7 +37,6 @@ class RuntimePlatformAndroidTest {
 
         assertManifestDeadlineIntent(context, RuntimeDeadlineIntentCodec.intent(context, first))
         assertEquals(first, RuntimeDeadlineIntentCodec.decode(RuntimeDeadlineIntentCodec.intent(context, first)))
-        AndroidRuntimeDeadlineScheduler(context).cancel()
         val token = RuntimeDeadlineIntentCodec.pendingIntent(context, first)
         // A real no-update control demonstrates why token equality alone is insufficient.
         val unchanged =

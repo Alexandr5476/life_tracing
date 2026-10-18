@@ -19,13 +19,14 @@ import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
 import java.time.Instant
 import java.time.ZoneOffset
@@ -42,10 +43,8 @@ class RuntimeCapabilityAndroidTest {
             "platform-smoke-never-a-durable-execution",
         )
 
-    @After
-    fun cleanPlatformEffects() {
-        AndroidRuntimeDeadlineScheduler(context).cancel()
-    }
+    @get:Rule
+    val platformFixture: TestRule = RuntimePlatformFixtureRule(context)
 
     @Test
     fun realSchedulerInspectsSupportedCapabilityAndReplacesAndCancelsOneAlarm() {
@@ -71,7 +70,6 @@ class RuntimeCapabilityAndroidTest {
     @Test
     fun realAlarmManagerRegistersTheAuthorizedModeAndCancellationRemovesIt() {
         val scheduler = AndroidRuntimeDeadlineScheduler(context)
-        scheduler.cancel()
         // Fresh installs authorize exact alarms through API 33; API 34+ deny special access by default.
         // The matrix requires both real modes without revoking access and killing instrumentation.
         val exact = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
@@ -117,7 +115,7 @@ class RuntimeCapabilityAndroidTest {
                 withRuntimeNotificationsEnabled(context) { publisher, manager ->
                     fun notification() =
                         manager.activeNotifications.singleOrNull {
-                            it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID
+                            it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID && it.tag == null
                         }
 
                     publisher.publish(runtime, null)

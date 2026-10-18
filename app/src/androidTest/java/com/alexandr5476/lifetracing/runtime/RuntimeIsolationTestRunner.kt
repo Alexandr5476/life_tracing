@@ -1,7 +1,6 @@
 package com.alexandr5476.lifetracing.runtime
 
 import android.app.Application
-import android.app.NotificationManager
 import android.content.Context
 import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
@@ -49,9 +48,21 @@ class RuntimeIsolationApplication : LifeTracingApplication() {
         errorHandler: DatabaseErrorHandler?,
     ): SQLiteDatabase = super.openOrCreateDatabase(scopedName(name), mode, factory, errorHandler)
 
-    internal suspend fun <T> withDisposableRuntime(block: suspend (ManifestRuntimeEnvironment) -> T): T {
+    internal suspend fun <T> withDisposableRuntime(block: suspend (ManifestRuntimeEnvironment) -> T): T =
+        RuntimePlatformFixture.acquire(this).use {
+            withEnvironment(platformOwned = true, block)
+        }
+
+    /** Baselines may own durable facts but must never acquire production runtime adapters. */
+    internal suspend fun <T> withDisposableDatabase(block: suspend (ManifestRuntimeEnvironment) -> T): T =
+        withEnvironment(platformOwned = false, block)
+
+    private suspend fun <T> withEnvironment(
+        platformOwned: Boolean,
+        block: suspend (ManifestRuntimeEnvironment) -> T,
+    ): T {
         val previous = environment
-        val owned = ManifestRuntimeEnvironment(this)
+        val owned = ManifestRuntimeEnvironment(platformOwned)
         environment = owned
         try {
             return block(owned)
@@ -77,7 +88,7 @@ class RuntimeIsolationApplication : LifeTracingApplication() {
 
 /** Cold owner uses the production factory, clocks, adapters and repositories without substitution. */
 internal class ManifestRuntimeEnvironment(
-    private val application: Context,
+    private val platformOwned: Boolean,
 ) {
     val name = "manifest-runtime-" + UUID.randomUUID()
     var acquisitions = 0
@@ -86,6 +97,7 @@ internal class ManifestRuntimeEnvironment(
     private var closeRuntimeDatabase: () -> Unit = {}
     val owner =
         RuntimeGraphOwner { context ->
+            check(platformOwned) { "Database-only fixture cannot acquire Android runtime resources" }
             acquisitions++
             LifeTracingRuntimeGraph
                 .create(context) { repository ->
@@ -101,16 +113,9 @@ internal class ManifestRuntimeEnvironment(
                 ?.get(Job)
                 ?.cancelAndJoin()
         } finally {
-            try {
-                closeRuntimeDatabase()
-            } finally {
-                if (graph != null) {
-                    AndroidRuntimeDeadlineScheduler(application).cancel()
-                    application
-                        .getSystemService(NotificationManager::class.java)
-                        .cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
-                }
-            }
+            closeRuntimeDatabase()
+            // The outer platform lease cleans only after successful vacancy preflight and after
+            // this graph has stopped. Rejected acquisition never enters fixture teardown.
         }
     }
 }
