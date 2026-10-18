@@ -146,9 +146,7 @@ class RuntimeManifestDeadlineAndroidTest {
 
     private fun send(expected: RuntimeDeadline) {
         assertManifestDeadlineIntent(context, RuntimeDeadlineIntentCodec.intent(context, expected))
-        val sent = sendDeadlineToManifest(RuntimeDeadlineIntentCodec.pendingIntent(context, expected))
-        assertManifestDeadlineIntent(context, sent)
-        assertEquals(expected, RuntimeDeadlineIntentCodec.decode(sent))
+        assertEquals(expected, sendDeadlineToManifest(RuntimeDeadlineIntentCodec.pendingIntent(context, expected)))
     }
 
     private fun seed(

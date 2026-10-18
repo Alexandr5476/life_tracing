@@ -14,14 +14,19 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/** Observes Android's actual sent Intent, including extras retained in the system token. */
+/** Observes completion-callback payload, including extras retained in the system token. */
 internal fun deliveredDeadline(token: PendingIntent): RuntimeDeadline? =
     RuntimeDeadlineIntentCodec.decode(sentDeadlineIntent(token, suppressManifestReceiver = true))
 
-/** No permission filter, fill-in Intent, component substitution or injected receiver/graph. */
-internal fun sendDeadlineToManifest(token: PendingIntent): Intent =
-    sentDeadlineIntent(token, suppressManifestReceiver = false)
+/**
+ * No permission filter, fill-in Intent, component substitution or injected receiver/graph.
+ * Decode only the completion payload: legacy BroadcastQueue.finishReceiverLocked clears the
+ * component before OnFinished, so that callback cannot verify the original receiver routing.
+ */
+internal fun sendDeadlineToManifest(token: PendingIntent): RuntimeDeadline? =
+    RuntimeDeadlineIntentCodec.decode(sentDeadlineIntent(token, suppressManifestReceiver = false))
 
+/** Checks the outgoing Intent; completion callbacks need not retain its routing metadata. */
 internal fun assertManifestDeadlineIntent(
     context: Context,
     intent: Intent,
