@@ -1,9 +1,12 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 
@@ -13,20 +16,128 @@ spec.loader.exec_module(ci)
 
 
 class InstrumentationEvidenceTests(unittest.TestCase):
+    def write_inventory(self, root, module="data", api=26):
+        inventory = json.loads(Path(__file__).with_name("instrumentation-inventory.json").read_text())
+        suite = ET.Element("testsuite")
+        for classname, names in inventory[module].items():
+            for name in names:
+                ET.SubElement(suite, "testcase", classname=classname, name=name.format(api=api))
+        source = root / module / f"build/outputs/androidTest-results/managedDevice/debug/pixel2Api{api}/TEST-suite.xml"
+        source.parent.mkdir(parents=True)
+        self.save_report(source, suite)
+        return source, suite
+
+    def save_report(self, source, suite):
+        suite.set("tests", str(len(suite.findall("testcase"))))
+        for tag, attribute in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
+            suite.set(attribute, str(len(suite.findall(f"testcase/{tag}"))))
+        ET.ElementTree(suite).write(source, encoding="utf-8", xml_declaration=True)
+
+    def test_marker_only_success_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, suite = self.write_inventory(root)
+            for case in list(suite):
+                if not case.get("name").startswith("recordsActualApi"):
+                    suite.remove(case)
+            self.save_report(source, suite)
+            with self.assertRaisesRegex(ValueError, "mandatory"):
+                ci.collect_reports(root, root / "evidence", "data", 26)
+
+    def test_missing_mandatory_suite_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, suite = self.write_inventory(root)
+            for case in list(suite):
+                if case.get("classname").endswith(".ProductionDatabaseEntryPathTest"):
+                    suite.remove(case)
+            self.save_report(source, suite)
+            with self.assertRaisesRegex(ValueError, "mandatory.*ProductionDatabaseEntryPathTest"):
+                ci.collect_reports(root, root / "evidence", "data", 26)
+
+    def test_missing_skipped_failed_error_duplicate_and_malformed_mandatory_cases_are_rejected(self):
+        for module in ("data", "app"):
+            for defect in ("missing", "skipped", "failure", "error", "duplicate", "malformed"):
+                with self.subTest(module=module, defect=defect), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source, suite = self.write_inventory(root, module)
+                    case = suite.find("testcase")
+                    if defect == "missing":
+                        suite.remove(case)
+                    elif defect == "duplicate":
+                        suite.append(ET.fromstring(ET.tostring(case)))
+                    elif defect == "malformed":
+                        case.attrib.pop("name")
+                    else:
+                        ET.SubElement(case, defect)
+                    self.save_report(source, suite)
+                    with self.assertRaisesRegex(ValueError, "mandatory|malformed"):
+                        ci.collect_reports(root, root / "evidence", module, 26)
+
+    def test_complete_inventory_accepts_nonmandatory_ignored_fixtures_on_every_api(self):
+        for module in ("data", "app"):
+            for api in (26, 31, 33, 35, 36):
+                with self.subTest(module=module, api=api), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source, suite = self.write_inventory(root, module, api)
+                    if module == "data":
+                        for fixture in ("CurrentIndexIntegrity", "CurrentTableIntegrity", "HistoricalActiveV8Fixture",
+                                        "HistoricalActiveV8State", "SequenceExecutionManualSchema"):
+                            case = ET.SubElement(suite, "testcase", classname="fixture." + fixture, name="null")
+                            ET.SubElement(case, "skipped")
+                    self.save_report(source, suite)
+                    result = ci.collect_reports(root, root / "evidence", module, api)
+                    self.assertTrue(result["mandatory_inventory_passed"])
+                    self.assertEqual(result["skipped"], 5 if module == "data" else 0)
+
     def test_original_report_and_observed_api_are_retained(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "data/build/outputs/androidTest-results/managedDevice/debug/pixel2Api26/TEST-suite.xml"
-            source.parent.mkdir(parents=True)
-            source.write_text('<testsuite tests="1"><testcase classname="pkg.AndroidCompatibilityDeviceTest" '
-                              'name="recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi=26]"/></testsuite>')
+            source, suite = self.write_inventory(root)
             result = ci.collect_reports(root, root / "evidence", "data", 26)
             self.assertEqual(result["observed_apis"], [26])
-            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["total"], len(suite))
             self.assertEqual((root / "evidence" / source.relative_to(root)).read_bytes(), source.read_bytes())
-            source.write_text(source.read_text().replace('tests="1"', 'tests="2"'))
+            suite.set("tests", str(len(suite) + 1))
+            ET.ElementTree(suite).write(source)
             with self.assertRaisesRegex(ValueError, "inconsistent JUnit"):
                 ci.collect_reports(root, root / "evidence", "data", 26)
+
+    def test_successful_gradle_with_marker_only_data_fails_but_app_is_still_certified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, suite = self.write_inventory(root)
+            self.write_inventory(root, "app")
+            for case in list(suite):
+                if not case.get("name").startswith("recordsActualApi"):
+                    suite.remove(case)
+            self.save_report(source, suite)
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+            with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                    patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "Popen") as worker, \
+                    patch("sys.argv", ["ci", "--api", "26"]), contextlib.redirect_stdout(io.StringIO()):
+                worker.return_value.__enter__.return_value.stdout = []
+                worker.return_value.__enter__.return_value.wait.return_value = 0
+                self.assertEqual(ci.main(), 1)
+            evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+            self.assertEqual(evidence["modules"]["data"]["exit_code"], 0)
+            self.assertIn("mandatory", evidence["modules"]["data"]["evidence_error"])
+            self.assertTrue(evidence["modules"]["app"]["mandatory_inventory_passed"])
+            self.assertEqual((root / "ci-evidence/api26" / source.relative_to(root)).read_bytes(), source.read_bytes())
+            self.assertEqual(worker.call_count, 2)
+
+    def test_malformed_original_xml_is_retained_and_rejected(self):
+        for malformed in (b"<testsuite>", b"<unknown/> "):
+            with self.subTest(xml=malformed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, _ = self.write_inventory(root)
+                source.write_bytes(malformed)
+                with self.assertRaises((ValueError, ET.ParseError)):
+                    ci.collect_reports(root, root / "evidence", "data", 26)
+                self.assertEqual((root / "evidence" / source.relative_to(root)).read_bytes(), malformed)
 
     def test_data_failure_still_runs_app_sequentially_and_retains_exit_status(self):
         class Process:
@@ -63,7 +174,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     calls.append(("install", command))
                 def reports(*args):
                     calls.append(("suite", args[2]))
-                    return dict(total=1, failures=0, errors=0, observed_apis=[api], reports=[])
+                    return dict(total=1, failures=0, errors=0, observed_apis=[api], reports=[], mandatory_inventory_passed=True)
                 env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
                            GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
                 with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
@@ -122,7 +233,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         patch.object(ci.subprocess, "run", side_effect=install) as installation, \
                         patch.object(ci.subprocess, "Popen") as worker, \
                         patch.object(ci, "collect_reports", return_value=dict(
-                            total=1, failures=0, errors=0, observed_apis=[26], reports=[])), \
+                            total=1, failures=0, errors=0, observed_apis=[26], reports=[], mandatory_inventory_passed=True)), \
                         patch("sys.argv", ["ci", "--api", "26"]):
                     worker.return_value.__enter__.return_value.stdout = []
                     worker.return_value.__enter__.return_value.wait.return_value = 0

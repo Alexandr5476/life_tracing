@@ -39,29 +39,56 @@ def sdkmanager_command():
 
 def collect_reports(repo, directory, module, api):
     reports, counts, observed = [], dict(total=0, failures=0, errors=0, skipped=0), set()
+    # Pinned independently of discovery/results: disappearing tests cannot shrink the gate.
+    inventory = json.loads(Path(__file__).with_name("instrumentation-inventory.json").read_text(encoding="utf-8"))
+    required = {(suite, name.format(api=api)) for suite, names in inventory[module].items() for name in names}
+    executed = {}
     source = repo / module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
     for path in sorted(source.glob("TEST-*.xml")):
+        # Retain original evidence even if parsing or mandatory inventory validation fails.
+        destination = directory / path.relative_to(repo)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        reports.append({"path": destination.relative_to(directory).as_posix(),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         tree = ET.parse(path)
+        if tree.getroot().tag not in ("testsuite", "testsuites"):
+            raise ValueError(f"{module}: malformed JUnit root")
         cases = list(tree.iter("testcase"))
-        before = counts.copy()
         counts["total"] += len(cases)
         for case in cases:
+            identity = (case.get("classname"), case.get("name"))
+            if not all(identity):
+                raise ValueError(f"{module}: malformed JUnit testcase identity")
+            executed.setdefault(identity, []).append(case)
             for tag, key in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
                 counts[key] += case.find(tag) is not None
             if (case.get("classname", "").endswith(".AndroidCompatibilityDeviceTest")
                     and case.get("name", "").startswith("recordsActualApiAndRejectsMismatchedRequestedTarget[")
                     and not any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))):
                 observed.update(int(value) for value in re.findall(r"actualApi=(\d+)", case.get("name", "")))
-        for attribute, key in (("tests", "total"), ("failures", "failures"), ("errors", "errors"), ("skipped", "skipped")):
-            declared = tree.getroot().get(attribute)
-            if declared is not None and int(declared) != counts[key] - before[key]:
-                raise ValueError(f"{module}: inconsistent JUnit {attribute} count")
-        destination = directory / path.relative_to(repo)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, destination)
-        reports.append({"path": destination.relative_to(directory).as_posix(),
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-    return dict(counts, observed_apis=sorted(observed), reports=reports)
+        for suite in tree.iter():
+            if suite.tag not in ("testsuite", "testsuites"):
+                continue
+            children = list(suite.iter("testcase"))
+            actual = dict(tests=len(children), **{
+                attribute: sum(case.find(tag) is not None for case in children)
+                for tag, attribute in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped"))
+            })
+            for attribute, value in actual.items():
+                declared = suite.get(attribute)
+                if declared is not None and int(declared) != value:
+                    raise ValueError(f"{module}: inconsistent JUnit {attribute} count")
+    invalid = []
+    for identity in sorted(required):
+        matches = executed.get(identity, [])
+        if len(matches) != 1 or any(matches[0].find(tag) is not None for tag in ("failure", "error", "skipped")):
+            invalid.append("#".join(identity))
+    if invalid:
+        raise ValueError(f"{module}: {len(invalid)} missing, duplicate or unsuccessful mandatory testcases "
+                         f"(first 20): {', '.join(invalid[:20])}")
+    return dict(counts, observed_apis=sorted(observed), reports=reports,
+                mandatory_inventory_passed=True, mandatory_testcases=len(required))
 
 
 def main():
@@ -109,6 +136,7 @@ def main():
                 print(f"::error::{module} API {args.api}: {exc}", flush=True)
             record["finished_at"] = timestamp()
             passed = (record["exit_code"] == 0 and record.get("total", 0) > 0
+                      and record.get("mandatory_inventory_passed") is True and "evidence_error" not in record
                       and record.get("observed_apis") == [args.api]
                       and not any(record.get(key, 0) for key in ("failures", "errors")))
             failed |= not passed

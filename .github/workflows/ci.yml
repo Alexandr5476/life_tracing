@@ -60,6 +60,7 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+  # All five matrix checks and fast-checks are required; see docs/implementation/android_compatibility_gate.md.
   instrumented-tests:
     name: ${{ matrix.name }}
     strategy:
@@ -92,7 +93,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-      - name: Run complete data and app suites
+      - name: Run complete suites and certify mandatory testcase inventory
         env:
           EXPECTED_TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 .github/scripts/run-instrumentation.py --api ${{ matrix.api }}

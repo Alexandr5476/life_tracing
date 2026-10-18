@@ -10,10 +10,15 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
+import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineKind
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,6 +28,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
+import java.time.ZoneOffset
 
 @RunWith(AndroidJUnit4::class)
 class RuntimeCapabilityAndroidTest {
@@ -39,9 +45,6 @@ class RuntimeCapabilityAndroidTest {
     @After
     fun cleanPlatformEffects() {
         AndroidRuntimeDeadlineScheduler(context).cancel()
-        context
-            .getSystemService(NotificationManager::class.java)
-            .cancel(AndroidRuntimeNotificationPublisher.NOTIFICATION_ID)
     }
 
     @Test
@@ -63,6 +66,100 @@ class RuntimeCapabilityAndroidTest {
         assertEquals(replacement, deliveredDeadline(requireNotNull(token)))
         scheduler.cancel()
         assertNull(RuntimeDeadlineIntentCodec.existingPendingIntent(context))
+    }
+
+    @Test
+    fun realAlarmManagerRegistersTheAuthorizedModeAndCancellationRemovesIt() {
+        val scheduler = AndroidRuntimeDeadlineScheduler(context)
+        scheduler.cancel()
+        // Fresh installs authorize exact alarms through API 33; API 34+ deny special access by default.
+        // The matrix requires both real modes without revoking access and killing instrumentation.
+        val exact = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        assertEquals("Unexpected fresh-install exact-alarm state", exact, scheduler.canScheduleExactRuntimeDeadlines())
+
+        fun records() = pendingRuntimeAlarmRecords(runtimeShell("dumpsys alarm"), context.packageName)
+
+        // Negative control: a PendingIntent alone must not be mistaken for a registered alarm.
+        RuntimeDeadlineIntentCodec.pendingIntent(context, deadline)
+        assertTrue(records().isEmpty())
+        scheduler.schedule(deadline)
+        val registered = records()
+        assertEquals("Expected one registered AlarmManager alarm: $registered", 1, registered.size)
+        val record = registered.single()
+        assertTrue(record, Regex("(?:origWhen|when) ${deadline.at.toEpochMilli()}\\b").containsMatchIn(record))
+        val window = requireNotNull(Regex("\\bwindow=(\\S+)").find(record)) { record }.groupValues[1]
+        assertEquals("Actual AlarmManager batching window: $record", exact, window == "0")
+        assertTrue(record, record.contains("repeatInterval=0"))
+        println("LifeTracing AlarmManager api=${Build.VERSION.SDK_INT} exact=$exact pending=$record")
+        scheduler.cancel()
+        assertTrue("Cancellation must remove the system alarm", records().isEmpty())
+    }
+
+    @Test
+    fun realRuntimeAndCompletionNotificationsArePostedReplacedAndCancelled() {
+        val name = "notification-platform-${System.nanoTime()}"
+        try {
+            RuntimeRecoveryStore(context, name).use { store ->
+                val template =
+                    store.authoring.createActivityTemplate(
+                        ActivityTemplateDraft("Notification smoke", null, TimeTrackingMode.STOPWATCH, null),
+                        createdAt = deadline.at,
+                    )
+                store.activityCommands.startLive(
+                    ActivityEntrySource.Template(template.id),
+                    deadline.at,
+                    deadline.at,
+                    ZoneOffset.UTC,
+                )
+                val runtime = requireNotNull(store.live.getActiveRuntime())
+                val facts = store.durableFacts()
+                withRuntimeNotificationsEnabled(context) { publisher, manager ->
+                    fun notification() =
+                        manager.activeNotifications.singleOrNull {
+                            it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID
+                        }
+
+                    publisher.publish(runtime, null)
+                    awaitRuntimeSystemState("posted runtime notification") { notification() != null }
+                    val running = requireNotNull(notification())
+                    assertEquals(context.packageName, running.packageName)
+                    assertEquals(AndroidRuntimeNotificationPublisher.CHANNEL_ID, running.notification.channelId)
+                    assertEquals(
+                        context.getString(R.string.runtime_notification_activity),
+                        running.notification.extras.getString(Notification.EXTRA_TITLE),
+                    )
+                    assertEquals(
+                        context.getString(R.string.runtime_notification_running),
+                        running.notification.extras.getString(Notification.EXTRA_TEXT),
+                    )
+                    assertTrue(running.notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+                    assertTrue(running.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+                    assertEquals(Notification.VISIBILITY_PRIVATE, running.notification.visibility)
+                    assertEquals(Notification.CATEGORY_STOPWATCH, running.notification.category)
+
+                    publisher.publish(null, RuntimeDeadlineFeedback(deadline, false, false))
+                    awaitRuntimeSystemState("completion replacing runtime notification") {
+                        notification()?.notification?.extras?.getString(Notification.EXTRA_TITLE) ==
+                            context.getString(R.string.runtime_notification_due)
+                    }
+                    val completed = requireNotNull(notification()).notification
+                    assertEquals(AndroidRuntimeNotificationPublisher.CHANNEL_ID, completed.channelId)
+                    assertEquals(
+                        context.getString(R.string.runtime_notification_completed),
+                        completed.extras.getString(Notification.EXTRA_TEXT),
+                    )
+                    assertEquals(0, completed.flags and Notification.FLAG_ONGOING_EVENT)
+                    assertEquals(0, completed.flags and Notification.FLAG_ONLY_ALERT_ONCE)
+                    assertEquals(Notification.VISIBILITY_PRIVATE, completed.visibility)
+                    assertEquals(Notification.CATEGORY_STOPWATCH, completed.category)
+                    publisher.publish(null, null)
+                    awaitRuntimeSystemState("cancelled system notification") { notification() == null }
+                    assertEquals(facts, store.durableFacts())
+                }
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
     }
 
     @Test
