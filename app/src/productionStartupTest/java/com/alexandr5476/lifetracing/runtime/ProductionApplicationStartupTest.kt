@@ -1,6 +1,9 @@
 package com.alexandr5476.lifetracing.runtime
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -50,6 +53,7 @@ class ProductionApplicationStartupTest {
                 "Run only in the dedicated disposable installation",
                 application.packageName.endsWith(".debug.startup"),
             )
+            assertRecoveryBroadcastsDisabled()
             assertFalse("Startup requires a fresh installation", application.getDatabasePath(DATABASE).exists())
             RuntimePlatformFixture.acquire(application).use {
                 try {
@@ -72,13 +76,14 @@ class ProductionApplicationStartupTest {
         val original = RuntimeRecoveryStore(application, DATABASE).use { seed(it) }
         val logicalDeadline = original.startedAt!!.plusSeconds(60)
         assertTrue(application.getDatabasePath(DATABASE).isFile)
-        // Seed connection closes before framework foreground delivery. No graph acquisition,
-        // direct coordinator call, receiver, local deadline or alarm is armed by this fixture.
+        // Seed connection closes before framework foreground delivery. Graph acquisition below
+        // only captures a generation; no coordinator call, receiver or deadline is armed here.
+        val coordinator = LifeTracingRuntimeGraph.from(application).coordinator
+        val generation = coordinator.semanticGeneration.value
         val foregroundArrival = Instant.now()
         assertTrue(logicalDeadline < foregroundArrival)
         ActivityScenario.launch(MainActivity::class.java).use {
-            val coordinator = LifeTracingRuntimeGraph.from(application).coordinator
-            withTimeout(10_000) { coordinator.semanticGeneration.first { it > 0 } }
+            withTimeout(10_000) { coordinator.semanticGeneration.first { it > generation } }
         }
         // A new physical Room connection and canonical readers, not an in-memory runtime result.
         RuntimeRecoveryStore(application, DATABASE).use { reopened ->
@@ -118,6 +123,21 @@ class ProductionApplicationStartupTest {
             assertNull(execution.completedAt)
             assertNull(NextRuntimeDeadlineResolver.resolve(original))
         }
+    }
+
+    private fun assertRecoveryBroadcastsDisabled() {
+        val component = ComponentName(application, RuntimeRecoveryReceiver::class.java)
+        val receiver =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                application.packageManager.getReceiverInfo(
+                    component,
+                    PackageManager.ComponentInfoFlags.of(PackageManager.MATCH_DISABLED_COMPONENTS.toLong()),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                application.packageManager.getReceiverInfo(component, PackageManager.MATCH_DISABLED_COMPONENTS)
+            }
+        assertFalse("Startup fixture must exclude unsolicited recovery broadcasts", receiver.enabled)
     }
 
     private fun seed(store: RuntimeRecoveryStore): ActivityExecution {

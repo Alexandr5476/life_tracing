@@ -88,6 +88,13 @@ android {
         }
     }
 
+    if (productionStartup) {
+        // Isolate foreground lifecycle recovery from boot/time/permission broadcasts during install.
+        sourceSets.named("debug") {
+            manifest.srcFile("src/productionStartup/AndroidManifest.xml")
+        }
+    }
+
     sourceSets.named("androidTest") {
         if (productionStartup) {
             java.setSrcDirs(

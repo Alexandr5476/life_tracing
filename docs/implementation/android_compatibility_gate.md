@@ -68,12 +68,20 @@ platform-isolation helpers copied by a tracked-input Sync task into a generated 
 `.debug.startup` for this invocation only, so its ordinary `lifetracing.db` and platform slots belong to
 a disposable installation, independently of the regular `.debug` package.
 
+Only this invocation's debug manifest overlay disables RuntimeRecoveryReceiver. CI API 35 logcat
+showed `runtime_recovery_started` before test discovery on a newly installed package: installation
+freshness does not prevent boot/time/permission recovery broadcasts from opening the database.
+The overlay excludes those competing recovery triggers before the process starts, while leaving the
+manifest Application, MainActivity and foreground lifecycle wiring unchanged. Ordinary debug and
+release manifests retain the enabled receiver; the ordinary app suite covers receiver recovery.
+The startup case asserts that the receiver is disabled before checking database and platform vacancy.
+
 The test requires the installed declaration and actual framework Application to be exactly
 LifeTracingApplication. It requires a fresh database and vacant platform slots before acquiring the
 existing package-wide lease. Production repositories persist an overdue RUNNING Timer, close their
 physical Room connection, then launch the real MainActivity. Only the production Application lifecycle
 callback triggers recovery: the test never calls onForeground(), dispatches a receiver, or arms an alarm.
-A bounded semantic-generation observation waits for lifecycle reconciliation to finish before reading the committed state. After closing the Activity, a new physical
+A bounded semantic-generation observation waits for an advance beyond the value captured before launch, so an earlier reconciliation cannot satisfy the wait. After closing the Activity, a new physical
 Room connection verifies canonical History identity, snapshot, original zone, completion at the stored
 logical deadline, duration, and cleared active ownership. A second foreground launch preserves an overdue
 but PAUSED Timer and its active slot, observed after bounded semantic-generation publication. Both
