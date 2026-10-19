@@ -644,6 +644,11 @@
       "zeroActualValueSurvivesColdTemporalRecoveryAsZero[context=2]"
     ],
     "com.alexandr5476.lifetracing.data.persistence.StatisticsRepositoryTest": [
+      "mixedStatisticsSurviveReopenCorrectionAndDeletionWithIndependentExpectations",
+      "concurrentStandaloneCorrectionKeepsEveryStatisticsProjectionInOneTransaction",
+      "concurrentStandaloneDeletionKeepsEveryStatisticsProjectionInOneTransaction",
+      "concurrentChildDeletionKeepsEveryStatisticsProjectionInOneTransaction",
+      "statisticsReadFailureAndCancellationReleaseTransactionWithoutDurableWrites",
       "boundedNumberReadersPreserveSignedEligibilityAndPeriods",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",

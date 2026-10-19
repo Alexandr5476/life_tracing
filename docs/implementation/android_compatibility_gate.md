@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 615 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 620 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -44,12 +44,24 @@ count/median consistency and invalid persisted durations. The other two S1 addit
 the pre-S2 mandatory data count of 609 remain unchanged. S2 adds four Number reader cases
 (eligibility/periods, growing history/query cardinality, physical reopen/deletion and
 malformed storage), bringing the S2 mandatory data count to 613. S3 adds two Series Detail cases
-(raw-sample rejection and increasing-history result/query bounds), bringing the current
+(raw-sample rejection and increasing-history result/query bounds), bringing the S3
 mandatory data count to 615. Existing mixed-Field fixtures now cover exact signed totals,
 empty Number/Category Fields and Text descriptors; the physical reopen/deletion and
 malformed-storage cases also exercise canonical Series Detail. The five-API gate and
 independent startup inventory remain mandatory; host probes and APK compilation do not
 certify device execution.
+
+## S4 Statistics integration additions
+
+S4 adds five mandatory `StatisticsRepositoryTest` identities: mixed physical reopen with
+supported correction/deletion, separate-connection correction/deletion/child-deletion
+interleavings, and read failure/cancellation without durable writes. Data now requires
+620 mandatory cases (625 including the five existing nonmandatory skips); app and
+independent startup remain 323 and two. Every original case is retained. See
+[the S4 closure evidence](statistics_s4_evidence.md) for the independent ledger,
+transaction gates, read graph, host-only comparison and remaining acceptance risks.
+Compilation and host probes do not certify these new Android cases. Controller must
+execute the complete unfiltered inventory at all five APIs and exact-head GitHub CI.
 
 ## System alarm and notification evidence
 

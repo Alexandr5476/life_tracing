@@ -118,6 +118,58 @@ class StatisticsSeriesDetailControllerTest {
             assertEquals(StatisticsSeriesDetailLoadState.Loading, controller.state.value.load)
         }
 
+    @Test
+    fun replacedAndReleasedSessionsRejectLateSuccessAndFailure() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val owner = StatisticsSeriesDetailRouteSessionOwner()
+        val success = CompletableDeferred<StatisticsSeriesDetail>()
+        val failure = CompletableDeferred<StatisticsSeriesDetail>()
+        var calls = 0
+        try {
+            val first =
+                owner.acquire(id, initial) { series, period ->
+                    StatisticsSeriesDetailController(scope, series, period) { _, _ -> success.await() }
+                }
+            val second =
+                owner.acquire(StatisticsSeriesId("second"), initial) { series, period ->
+                    StatisticsSeriesDetailController(scope, series, period) { _, _ -> failure.await() }
+                }
+            owner.release(first)
+            assertSame(second, owner.activeSession)
+            val current =
+                owner.acquire(id, day) { series, period ->
+                    StatisticsSeriesDetailController(scope, series, period) { _, _ ->
+                        calls++
+                        activityDetail()
+                    }
+                }
+            success.complete(activityDetail())
+            failure.completeExceptionally(IllegalStateException("obsolete failure"))
+            assertEquals(StatisticsSeriesDetailLoadState.Loading, first.controller.state.value.load)
+            assertEquals(StatisticsSeriesDetailLoadState.Loading, second.controller.state.value.load)
+            assertEquals(day, current.controller.state.value.selectedPeriod)
+            assertEquals(1, calls)
+            owner.release(second)
+            assertSame(current, owner.activeSession)
+            owner.release(current)
+            current.controller.refresh()
+            assertEquals(1, calls)
+            val reentered =
+                owner.acquire(id, initial) { series, period ->
+                    StatisticsSeriesDetailController(scope, series, period) { _, _ ->
+                        calls++
+                        activityDetail()
+                    }
+                }
+            org.junit.jupiter.api.Assertions
+                .assertNotSame(current.controller, reentered.controller)
+            assertEquals(2, calls)
+        } finally {
+            owner.activeSession?.let(owner::release)
+            scope.cancel()
+        }
+    }
+
     private suspend fun StatisticsSeriesDetailController.awaitContent(expected: StatisticsSeriesDetail) =
         withTimeout(2_000) {
             state.first { (it.load as? StatisticsSeriesDetailLoadState.Content)?.detail === expected }
