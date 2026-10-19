@@ -72,21 +72,27 @@ class ExactNumberSummaryTest {
     }
 
     @Test
-    fun medianReadPolicyProtectsSelectiveReadsAndBoundsDenseLineagesWithoutOverflow() {
-        assertEquals(false, NumberMedianReadPolicy.isBroad(0, 0))
-        assertEquals(false, NumberMedianReadPolicy.isBroad(2, 10_000))
-        assertEquals(false, NumberMedianReadPolicy.isBroad(2, 5))
-        assertEquals(true, NumberMedianReadPolicy.isBroad(3, 5))
-        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(3, 5, 4))
-        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(3, 5, 3))
-        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(2, 10_000, 1))
-        assertEquals(false, NumberMedianReadPolicy.isBroad(Long.MAX_VALUE / 2, Long.MAX_VALUE))
-        assertEquals(true, NumberMedianReadPolicy.isBroad(Long.MAX_VALUE / 2 + 1, Long.MAX_VALUE))
-        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.lineageLimit(Long.MAX_VALUE))
-        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.lineageLimit(Long.MAX_VALUE - 1))
-        assertEquals(2L, NumberMedianReadPolicy.lineageLimit(1))
-        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.isBroad(2, 1) }
-        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.lineageLimit(0) }
+    fun medianReadPolicyBoundsFieldAndValueFanoutWithoutGlobalMajorityOrOverflow() {
+        // Dense minority and singleton sparse Fields use their exclusive lineage.
+        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(800, 800, 800))
+        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(1, 800, 1))
+        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(1, 800, 1_600))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(1, 800, 1_601))
+        // Value candidates, rather than global executions or sample density, set the budget.
+        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(1, 19_200, 20_000))
+        // Tiny new Series and narrow periods stop probing a large shared lineage.
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(3, 72, 145))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(3, 3, 7))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(1, 1, 3))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(0, 0, 0))
+        assertEquals(3L, NumberMedianReadPolicy.candidateLimit(1))
+        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.candidateLimit(Long.MAX_VALUE))
+        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.candidateLimit(Long.MAX_VALUE / 2))
+        assertEquals(Long.MAX_VALUE - 2, NumberMedianReadPolicy.candidateLimit(Long.MAX_VALUE / 2 - 1))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(1, Long.MAX_VALUE, Long.MAX_VALUE))
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.candidateLimit(0) }
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.candidateLimit(-1) }
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.useFieldFirst(2, 1, 0) }
         assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.useFieldFirst(1, 1, -1) }
     }
 

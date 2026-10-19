@@ -2469,7 +2469,7 @@ class StatisticsRepositoryTest {
                             isRead && !statement.contains("room_table_modification_log", ignoreCase = true)
                         }
                     }
-                assertEquals(5, reads.size)
+                assertEquals(7, reads.size)
                 assertTrue(reads.none { it.contains("active_duration_ms") })
                 assertEquals(
                     com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
@@ -2697,8 +2697,9 @@ class StatisticsRepositoryTest {
                     }
                 }
             }
-            assertEquals(2L, database.statisticsDao().activityNumberFieldLineageCount("number-source", 2))
-            assertEquals(2L, database.statisticsDao().sequenceNumberFieldLineageCount("sequence-number-source", 2))
+            seedMinorityNumberHistory()
+            assertEquals(2L, database.statisticsDao().activityNumberFieldCandidateCount("number-source", 2))
+            assertEquals(2L, database.statisticsDao().sequenceNumberFieldCandidateCount("sequence-number-source", 2))
             repeat(2) {
                 database.close()
                 database =
@@ -2753,6 +2754,7 @@ class StatisticsRepositoryTest {
                         assertNumberReadPlans()
                     }
                 }
+                assertMinorityNumberHistory()
             }
         } finally {
             database.close()
@@ -3710,7 +3712,10 @@ class StatisticsRepositoryTest {
         args: List<Any?>,
     ) {
         observedSql.add(sql)
-        if (sql.contains(" AS bit_counts ") || sql.contains(" AS lower_median_scaled")) {
+        if (sql.contains(" AS bit_counts ") ||
+            sql.contains(" AS lower_median_scaled") ||
+            (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN"))
+        ) {
             observedNumberReads.add(sql to args.toList())
         }
     }
@@ -3735,6 +3740,19 @@ class StatisticsRepositoryTest {
                 assertEquals(64, Regex(Regex.escape("COUNT(CASE WHEN ((")).findAll(sql).count())
             }
             val searches = plan.filter { it.contains("SEARCH ") }
+            if (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN")) {
+                assertTrue("Candidate probe must stop early", sql.contains("LIMIT ?"))
+                assertTrue(
+                    "Candidate probe must use the source Field index: $plan",
+                    searches.first().contains("fields"),
+                )
+                assertTrue(plan.any { it.contains("execution_values_snapshot_field_id") })
+                database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertTrue(cursor.getLong(0) <= (args.last() as Number).toLong())
+                }
+                return@forEach
+            }
             val fieldFirst =
                 sql.startsWith("WITH eligible AS (SELECT recorded_values.number_scaled FROM ") &&
                     sql.substringBefore("CROSS JOIN").contains("snapshot_fields AS fields")
@@ -3750,6 +3768,120 @@ class StatisticsRepositoryTest {
             }
         }
         observedNumberReads.clear()
+    }
+
+    private fun seedMinorityNumberHistory() {
+        database.runInTransaction {
+            for (kind in listOf("activity", "sequence")) {
+                val seriesId = "$kind-minority"
+                val snapshot = "$kind-minority-snapshot"
+                series(seriesId, kind.uppercase(), "Minority")
+                if (kind == "activity") {
+                    activitySnapshot(snapshot, seriesId, mode = "NO_LIVE_TRACKING")
+                } else {
+                    database.sequenceSnapshotDao().insertAggregate(
+                        SequenceSnapshotAggregateEntity(
+                            SequenceSnapshotEntity(snapshot, "Minority", null, null, null, seriesId, 0),
+                            sequenceSettings(snapshot),
+                        ),
+                    )
+                }
+                repeat(24) { field ->
+                    val source = "$kind-minority-$field"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_template_fields " +
+                            "(id,${kind}_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                            "VALUES (?,?,?,'Same label','NUMBER',0,0)",
+                        arrayOf<Any>(source, if (kind == "activity") "activity" else "sequence", 100 + field),
+                    )
+                    val owner = if (kind == "activity") "snapshot_id" else "sequence_snapshot_id"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_snapshot_fields " +
+                            "(id,$owner,source_field_id,position,name_at_creation,field_type) " +
+                            "VALUES (?,?,?,?,'Same label','NUMBER')",
+                        arrayOf<Any>("$snapshot-$field", snapshot, source, field),
+                    )
+                }
+                repeat(800) { index ->
+                    val id = "$kind-minority-execution-$index"
+                    val columns =
+                        if (kind == "activity") {
+                            "context_type,completed_at_ms"
+                        } else {
+                            "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                        }
+                    val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_executions " +
+                            "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                            "created_at_ms,updated_at_ms,$columns) " +
+                            "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                        arrayOf(id, snapshot, seriesId, AUG_20),
+                    )
+                    repeat(24) { field ->
+                        if (field != 23 || index == 0) {
+                            val value = if (index % 2 == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                            database.openHelper.writableDatabase.execSQL(
+                                "INSERT INTO ${kind}_execution_field_values " +
+                                    "(${kind}_execution_id,snapshot_field_id,number_scaled) VALUES (?,?,?)",
+                                arrayOf<Any>(id, "$snapshot-$field", value),
+                            )
+                        }
+                    }
+                }
+                database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 2")
+            }
+        }
+    }
+
+    private fun assertMinorityNumberHistory() {
+        for (kind in listOf("activity", "sequence")) {
+            val seriesId = StatisticsSeriesId("$kind-minority")
+            observedNumberReads.clear()
+            observedSql.clear()
+            val detail = repository.seriesDetail(seriesId, StatisticsPeriod.AllTime)
+            val numbers =
+                detail.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+            assertEquals(24, numbers.size)
+            // Room can record background invalidation queries while these assertions inspect the log.
+            val detailQueries = synchronized(observedSql) { observedSql.toList() }
+            assertEquals(
+                1,
+                detailQueries.count {
+                    it.startsWith("SELECT COUNT(*) FROM ${kind}_executions AS executions LEFT JOIN")
+                },
+            )
+            assertEquals(24, detailQueries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") })
+            numbers.forEach { number ->
+                val fieldId = number.field.id.value
+                val sparse = fieldId.endsWith("-23")
+                val values =
+                    if (sparse) {
+                        listOf(Long.MIN_VALUE)
+                    } else {
+                        List(800) { if (it % 2 == 0) Long.MIN_VALUE else Long.MAX_VALUE }
+                    }
+                val expected =
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(values)
+                assertEquals(expected, number.statistics.values)
+                assertEquals(800L, number.statistics.relevantExecutionCount)
+                assertEquals(if (sparse) 799L else 0L, number.statistics.missingCount)
+                assertEquals(
+                    number.statistics,
+                    repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                )
+            }
+            val numberQueries = synchronized(observedNumberReads) { observedNumberReads.toList() }
+            val medians = numberQueries.filter { it.first.contains(" AS lower_median_scaled") }
+            assertEquals(48, medians.size)
+            assertTrue(
+                "Every dense/sparse median must avoid repeated all-Field execution scans",
+                medians.all { it.first.substringBefore("CROSS JOIN").contains("snapshot_fields AS fields") },
+            )
+            assertNumberReadPlans()
+        }
     }
 
     private fun numberHistorySources() {

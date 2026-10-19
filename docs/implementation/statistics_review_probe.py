@@ -59,15 +59,14 @@ def structural(db, kind, bindings, finding, read=query):
         assert "fields" in next(line for line in dense if "SEARCH " in line.upper()), dense
         assert any("execution_values_snapshot_field_id" in line for line in dense), dense
         print(kind, "guarded dense median", *dense, sep="\n  ")
-        size_sql = read(kind + "HistoryExecutionCount")
-        bytecode = db.execute("EXPLAIN " + size_sql).fetchall()
-        assert any(row[1] == "Count" for row in bytecode), "History size must use SQLite's B-tree COUNT"
-        cap_sql = read(kind + "NumberFieldLineageCount")
+        cap_sql = read(kind + "NumberFieldCandidateCount")
         cap_bindings = dict(bindings, limit=1)
         cap_plan = plan(db, cap_sql, cap_bindings)
-        assert "LIMIT :limit" in cap_sql and any("source_field_id" in line for line in cap_plan)
+        assert "LIMIT :limit" in cap_sql and "LEFT JOIN" in cap_sql
+        assert any("source_field_id" in line for line in cap_plan)
+        assert any("execution_values_snapshot_field_id" in line for line in cap_plan)
         assert db.execute(cap_sql, cap_bindings).fetchone()[0] <= 1
-        print(kind, "capped Field metadata", *cap_plan, sep="\n  ")
+        print(kind, "capped Field/value candidates", *cap_plan, sep="\n  ")
 
 
 def distribution(rows, selected):
@@ -171,20 +170,14 @@ def main():
                         for suffix in ("NumberSelection", "SeriesNumberSelection"):
                             method = kind + suffix
                             if version == "optimized" and suffix == "SeriesNumberSelection" and values:
-                                size_rows, size_ms, size_steps = measure(
-                                    db, query(kind + "HistoryExecutionCount"), bindings, args.repeats)
-                                history = size_rows[0][0]
-                                print(kind, label, "history-size preflight", "rows", len(size_rows),
-                                      "ms", size_ms, "VM~", size_steps)
-                                if len(values) >= history // 2 + history % 2:
-                                    lineage_rows, lineage_ms, lineage_steps = measure(
-                                        db, query(kind + "NumberFieldLineageCount"),
-                                        dict(fieldId=bindings["fieldId"], limit=len(values) + 1), args.repeats)
-                                    if lineage_rows[0][0] <= len(values):
-                                        method = kind + "DenseSeriesNumberSelection"
-                                    print(kind, label, "capped-lineage preflight", "rows", len(lineage_rows),
-                                          "ms", lineage_ms, "VM~", lineage_steps)
+                                execution_candidates = db.execute(query(kind + "NumberExecutionCandidateCount"), bindings).fetchone()[0]
+                                candidates, cap_ms, cap_steps = measure(
+                                    db, query(kind + "NumberFieldCandidateCount"),
+                                    dict(fieldId=bindings["fieldId"], limit=2 * execution_candidates + 1), args.repeats)
+                                if candidates[0][0] <= 2 * execution_candidates:
+                                    method = kind + "DenseSeriesNumberSelection"
                                 assert ("Dense" in method) == (label == "dense-old")
+                                print(kind, label, "capped candidates", "ms", cap_ms, "VM~", cap_steps)
                                 print(kind, label, "strategy", method)
                             selected, ms, steps = measure(db, read(method), bindings, args.repeats)
                             assert len(selected) == 1

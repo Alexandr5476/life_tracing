@@ -269,14 +269,18 @@ Field summaries. SQL returns one fixed-width row per recorded Field, containing 
 min/max, integer-storage validation and the 64 decimal bit counts. Kotlin reconstructs
 exact signed totals through ExactNumberSummary and ExactSignedLongSum. Median selection
 returns at most two endpoints in one scalar row per populated Field. The PR37 review
-correction makes individual summaries one fixed-width aggregate row. Individual medians
-and selective Series Detail medians use existing execution/Series and primary-key indexes.
-Series Detail may select the source-Field index path only after scalar cardinality checks
-bound the entire execution history to at most twice the selected sample count and the
-requested source-Field snapshot lineage to at most that sample count. Metadata checks stop
-at sample-count-plus-one; no history collection enters application memory. Both paths use
-the same eligibility predicates and transaction. This avoids per-bit correlated history
-scans and forced unrelated Field-lineage traversal while preserving dense read efficiency.
+correction makes individual summaries one fixed-width aggregate row. Individual and
+Series Detail medians share a bounded source-Field/value candidate probe. It traverses
+existing source-Field and snapshot-Field value indexes with a LEFT JOIN (including
+unused metadata). A single scalar covering-index traversal counts the selected eligible
+executions' value candidates, including empty executions, once per read. The Field probe
+stops at twice that candidate count plus one.
+If the sentinel is reached, median selection uses execution-first eligibility; otherwise
+it uses Field-first access. Both metadata and value fanout are bounded before choosing
+Field-first. Unrelated global execution counts and Field sample density do not gate
+this decision. All projections remain scalar and inside the canonical read transaction.
+This avoids repeated all-Field scans for exclusive dense/sparse lineages while retaining
+selective access for tiny new Series or narrow periods sharing large old lineages.
 Empty catalog Fields retain the canonical
 empty distribution and the containing Series' execution denominator. Category/Text,
 source/snapshot provenance, eligibility, ordering and period semantics are unchanged.

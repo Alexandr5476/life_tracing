@@ -95,27 +95,20 @@ internal class ExactNumberSummary private constructor(
     }
 }
 
-/** Bounds Field-first median work; selective reads never inspect the unrelated Field lineage. */
+/** Compare indexed Field/value candidates with selected execution work, never global history size. */
 internal object NumberMedianReadPolicy {
-    fun isBroad(
-        sampleCount: Long,
-        historyExecutionCount: Long,
-    ): Boolean {
-        require(sampleCount >= 0 && historyExecutionCount >= sampleCount)
-        return sampleCount > 0 && sampleCount >= historyExecutionCount / 2 + historyExecutionCount % 2
-    }
-
-    fun lineageLimit(sampleCount: Long): Long {
-        require(sampleCount > 0)
-        return if (sampleCount == Long.MAX_VALUE) Long.MAX_VALUE else sampleCount + 1
+    /** Cap Field/value candidates at twice the selected execution/value work plus one sentinel. */
+    fun candidateLimit(executionCandidateCount: Long): Long {
+        require(executionCandidateCount > 0)
+        return if (executionCandidateCount >= Long.MAX_VALUE / 2) Long.MAX_VALUE else executionCandidateCount * 2 + 1
     }
 
     fun useFieldFirst(
         sampleCount: Long,
-        historyExecutionCount: Long,
-        boundedLineageCount: Long,
+        executionCandidateCount: Long,
+        boundedCandidateCount: Long,
     ): Boolean {
-        require(boundedLineageCount >= 0)
-        return isBroad(sampleCount, historyExecutionCount) && boundedLineageCount <= sampleCount
+        require(sampleCount >= 0 && executionCandidateCount >= sampleCount && boundedCandidateCount >= 0)
+        return sampleCount > 0 && boundedCandidateCount < candidateLimit(executionCandidateCount)
     }
 }

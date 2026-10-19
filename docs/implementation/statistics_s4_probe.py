@@ -162,7 +162,7 @@ def compare(db, kind, date, fields, plans):
     assert len(grouped) <= fields
     median_rows = 0
     number_samples = 0
-    history_count = db.execute(query(kind + "HistoryExecutionCount")).fetchone()[0] if grouped else 0
+    execution_candidates = db.execute(query(kind + "NumberExecutionCandidateCount"), bindings).fetchone()[0] if grouped else 0
     lineage_reads = 0
     for field in range(fields + 1):
         field_id = f"{kind}-source-{field}"
@@ -187,7 +187,7 @@ def compare(db, kind, date, fields, plans):
         summaries = [row for row in grouped if row["source_field_id"] == field_id]
         if expected[0]:
             assert len(summaries) == 1
-            median_sql, preflights = series_selection_sql(db, kind, params, history_count)
+            median_sql, preflights = series_selection_sql(db, kind, params, execution_candidates)
             lineage_reads += preflights
             series_selection, series_metrics = timed_read(db, median_sql, params)
             assert len(series_selection) == 1 and distribution(summaries[0], series_selection[0]) == expected

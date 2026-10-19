@@ -50,13 +50,12 @@ def fixture(db, kind, rows, fields):
     return series, samples
 
 
-def series_selection_sql(db, kind, bindings, history_count):
-    """Mirror the production cardinality policy; scalar preflight never returns IDs."""
-    count = bindings["expectedCount"]
-    if count and count >= history_count // 2 + history_count % 2:
-        lineage = db.execute(query(kind + "NumberFieldLineageCount"),
-                             dict(fieldId=bindings["fieldId"], limit=count + 1)).fetchone()[0]
-        if lineage <= count:
+def series_selection_sql(db, kind, bindings, candidates):
+    """Mirror the bounded production Field/value candidate preflight, returning no IDs."""
+    if bindings["expectedCount"]:
+        field_candidates = db.execute(query(kind + "NumberFieldCandidateCount"),
+                                      dict(fieldId=bindings["fieldId"], limit=2 * candidates + 1)).fetchone()[0]
+        if field_candidates <= 2 * candidates:
             return query(kind + "DenseSeriesNumberSelection"), 1
         return query(kind + "SeriesNumberSelection"), 1
     return query(kind + "SeriesNumberSelection"), 0
@@ -93,7 +92,7 @@ def main():
                 summaries = db.execute(summary_sql, bindings).fetchall()
                 assert len(summaries) <= args.fields, f"unbounded raw Number rows: {len(summaries)} > F={args.fields}"
                 assert len({r["source_field_id"] for r in summaries}) == len(summaries)
-                history_count = db.execute(query(kind + "HistoryExecutionCount")).fetchone()[0] if summaries else 0
+                candidates = db.execute(query(kind + "NumberExecutionCandidateCount"), bindings).fetchone()[0] if summaries else 0
                 lineage_reads = 0
                 for row in summaries:
                     count = row["sample_count"]
@@ -101,7 +100,7 @@ def main():
                     assert len(bits) == 64 and all(0 <= bit <= count for bit in bits) and row["invalid_count"] == 0
                     total = sum(v * (-(1 << 63) if b == 63 else 1 << b) for b, v in enumerate(bits))
                     params = dict(bindings, fieldId=row["source_field_id"], expectedCount=count)
-                    median_sql, preflights = series_selection_sql(db, kind, params, history_count)
+                    median_sql, preflights = series_selection_sql(db, kind, params, candidates)
                     lineage_reads += preflights
                     selections = db.execute(median_sql, params).fetchall()
                     assert len(selections) == 1
@@ -115,7 +114,7 @@ def main():
                 db.set_trace_callback(None)
                 expected_fields = {f for f, values in samples.items() if any(date is None or day == date for day, _ in values)}
                 assert {r["source_field_id"] for r in summaries} == expected_fields
-                # Summary + one history size + P medians + <=P capped lineage checks.
+                # Summary + one selected-value cost + P medians + P capped candidate checks.
                 assert len(statements) == 1 + bool(summaries) + len(summaries) + lineage_reads
                 print(kind, date or "AllTime", "summary_rows", len(summaries), "median_rows", len(summaries),
                       "queries", len(statements), "PASS exact integer/Fraction reference")

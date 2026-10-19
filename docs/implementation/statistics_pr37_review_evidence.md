@@ -1,4 +1,4 @@
-# PR37 B1/W1 query correction
+# PR37 B1/W1 and B2 query corrections
 
 This increment preserves v1 eligibility, stable source Field/Series identities,
 primaryLocalDate attribution, coverage, exact signed totals and rational distributions.
@@ -40,45 +40,70 @@ that Series, but no longer traverses their excluded snapshot/value lineage first
 The individual median sibling queries have the same protected execution-first order.
 No new execution/snapshot ownership predicate was added to statistical eligibility.
 
-Forcing this path on every dense multi-Field read repeated too many selected-value
-lookups. Series Detail therefore retains an explicitly guarded dense alternative:
+The first W1 correction guarded Field-first access using a majority of all physical
+executions and a capped metadata count. B2 replaces that policy: unrelated Series
+could suppress the cheaper Field index, and snapshot count alone did not measure
+value fanout from a shared snapshot. The following is the current production policy.
 
-1. Read the physical execution count H once for the relevant kind, inside the existing
-   canonical transaction. SQLite uses its B-tree Count opcode; this returns one Long,
-   without reading execution objects. It is not a persistent aggregate or an O(1)
-   latency claim: native page work may still grow with the database.
-2. For a populated result Field with n selected samples, consider the dense path only
-   when n >= ceil(H / 2). This comparison avoids overflowing multiplication/addition.
-3. Only then count that source Field's snapshot lineage, stopping at n + 1 rows.
-   Accept the Field-first alternative only if the count is <= n. The cap saturates
-   safely at Long.MAX_VALUE. Selective reads do not issue this metadata query.
+1. For a nonempty Number request, count selected execution/value candidates Q once.
+   Use the same Series, status, deletion and primaryLocalDate eligibility as the
+   median, then LEFT JOIN execution values through the covering execution-ID primary
+   key prefix. Each execution contributes max(1, stored value row count). No snapshot
+   Field lookups or value objects are needed. The Series Detail read shares Q across
+   all result Fields; an individual read obtains Q once too.
+2. For each populated Number Field, probe its source-Field index and LEFT JOIN its
+   snapshot-Field value index, with LIMIT 2Q+1 inside the counted subquery. A Field
+   with no value rows still contributes one candidate, so both unused snapshot
+   metadata and shared-snapshot value fanout consume the budget. The query returns
+   only one scalar count; LIMIT stops native traversal, not just returned rows.
+3. If the probe reaches the sentinel, use execution-first median selection.
+   Otherwise use Field-first selection. The cap saturates at Long.MAX_VALUE without
+   overflow; saturation at the sentinel conservatively selects execution-first.
+   Empty summaries issue neither cost/probe queries nor a median query.
 
-Under the existing one-value-per-source-Field execution invariant, the accepted
-alternative visits at most n Field metadata rows and at most H <= 2n execution/value
-candidates for that Field. Unused snapshots cannot cause an uncontrolled lineage
-scan: the metadata check stops and selects execution-first instead. No returned
-identifier collection, sample list, new statistical predicate or durable state is used.
-Physical deleted/nonterminal/unrelated executions conservatively increase H; they
-cannot make the dense alternative pass too easily. All eligibility predicates in
-the two median alternatives are identical.
+This is a bounded cost comparison, independent of global physical history size and
+recorded sample density. The factor-two allowance permits modest unrelated lineage
+while bounding the Field path's candidate work by selected execution/value work.
+It is an access choice, not an eligibility approximation. Dense/sparse exclusive
+lineages select Field-first even when many unrelated Series exist. Tiny new Series
+and narrow periods sharing a large old lineage hit the sentinel and retain W1's
+execution-first plan. A sparse Field with a genuinely small lineage can still
+choose Field-first inside a tiny Series, because that path is cheap.
 
-The dense plan retains the existing source-Field index, snapshot-Field value index
-and execution primary key. Both alternatives return one scalar row with at most two
-endpoints and an independently checked eligible count. SQL sorting may require
-history-sized native temporary storage; application sample retention remains fixed.
-Execution-first work scales with selected execution/value candidates. Dense work
-scales with its bounded Field lineage; median sorting remains O(n log n). The
-count/selection CTE can be evaluated twice by SQLite; neither is correlated per bit
-or per execution. No persistent index or cache is required.
+Let E be selected eligible executions, V their stored value rows, and
+Q = sum(max(1, values per execution)); Q is between max(E,V) and E+V. The initial
+cost query is O(T+V) indexed row work, with no per-value snapshot lookup, where
+T includes the Series-index execution candidates rejected by date/status/deletion. Each Field
+probe visits at most 2Q+1 joined candidates, covering both metadata and values. An
+accepted Field-first median visits at most 2Q candidates, with at most one
+execution-PK eligibility lookup per value, and sorts the eligible samples in SQL.
+A rejected probe does not traverse the remaining unrelated lineage. Execution-first
+selection retains O(T+V) candidate work, including Series-index eligibility rejection. Both
+median queries can evaluate the eligible CTE twice; neither uses correlated scans.
+Index lookup factors and exact sorting cost remain; this is not constant-time SQL.
 
-With P populated result Number Fields, Number-specific Series Detail reads are:
-one grouped summary, one physical count, P scalar medians and K capped metadata
-counts, where 0 <= K <= P. Thus at most 2 + 2P reads; an empty summary needs only its
-grouped read, and a catalog without Number Fields needs none. Query counts depend
-on result dimensions, never execution/sample cardinality. Largest median bindings
-remain nine; individual summary uses six, lineage count two, physical count zero.
+For P exclusive dense Fields with E recorded values each, Q is O(EP), the shared
+cost query is O(EP), and the P probes/medians are O(EP) before sorting. There are no
+P repetitions of all P execution values. Sparse exclusive Fields probe only their
+own metadata/value candidates. If every Field shares a vastly larger lineage, the
+bounded probes and execution-first medians can still cost O(PQ); that is the
+deliberate bounded fallback, not an unconditional scan of unrelated history.
 
-## Fail-first and corrected host evidence
+Number-specific Series Detail statements are one grouped summary, one selected
+candidate count, and one probe plus one scalar median per populated Field: 2+2P.
+Empty summaries need only the grouped read. Individual nonempty Number reads now
+execute seven canonical statements including metadata and coverage, independent of
+execution/sample count. Their summary remains the closed B1 fixed 64-accumulator
+aggregate. Largest median bindings remain nine and each probe binds two arguments.
+
+All queries remain within their existing complete repository Room transaction;
+no preflight is performed outside it. Existing exact bit arithmetic, rational
+average/median calculation, missing coverage, identity, display resolution and
+eligibility predicates are unchanged. SQL may use history-sized native sort
+storage; application projections retain only one cost scalar, one probe scalar,
+and one median row per requested Field. No new schema, index or durable cache.
+
+## Earlier B1/W1 execution record
 
 The new probe creates a private physical SQLite database from the checked-in v10
 tables/indexes, restores the exported partial Main Value index predicates, enables
@@ -155,7 +180,7 @@ latency claims or CI thresholds. Run the private-database probe without concurre
 build work when comparing wall-clock values. Result cardinality, exact arithmetic,
 strategy guards and query plans are the deterministic assertions.
 
-## Room inventory and local verification boundary
+## Earlier B1/W1 Room inventory and verification record
 
 The new mandatory Room case is
 StatisticsRepositoryTest.numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen.
@@ -194,3 +219,127 @@ Controller must still run the full build/static/JVM and unfiltered five-API data
 plus independent exact-head GitHub CI. No device task, commit, push or PR operation
 was performed by these implementation turns. Host probes, cached reports and APK
 compilation do not certify device passes.
+
+## B2 regression and verification record
+
+The existing pinned
+StatisticsRepositoryTest.numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen
+now additionally seeds 800 minority-Series executions with 23 dense Number Fields
+and one singleton sparse Field, separately for Activity and Sequence. The 8,000 old
+executions per kind provide unrelated Series. Both physical reopens read complete
+canonical Series Detail and every individual Number Field. Assertions require one
+shared selected-value count, 24 bounded probes, and 48 Field-first medians across
+the two read forms, with exact independent signed-extreme distributions, -1/2 even
+medians, missing coverage and archived sources. Actual callback SQL/bindings are
+checked with EXPLAIN QUERY PLAN; probe limits include real indexed value fanout.
+The original shared old/new lineage and narrow-day assertions remain intact.
+
+The mandatory inventory identities/counts remain unchanged: 621 data, 323 isolated
+app and two startup cases at each of the five APIs. Existing canonical physical
+reopen, supported historical correction/deletion, child-deletion, deterministic
+mutation interleaving, cancellation and failure cases continue using the same
+transactional repository, now including both new cost queries and the bounded probe.
+No instrumentation case or required CI job was removed, renamed or filtered.
+
+Fail-first evidence was observed before changing production: the focused JVM median
+policy regression failed for (800 requested samples, 3,200 global executions,
+800 exclusive lineage rows), and the new B2 host probe rejected the baseline's
+execution-first minority path. The immutable baseline can be checked for both kinds:
+
+```powershell
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 24 --kind activity --query-ref b074d9a2477e42e73c6c82860ae5b7b8dfee1129
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 24 --kind sequence --query-ref b074d9a2477e42e73c6c82860ae5b7b8dfee1129
+```
+
+Both must fail the B2 path assertion. Add --sparse-first to either command to
+independently reproduce the singleton sparse-Field failure before visiting any dense
+Field. Both sparse-first baseline variants also exited one at that intended assertion;
+the corrected sparse-first 800/24 run passed both kinds and all scenarios.
+The probe extracts actual Room SQL from v10,
+uses a private physical database with foreign keys and checked-in indexes, closes
+and reopens it, and compares all Number distributions with independent Python
+integer/Fraction calculations. It covers minority Series, sparse Fields, a tiny new
+Series sharing large old Field/value lineage, a narrow day, and a large unused
+snapshot-metadata lineage that must trigger an early stop. It records the cost query,
+probe and median separately, including covering-index plans and bounded result rows.
+Its allocations belong to the fixture/reference oracle, not production readers.
+
+Reproducible comparisons (no concurrent build work for representative timing):
+
+```powershell
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 12 --repeats 3
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 24 --repeats 3
+python docs/implementation/statistics_b2_probe.py --rows 3200 --fields 24 --repeats 3
+```
+
+VM-work comparisons are host structural evidence, not Android latency guarantees.
+There are no wall-clock thresholds in mandatory CI. Device suites and independent
+exact-head CI remain Controller-owned; APK compilation does not certify execution.
+
+All three comparisons above passed on host SQLite 3.53.1 on 2026-10-19, after the
+focused Gradle run had finished. Each fixture has three unrelated executions for
+every selected execution. Counts below are approximate VM instructions, rounded to
+the progress callback's 1,000-instruction quantum. Corrected work includes the new
+shared cost query and all Field probes plus medians. Both sides exclude unchanged
+grouped bit summaries, catalog, Category and duration reads; these are median-boundary
+comparisons, not complete UI latency measurements.
+
+| Selected executions / populated Fields | Activity reviewed / corrected VM | Sequence reviewed / corrected VM | Number statements / fixed summary rows |
+| --- | ---: | ---: | ---: |
+| 800 / 12 | 1,938,000 / 369,000 | 1,909,000 / 346,000 | 26 / 12 |
+| 800 / 24 | 7,568,000 / 764,000 | 7,511,000 / 719,000 | 50 / 24 |
+| 3,200 / 24 | 30,267,000 / 3,036,000 | 30,038,000 / 2,856,000 | 50 / 24 |
+
+Doubling configured Fields roughly quadruples reviewed median work but doubles the
+corrected work. Quadrupling history at fixed Fields scales both native workloads
+about fourfold while statement count and application result cardinality stay fixed.
+All minority medians, including singleton sparse Fields, use the indexed Field-first
+plan, never repeated execution-to-all-Field value traversal. At 800/24, the Activity
+individual dense median drops from about 315,000 instructions to 24,000 plus 6,000
+for its probe and 68,000 for the cost query. The sparse median drops from about
+310,000 to under 1,000 plus a probe under 1,000 and the same 68,000 cost query.
+The covering cost query is shared once by the bundled read, not repeated per Field.
+
+Representative Activity 800/24 elapsed observations were 8.18–8.44 ms for the reviewed
+dense median versus 0.85–1.15 ms for corrected median selection, with the shared cost
+query measured separately at 0.99–1.36 ms. At 3,200/24 those observations were
+43.85–43.89 ms versus 7.18–7.78 ms, with 5.36–6.39 ms for the cost query. Probe VM
+work is included above; these component timings are not summed into an end-to-end
+claim. Sequence and sparse timings varied substantially despite stable VM work.
+The probe prints every repeat so loaded-host timing reversals remain visible.
+
+The tiny/shared and narrow cases passed execution-first assertions for the large
+old lineages at all three sizes. The genuinely exclusive singleton sparse lineage
+can still use Field-first. The unused-metadata fixture exceeds the 2Q+1 budget and
+requires bounded probing followed by execution-first, so the evidence includes
+fallback overhead rather than assuming every probe is beneficial. Foreign-key
+checks, physical reopen and all independent exact distributions passed in every run.
+
+The immutable reviewed Activity and Sequence 800/24 commands above both exited one
+at the intended B2 minority-path assertion. Before production changes, the focused
+JVM fail-first command also exited one with its new policy assertion:
+
+```powershell
+.\gradlew.bat :data:testDebugUnitTest --tests '*ExactNumberSummaryTest.medianReadPolicy*' --console=plain
+```
+
+After fixing the policy, query shapes and static-check issues, this final focused
+verification exited zero with BUILD SUCCESSFUL:
+
+```powershell
+.\gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest :app:testDebugUnitTest --tests '*Statistics*' --continue --console=plain
+```
+
+Data production and AndroidTest compilation, APK packaging, Detekt, ktlint and lint
+passed. The final run reused successful JVM tasks; their original reports show 25
+data and 17 selected app cases, zero failures/errors/skips. The unchanged domain
+suite was UP-TO-DATE (241 cases in its existing successful reports). No device pass
+is inferred. The pinned StatisticsRepositoryTest inventory still matches all 29
+method identities exactly. git diff --check passed.
+
+Additional final host checks passed: statistics_review_probe.py at 1,000/16
+(both the structural-only check and one-repeat comparison),
+statistics_number_s3_probe.py at 128/64, and statistics_s4_probe.py at 128/4.
+The updated shared probe helper was also explicitly checked to choose selective
+and Field-first paths for both kinds. The existing five-API gate remains mandatory.
+No managed-device task, commit, push or PR operation was performed.

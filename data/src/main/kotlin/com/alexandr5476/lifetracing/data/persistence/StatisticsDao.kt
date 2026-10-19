@@ -207,20 +207,31 @@ internal interface StatisticsDao {
         endDate: String?,
     ): List<StatisticsNumberSummaryRow>
 
-    // COUNT(*) uses SQLite's B-tree count, without hydrating any execution rows.
-    @Query("SELECT COUNT(*) FROM activity_executions")
-    fun activityHistoryExecutionCount(): Long
-
-    // Cap metadata traversal at the selected sample count plus one.
+    // One covering value-index traversal estimates execution-first work for every requested median.
     @Query(
-        "SELECT COUNT(*) FROM (SELECT id FROM activity_snapshot_fields WHERE source_field_id = :fieldId LIMIT :limit)",
+        "SELECT COUNT(*) FROM activity_executions AS executions " +
+            "LEFT JOIN activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "WHERE executions.statistics_series_id = :seriesId AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)",
     )
-    fun activityNumberFieldLineageCount(
+    fun activityNumberExecutionCandidateCount(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): Long
+
+    // LEFT JOIN counts unused Field metadata too. LIMIT precedes COUNT and stops indexed fanout early.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM activity_snapshot_fields AS fields " +
+            "LEFT JOIN activity_execution_field_values AS recorded_values ON recorded_values.snapshot_field_id = fields.id " +
+            "WHERE fields.source_field_id = :fieldId LIMIT :limit)",
+    )
+    fun activityNumberFieldCandidateCount(
         fieldId: String,
         limit: Long,
     ): Long
 
-    // Only the repository's cardinality policy may select this dense-history path.
+    // Only the repository's bounded candidate preflight may select this Field-first path.
     @Query(
         "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_snapshot_fields AS fields " +
             "CROSS JOIN activity_execution_field_values AS recorded_values " +
@@ -347,20 +358,31 @@ internal interface StatisticsDao {
         endDate: String?,
     ): List<StatisticsNumberSummaryRow>
 
-    // COUNT(*) uses SQLite's B-tree count, without hydrating any execution rows.
-    @Query("SELECT COUNT(*) FROM sequence_executions")
-    fun sequenceHistoryExecutionCount(): Long
-
-    // Cap metadata traversal at the selected sample count plus one.
+    // One covering value-index traversal estimates execution-first work for every requested median.
     @Query(
-        "SELECT COUNT(*) FROM (SELECT id FROM sequence_snapshot_fields WHERE source_field_id = :fieldId LIMIT :limit)",
+        "SELECT COUNT(*) FROM sequence_executions AS executions " +
+            "LEFT JOIN sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "WHERE executions.statistics_series_id = :seriesId AND executions.status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)",
     )
-    fun sequenceNumberFieldLineageCount(
+    fun sequenceNumberExecutionCandidateCount(
+        seriesId: String,
+        startDate: String?,
+        endDate: String?,
+    ): Long
+
+    // LEFT JOIN counts unused Field metadata too. LIMIT precedes COUNT and stops indexed fanout early.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM sequence_snapshot_fields AS fields " +
+            "LEFT JOIN sequence_execution_field_values AS recorded_values ON recorded_values.snapshot_field_id = fields.id " +
+            "WHERE fields.source_field_id = :fieldId LIMIT :limit)",
+    )
+    fun sequenceNumberFieldCandidateCount(
         fieldId: String,
         limit: Long,
     ): Long
 
-    // Only the repository's cardinality policy may select this dense-history path.
+    // Only the repository's bounded candidate preflight may select this Field-first path.
     @Query(
         "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_snapshot_fields AS fields " +
             "CROSS JOIN sequence_execution_field_values AS recorded_values " +
