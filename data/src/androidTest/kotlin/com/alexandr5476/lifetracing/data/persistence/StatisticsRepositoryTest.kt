@@ -2826,7 +2826,7 @@ class StatisticsRepositoryTest {
                         }
                     assertEquals("Shared pass count must not grow with populated Field count", 3, ranks.size)
                     assertEquals(
-                        fields,
+                        2 * fields,
                         queries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") },
                     )
                     ranks.forEach { (sql, args) ->
@@ -2873,7 +2873,13 @@ class StatisticsRepositoryTest {
             try {
                 database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
                 numberHistorySources()
-                seedSharedNumberLineages(fields, 1_000, 7_000, exclusiveFirst, ::broadNumberValue)
+                seedSharedNumberLineages(
+                    fields,
+                    1_000,
+                    if (fields >= 8) 16_000 else 7_000,
+                    exclusiveFirst,
+                    ::broadNumberValue,
+                )
                 database.close()
                 database =
                     LifeTracingDatabase
@@ -2960,22 +2966,16 @@ class StatisticsRepositoryTest {
                         reads.filter {
                             it.first.startsWith("SELECT COUNT(*) FROM (") && it.first.contains("LIMIT")
                         }
-                    assertEquals(fields, probes.size)
+                    assertEquals(if (fields > 3) 2 * fields else fields, probes.size)
                     var probeVisits = 0L
                     probes.forEachIndexed { index, (sql, args) ->
-                        database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
-                            assertTrue(cursor.moveToFirst())
-                            val limit = (args.last() as Number).toLong()
-                            probeVisits += cursor.getLong(0)
-                            if (exclusiveFirst && index == 0) {
-                                assertTrue(cursor.getLong(0) < limit)
-                            } else {
-                                assertEquals(
-                                    "Shared old lineage must exhaust the bounded probe",
-                                    limit,
-                                    cursor.getLong(0),
-                                )
-                            }
+                        val count = assertNumberProbe(sql, args)
+                        val limit = (args.last() as Number).toLong()
+                        probeVisits += count
+                        if (exclusiveFirst && index == 0) {
+                            assertTrue(count < limit)
+                        } else {
+                            assertEquals("Shared old lineage must exhaust the bounded probe", limit, count)
                         }
                     }
                     val candidates =
@@ -2986,7 +2986,7 @@ class StatisticsRepositoryTest {
                         }
                     assertTrue(
                         "Total probe work includes every saturated sentinel",
-                        probeVisits <= 2 * candidates + fields,
+                        probeVisits <= 17 * candidates + 2 * fields,
                     )
                     val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
                     assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
@@ -2998,6 +2998,188 @@ class StatisticsRepositoryTest {
             } finally {
                 database.close()
                 context.deleteDatabase(name)
+            }
+        }
+    }
+
+    @Test
+    fun moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(16, 17, 24)) {
+            val cases =
+                listOf(
+                    Triple(1_000, 999, true),
+                    Triple(1_000, 1_000, true),
+                    Triple(1_000, 1_001, true),
+                    Triple(1_000, 1_002, true),
+                    Triple(1_000, 1_001, false),
+                    Triple(999, 1_000, true),
+                    Triple(1_001, 1_000, true),
+                )
+            for ((selectedExecutions, oldExecutions, dense) in cases) {
+                val name = "statistics-moderate-lineages-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    seedSharedNumberLineages(
+                        fields,
+                        selectedExecutions,
+                        oldExecutions,
+                        number = ::broadNumberValue,
+                        missingOddLast = !dense,
+                    )
+                    for (kind in listOf("activity", "sequence")) {
+                        database.openHelper.readableDatabase
+                            .query(
+                                "SELECT source_field_id, COUNT(DISTINCT id) FROM ${kind}_snapshot_fields " +
+                                    "WHERE source_field_id LIKE '$kind-shared-$fields-source-%' GROUP BY source_field_id",
+                            ).use { cursor ->
+                                var count = 0
+                                while (cursor.moveToNext()) {
+                                    assertEquals(2L, cursor.getLong(1))
+                                    count++
+                                }
+                                assertEquals(fields, count)
+                            }
+                    }
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        // Equal mutable labels, then renamed labels, preserve stable source identities.
+                        for (rename in listOf(false, true)) {
+                            if (rename) {
+                                database.openHelper.writableDatabase.execSQL(
+                                    "UPDATE ${kind}_template_fields SET name = 'Renamed ' || (1000 - position)",
+                                )
+                            }
+                            observedNumberReads.clear()
+                            val numbers =
+                                repository
+                                    .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                                    .fields
+                                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                            val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                            assertEquals(fields, numbers.size)
+                            assertEquals(0, reads.count { it.first.contains(" AS at_or_below_count") })
+                            val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                            assertEquals(fields, medians.size)
+                            assertTrue(
+                                medians.none {
+                                    it.first.startsWith(
+                                        "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                                    )
+                                },
+                            )
+                            val probes = reads.filter { it.first.startsWith("SELECT COUNT(*) FROM (") }
+                            if (dense) {
+                                assertEquals(
+                                    if (oldExecutions <=
+                                        selectedExecutions
+                                    ) {
+                                        fields
+                                    } else {
+                                        2 * fields
+                                    },
+                                    probes.size,
+                                )
+                            } else {
+                                assertTrue(probes.size in fields..2 * fields)
+                            }
+                            var visits = 0L
+                            probes.forEach { (sql, args) -> visits += assertNumberProbe(sql, args) }
+                            val candidates =
+                                if (kind == "activity") {
+                                    database.statisticsDao().activityNumberExecutionCandidateCount(
+                                        seriesId.value,
+                                        null,
+                                        null,
+                                    )
+                                } else {
+                                    database.statisticsDao().sequenceNumberExecutionCandidateCount(
+                                        seriesId.value,
+                                        null,
+                                        null,
+                                    )
+                                }
+                            assertEquals(
+                                selectedExecutions.toLong() * fields - if (dense) 0 else fields / 2,
+                                candidates,
+                            )
+                            assertTrue(visits <= 17 * candidates + 2 * fields)
+                            numbers.forEach { number ->
+                                val index =
+                                    number.field.id.value
+                                        .substringAfterLast('-')
+                                        .toInt()
+                                val expectedId = "$kind-shared-$fields-source-$index"
+                                assertEquals(expectedId, number.field.id.value)
+                                val values =
+                                    List(
+                                        selectedExecutions - if (dense) 0 else index % 2,
+                                    ) { broadNumberValue(it, index) }.sorted()
+                                val count = values.size.toLong()
+                                val total =
+                                    values.fold(
+                                        BigInteger.ZERO,
+                                    ) { sum, value -> sum + BigInteger.valueOf(value) }
+                                val statistics = number.statistics
+                                assertEquals(selectedExecutions.toLong(), statistics.relevantExecutionCount)
+                                assertEquals(count, statistics.recordedCount)
+                                assertEquals(selectedExecutions.toLong() - count, statistics.missingCount)
+                                assertEquals(count, statistics.coverage.numerator)
+                                assertEquals(selectedExecutions.toLong(), statistics.coverage.denominator)
+                                assertEquals(count, statistics.values.sampleCount)
+                                assertEquals(total, statistics.values.totalScaled)
+                                assertEquals(
+                                    ExactValue.of(total, BigInteger.valueOf(count)),
+                                    statistics.values.averageScaled,
+                                )
+                                assertEquals(
+                                    ExactValue.of(
+                                        BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                            BigInteger.valueOf(values[values.size / 2]),
+                                        BigInteger.valueOf(2),
+                                    ),
+                                    statistics.values.medianScaled,
+                                )
+                                assertEquals(Long.MIN_VALUE, statistics.values.minimumScaled)
+                                assertEquals(Long.MAX_VALUE, statistics.values.maximumScaled)
+                                assertEquals(
+                                    statistics,
+                                    repository.numberFieldStatistics(
+                                        seriesId,
+                                        number.field.id,
+                                        StatisticsPeriod.AllTime,
+                                    ),
+                                )
+                            }
+                            val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                            assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                            val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                            assertTrue(
+                                empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                    it.statistics.recordedCount == 0L
+                                },
+                            )
+                            assertEquals(fingerprint, numberHistoryFingerprint())
+                            observedNumberReads.clear()
+                            observedNumberReads.addAll(reads)
+                            assertNumberReadPlans()
+                        }
+                    }
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
             }
         }
     }
@@ -3173,6 +3355,7 @@ class StatisticsRepositoryTest {
         exclusiveFirst: Boolean = false,
         number: (Int, Int) -> Long = ::sharedNumberValue,
         exclusiveOthers: Boolean = false,
+        missingOddLast: Boolean = true,
     ) {
         database.runInTransaction {
             for (kind in listOf("activity", "sequence")) {
@@ -3236,7 +3419,8 @@ class StatisticsRepositoryTest {
                             arrayOf(id, snapshot, seriesId, AUG_20),
                         )
                         repeat(fields) { field ->
-                            val missing = era == "new" && field % 2 == 1 && index == selectedExecutions - 1
+                            val missing =
+                                missingOddLast && era == "new" && field % 2 == 1 && index == selectedExecutions - 1
                             val exclusive = (exclusiveFirst && field == 0) || (exclusiveOthers && field > 0)
                             if (!missing && !(era == "old" && exclusive)) {
                                 database.openHelper.writableDatabase.execSQL(
@@ -4212,6 +4396,35 @@ class StatisticsRepositoryTest {
         }
     }
 
+    /** Validate OFFSET admission against the independent bounded counting query, including its sentinel. */
+    private fun assertNumberProbe(
+        sql: String,
+        args: List<Any?>,
+    ): Long {
+        val result =
+            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                cursor.getLong(0)
+            }
+        val limit = (args.last() as Number).toLong()
+        val count =
+            if (sql.contains("OFFSET")) {
+                val source = args.first() as String
+                val actual =
+                    if (sql.contains("activity_snapshot_fields")) {
+                        database.statisticsDao().activityNumberFieldCandidateCount(source, limit)
+                    } else {
+                        database.statisticsDao().sequenceNumberFieldCandidateCount(source, limit)
+                    }
+                assertEquals(if (actual == limit) 1L else 0L, result)
+                actual
+            } else {
+                result
+            }
+        assertTrue(count in 0..limit)
+        return count
+    }
+
     private fun assertNumberReadPlans() {
         val queries = synchronized(observedNumberReads) { observedNumberReads.toList() }
         assertTrue("Number queries must be observed", queries.isNotEmpty())
@@ -4233,16 +4446,18 @@ class StatisticsRepositoryTest {
             }
             val searches = plan.filter { it.contains("SEARCH ") }
             if (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN")) {
-                assertTrue("Candidate probe must stop early", sql.contains("LIMIT ?"))
+                assertTrue(
+                    "Candidate probe must stop at its bound",
+                    sql.endsWith("LIMIT ?)") || sql.endsWith("LIMIT 1 OFFSET (? - 1))"),
+                )
+                assertEquals(2, args.size)
+                assertTrue("Candidate bound must be positive", (args.last() as Number).toLong() > 0)
                 assertTrue(
                     "Candidate probe must use the source Field index: $plan",
                     searches.first().contains("fields"),
                 )
                 assertTrue(plan.any { it.contains("execution_values_snapshot_field_id") })
-                database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
-                    assertTrue(cursor.moveToFirst())
-                    assertTrue(cursor.getLong(0) <= (args.last() as Number).toLong())
-                }
+                assertNumberProbe(sql, args)
                 return@forEach
             }
             val fieldFirst =

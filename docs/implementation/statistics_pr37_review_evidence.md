@@ -719,3 +719,153 @@ All 32 Statistics Room method names exactly match the pinned inventory, and
 `git diff --check` passed. No managed-device task, GitHub polling, commit, push, PR
 operation or merge was performed. Changes are left uncommitted for Controller review,
 physical fail-first/corrected execution, and the mandatory independent five-API gate.
+
+## Round-six W1: fair probing at an ordinary Series-split boundary
+
+The equal first allowance remains `floor(2Q/P)+1`. When more than three Fields are
+still unresolved, an independent second allowance compares indexed sort work with
+the available fallback: `floor(10Q/P)+1` for up to sixteen unresolved Fields and
+`floor(15Q/P)+1` for larger sets. Both are also capped by the individual reader's
+`2Q+1` allowance. P remains the original populated result dimension in both stages;
+no early expensive lineage consumes another Field's allowance. The policy and both
+Activity/Sequence SQL paths are shared; display order cannot influence admission.
+
+The first walk retains its bounded count. The larger walk only asks whether its
+sentinel exists, using `LIMIT 1 OFFSET (:limit - 1)` inside the existing indexed
+Field/value join. It does not yield and increment a count for every preceding
+candidate. LEFT JOIN is retained: a snapshot Field with no values still consumes a
+candidate, so numerous empty old snapshot Fields cannot cause an uncontrolled walk.
+Physical Room assertions independently compare every OFFSET answer with the original
+bounded counting SQL and inspect the actually executed indexed plans.
+
+Across both walks, visited candidates are bounded by **17Q + 2P** (including sentinels).
+Admitted lineage cardinalities sum to at most **15Q**, also honoring the individual
+reader's lineage cost bound. EXPLAIN shows up to two eligible traversals per indexed
+scalar selection, so these selections examine at most **30Q** joined candidates before
+indexed execution lookups and sorting. The second-stage choice is cost-sensitive: bounded
+scalar completion is a cheaper alternative than repeated large-set grouped ranks, so
+it receives less probe work. One/two/three unresolved Fields keep the existing direct
+scalar behavior. Other unresolved Fields retain the three-pass trial / sixteen-scalar
+cap, or the shared at-most-65-pass selection for large sets. No P independent
+execution-first fallback is introduced. Number-specific query count remains O(P) plus
+a fixed number of grouped passes, independent of execution count. No complete raw-sample collection is
+retained; summaries, selections and probes remain O(P).
+
+All statistical selectors, exact bit summaries, BigInteger totals, rational arithmetic,
+eligibility, date predicates, source identities and the complete Room read transaction
+are unchanged. No application presentation, schema, index, cache or mutation changes
+are required. This is an internal query-policy correction, with no semantic amendment.
+
+### Deterministic work and cost crossover
+
+`statistics_lineage_boundary_probe.py` creates the physical v10 schema from the Room
+export (including production indexes), extracts production SQL, closes/reopens each
+fixture, inspects EXPLAIN, traces execution, and measures SQLite VM instructions with
+the progress handler. Independently sorted Python integers/Fractions check counts,
+totals, averages, odd/even medians and extrema, including both signed Long extremes;
+both indexed and execution-first individual queries must agree. Sources are archived,
+old/new snapshot Field IDs differ, and current source rename preserves the summaries.
+The host result is native-work evidence, not an Android time guarantee. Tables report
+median selection plus admission probes; unchanged summary/catalog/Q-count work is
+excluded from both sides.
+
+SQLite 3.53.1, 1,000 selected executions, all Fields recorded:
+
+| Kind / Fields | Old executions | Reviewed head VM | Corrected VM | Corrected selection |
+| --- | ---: | ---: | ---: | --- |
+| Activity / 24 | 1,000 | 1,827,858 | 1,827,858 | 24 indexed medians |
+| Activity / 24 | 1,001 | 17,470,746 | 2,021,466 | 24 indexed medians |
+| Sequence / 24 | 1,000 | 1,731,882 | 1,731,882 | 24 indexed medians |
+| Sequence / 24 | 1,001 | 17,450,716 | 1,925,490 | 24 indexed medians |
+
+The additional 24 values now add about 11% work instead of causing the former roughly
+9.5x jump. The selected fixture requires ten grouped passes at the reviewed head;
+the review's illustrative twelve-pass fixture has a different value distribution.
+
+The larger allowances are not justified merely by moving the same decision threshold.
+The probe also checks the final sort/fallback crossover, where the competing work is
+comparable rather than nine times apart:
+
+| Kind / Fields | Old executions at indexed / fallback boundary | Indexed-side VM | Fallback-side VM |
+| --- | --- | ---: | ---: |
+| Activity / 16 | 9,000 / 9,001 | 4,419,169 | 10,149,001 |
+| Sequence / 16 | 9,000 / 9,001 | 4,355,185 | 10,079,008 |
+| Activity / 17 | 14,000 / 14,001 | 6,735,362 | 12,603,445 |
+| Sequence / 17 | 14,000 / 14,001 | 6,667,379 | 12,583,415 |
+| Activity / 24 | 14,000 / 14,001 | 9,508,722 | 18,911,634 |
+| Sequence / 24 | 14,000 / 14,001 | 9,412,746 | 18,891,604 |
+
+The maximum observed crossover ratio is 2.32. A deterministic 2.5x work regression guard
+covers these cost crossovers, while the reported 1,000/1,001 boundary has a tighter 1.5x
+guard and requires every Field to use its indexed median. These are relative native
+instruction assertions, never mandatory CI wall-clock thresholds. Shared long lineages
+still use grouped ranks; no unconditional history-length-dependent indexed scan exists.
+
+### Regression inventory and local verification
+
+The fail-first JVM allowance test failed at its assertion with the original equal cap.
+Immutable-head host controls for both kinds at `b555e9e583036a245fa1438f900391aabef51758`
+fail the intended structural assertion after verifying exact results (24 rejected Fields,
+ten grouped traversals). The physical Room regression is pinned as
+`moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen`. It contains separate
+otherwise-identical 1,000-selected / 1,000-old and 1,000-selected / 1,001-old databases,
+plus 999/1,002-old neighbors, 999/1,001-selected neighbors, sparse odd medians/missing
+values and 16/17/24 Fields for both kinds. It closes/reopens storage, verifies distinct
+snapshot Field IDs and stable source IDs, archive/rename, exact persisted arithmetic,
+canonical individual-reader parity, day attribution, immutable row fingerprints,
+actual SQL, indexed plans and bounded probes. Existing shared-lineage, fair expensive-
+first/last, direct-three, partial grouped-trial, B1/W1/B2 and mutation/coherence cases
+remain mandatory. Broad fallback fixtures use 16,000 old executions at 8+ Fields so
+that their bounded fallback assertions continue to test saturated probes; the selected
+history and all exact, trial/scalar/grouped assertions remain intact.
+
+Reproduction commands (host probes also accept targeted dimensions):
+
+```powershell
+python docs/implementation/statistics_lineage_boundary_probe.py
+python docs/implementation/statistics_lineage_boundary_probe.py --sparse --old 1001
+python docs/implementation/statistics_lineage_boundary_probe.py --repository-ref b555e9e583036a245fa1438f900391aabef51758 --kind activity --fields 24 --old 1001
+python docs/implementation/statistics_lineage_boundary_probe.py --repository-ref b555e9e583036a245fa1438f900391aabef51758 --kind sequence --fields 24 --old 1001
+python docs/implementation/statistics_fair_fallback_probe.py --fields 3 4 8 16 17 24 --rows 500
+python docs/implementation/statistics_fair_fallback_probe.py --case fair
+python docs/implementation/statistics_small_fallback_probe.py --rows 1000
+python docs/implementation/statistics_shared_lineage_probe.py
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 24 --repeats 1
+```
+
+Final Kotlin verification passed:
+
+```powershell
+.\gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain --continue
+```
+
+Domain reports 241 successful tests and data reports 32, with no failures/errors/skips.
+Data ktlint, Detekt, Android lint, Room query validation, AndroidTest compilation and
+APK packaging passed. The inventory contains 625 mandatory data cases (630 with the
+same five nonmandatory skips) and all 33 StatisticsRepositoryTest identities match the
+source. Controller owns physical Room/device execution, unfiltered five-API suites,
+commit/push and independent exact-head CI. No device task or Git/PR mutation was run.
+
+The retained shared-lineage probe now measures the actual two-stage policy too:
+24-Field Activity/Sequence fixtures take 678,522/677,925 instructions versus the older
+independent-scalar baseline's 2,247,376/2,237,792. All 4/8/16/24 cases keep three shared
+passes and zero execution-first scalar completion. Small fixed sets can incur extra
+probe work (the 4-Field Activity fixture is 83,454 versus that scalar baseline's 72,126);
+no claim is made that the adaptive policy always picks the cheapest possible query.
+The retained partial-trial work comparisons and expensive-first/last fairness assertions
+pass unchanged. The 17 mocked instrumentation-harness unit tests also passed; their
+printed device commands are mocks, not managed-device execution. `git diff --check`
+and the exact 33-method pinned Statistics inventory comparison passed.
+
+### Controller API35 assertion repair
+
+The first Controller API35 execution reached two assertion failures in
+`smallNumberFallbackUsesScalarMediansAfterPhysicalReopen` and
+`moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen`. Their shared query-plan
+helper required `LIMIT ?` even for the new bounded `LIMIT 1 OFFSET (? - 1)` sentinel
+probe. The helper now accepts only those two bounded query endings, requires exactly
+two arguments and a positive candidate cap, and retains both source-Field/value index
+checks. It also validates sentinel existence against the independent bounded counting
+query instead of comparing a Boolean result to a candidate count. Fixture arithmetic,
+probe budgets, median strategy assertions and production SQL remain unchanged.
+The implementation clarification now documents the two-stage budget as well.

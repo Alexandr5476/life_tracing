@@ -654,6 +654,7 @@
       "sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen",
       "smallNumberFallbackUsesScalarMediansAfterPhysicalReopen",
       "numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen",
+      "moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
       "numberReadersRejectNonIntegerStorage",

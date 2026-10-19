@@ -113,23 +113,38 @@ internal object NumberMedianReadPolicy {
     }
 }
 
-/** Equal capped allowances: a saturated lineage cannot starve another Field, regardless of order.
- * Total visited candidates are at most 2Q + P, including one sentinel per populated Field.
+/** Fair, cost-bounded indexed probes, independent of display order.
+ * A stage visits at most multiplier * Q + P candidates. Admitted lineage cardinalities
+ * total at most 15Q. A scalar selection may traverse its lineage twice; each lineage
+ * also respects the individual 2Q candidate admission policy.
  */
 internal class NumberMedianProbeBudget(
     executionCandidates: Long,
     fieldCount: Int,
+    workMultiplier: Int = 2,
 ) {
     private var fieldsRemaining = fieldCount.also { require(it > 0) }
-    private val limit = (NumberMedianReadPolicy.candidateLimit(executionCandidates) - 1) / fieldCount + 1
+    private val limit =
+        BigInteger
+            .valueOf(executionCandidates)
+            .multiply(BigInteger.valueOf(workMultiplier.also { require(it in 2..INDEXED_SORT_WORK) }.toLong()))
+            .divide(BigInteger.valueOf(fieldCount.toLong()))
+            .add(BigInteger.ONE)
+            .min(BigInteger.valueOf(NumberMedianReadPolicy.candidateLimit(executionCandidates)))
+            .toLong()
 
     val nextLimit: Long?
         get() = if (fieldsRemaining == 0) null else limit
 
+    /** An OFFSET probe may report zero when it proves that the allocated sentinel is absent. */
     fun record(candidates: Long): Boolean {
         require(nextLimit != null) { "Number median probe budget exhausted" }
         require(candidates in 0..limit) { "Candidate probe exceeded its limit" }
         fieldsRemaining--
         return candidates < limit
+    }
+
+    companion object {
+        const val INDEXED_SORT_WORK = 15
     }
 }

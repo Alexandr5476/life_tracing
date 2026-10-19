@@ -97,6 +97,40 @@ class ExactNumberSummaryTest {
     }
 
     @Test
+    fun moderateSharedLineagesRemainIndexedAcrossTheFairAllowanceBoundary() {
+        for (fields in listOf(16, 17, 24)) {
+            for (oldExecutions in listOf(999, 1_000, 1_001, 1_002)) {
+                val budget = NumberMedianProbeBudget(1_000L * fields, fields, workMultiplier = 15)
+                repeat(fields) {
+                    assertEquals(true, budget.record(1_000L + oldExecutions))
+                }
+                assertEquals(null, budget.nextLimit)
+            }
+        }
+    }
+
+    @Test
+    fun indexedSortAllowanceIsFairBoundedAndSaturatesWithoutOverflow() {
+        for (fields in listOf(16, 17, 24)) {
+            val executions = 1_000L * fields
+            val cap = 15 * executions / fields + 1
+            for (expensiveFirst in listOf(true, false)) {
+                val budget = NumberMedianProbeBudget(executions, fields, workMultiplier = 15)
+                val counts = List(fields - 1) { 2_001L }.toMutableList()
+                if (expensiveFirst) counts.add(0, cap) else counts.add(cap)
+                counts.forEach { count -> assertEquals(count < cap, budget.record(count)) }
+                assertEquals(true, counts.sum() <= 15 * executions + fields)
+            }
+        }
+        assertEquals(
+            Long.MAX_VALUE,
+            NumberMedianProbeBudget(Long.MAX_VALUE, 2, workMultiplier = 15).nextLimit,
+        )
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianProbeBudget(1, 1, 1) }
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianProbeBudget(1, 1, 17) }
+    }
+
+    @Test
     fun groupedProbeBudgetIncludesFailedProbesAndBoundsAllFieldsTogether() {
         val budget = NumberMedianProbeBudget(2_400, 24)
         assertEquals(201L, budget.nextLimit)

@@ -236,6 +236,18 @@ internal interface StatisticsDao {
         limit: Long,
     ): Long
 
+    // Only existence of the capped candidate is needed for admission. OFFSET avoids yielding
+    // and counting every preceding candidate in the larger second-stage probe.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM activity_snapshot_fields AS fields " +
+            "LEFT JOIN activity_execution_field_values AS recorded_values ON recorded_values.snapshot_field_id = fields.id " +
+            "WHERE fields.source_field_id = :fieldId LIMIT 1 OFFSET (:limit - 1))",
+    )
+    fun activityNumberFieldCandidateLimitReached(
+        fieldId: String,
+        limit: Long,
+    ): Boolean
+
     // Only the repository's bounded candidate preflight may select this Field-first path.
     @Query(
         "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_snapshot_fields AS fields " +
@@ -386,6 +398,18 @@ internal interface StatisticsDao {
         fieldId: String,
         limit: Long,
     ): Long
+
+    // Only existence of the capped candidate is needed for admission. OFFSET avoids yielding
+    // and counting every preceding candidate in the larger second-stage probe.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM sequence_snapshot_fields AS fields " +
+            "LEFT JOIN sequence_execution_field_values AS recorded_values ON recorded_values.snapshot_field_id = fields.id " +
+            "WHERE fields.source_field_id = :fieldId LIMIT 1 OFFSET (:limit - 1))",
+    )
+    fun sequenceNumberFieldCandidateLimitReached(
+        fieldId: String,
+        limit: Long,
+    ): Boolean
 
     // Only the repository's bounded candidate preflight may select this Field-first path.
     @Query(

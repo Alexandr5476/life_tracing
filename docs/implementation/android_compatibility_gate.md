@@ -233,3 +233,21 @@ fallback, individual-reader parity, exact distributions and original-date Day se
 All prior testcase identities and the unfiltered five-API gates remain mandatory.
 Controller owns physical fail-first/corrected execution and independent exact-head CI;
 local APK compilation and host VM evidence do not certify device execution.
+
+## PR37 W1 fair-probe boundary correction
+
+Adds mandatory `StatisticsRepositoryTest.moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen`.
+The pinned inventory now contains 625 mandatory data cases (630 including the same five
+nonmandatory skips), including all 33 StatisticsRepositoryTest methods. This test uses
+physical databases for both Activity and Sequence at 16/17/24 populated Fields,
+1,000 selected executions and 999/1,000/1,001/1,002 old executions, plus sparse values
+and 999/1,001 selected-execution neighbors. It checks actual canonical SQL dispatch,
+indexed plans, bounded probes, independent exact arithmetic, individual-reader parity,
+source rename/archive, distinct old/new snapshot Field IDs, dates and historical rows.
+The existing broad fallback fixture now uses 16,000 old executions at 8+ Fields so it
+continues to test saturation of the larger, cost-bounded allowance; its selected values,
+three-pass/scalar and large grouped assertions remain intact. Shared duplicate-heavy
+and expensive-first/last fairness regressions remain mandatory. Host VM measurements
+are isolated in `statistics_lineage_boundary_probe.py`, without CI latency thresholds.
+Controller still owns unfiltered execution on all five APIs and exact-head GitHub CI;
+compiling a test APK does not certify Room test execution.

@@ -433,15 +433,26 @@ class StatisticsRepository internal constructor(
             )
         }
         val dao = database.statisticsDao()
-        val budget = NumberMedianProbeBudget(executionCandidates, populated.size)
         val result = mutableMapOf<String, NumberDistribution>()
-        for (field in populated) {
-            val limit = budget.nextLimit
-            if (limit != null) {
+
+        fun probe(workMultiplier: Int) {
+            val budget = NumberMedianProbeBudget(executionCandidates, populated.size, workMultiplier)
+            for (field in populated.filter { it.id.value !in result }) {
+                val limit = requireNotNull(budget.nextLimit)
                 val candidates =
                     when (kind) {
-                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberFieldCandidateCount(field.id.value, limit)
-                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberFieldCandidateCount(field.id.value, limit)
+                        StatisticsSeriesKind.ACTIVITY ->
+                            if (workMultiplier == INITIAL_NUMBER_PROBE_WORK) {
+                                dao.activityNumberFieldCandidateCount(field.id.value, limit)
+                            } else {
+                                if (dao.activityNumberFieldCandidateLimitReached(field.id.value, limit)) limit else 0L
+                            }
+                        StatisticsSeriesKind.SEQUENCE ->
+                            if (workMultiplier == INITIAL_NUMBER_PROBE_WORK) {
+                                dao.sequenceNumberFieldCandidateCount(field.id.value, limit)
+                            } else {
+                                if (dao.sequenceNumberFieldCandidateLimitReached(field.id.value, limit)) limit else 0L
+                            }
                         StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable Fields")
                     }
                 if (budget.record(candidates)) {
@@ -457,11 +468,25 @@ class StatisticsRepository internal constructor(
                 }
             }
         }
+        probe(INITIAL_NUMBER_PROBE_WORK)
+        // Reprobe each unresolved lineage fairly against the bounded indexed-sort work allowance.
+        // The old 2Q/P sentinel is not a rejection threshold for the entire result anymore.
+        val unresolvedCount = populated.size - result.size
+        if (unresolvedCount > DIRECT_SCALAR_FIELD_LIMIT) {
+            // Bounded scalar completion is cheaper than the large-set repeated-rank alternative,
+            // so spend less on probing when that cheaper fallback is available.
+            probe(
+                if (unresolvedCount <=
+                    SMALL_FALLBACK_FIELD_LIMIT
+                ) {
+                    SMALL_NUMBER_SORT_WORK
+                } else {
+                    INDEXED_NUMBER_SORT_WORK
+                },
+            )
+        }
         val remaining = summaries.filterKeys { it !in result }
         if (remaining.size > DIRECT_SCALAR_FIELD_LIMIT) {
-            // Preserve fast convergence for duplicate-heavy distributions. Wide small sets instead
-            // finish with at most sixteen scalar sorts after three shared passes. Host VM evidence
-            // covers 3/4/8/16 and the adjacent 17/24/32/40 counts; larger sets keep shared ranks.
             val smallFallbackPassLimit =
                 if (remaining.size <= SMALL_FALLBACK_FIELD_LIMIT) SMALL_FALLBACK_TRIAL_PASSES else Long.SIZE_BITS + 1
             val selections =
@@ -863,6 +888,12 @@ class StatisticsRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        private const val INITIAL_NUMBER_PROBE_WORK = 2
+        private const val SMALL_NUMBER_SORT_WORK = 10
+
+        // Native work comparisons cover both sides of this sort/rank crossover; unlike the
+        // old 2Q/P cap, indexed sorts near 15Q do comparable work to the fallback.
+        private const val INDEXED_NUMBER_SORT_WORK = NumberMedianProbeBudget.INDEXED_SORT_WORK
         private const val DIRECT_SCALAR_FIELD_LIMIT = 3
         private const val SMALL_FALLBACK_FIELD_LIMIT = 16
         private const val SMALL_FALLBACK_TRIAL_PASSES = 3

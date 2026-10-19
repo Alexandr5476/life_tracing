@@ -276,12 +276,19 @@ sentinel selects execution-first access, protecting tiny new Series and narrow p
 from large old lineages. Otherwise Field-first access protects exclusive dense/sparse
 lineages. Unrelated global history cardinality never gates the choice.
 
-For P populated Fields, Series Detail allocates each Field an equal capped probe of
-floor((candidateLimit(Q) - 1) / P) candidates plus one sentinel, using the existing
-saturated bound candidateLimit(Q) = min(2Q + 1, Long.MAX_VALUE). Every Field
-is inspected, independently of display-name order or another Field's saturated lineage.
-Total probe visits are bounded by 2Q + P. Successful exclusive lineages keep their scalar
-Field-first reads. Up to three unresolved Fields use execution-first scalar medians directly.
+For P populated Fields, Series Detail first allocates each Field an equal probe capped at
+min(floor(2Q / P) + 1, candidateLimit(Q)), using the existing saturated individual bound
+candidateLimit(Q) = min(2Q + 1, Long.MAX_VALUE). Every Field is inspected independently
+of display-name order or another Field's saturated lineage. If more than three Fields
+remain unresolved, a second fair stage tests the capped candidate's existence with
+LIMIT 1 OFFSET (cap - 1). Its cap is min(floor(kQ / P) + 1, candidateLimit(Q)), where
+k is 10 for up to sixteen unresolved Fields and 15 for larger sets. Both stages use the
+original P denominator. The second stage walks at most its cap, including unused
+metadata; it does not count or return the preceding candidates. Combined probe visits
+are bounded by 17Q + 2P. Admitted lineage cardinalities total at most 15Q, and scalar
+median SQL may traverse each lineage twice. These cost allowances retain moderately
+shared lineages without unbounded independent execution-first scans. Admitted Fields
+keep scalar Field-first reads. Up to three unresolved Fields use execution-first scalar medians directly.
 For 4..16 unresolved Fields, try at most three shared rank passes, retaining resolved
 results, then finish any remainder with scalar ordered selections. This keeps the cheap
 three-pass duplicate-heavy path while bounding repeated traversal on broad signed values.

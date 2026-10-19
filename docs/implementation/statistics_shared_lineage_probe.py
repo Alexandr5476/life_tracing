@@ -172,6 +172,13 @@ def main():
                             del searches[field]
                     for row in summaries:
                         assert distribution([row], selected[row["source_field_id"]]) == reference(expected[row["source_field_id"]].copy())
+                    repository = ROOT / "data/src/main/kotlin/com/alexandr5476/lifetracing/data/persistence/StatisticsRepository.kt"
+                    if "INDEXED_NUMBER_SORT_WORK" in repository.read_text(encoding="utf-8"):
+                        from statistics_lineage_boundary_probe import strategy
+                        selected, work, shape = strategy(db, kind, series, summaries)
+                        assert shape == (2 * fields, 0, 3, 0), shape
+                        for row in summaries:
+                            assert distribution([row], selected[row["source_field_id"]]) == reference(expected[row["source_field_id"]].copy())
                     if fields == 24:
                         assert work < baseline
                     corrected_work.append(work)

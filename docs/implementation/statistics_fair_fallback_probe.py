@@ -17,7 +17,13 @@ from statistics_shared_lineage_probe import measured
 from statistics_small_fallback_probe import small_fixture, grouped
 
 
+STAGED = False
+
+
 def strategy(db, kind, series, rows, corrected, work=True):
+    if corrected and STAGED:
+        from statistics_lineage_boundary_probe import strategy as staged_strategy
+        return staged_strategy(db, kind, series, rows, extended=True, work=work)
     bindings = dict(seriesId=series, startDate=None, endDate=None)
     q = db.execute(query(kind + "NumberExecutionCandidateCount"), bindings).fetchone()[0]
     remaining, result = [], {}
@@ -99,7 +105,7 @@ def run(args, corrected):
                 with closing(sqlite3.connect(path)) as db:
                     schema(db)
                     series, expected = small_fixture(db, kind, fields, False, args.rows,
-                                                     old_rows=50_000 if args.case == "fair" else max(7_000, 2 * args.rows * fields + 1))
+                                                     old_rows=50_000 if args.case == "fair" else max(16_000, 2 * args.rows * fields + 1))
                     if args.case == "fair":
                         for f in range(1, fields):
                             db.execute(f"DELETE FROM {kind}_execution_field_values WHERE snapshot_field_id=?",
@@ -153,6 +159,8 @@ def main():
     source = (subprocess.check_output(["git", "show", args.repository_ref + ":" + source_path], cwd=ROOT).decode()
               if args.repository_ref else (ROOT / source_path).read_text(encoding="utf-8"))
     corrected = "smallFallbackPassLimit" in source
+    global STAGED
+    STAGED = "INDEXED_NUMBER_SORT_WORK" in source
     run(args, corrected)
 
 
