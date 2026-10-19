@@ -656,6 +656,7 @@
       "numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen",
       "moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen",
       "signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen",
+      "mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
       "numberReadersRejectNonIntegerStorage",

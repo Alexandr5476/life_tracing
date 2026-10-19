@@ -293,7 +293,9 @@ For 4..16 unresolved Fields, try at most three shared rank passes, retaining res
 results, then finish any remainder with scalar ordered selections. This keeps the cheap
 three-pass duplicate-heavy path while bounding repeated traversal on broad signed values.
 Larger unresolved sets also stop after three shared rank passes, retaining resolved Fields.
-Remaining Fields use exact magnitude/byte histograms rather than up to 65 full rank scans.
+Completion uses the post-trial unresolved count: at most sixteen remaining Fields use
+scalar ordered selections, regardless of the starting count. Only larger remaining sets
+use exact magnitude/byte histograms rather than up to 65 full rank scans.
 The first histogram partitions signed integers at negative/positive powers of two and zero
 (128 bins, with zero and one individually represented). Each bin returns only count and
 extrema. Locate both adjacent median ranks cumulatively; a rank at a bin edge is its

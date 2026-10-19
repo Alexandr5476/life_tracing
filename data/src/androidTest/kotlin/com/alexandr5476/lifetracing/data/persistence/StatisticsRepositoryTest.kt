@@ -3009,6 +3009,149 @@ class StatisticsRepositoryTest {
     }
 
     @Test
+    fun mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(17, 24)) {
+            for (hardFields in 1..3) {
+                val name = "statistics-mixed-trial-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    seedSharedNumberLineages(fields, 200, 3_001, number = { index, field ->
+                        mixedTrialNumberValue(index, field, hardFields)
+                    })
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        observedNumberReads.clear()
+                        val detail = repository.seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                        val numbers = detail.fields.filterIsInstance<StatisticsFieldDetail.Number>()
+                        val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                        assertEquals(fields, numbers.size)
+                        assertEquals(3, reads.count { it.first.contains(" AS at_or_below_count") })
+                        assertEquals(
+                            "Only the post-trial remainder determines histogram dispatch",
+                            0,
+                            reads.count { it.first.contains(" AS bucket_id") },
+                        )
+                        val scalars = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                        assertEquals("One exact scalar selection per difficult Field", hardFields, scalars.size)
+                        assertTrue(
+                            scalars.all {
+                                val source = it.second[1] as String
+                                source.substringAfterLast('-').toInt() < hardFields
+                            },
+                        )
+                        val probes = reads.filter { it.first.startsWith("SELECT COUNT(*) FROM (") }
+                        assertEquals(2 * fields, probes.size)
+                        probes.forEach { (sql, args) ->
+                            assertEquals(
+                                "Both fair stages must reject Field-first access",
+                                args.last(),
+                                assertNumberProbe(sql, args),
+                            )
+                        }
+                        val ranks = reads.filter { it.first.contains(" AS at_or_below_count") }
+                        ranks.forEachIndexed { pass, (sql, args) ->
+                            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                                assertEquals(if (pass == 0) fields else hardFields, cursor.count)
+                            }
+                        }
+                        assertNumberReadPlans()
+                        numbers.forEach { number ->
+                            val field =
+                                number.field.id.value
+                                    .substringAfterLast('-')
+                                    .toInt()
+                            assertEquals("$kind-shared-$fields-source-$field", number.field.id.value)
+                            val values = List(200 - field % 2) { mixedTrialNumberValue(it, field, hardFields) }.sorted()
+                            val count = values.size.toLong()
+                            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                            val stats = number.statistics
+                            assertEquals(200L, stats.relevantExecutionCount)
+                            assertEquals(count, stats.recordedCount)
+                            assertEquals(200L - count, stats.missingCount)
+                            assertEquals(count, stats.coverage.numerator)
+                            assertEquals(200L, stats.coverage.denominator)
+                            assertEquals(count, stats.values.sampleCount)
+                            assertEquals(total, stats.values.totalScaled)
+                            assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), stats.values.averageScaled)
+                            assertEquals(
+                                ExactValue.of(
+                                    BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                        BigInteger.valueOf(values[values.size / 2]),
+                                    BigInteger.valueOf(2),
+                                ),
+                                stats.values.medianScaled,
+                            )
+                            assertEquals(values.first(), stats.values.minimumScaled)
+                            assertEquals(values.last(), stats.values.maximumScaled)
+                            if (field < hardFields) assertTrue(total.abs() > BigInteger.valueOf(Long.MAX_VALUE))
+                            assertEquals(
+                                stats,
+                                repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            )
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "SELECT COUNT(DISTINCT id) FROM ${kind}_snapshot_fields WHERE source_field_id = ?",
+                                    arrayOf(number.field.id.value),
+                                ).use { cursor ->
+                                    assertTrue(cursor.moveToFirst())
+                                    assertEquals(2L, cursor.getLong(0))
+                                }
+                        }
+                        val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                        assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                        val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                        assertTrue(
+                            empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                it.statistics.recordedCount == 0L
+                            },
+                        )
+                        database.openHelper.readableDatabase
+                            .query("SELECT deleted_at_ms FROM ${kind}_templates")
+                            .use { cursor ->
+                                assertTrue(cursor.moveToFirst())
+                                assertEquals(2L, cursor.getLong(0))
+                            }
+                    }
+                    assertEquals(fingerprint, numberHistoryFingerprint())
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
+            }
+        }
+    }
+
+    private fun mixedTrialNumberValue(
+        index: Int,
+        field: Int,
+        hardFields: Int,
+    ): Long {
+        if (field >= hardFields) return 7L
+        val base = 1L shl 62
+        val positive =
+            when {
+                index < 99 -> base
+                index == 99 -> base + 1
+                index <= 160 -> base + (1L shl (index - 99))
+                index == 161 -> Long.MAX_VALUE
+                else -> base + 2
+            }
+        return if (field % 2 == 0) positive else -positive
+    }
+
+    @Test
     fun signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         for (fields in listOf(16, 17, 24)) {

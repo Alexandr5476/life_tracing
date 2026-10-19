@@ -985,3 +985,86 @@ Detekt's method-length limit. Inventory/source equality and `git diff --check` p
 No managed-device task was launched. These local checks do not certify physical Android
 Room execution, the unfiltered five-API compatibility gate or independent exact-head CI;
 Controller owns those gates, commit/push and PR mechanics. Changes remain uncommitted.
+
+## W1 mixed post-trial remainder (review head f36c4e4)
+
+The three shared rank trials can resolve most Fields in an initially large set. Dispatch
+previously tested the original remaining count, so even one difficult Field could trigger
+nine histogram traversals. Dispatch now tests the **post-trial unresolved count**. At most
+16 remaining Fields finish with existing execution-first scalar medians; larger remainders
+retain the shared histogram bound. The scalar cap is constant as configured P grows.
+No DAO SQL, schema, index, eligibility, arithmetic, transaction or durable state changes.
+
+`mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen` covers both kinds,
+P=17/24, E=200 and 3,001 old-Series executions with separate old/new frozen snapshot
+Field IDs sharing stable source identities. Both fair stages saturate for every Field.
+All but one/two/three Fields contain constant 7 and resolve in the first trial; the hard
+Fields use the prior nine-byte-pass positive cluster and its signed negative mirror.
+Odd Fields omit the last sample, exercising missing coverage and odd/even exact medians.
+The positive cluster's even endpoints are 2^62+1 and 2^62+2. Independent BigInteger
+totals exceed signed Long range for every hard Field. Tests also check average, extrema,
+individual/detail parity after physical reopening, archived source metadata, frozen Field
+identity, primaryLocalDate Day/empty-Day attribution and unchanged historical fingerprints.
+Executed-query assertions require three rank reads, first-pass P rows then only the hard
+Fields, zero histograms, exactly one execution-first scalar per hard Field, saturated
+fair probes and indexed EXPLAIN plans. The mandatory inventory adds this one identity;
+all prior cases remain pinned (35 Statistics methods; 627 mandatory data cases).
+
+### Reproducible structural comparison
+
+Host SQLite 3.53.1, physical v10 database closed/reopened, production DAO SQL and expanded
+Kotlin rank/histogram templates. The shared probe driver mirrors the production dispatch;
+its explicit `--reviewed` control uses the original pre-trial count. On the unchanged
+production predicate the new host guard failed with `(34 probes, 0 indexed medians,
+3 ranks, 0 scalar completions)` and nine histogram statements. Corrected dispatch produces
+`(2P probes, 0 indexed medians, 3 ranks, hard scalar completions)` and zero histograms in
+all twelve fixtures. The reviewed Sequence control independently fails the same guard.
+
+Completion-only VM instructions (common summaries/probes/trials excluded):
+
+| P | Hard Fields | Activity histogram / scalar | Sequence histogram / scalar |
+| ---: | ---: | ---: | ---: |
+| 17 | 1 | 290,298 / 73,387 | 286,671 / 72,580 |
+| 17 | 2 | 301,588 / 146,998 | 297,961 / 145,392 |
+| 17 | 3 | 484,931 / 220,333 | 481,304 / 217,928 |
+| 24 | 1 | 382,434 / 101,307 | 378,807 / 100,500 |
+| 24 | 2 | 395,120 / 202,838 | 391,493 / 201,232 |
+| 24 | 3 | 628,719 / 304,093 | 625,092 / 301,688 |
+
+Both strategies return exactly the independent ordered reference. Every comparison forces
+all nine histogram traversals. EXPLAIN uses `*_executions_series_completed/ended`, the
+execution-value composite primary key and snapshot-Field primary key. Histogram SQL uses
+a temporary GROUP BY B-tree on each pass; scalar selection uses a temporary ORDER BY and
+an eligibility count in one query. Scalar work here is O(Q + N log N) per remaining Field,
+capped at 16 Fields; shared histogram work remains O(Q log Q) per pass for larger sets.
+These are fixture-specific native-work observations, never Android elapsed-time gates.
+
+```powershell
+python docs/implementation/statistics_mixed_trial_probe.py
+# Expected failure: same SQL, original-count dispatch:
+python docs/implementation/statistics_mixed_trial_probe.py --reviewed --kind sequence
+python docs/implementation/statistics_signed_rank_probe.py --fields 17 24 --byte-worst-only
+python docs/implementation/statistics_lineage_boundary_probe.py --fields 24 --old 1000 1001
+```
+
+The new physical Room regression was added before the production correction. No device
+task was launched: Controller owns physical fail-first/corrected execution, the complete
+five-API compatibility gate and exact-head CI. Host evidence and APK compilation cannot
+certify those executions.
+
+Local verification for this correction:
+
+```powershell
+.\gradlew.bat :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain
+# Initial combined run: 36 JVM tests passed; new-test ktlint formatting failed.
+# After formatting correction:
+.\gradlew.bat :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain
+python .github/scripts/test_run_instrumentation.py
+```
+
+Final static/lint/APK run exited 0; AndroidTest Kotlin compilation and packaging passed.
+Data JVM reports contain 36 tests, zero failures/errors/skips. The 17 instrumentation
+runner unit tests passed with mocked Gradle invocations (no device execution). Statistics
+source/inventory equality and `git diff --check` pass. The mixed host probe, reviewed
+fail-first control, signed-rank boundaries, nine-pass witnesses and 1000/1001 lineage
+probe produced the outcomes above. Controller retains commit/push and final gate ownership.

@@ -494,8 +494,9 @@ class StatisticsRepository internal constructor(
             selections.forEach { (fieldId, selection) ->
                 result[fieldId] = remaining.getValue(fieldId).distribution(selection)
             }
-            if (remaining.size > SMALL_FALLBACK_FIELD_LIMIT) {
-                val unresolved = remaining.filterKeys { it !in result }
+            val unresolved = remaining.filterKeys { it !in result }
+            // Trial results can reduce a large starting set to a cheap, fixed scalar remainder.
+            if (unresolved.size > SMALL_FALLBACK_FIELD_LIMIT) {
                 val completion =
                     GroupedNumberHistograms(unresolved).select { ranges, shift ->
                         dao.groupedNumberBuckets(

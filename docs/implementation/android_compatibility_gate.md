@@ -271,3 +271,21 @@ period tests remain mandatory. The large broad fallback assertion now requires t
 rank passes plus bounded exact histograms and zero independent scalar completion.
 Host reproduction and VM-work comparisons are documented in the review evidence;
 Controller still owns device execution, all five unfiltered API suites and exact-head CI.
+
+## PR37 W1 mixed post-trial completion correction
+
+Adds mandatory `StatisticsRepositoryTest.mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen`.
+The pinned inventory now contains 627 mandatory data cases (632 including the same five
+nonmandatory skips), including all 35 StatisticsRepositoryTest methods. Physical fixtures
+cover Activity and Sequence with 17/24 initially unresolved Fields, 200 selected and
+3,001 old-Series executions, distinct old/new snapshot Fields, archived sources, sparse
+odd Fields and one/two/three broad signed Fields remaining after three shared rank trials.
+Executed SQL must reject Field-first access in both fair stages, resolve the constant
+Fields in the first rank trial, run exactly one indexed execution-first scalar selection
+per remaining Field and never run a histogram for this small remainder. Tests compare
+independent BigInteger totals, exact odd/even medians, extrema, coverage and missing
+counts with canonical individual/detail reads after physical reopen, verify historical
+date attribution and unchanged history, and inspect EXPLAIN for executed statements.
+All earlier signed-rank, nine-byte-pass, fair-probe, eligibility and coherence regressions
+remain mandatory. The host mixed-trial probe supplies reproducible native VM evidence;
+Controller owns fail-first/corrected Room execution and the unfiltered five-API CI gate.
