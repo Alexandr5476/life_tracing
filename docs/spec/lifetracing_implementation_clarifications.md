@@ -276,19 +276,28 @@ sentinel selects execution-first access, protecting tiny new Series and narrow p
 from large old lineages. Otherwise Field-first access protects exclusive dense/sparse
 lineages. Unrelated global history cardinality never gates the choice.
 
-For multiple populated Fields, Series Detail shares that probe budget across the entire
-read. Successful probes consume their actual candidate count; the first failed probe
-consumes the remaining budget and ends further probing. Already selected exclusive
-lineages keep their scalar Field-first reads. All remaining medians use parallel exact
-rank selection. Each pass scans the selected execution/value subset once, returns one
-count and two extrema per unresolved Field, and halves each Field's signed-Long search
+For P populated Fields, Series Detail allocates each Field an equal capped probe of
+floor((candidateLimit(Q) - 1) / P) candidates plus one sentinel, using the existing
+saturated bound candidateLimit(Q) = min(2Q + 1, Long.MAX_VALUE). Every Field
+is inspected, independently of display-name order or another Field's saturated lineage.
+Total probe visits are bounded by 2Q + P. Successful exclusive lineages keep their scalar
+Field-first reads. Up to three unresolved Fields use execution-first scalar medians directly.
+For 4..16 unresolved Fields, try at most three shared rank passes, retaining resolved
+results, then finish any remainder with scalar ordered selections. This keeps the cheap
+three-pass duplicate-heavy path while bounding repeated traversal on broad signed values.
+Larger unresolved sets retain the full shared rank algorithm; no P independent execution
+scans are introduced as P grows. The fixed cap and trial are implementation choices
+supported by the adjacent-count VM evidence, not changes to statistical semantics.
+Parallel exact rank selection works as follows. Each pass scans the selected execution/value
+subset once, returns one count and two extrema per unresolved Field, and halves each Field's signed-Long search
 range. At most 64 halvings plus one exact-value pass are needed. Balanced binary CASE
 lookup costs O(log P) per candidate, avoiding a linear pivot-table join or CASE chain.
 The query binds only four selection/period arguments; opaque source IDs are encoded as
 UTF-8 hex text literals. No window functions or unbounded sample cursors/collections
 are required. Application calculation state and returned rows are O(P), never O(Q).
-Total fallback database work is bounded by O(65 * Q * log P), plus grouping and indexed
-execution discovery, rather than P independent complete execution/value traversals.
+Total fallback database work is bounded by O(65 * Q * log P), plus grouping, native
+ordered selection for at most sixteen Fields, and indexed execution discovery, rather
+than unbounded P independent complete execution/value traversals.
 
 Empty catalog Fields retain the canonical empty distribution and the containing Series'
 execution denominator. Category/Text, source/snapshot provenance, eligibility, ordering

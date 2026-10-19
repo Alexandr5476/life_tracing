@@ -33,8 +33,8 @@ def broad_value(index, field):
     return (next32() << 32) + next32()
 
 
-def small_fixture(db, kind, fields, mixed, rows):
-    old, _ = fixture(db, kind, max(7_000, 7 * rows), fields)
+def small_fixture(db, kind, fields, mixed, rows, old_rows=None):
+    old, _ = fixture(db, kind, old_rows or max(7_000, 7 * rows), fields)
     for field in range(fields):
         if mixed and field == 0:
             db.execute(f"DELETE FROM {kind}_execution_field_values WHERE snapshot_field_id=?",
@@ -69,12 +69,12 @@ def small_fixture(db, kind, fields, mixed, rows):
     return new, expected
 
 
-def grouped(db, kind, series, summaries, measure_work=True):
+def grouped(db, kind, series, summaries, measure_work=True, max_passes=65):
     searches = {r["source_field_id"]: [r["minimum_scaled"], r["maximum_scaled"]] for r in summaries}
     counts = {r["source_field_id"]: r["sample_count"] for r in summaries}
     selected = {}
     work = passes = 0
-    while searches:
+    while searches and passes < max_passes:
         passes += 1
         assert passes <= 65
         pivots = {field: (bounds[0] + bounds[1]) // 2 for field, bounds in searches.items()}
@@ -186,7 +186,7 @@ def main():
     source = (subprocess.check_output(["git", "show", args.repository_ref + ":" + path], cwd=ROOT).decode("utf-8")
               if args.repository_ref else (ROOT / path).read_text(encoding="utf-8"))
     # Deliberately narrow dispatch recognition; the Room test asserts executed production statements.
-    corrected = "if (remaining.size <= 2)" in source
+    corrected = "if (remaining.size <= 2)" in source or "smallFallbackPassLimit" in source
     print("Host SQLite", sqlite3.sqlite_version, "small fallback enabled", corrected)
     for case, fields, mixed in (("single", 1, False), ("two", 2, False), ("mixed", 2, True)):
         if args.case and case != args.case:

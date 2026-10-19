@@ -433,20 +433,18 @@ class StatisticsRepository internal constructor(
             )
         }
         val dao = database.statisticsDao()
-        val budget = NumberMedianProbeBudget(executionCandidates)
+        val budget = NumberMedianProbeBudget(executionCandidates, populated.size)
         val result = mutableMapOf<String, NumberDistribution>()
-        var probing = true
         for (field in populated) {
             val limit = budget.nextLimit
-            if (probing && limit != null) {
+            if (limit != null) {
                 val candidates =
                     when (kind) {
                         StatisticsSeriesKind.ACTIVITY -> dao.activityNumberFieldCandidateCount(field.id.value, limit)
                         StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberFieldCandidateCount(field.id.value, limit)
                         StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable Fields")
                     }
-                probing = budget.record(candidates)
-                if (probing) {
+                if (budget.record(candidates)) {
                     result[field.id.value] =
                         numberDistribution(
                             seriesId,
@@ -460,28 +458,31 @@ class StatisticsRepository internal constructor(
             }
         }
         val remaining = summaries.filterKeys { it !in result }
-        // At most two execution-first selections avoid repeated rank passes for small fallbacks.
-        // Keep this cap fixed: allowing P independent scans would restore O(P * Q) fallback work.
-        if (remaining.size <= 2) {
-            populated.filter { it.id.value in remaining }.forEach { field ->
-                result[field.id.value] =
-                    numberDistribution(
-                        seriesId,
-                        field,
-                        remaining.getValue(field.id.value),
-                        bounds,
-                        executionCandidates,
-                        false,
-                    )
-            }
-        } else {
+        if (remaining.size > DIRECT_SCALAR_FIELD_LIMIT) {
+            // Preserve fast convergence for duplicate-heavy distributions. Wide small sets instead
+            // finish with at most sixteen scalar sorts after three shared passes. Host VM evidence
+            // covers 3/4/8/16 and the adjacent 17/24/32/40 counts; larger sets keep shared ranks.
+            val smallFallbackPassLimit =
+                if (remaining.size <= SMALL_FALLBACK_FIELD_LIMIT) SMALL_FALLBACK_TRIAL_PASSES else Long.SIZE_BITS + 1
             val selections =
-                GroupedNumberMedians(remaining).select { pivots ->
+                GroupedNumberMedians(remaining).select(smallFallbackPassLimit) { pivots ->
                     dao.groupedNumberRanks(groupedNumberRankQuery(kind, seriesId.value, bounds, pivots))
                 }
             selections.forEach { (fieldId, selection) ->
                 result[fieldId] = remaining.getValue(fieldId).distribution(selection)
             }
+        }
+        // Up to three Fields skip the trial entirely. The scalar cap stays constant as P grows.
+        populated.filter { it.id.value !in result }.forEach { field ->
+            result[field.id.value] =
+                numberDistribution(
+                    seriesId,
+                    field,
+                    remaining.getValue(field.id.value),
+                    bounds,
+                    executionCandidates,
+                    false,
+                )
         }
         return result
     }
@@ -862,6 +863,10 @@ class StatisticsRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        private const val DIRECT_SCALAR_FIELD_LIMIT = 3
+        private const val SMALL_FALLBACK_FIELD_LIMIT = 16
+        private const val SMALL_FALLBACK_TRIAL_PASSES = 3
+
         fun create(context: Context): StatisticsRepository =
             StatisticsRepository(
                 LifeTracingDatabase.builder(context.applicationContext, "lifetracing.db").build(),

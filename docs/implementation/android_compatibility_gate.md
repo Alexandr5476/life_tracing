@@ -217,3 +217,19 @@ passes, with indexed plans and capped probes. All existing F1 4/8/16/24-Field, B
 transaction, correction/deletion and compatibility protections remain required. The
 [host work probe](statistics_small_fallback_probe.py) supplies deterministic VM evidence;
 Controller retains physical fail-first/corrected execution and the complete five-API gate.
+
+## PR37 round-two F1/F2 query-strategy correction
+
+Adds mandatory `StatisticsRepositoryTest.numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen`.
+Data now requires 624 mandatory cases (629 including five existing nonmandatory skips).
+The existing small-fallback case retains one/two-Field scenarios and adds broad signed
+3/4/8/16/17/24-Field histories for both Activity and Sequence. The original duplicate-heavy
+4/8/16/24-Field case still requires three shared passes and now checks every fair probe.
+The new physical case has 1,000 selected executions, 24 Fields, 50,000 old values only
+for the expensive Field, archived sources and distinct old/new snapshot Field IDs.
+Renaming current source metadata puts the expensive Field first and last without changing
+historical facts. Both orders must retain 23 indexed Field-first medians and one scalar
+fallback, individual-reader parity, exact distributions and original-date Day selection.
+All prior testcase identities and the unfiltered five-API gates remain mandatory.
+Controller owns physical fail-first/corrected execution and independent exact-head CI;
+local APK compilation and host VM evidence do not certify device execution.

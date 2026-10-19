@@ -553,3 +553,169 @@ corrected before the successful final command. The B1/W1 structural host probe a
 passed separately with `--rows 800 --fields 24 --structural-only`. All 31 Statistics
 Room testcase names match the pinned inventory. `git diff --check` passed. Changes
 remain uncommitted on the reviewed branch; no commit, push, PR or CI operation occurred.
+
+## Round-two F1/F2: bounded small selection and fair probes (2026-10-19)
+
+Reviewed head: `f12f55d51b57a60485cc7f6436cc2ad36561f96b`.
+This section supersedes the earlier all-or-nothing probe allocation and unconditional
+three-or-more-Field rank dispatch. It changes only the shared read policy and permits a
+bounded partial rank trial. Scalar SQL, grouped rank SQL, indexes, persisted data and
+individual Field policy remain unchanged. Every read remains in the original complete
+Room transaction; no cache, migration, new identity or statistical semantics.
+
+Each populated Field gets the same probe cap: floor((candidateLimit(Q)-1)/P)+1.
+Success/failure consumes one Field slot, never another Field's allowance. The total is
+at most 2Q+P candidates including every sentinel, independent of old-lineage cardinality.
+Presentation ordering therefore cannot starve cheap Fields. This intentionally does not
+reallocate successful Fields' unused allowances according to display order.
+
+Up to three unresolved Fields use scalar selection directly. For 4..16 unresolved
+Fields, run at most three shared rank passes and retain any resolved results, then use
+at most sixteen scalar exact selections for the remainder. Duplicate-heavy 4/8/16/24
+fixtures still converge in three passes with no scalar fallback. More than sixteen
+unresolved Fields retain the full shared algorithm, bounded by 65 rank passes. The
+constant scalar cap prevents unbounded O(PQ) fallback work; native sorting for the capped
+scalar selections remains ordinary O(Q log Q) SQLite work. Application state is O(P),
+with no history-sized sample cursor/List. Grouped queries still bind four values and
+return at most P scalar rows; scalar/probe bind counts stay fixed.
+
+The cap is supported by measurements across 3/4/8/16 and adjacent 17/24/32/40 Fields,
+rather than assuming every large numeric range converges in three passes. On 500 selected
+Activity executions, the full broad-range grouped/scalar VM ratios are 4.65 at three
+Fields, 4.27 at four, 2.95 at eight, 1.77 at sixteen, 1.70 at seventeen and 1.30 at 24;
+by 32 they are near parity. Paying a three-pass trial plus scalar work ceases to be
+beneficial beyond the chosen small cap. Three unresolved Fields skip the trial entirely,
+fixing the audited three-Field case with exactly three scalar selections. This policy does not claim globally optimal
+SQL for every value distribution; it bounds both the small-case repeated work and the
+large-case independent traversals while preserving the earlier cheap grouped path.
+
+### Reproduction and fail-first evidence
+
+```powershell
+python docs/implementation/statistics_fair_fallback_probe.py --rows 500 --case wide
+python docs/implementation/statistics_fair_fallback_probe.py --case fair
+python docs/implementation/statistics_fair_fallback_probe.py --rows 1000 --fields 3
+python docs/implementation/statistics_fair_fallback_probe.py --repository-ref f12f55d51b57a60485cc7f6436cc2ad36561f96b --rows 500 --kind activity --case wide
+python docs/implementation/statistics_fair_fallback_probe.py --repository-ref f12f55d51b57a60485cc7f6436cc2ad36561f96b --kind activity --case fair
+```
+
+Before production correction, the corresponding cases failed at the intended F1 and F2
+policy assertions (the immutable-reference commands above reproduce that strategy). The first traced eight grouped passes for three unresolved broad
+Fields; the second traced one saturated probe, no Field-first medians and eleven rank
+passes. This host harness extracts actual production SQL and mirrors the dispatch; it
+does not execute Kotlin. The physical Room tests were extended before production fixes;
+Controller owns fail-first device execution against reviewed production and corrected
+execution. No emulator or device task was invoked locally.
+
+All fixtures use real exported v10 tables/indexes with foreign keys, distinct old/new
+frozen snapshot Field IDs sharing typed source identity, archived sources and physical
+commit/close/reopen. The wide fixture keeps each old lineage longer than the full 2Q
+budget, so all requested Fields are simultaneously unresolved. It compares scalar,
+full grouped and chosen endpoints with independent sorted integer/Fraction references,
+including odd/even missing counts, signed extremes, overflow-sized totals, rational
+averages/medians and minima/maxima. Probe visits include failed sentinels. Scalar and
+Field-first plans must start at the existing execution and source-Field indexes
+respectively; grouped passes require exactly three indexed SEARCH nodes, no correlated
+scan and one bounded result row per unresolved Field. SQLite progress callbacks count
+every VM instruction. Common summaries/candidate counts/catalog/duration/Category reads
+are excluded from both sides. These are native work comparisons, not Android timings
+or arbitrary wall-clock CI thresholds. Oracle sample lists are test-owned.
+
+### Wide-range work comparison
+
+Both kinds passed all 3/4/8/16/17/24/32/40 comparisons. The final direct-three path was
+rerun separately at 1,000 selected executions after selecting that fast path; the
+4..40 dispatch and measurements are unchanged. Each row below includes probes and
+chosen median work, excluding the common reads described above:
+
+| Selected / Fields | Activity reviewed / corrected VM | Sequence reviewed / corrected VM | Corrected ranks / scalar fallbacks |
+| --- | ---: | ---: | ---: |
+| 1,000 / 3 | 1,631,625 / 318,370 | 1,613,598 / 306,365 | 0 / 3 |
+| 500 / 4 | 959,357 / 629,919 | 950,342 / 618,906 | 3 / 4 |
+| 500 / 8 | 2,291,248 / 1,654,197 | 2,282,233 / 1,635,188 | 3 / 8 |
+| 500 / 16 | 5,077,082 / 4,751,735 | 5,068,067 / 4,716,734 | 3 / 16 |
+| 500 / 17 | 5,460,180 / 5,460,981 | 5,451,189 / 5,451,954 | 9 / 0 |
+| 500 / 24 | 8,157,296 / 8,158,352 | 8,148,305 / 8,149,325 | 9 / 0 |
+| 500 / 32 | 11,135,659 / 11,137,001 | 11,126,668 / 11,127,974 | 9 / 0 |
+| 500 / 40 | 14,078,596 / 14,080,220 | 14,069,605 / 14,071,193 | 9 / 0 |
+
+At 1,000/3, exact scalar work alone is 264,240/252,243 instructions for Activity/Sequence;
+full grouped work is 1,577,365/1,559,374 over nine passes. All endpoints match independent
+expectations. At seventeen and above the additional bounded fair-probe setup is below
+0.02%, with the same shared median work, rather than moving the repeated rank regression
+to the next Field count. The small-set trial is an explicit compromise: it preserves the
+previous three-pass duplicate-heavy wins while improving broad 4/8/16-Field workloads;
+it is not represented as universally cheaper than the counterfactual scalar-only path.
+The original duplicate-heavy 4/8/16/24 host regression also passes unchanged.
+
+### Fairness work comparison
+
+Host SQLite 3.53.1, 1,000 selected executions, 24 populated Fields, 50,000 old values
+only for the expensive Field. Current source labels place it first and last without
+rewriting history. Both corrected orders use 24 fair probes, 23 Field-first scalar
+medians, one execution-first scalar median and no rank passes:
+
+| Kind / order | Reviewed VM | Corrected VM |
+| --- | ---: | ---: |
+| Activity / expensive first | 18,188,456 | 1,610,205 |
+| Activity / expensive last | 1,816,793 | 1,610,099 |
+| Sequence / expensive first | 18,166,423 | 1,514,261 |
+| Sequence / expensive last | 1,720,865 | 1,514,171 |
+
+The roughly 0.007% corrected order difference is preparation/reprepare bookkeeping,
+with identical selected query shapes and facts; the probe rejects a 0.1% work change.
+Expensive-first work improves about 11.3x/12.0x for Activity/Sequence. The physical Room
+case additionally streams a SHA-256 fingerprint of all execution, recorded-value,
+snapshot and snapshot-Field rows before reopen and after each rename/read, compares
+stable typed IDs and exact distributions, preserves individual-reader parity, and checks
+Day attribution against All time. It inspects actually executed SQL and its plans.
+
+The original small-fallback physical case now also covers 3/4/8/16/17/24 broad Fields,
+asserts total probe visits <=2Q+P and compares Day reads. All earlier case identities,
+including duplicate-heavy shared 4/8/16/24, one/two Fields, exclusive dense/sparse,
+unused metadata, narrow periods, mutation, transaction consistency and cancellation,
+remain pinned. The inventory contains 624 mandatory data cases (629 including the five
+existing nonmandatory skips), including all 32 StatisticsRepositoryTest methods.
+Controller retains the complete unfiltered five-API suites and independent exact-head CI.
+
+### Final local verification
+
+The final production/read-policy verification passed:
+
+```powershell
+.\gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain
+```
+
+Data ran 30 JVM tests with zero failures/errors/skips. Domain was up to date (241
+successful cases in its reports). ktlint, Detekt, Android lint, changed AndroidTest
+compilation and data test APK packaging passed. A final strengthening of the partial
+rank unit test mixes an already-resolved constant Field with broad unresolved Fields;
+the follow-up below passed after that test-only edit:
+
+```powershell
+.\gradlew.bat :data:testDebugUnitTest :data:ktlintCheck :data:detekt --console=plain
+```
+
+Earlier local runs found Detekt constants/line-length and ktlint formatting issues;
+these were corrected before the successful final commands. No test was removed or
+weakened. The data AndroidTest APK contains the corrected direct-three production
+strategy and both physical regressions. APK compilation is not device execution.
+
+Additional retained checks passed:
+
+```powershell
+python docs/implementation/statistics_small_fallback_probe.py --rows 1000
+python docs/implementation/statistics_shared_lineage_probe.py
+python docs/implementation/statistics_b2_probe.py --rows 800 --fields 24 --repeats 1
+python docs/implementation/statistics_review_probe.py --rows 800 --fields 24 --structural-only
+python -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+```
+
+The last command ran 17 mocked harness tests; its printed device commands are mocks,
+not emulator launches. The explicit immutable-head Sequence F1 check also failed at
+the intended regression assertion with eight grouped passes:
+`statistics_fair_fallback_probe.py --repository-ref f12f55d51b57a60485cc7f6436cc2ad36561f96b --rows 500 --kind sequence --fields 3`.
+All 32 Statistics Room method names exactly match the pinned inventory, and
+`git diff --check` passed. No managed-device task, GitHub polling, commit, push, PR
+operation or merge was performed. Changes are left uncommitted for Controller review,
+physical fail-first/corrected execution, and the mandatory independent five-API gate.

@@ -98,19 +98,62 @@ class ExactNumberSummaryTest {
 
     @Test
     fun groupedProbeBudgetIncludesFailedProbesAndBoundsAllFieldsTogether() {
-        val budget = NumberMedianProbeBudget(2_400)
-        assertEquals(4_801L, budget.nextLimit)
-        repeat(24) { assertEquals(true, budget.record(100)) }
-        assertEquals(2_401L, budget.nextLimit)
-        assertEquals(false, budget.record(2_401))
+        val budget = NumberMedianProbeBudget(2_400, 24)
+        assertEquals(201L, budget.nextLimit)
+        assertEquals(false, budget.record(201))
+        repeat(23) {
+            assertEquals(201L, budget.nextLimit)
+            assertEquals(true, budget.record(100))
+        }
         assertEquals(null, budget.nextLimit)
         assertThrows(IllegalArgumentException::class.java) { budget.record(0) }
-        val huge = NumberMedianProbeBudget(Long.MAX_VALUE)
+        val last = NumberMedianProbeBudget(2_400, 24)
+        repeat(23) { assertEquals(true, last.record(100)) }
+        assertEquals(false, last.record(201))
+        assertEquals(null, last.nextLimit)
+        val huge = NumberMedianProbeBudget(Long.MAX_VALUE, 1)
         assertEquals(Long.MAX_VALUE, huge.nextLimit)
         assertEquals(false, huge.record(Long.MAX_VALUE))
-        val exact = NumberMedianProbeBudget(1)
+        val exact = NumberMedianProbeBudget(1, 1)
         assertEquals(true, exact.record(2))
         assertEquals(null, exact.nextLimit)
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianProbeBudget(1, 0) }
+        val many = NumberMedianProbeBudget(1, 100)
+        repeat(100) {
+            assertEquals(1L, many.nextLimit)
+            assertEquals(false, many.record(1))
+        }
+    }
+
+    @Test
+    fun groupedTrialReturnsOnlyResolvedFieldsForBoundedScalarCompletion() {
+        val broadSamples =
+            (0..15).associate { field ->
+                "$field" to List(1_000) { java.util.Random(37L + it * 1_000_003L + field).nextLong() }
+            }
+        val samples = broadSamples + ("resolved" to List(1_000) { 7L })
+        val summaries = samples.mapValues { ExactNumberSummary.read(rows(it.value)) }
+        var queries = 0
+        val selected =
+            GroupedNumberMedians(summaries).select(3) { pivots ->
+                queries++
+                pivots.map { (field, pivot) -> rankRow(field, samples.getValue(field), pivot) }
+            }
+        assertEquals(3, queries)
+        assertEquals(true, "resolved" in selected)
+        assertEquals(true, selected.size < samples.size)
+        selected.forEach { (field, selection) ->
+            assertEquals(
+                StatisticsDistributionCalculator.numbers(samples.getValue(field)),
+                summaries.getValue(field).distribution(selection),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            GroupedNumberMedians(summaries).select(0) { emptyList() }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            GroupedNumberMedians(summaries).select(66) { emptyList() }
+        }
     }
 
     @Test

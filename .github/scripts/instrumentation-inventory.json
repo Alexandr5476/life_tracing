@@ -653,6 +653,7 @@
       "numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen",
       "sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen",
       "smallNumberFallbackUsesScalarMediansAfterPhysicalReopen",
+      "numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
       "numberReadersRejectNonIntegerStorage",

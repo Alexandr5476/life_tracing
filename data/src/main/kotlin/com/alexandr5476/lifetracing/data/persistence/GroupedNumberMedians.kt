@@ -20,10 +20,15 @@ internal class GroupedNumberMedians(
 ) {
     private val searches = summaries.mapValues { Search(it.value) }.toMutableMap()
 
-    fun select(read: (Map<String, Long>) -> List<StatisticsNumberRankRow>): Map<String, StatisticsNumberSelectionRow> {
+    /** A shorter trial returns resolved Fields only; the caller finishes the bounded remainder in SQL. */
+    fun select(
+        passLimit: Int = Long.SIZE_BITS + 1,
+        read: (Map<String, Long>) -> List<StatisticsNumberRankRow>,
+    ): Map<String, StatisticsNumberSelectionRow> {
+        require(passLimit in 1..Long.SIZE_BITS + 1)
         val result = mutableMapOf<String, StatisticsNumberSelectionRow>()
         // At most 64 halvings plus a final exact-value query, independently of samples and Fields.
-        repeat(Long.SIZE_BITS + 1) {
+        repeat(passLimit) {
             if (searches.isNotEmpty()) {
                 val pivots = searches.mapValues { it.value.pivot() }
                 val rows = read(pivots)
@@ -38,7 +43,7 @@ internal class GroupedNumberMedians(
                 }
             }
         }
-        require(searches.isEmpty()) { "Number median search did not converge" }
+        require(passLimit < Long.SIZE_BITS + 1 || searches.isEmpty()) { "Number median search did not converge" }
         return result
     }
 

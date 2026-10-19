@@ -113,23 +113,23 @@ internal object NumberMedianReadPolicy {
     }
 }
 
-/** One read-wide budget, including unsuccessful probes. Saturating arithmetic keeps it safe. */
+/** Equal capped allowances: a saturated lineage cannot starve another Field, regardless of order.
+ * Total visited candidates are at most 2Q + P, including one sentinel per populated Field.
+ */
 internal class NumberMedianProbeBudget(
     executionCandidates: Long,
+    fieldCount: Int,
 ) {
-    private var remaining = NumberMedianReadPolicy.candidateLimit(executionCandidates) - 1
+    private var fieldsRemaining = fieldCount.also { require(it > 0) }
+    private val limit = (NumberMedianReadPolicy.candidateLimit(executionCandidates) - 1) / fieldCount + 1
 
     val nextLimit: Long?
-        get() = if (remaining == 0L) null else remaining + 1
+        get() = if (fieldsRemaining == 0) null else limit
 
     fun record(candidates: Long): Boolean {
-        val limit = requireNotNull(nextLimit) { "Number median probe budget exhausted" }
+        require(nextLimit != null) { "Number median probe budget exhausted" }
         require(candidates in 0..limit) { "Candidate probe exceeded its limit" }
-        if (candidates == limit) {
-            remaining = 0
-            return false
-        }
-        remaining -= candidates
-        return true
+        fieldsRemaining--
+        return candidates < limit
     }
 }
