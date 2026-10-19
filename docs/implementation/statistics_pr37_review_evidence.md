@@ -343,3 +343,101 @@ statistics_number_s3_probe.py at 128/64, and statistics_s4_probe.py at 128/4.
 The updated shared probe helper was also explicitly checked to choose selective
 and Field-first paths for both kinds. The existing five-API gate remains mandatory.
 No managed-device task, commit, push or PR operation was performed.
+
+## F1: many populated Fields sharing old Series lineages (2026-10-19)
+
+This section supersedes the per-Field fallback work bound above. The audited head was
+`1d481f32963c07935cab90f9d32b219f15bb6f06`; this correction leaves individual-Field
+selection, duration and Category SQL unchanged. No migration or persistent index/cache.
+
+The former policy capped *each* lineage probe at 2Q+1, then independently traversed Q
+selected execution/value candidates for each fallback Field. Both the repeated probes
+and medians could cost O(PQ). The replacement shares one 2Q+1 probe budget. Successful
+exclusive lineages retain their existing Field-first scalar queries. On the first
+saturated probe, all unresolved Fields use grouped exact rank selection.
+
+Each rank pass uses one execution -> execution-value -> snapshot-Field indexed traversal,
+the existing Series/status/deletion/date predicates, a balanced binary CASE pivot lookup
+and GROUP BY source Field identity. A linear CASE chain or joining a small VALUES pivot
+relation would reintroduce P comparisons per value; neither is used. UTF-8 hex literals
+encode opaque Field IDs without SQL interpolation of raw IDs. Only Series and date bounds
+are bound (four arguments); neither the bind cap nor SQL expression nesting becomes
+linear in Field count. The CASE tree has O(log P) depth and O(P) SQL text size.
+
+For each unresolved Field, COUNT(value <= pivot), MAX(value <= pivot), MIN(value > pivot)
+select the exact lower median rank; the same count supplies the upper endpoint for even
+samples. BigInteger computes the midpoint without signed-Long overflow. Each pass halves
+the remaining value interval or resolves it. At most 64 halvings plus one final exact-value
+pass are possible. Total fallback work is O(65 * Q * log P), plus temporary grouping and
+indexed execution discovery. SQLite may use a temporary grouping B-tree, with ordinary
+O(Q log Q) sorting; it has no per-Field correlated rescan. Returned projections, rank state,
+SQL text and retained endpoint results depend on configured/result Fields, never execution
+or sample cardinality. There is no raw-sample cursor/List in this path. All queries stay
+inside the original complete repository Room transaction.
+
+### Fail-first and deterministic work comparison
+
+Reproduce with `python docs/implementation/statistics_shared_lineage_probe.py`.
+`--baseline-only` executes the prior fallback statements on the fixture and deliberately
+asserts the shared traversal requirement: it fails at P=4 with four traced complete
+execution/value selection statements. The original physical Room regression was added
+before production changes. Controller must retain its fail-first device run against the
+reviewed production implementation; no device task was invoked in this correction turn.
+
+The host probe uses actual v10 tables/indexes and the production grouped SQL template
+with the same balanced pivot expansion. It persists and reopens each SQLite file, holds
+selected executions at 100, and varies populated Fields. Each Field has 6,000 old-Series
+values and distinct immutable old/new snapshot Field IDs sharing stable source identity.
+Sources are archived. Selected values include both signed Long extremes, zero, missing
+values, odd medians and even rational medians. Every distribution is compared with an
+independent sorted integer/Fraction reference. VM instructions use the SQLite progress
+handler at every instruction; no wall-clock threshold is asserted. Counts below include
+all lineage probes and median/rank reads (common summaries/candidate counts excluded):
+
+| Kind | Fields | Former VM instructions | Shared VM instructions | Shared rank passes |
+| --- | ---: | ---: | ---: | ---: |
+| Activity | 4 | 72,126 | 70,546 | 3 |
+| Activity | 8 | 265,192 | 156,188 | 3 |
+| Activity | 16 | 1,014,300 | 338,986 | 3 |
+| Activity | 24 | 2,247,376 | 533,680 | 3 |
+| Sequence | 4 | 70,522 | 69,937 | 3 |
+| Sequence | 8 | 261,992 | 155,579 | 3 |
+| Sequence | 16 | 1,007,908 | 338,377 | 3 |
+| Sequence | 24 | 2,237,792 | 533,071 | 3 |
+
+Host SQLite 3.53.1. Every grouped plan has exactly three indexed SEARCH nodes, led by
+`activity_executions_series_completed` / `sequence_executions_series_ended`, then the
+execution-value composite primary key and snapshot-Field primary key. It uses a temporary
+B-tree for grouping, with no correlated subquery or historical source-Field lineage scan.
+The deterministic scaling assertion distinguishes logarithmic lookup growth from P
+complete traversals. This is work evidence, not Android latency or native heap evidence.
+A wide continuous numeric range may require more shared passes than this three-pass
+fixture; the 65-pass upper bound is explicit, and no device timing threshold is invented.
+
+### Regression scope and verification ownership
+
+The new mandatory physical Room test covers both kinds and all four Field counts after
+close/reopen through the canonical repository. It verifies count/missing/coverage, exact
+signed totals/averages/odd/even medians/min/max and stable Field identities against a
+small reference, then inspects actually executed SQL and plans. It rejects any former
+per-Field execution-first median, requires one capped lineage probe, three shared rank
+passes independent of P, and four binds. Inventory is 622 required data cases, 627
+including five existing nonmandatory skips; all earlier B1/W1/B2 and mutation/concurrency,
+failure/cancellation cases remain pinned. No existing testcase identity is removed.
+
+Local host checks passed: the new shared-lineage probe, `statistics_review_probe.py
+--rows 800 --fields 24 --repeats 1`, `statistics_b2_probe.py --rows 800 --fields 24
+--repeats 1` and `statistics_s4_probe.py --rows 800 --fields 24`. The older probes continue
+to exercise their scoped scalar SQL/selective paths; the new probe supplies simultaneous
+multi-Field fallback evidence. They do not substitute for canonical Room execution.
+Controller owns full affected suites, device fail-first/corrected execution, commits,
+push and the independent unfiltered five-API exact-head CI. No merge was performed.
+
+Local focused verification completed successfully with:
+`gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt
+:data:assembleDebugAndroidTest --console=plain`.
+The domain result was up to date; data JVM tests ran successfully, including all ten
+ExactNumberSummaryTest cases. Changed AndroidTest sources compiled and the data test APK
+was packaged. Earlier local runs identified formatting violations; the final command
+passed after correction. `git diff --check` also passed. No device or GitHub CI result
+is inferred from these checks.

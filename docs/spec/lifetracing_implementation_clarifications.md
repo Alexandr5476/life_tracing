@@ -264,28 +264,36 @@ original-zone date attribution are unchanged. No schema/index change.
 
 ## Exact grouped Number Fields in Series Detail (S3)
 
-Series Detail now applies the same S2 arithmetic/validation to grouped stable source
+Series Detail applies the same S2 arithmetic/validation to grouped stable source
 Field summaries. SQL returns one fixed-width row per recorded Field, containing count,
 min/max, integer-storage validation and the 64 decimal bit counts. Kotlin reconstructs
-exact signed totals through ExactNumberSummary and ExactSignedLongSum. Median selection
-returns at most two endpoints in one scalar row per populated Field. The PR37 review
-correction makes individual summaries one fixed-width aggregate row. Individual and
-Series Detail medians share a bounded source-Field/value candidate probe. It traverses
-existing source-Field and snapshot-Field value indexes with a LEFT JOIN (including
-unused metadata). A single scalar covering-index traversal counts the selected eligible
-executions' value candidates, including empty executions, once per read. The Field probe
-stops at twice that candidate count plus one.
-If the sentinel is reached, median selection uses execution-first eligibility; otherwise
-it uses Field-first access. Both metadata and value fanout are bounded before choosing
-Field-first. Unrelated global execution counts and Field sample density do not gate
-this decision. All projections remain scalar and inside the canonical read transaction.
-This avoids repeated all-Field scans for exclusive dense/sparse lineages while retaining
-selective access for tiny new Series or narrow periods sharing large old lineages.
-Empty catalog Fields retain the canonical
-empty distribution and the containing Series' execution denominator. Category/Text,
-source/snapshot provenance, eligibility, ordering and period semantics are unchanged.
-All reads remain in the complete Series Detail Room transaction. There is no schema,
-index, cache or durable-state change. Query count may scale with populated result Fields,
-never with executions or samples. See docs/implementation/statistics_pr37_review_evidence.md
-for the current guarded median strategy, database work bounds and reproducible host plans;
-docs/implementation/statistics_number_s3_evidence.md preserves the earlier S3 evidence.
+exact signed totals through ExactNumberSummary and ExactSignedLongSum.
+
+Individual Number Field reads retain their bounded source-Field/value probe and exact
+scalar ordered selection. The probe stops at twice the selected eligible execution/value
+candidate count Q plus one; it includes unused metadata through LEFT JOIN. Reaching the
+sentinel selects execution-first access, protecting tiny new Series and narrow periods
+from large old lineages. Otherwise Field-first access protects exclusive dense/sparse
+lineages. Unrelated global history cardinality never gates the choice.
+
+For multiple populated Fields, Series Detail shares that probe budget across the entire
+read. Successful probes consume their actual candidate count; the first failed probe
+consumes the remaining budget and ends further probing. Already selected exclusive
+lineages keep their scalar Field-first reads. All remaining medians use parallel exact
+rank selection. Each pass scans the selected execution/value subset once, returns one
+count and two extrema per unresolved Field, and halves each Field's signed-Long search
+range. At most 64 halvings plus one exact-value pass are needed. Balanced binary CASE
+lookup costs O(log P) per candidate, avoiding a linear pivot-table join or CASE chain.
+The query binds only four selection/period arguments; opaque source IDs are encoded as
+UTF-8 hex text literals. No window functions or unbounded sample cursors/collections
+are required. Application calculation state and returned rows are O(P), never O(Q).
+Total fallback database work is bounded by O(65 * Q * log P), plus grouping and indexed
+execution discovery, rather than P independent complete execution/value traversals.
+
+Empty catalog Fields retain the canonical empty distribution and the containing Series'
+execution denominator. Category/Text, source/snapshot provenance, eligibility, ordering
+and period semantics are unchanged. All summaries, probes and rank passes remain in the
+complete Series Detail Room transaction. There is no schema, index, cache or durable-state
+change. Query count can scale with populated result Fields, never executions or samples.
+See docs/implementation/statistics_pr37_review_evidence.md for current evidence;
+docs/implementation/statistics_number_s3_evidence.md preserves earlier S3 evidence.

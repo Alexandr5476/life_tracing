@@ -205,6 +205,15 @@ class StatisticsRepository internal constructor(
                 }
             val executionCandidates =
                 if (numberSummaries.isEmpty()) 0L else numberExecutionCandidates(seriesId, series.kind, start to end)
+            val numberDistributions =
+                groupedNumberDistributions(
+                    seriesId,
+                    series.kind,
+                    numberFields,
+                    numberSummaries,
+                    start to end,
+                    executionCandidates,
+                )
             val (optionMetadata, categoryCounts) =
                 if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
                     when (series.kind) {
@@ -231,13 +240,10 @@ class StatisticsRepository internal constructor(
                                 numberStatistics(
                                     field,
                                     relevant,
-                                    numberDistribution(
-                                        seriesId,
-                                        field,
-                                        numberSummaries[field.id.value] ?: ExactNumberSummary.empty(),
-                                        start to end,
-                                        executionCandidates,
-                                    ),
+                                    numberDistributions[field.id.value]
+                                        ?: ExactNumberSummary.empty().distribution(
+                                            StatisticsNumberSelectionRow(0, 0, null, null),
+                                        ),
                                 ),
                             )
                         CustomFieldType.CATEGORY ->
@@ -401,12 +407,79 @@ class StatisticsRepository internal constructor(
         }
     }
 
+    /** Share the probe budget and execution traversal across all populated result Fields. */
+    @Suppress("LongParameterList", "CyclomaticComplexMethod", "NestedBlockDepth", "ReturnCount")
+    private fun groupedNumberDistributions(
+        seriesId: StatisticsSeriesId,
+        kind: StatisticsSeriesKind,
+        fields: List<StatisticsFieldDescriptor>,
+        summaries: Map<String, ExactNumberSummary>,
+        bounds: Pair<String?, String?>,
+        executionCandidates: Long,
+    ): Map<String, NumberDistribution> {
+        if (summaries.isEmpty()) return emptyMap()
+        val populated = fields.filter { it.id.value in summaries }
+        if (populated.size == 1) {
+            val field = populated.single()
+            return mapOf(
+                field.id.value to
+                    numberDistribution(
+                        seriesId,
+                        field,
+                        summaries.getValue(field.id.value),
+                        bounds,
+                        executionCandidates,
+                    ),
+            )
+        }
+        val dao = database.statisticsDao()
+        val budget = NumberMedianProbeBudget(executionCandidates)
+        val result = mutableMapOf<String, NumberDistribution>()
+        var probing = true
+        for (field in populated) {
+            val limit = budget.nextLimit
+            if (probing && limit != null) {
+                val candidates =
+                    when (kind) {
+                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberFieldCandidateCount(field.id.value, limit)
+                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberFieldCandidateCount(field.id.value, limit)
+                        StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable Fields")
+                    }
+                probing = budget.record(candidates)
+                if (probing) {
+                    result[field.id.value] =
+                        numberDistribution(
+                            seriesId,
+                            field,
+                            summaries.getValue(field.id.value),
+                            bounds,
+                            executionCandidates,
+                            true,
+                        )
+                }
+            }
+        }
+        val remaining = summaries.filterKeys { it !in result }
+        if (remaining.isNotEmpty()) {
+            val selections =
+                GroupedNumberMedians(remaining).select { pivots ->
+                    dao.groupedNumberRanks(groupedNumberRankQuery(kind, seriesId.value, bounds, pivots))
+                }
+            selections.forEach { (fieldId, selection) ->
+                result[fieldId] = remaining.getValue(fieldId).distribution(selection)
+            }
+        }
+        return result
+    }
+
+    @Suppress("LongParameterList")
     private fun numberDistribution(
         seriesId: StatisticsSeriesId,
         field: StatisticsFieldDescriptor,
         summary: ExactNumberSummary,
         bounds: Pair<String?, String?>,
         executionCandidateCount: Long,
+        fieldFirstOverride: Boolean? = null,
     ): NumberDistribution {
         val (start, end) = bounds
         val dao = database.statisticsDao()
@@ -414,7 +487,9 @@ class StatisticsRepository internal constructor(
             if (summary.sampleCount == 0L) {
                 StatisticsNumberSelectionRow(0, 0, null, null)
             } else {
-                val fieldFirst = useFieldFirstNumberSelection(field.id, summary.sampleCount, executionCandidateCount)
+                val fieldFirst =
+                    fieldFirstOverride
+                        ?: useFieldFirstNumberSelection(field.id, summary.sampleCount, executionCandidateCount)
                 when (field.id) {
                     is StatisticsFieldId.Activity -> {
                         val select =

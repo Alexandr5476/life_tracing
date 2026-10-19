@@ -5,6 +5,8 @@ package com.alexandr5476.lifetracing.data.persistence
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.RawQuery
+import androidx.sqlite.db.SupportSQLiteQuery
 
 internal data class GlobalStatisticsRow(
     @ColumnInfo(name = "total_tracked_ms") val totalTrackedMs: Long,
@@ -125,6 +127,9 @@ internal data class StatisticsFieldCategoryCountRow(
 // Fixed-width 64-bit SQL projections stay together with their eligibility predicates for auditability.
 @Suppress("TooManyFunctions", "MaxLineLength", "LargeClass")
 internal interface StatisticsDao {
+    @RawQuery
+    fun groupedNumberRanks(query: SupportSQLiteQuery): List<StatisticsNumberRankRow>
+
     @Query(
         "SELECT fields.source_field_id, COUNT(*) AS sample_count, " +
             "COUNT(CASE WHEN typeof(recorded_values.number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +

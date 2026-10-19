@@ -2763,6 +2763,196 @@ class StatisticsRepositoryTest {
     }
 
     @Test
+    fun sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-shared-fields-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            numberHistorySources()
+            for (fields in listOf(4, 8, 16, 24)) seedSharedNumberLineages(fields)
+            database.close()
+            database =
+                LifeTracingDatabase
+                    .builder(context, name)
+                    .allowMainThreadQueries()
+                    .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                    .build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            for (fields in listOf(4, 8, 16, 24)) {
+                for (kind in listOf("activity", "sequence")) {
+                    observedSql.clear()
+                    observedNumberReads.clear()
+                    val numbers =
+                        repository
+                            .seriesDetail(
+                                StatisticsSeriesId("$kind-shared-$fields-new"),
+                                StatisticsPeriod.AllTime,
+                            ).fields
+                            .filterIsInstance<StatisticsFieldDetail.Number>()
+                    assertEquals(fields, numbers.size)
+                    numbers.forEach { number ->
+                        val field =
+                            number.field.id.value
+                                .substringAfterLast('-')
+                                .toInt()
+                        assertEquals("$kind-shared-$fields-source-$field", number.field.id.value)
+                        val values = List(if (field % 2 == 0) 100 else 99) { sharedNumberValue(it, field) }
+                        val statistics = number.statistics
+                        assertEquals(100L, statistics.relevantExecutionCount)
+                        assertEquals(values.size.toLong(), statistics.recordedCount)
+                        assertEquals(100L - values.size, statistics.missingCount)
+                        assertEquals(values.size.toLong(), statistics.coverage.numerator)
+                        assertEquals(100L, statistics.coverage.denominator)
+                        assertEquals(
+                            com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                                .numbers(values),
+                            statistics.values,
+                        )
+                    }
+                    val queries = synchronized(observedSql) { observedSql.toList() }
+                    assertEquals(
+                        "No per-Field execution/value traversal is allowed for the shared fallback",
+                        0,
+                        queries.count {
+                            it.startsWith(
+                                "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                            )
+                        },
+                    )
+                    val ranks =
+                        synchronized(observedNumberReads) {
+                            observedNumberReads.filter { it.first.contains(" AS at_or_below_count") }
+                        }
+                    assertEquals("Shared pass count must not grow with populated Field count", 3, ranks.size)
+                    assertEquals(1, queries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") })
+                    ranks.forEach { (sql, args) ->
+                        assertEquals("Bind count is independent of Field count", 4, args.size)
+                        val plan =
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "EXPLAIN QUERY PLAN $sql",
+                                    args.toTypedArray(),
+                                ).use {
+                                    buildList { while (it.moveToNext()) add(it.getString(3)) }
+                                }
+                        val searches = plan.filter { it.contains("SEARCH ", ignoreCase = true) }
+                        assertTrue("Selected executions must lead: $plan", searches.first().contains("executions"))
+                        assertEquals("One execution/value/Field join per shared pass: $plan", 3, searches.size)
+                        assertTrue(plan.none { it.contains("CORRELATED", ignoreCase = true) })
+                    }
+                }
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    private fun sharedNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when {
+            field % 2 == 0 ->
+                when (index % 4) {
+                    0 -> Long.MIN_VALUE
+                    1, 3 -> Long.MAX_VALUE
+                    else -> 0L
+                }
+            else -> sharedOddNumberValue(index, field)
+        }
+
+    private fun sharedOddNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index % 5) {
+            0 -> Long.MIN_VALUE
+            1, 2 -> Long.MAX_VALUE
+            3 -> 0L
+            else -> -7L - field
+        }
+
+    private fun seedSharedNumberLineages(fields: Int) {
+        database.runInTransaction {
+            for (kind in listOf("activity", "sequence")) {
+                val prefix = "$kind-shared-$fields"
+                for (era in listOf("old", "new")) {
+                    val seriesId = "$prefix-$era"
+                    val snapshot = "$seriesId-snapshot"
+                    series(seriesId, kind.uppercase(), "Shared lineage")
+                    if (kind == "activity") {
+                        activitySnapshot(snapshot, seriesId, mode = "NO_LIVE_TRACKING")
+                    } else {
+                        database.sequenceSnapshotDao().insertAggregate(
+                            SequenceSnapshotAggregateEntity(
+                                SequenceSnapshotEntity(snapshot, "Shared", null, null, null, seriesId, 0),
+                                sequenceSettings(snapshot),
+                            ),
+                        )
+                    }
+                    repeat(fields) { field ->
+                        val source = "$prefix-source-$field"
+                        if (era == "old") {
+                            database.openHelper.writableDatabase.execSQL(
+                                "INSERT INTO ${kind}_template_fields " +
+                                    "(id,${kind}_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                                    "VALUES (?,?,?,'Same label','NUMBER',0,0)",
+                                arrayOf<Any>(
+                                    source,
+                                    if (kind ==
+                                        "activity"
+                                    ) {
+                                        "activity"
+                                    } else {
+                                        "sequence"
+                                    },
+                                    fields * 100 + field,
+                                ),
+                            )
+                        }
+                        val owner = if (kind == "activity") "snapshot_id" else "sequence_snapshot_id"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_snapshot_fields " +
+                                "(id,$owner,source_field_id,position,name_at_creation,field_type) " +
+                                "VALUES (?,?,?,?,'Same label','NUMBER')",
+                            arrayOf<Any>("$snapshot-$field", snapshot, source, field),
+                        )
+                    }
+                    repeat(if (era == "old") 6_000 else 100) { index ->
+                        val id = "$seriesId-$index"
+                        val columns =
+                            if (kind == "activity") {
+                                "context_type,completed_at_ms"
+                            } else {
+                                "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                            }
+                        val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_executions " +
+                                "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                                "created_at_ms,updated_at_ms,$columns) " +
+                                "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                            arrayOf(id, snapshot, seriesId, AUG_20),
+                        )
+                        repeat(fields) { field ->
+                            if (era == "old" || field % 2 == 0 || index != 99) {
+                                database.openHelper.writableDatabase.execSQL(
+                                    "INSERT INTO ${kind}_execution_field_values " +
+                                        "(${kind}_execution_id,snapshot_field_id,number_scaled) VALUES (?,?,?)",
+                                    arrayOf<Any>(id, "$snapshot-$field", sharedNumberValue(index, field)),
+                                )
+                            }
+                        }
+                    }
+                }
+                database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 2")
+            }
+        }
+    }
+
+    @Test
     fun numberReadersRejectNonIntegerStorage() {
         numberHistorySources()
         completedActivity(
@@ -3714,6 +3904,7 @@ class StatisticsRepositoryTest {
         observedSql.add(sql)
         if (sql.contains(" AS bit_counts ") ||
             sql.contains(" AS lower_median_scaled") ||
+            sql.contains(" AS at_or_below_count") ||
             (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN"))
         ) {
             observedNumberReads.add(sql to args.toList())

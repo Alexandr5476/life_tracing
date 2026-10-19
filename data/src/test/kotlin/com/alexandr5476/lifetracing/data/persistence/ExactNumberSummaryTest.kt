@@ -97,6 +97,131 @@ class ExactNumberSummaryTest {
     }
 
     @Test
+    fun groupedProbeBudgetIncludesFailedProbesAndBoundsAllFieldsTogether() {
+        val budget = NumberMedianProbeBudget(2_400)
+        assertEquals(4_801L, budget.nextLimit)
+        repeat(24) { assertEquals(true, budget.record(100)) }
+        assertEquals(2_401L, budget.nextLimit)
+        assertEquals(false, budget.record(2_401))
+        assertEquals(null, budget.nextLimit)
+        assertThrows(IllegalArgumentException::class.java) { budget.record(0) }
+        val huge = NumberMedianProbeBudget(Long.MAX_VALUE)
+        assertEquals(Long.MAX_VALUE, huge.nextLimit)
+        assertEquals(false, huge.record(Long.MAX_VALUE))
+        val exact = NumberMedianProbeBudget(1)
+        assertEquals(true, exact.record(2))
+        assertEquals(null, exact.nextLimit)
+    }
+
+    @Test
+    fun groupedRanksPreserveExactMediansForSignedBoundariesDuplicatesAndLargeSamples() {
+        val random = kotlin.random.Random(37)
+        val fixtures =
+            listOf(
+                listOf(0L),
+                listOf(Long.MIN_VALUE, Long.MAX_VALUE),
+                listOf(Long.MIN_VALUE, -1L, 0L, Long.MAX_VALUE),
+                List(100_000) { 7L },
+                List(101) { if (it == 0) Long.MIN_VALUE else Long.MAX_VALUE },
+                listOf(Long.MIN_VALUE),
+                listOf(Long.MAX_VALUE),
+                listOf(Long.MIN_VALUE, Long.MIN_VALUE + 1),
+                listOf(Long.MAX_VALUE - 1, Long.MAX_VALUE),
+                listOf(-2L, -1L),
+            ) + List(200) { List(1 + random.nextInt(300)) { random.nextLong() } }
+        val samples = fixtures.mapIndexed { index, values -> "$index" to values }.toMap()
+        val summaries = samples.mapValues { ExactNumberSummary.read(rows(it.value)) }
+        var queries = 0
+        val selections =
+            GroupedNumberMedians(summaries).select { pivots ->
+                queries++
+                if (queries == 1) {
+                    val expectedPivots =
+                        listOf(
+                            0L,
+                            -1L,
+                            -1L,
+                            7L,
+                            -1L,
+                            Long.MIN_VALUE,
+                            Long.MAX_VALUE,
+                            Long.MIN_VALUE,
+                            Long.MAX_VALUE - 1,
+                            -2L,
+                        )
+                    expectedPivots.forEachIndexed { index, expected ->
+                        assertEquals(expected, pivots.getValue("$index"))
+                    }
+                }
+                pivots.map { (field, pivot) -> rankRow(field, samples.getValue(field), pivot) }
+            }
+        assertEquals(true, queries in 1..65)
+        samples.forEach { (field, values) ->
+            assertEquals(
+                StatisticsDistributionCalculator.numbers(values),
+                summaries.getValue(field).distribution(selections.getValue(field)),
+            )
+        }
+        assertEquals(
+            emptyMap<String, StatisticsNumberSelectionRow>(),
+            GroupedNumberMedians(emptyMap()).select {
+                error("No reads")
+            },
+        )
+    }
+
+    @Test
+    fun groupedRanksRejectMissingDuplicateUnknownAndIncompatiblePersistedCounts() {
+        val summary = ExactNumberSummary.read(rows(listOf(-1L, 1L)))
+        val row = rankRow("field", listOf(-1L, 1L), 0)
+        for (invalid in listOf(
+            emptyList(),
+            listOf(row, row),
+            listOf(row.copy(sourceFieldId = "unknown")),
+            listOf(row.copy(sampleCount = 1)),
+            listOf(row.copy(atOrBelowCount = -1)),
+            listOf(row.copy(atOrBelowCount = 3)),
+            listOf(row.copy(maximumAtOrBelow = null)),
+            listOf(row.copy(minimumAbove = null)),
+            listOf(row.copy(maximumAtOrBelow = 1)),
+            listOf(row.copy(minimumAbove = -1)),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                GroupedNumberMedians(mapOf("field" to summary)).select { invalid }
+            }
+        }
+    }
+
+    @Test
+    fun groupedRankQueryBoundsBindsAndUsesBalancedSafeOpaqueIdentityLookup() {
+        val pivots = (0..1_200).associate { "quote'/$it/\uD83D\uDE00" to (it.toLong() - 600) }
+        val query =
+            groupedNumberRankQuery(
+                com.alexandr5476.lifetracing.domain.StatisticsSeriesKind.ACTIVITY,
+                "series",
+                null to null,
+                pivots,
+            )
+        assertEquals(4, query.argCount)
+        assertEquals(false, query.sql.contains("quote'"))
+        assertEquals(false, query.sql.contains("OVER ("))
+        assertEquals(3 * (pivots.size - 1), Regex("COLLATE BINARY").findAll(query.sql).count())
+    }
+
+    private fun rankRow(
+        field: String,
+        values: List<Long>,
+        pivot: Long,
+    ): StatisticsNumberRankRow =
+        StatisticsNumberRankRow(
+            field,
+            values.size.toLong(),
+            values.count { it <= pivot }.toLong(),
+            values.filter { it <= pivot }.maxOrNull(),
+            values.filter { it > pivot }.minOrNull(),
+        )
+
+    @Test
     fun malformedBitRowsAreRejectedAtBoundary() {
         val valid = rows(listOf(-1L, 1L))
         val invalid =

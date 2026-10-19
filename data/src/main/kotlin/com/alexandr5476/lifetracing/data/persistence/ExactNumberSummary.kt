@@ -9,8 +9,8 @@ import java.math.BigInteger
 internal class ExactNumberSummary private constructor(
     val sampleCount: Long,
     private val total: BigInteger,
-    private val minimum: Long?,
-    private val maximum: Long?,
+    val minimum: Long?,
+    val maximum: Long?,
 ) {
     fun distribution(selection: StatisticsNumberSelectionRow): NumberDistribution {
         require(selection.sampleCount == sampleCount) { "Number aggregate disagrees with eligible sample count" }
@@ -110,5 +110,26 @@ internal object NumberMedianReadPolicy {
     ): Boolean {
         require(sampleCount >= 0 && executionCandidateCount >= sampleCount && boundedCandidateCount >= 0)
         return sampleCount > 0 && boundedCandidateCount < candidateLimit(executionCandidateCount)
+    }
+}
+
+/** One read-wide budget, including unsuccessful probes. Saturating arithmetic keeps it safe. */
+internal class NumberMedianProbeBudget(
+    executionCandidates: Long,
+) {
+    private var remaining = NumberMedianReadPolicy.candidateLimit(executionCandidates) - 1
+
+    val nextLimit: Long?
+        get() = if (remaining == 0L) null else remaining + 1
+
+    fun record(candidates: Long): Boolean {
+        val limit = requireNotNull(nextLimit) { "Number median probe budget exhausted" }
+        require(candidates in 0..limit) { "Candidate probe exceeded its limit" }
+        if (candidates == limit) {
+            remaining = 0
+            return false
+        }
+        remaining -= candidates
+        return true
     }
 }

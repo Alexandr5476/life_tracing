@@ -187,3 +187,17 @@ The [pre-checkpoint-49 document](archive/android_compatibility_gate_pre_checkpoi
 ## PR37 Statistics query review correction
 
 Adds mandatory `StatisticsRepositoryTest.numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen`. Data now requires 621 mandatory cases (626 including five existing nonmandatory skips); app/startup counts and all five API gates are unchanged. The existing growing Number-reader regression also asserts noncorrelated bit-count plans and execution-first median plans. The new case also asserts the guarded dense plan for broad history; all preexisting eligibility, exactness, reopen and mutation/concurrency cases remain required. Host probes and APK compilation do not certify device execution. Controller must run the full unfiltered suites and independent startup at all five APIs plus exact-head CI after correction.
+
+## PR37 F1 shared-lineage correction
+
+Adds mandatory `StatisticsRepositoryTest.sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen`.
+Data now requires 622 mandatory cases (627 including the five existing nonmandatory skips).
+All prior B1/W1/B2, concurrency, cancellation, mutation and post-reopen cases remain required.
+The new physical Room fixture holds selected execution cardinality at 100 and varies
+populated Number Fields across 4/8/16/24, for Activity and Sequence. Every Field shares
+6,000 old-Series values through separate old/new immutable snapshot Field IDs. It checks
+exact signed distributions, missing/coverage, stable identities, three shared rank passes
+independent of Field count, four binds and plans from actually executed SQL. Host VM-work
+measurements complement these deterministic assertions. Compilation and host checks do
+not certify instrumentation; Controller owns fail-first/corrected device execution and
+the full unfiltered five-API exact-head gate.
