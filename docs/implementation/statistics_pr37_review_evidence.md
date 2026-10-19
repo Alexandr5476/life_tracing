@@ -441,3 +441,115 @@ ExactNumberSummaryTest cases. Changed AndroidTest sources compiled and the data 
 was packaged. Earlier local runs identified formatting violations; the final command
 passed after correction. `git diff --check` also passed. No device or GitHub CI result
 is inferred from these checks.
+
+## W1: one/two unresolved Number Fields (2026-10-19)
+
+Reviewed head: `3cfc9e45c3986ca8692a252f6040b89ea078fe72`. This focused correction
+supersedes F1's unconditional grouped fallback for small unresolved sets. After the
+existing shared probe budget, zero remaining Fields need no work, one/two remaining
+Fields use the existing execution-first scalar median, and three or more retain shared
+grouped rank selection. The scalar override skips further lineage probes. The existing
+single-populated-Field fast path and every individual Number Field reader are unchanged.
+
+The cap is fixed at two, independent of total configured Fields, execution count and
+history size. Each scalar median has an indexed eligible execution/value traversal,
+an independent count traversal and native ordered selection. At most two such statements
+(four eligible traversals plus native sorting) replace up to 65 grouped passes. Their
+cost is O(T + V) per traversal plus exact native sorting; this does not reintroduce P
+independent traversals or O(E * P^2) work as P grows. At three or more unresolved Fields
+the F1 bound, balanced pivot lookup, fixed bind usage and result-sized application state
+remain unchanged. No raw samples enter application collections, SQL/schema/index changes
+or durable state are introduced, and all reads retain the enclosing Room transaction.
+
+### Reproduction and deterministic evidence
+
+`statistics_small_fallback_probe.py` creates private physical databases from the actual
+exported v10 tables/indexes, enables foreign keys, seeds distinct old/new frozen snapshots
+sharing source Field IDs, archives sources, commits and closes/reopens before reading.
+The default fixture has 1,000 selected executions and 7,000 old executions per kind.
+It covers a single populated shared Field (the unchanged fast path), two shared Fields,
+and an exclusive first Field followed by one shared Field. The latter exercises a
+successful Field-first query before a saturated probe. The broad signed samples reproduce
+`java.util.Random.nextLong`, include both Long extremes, and require eight/nine grouped
+passes instead of F1's three. Python integer/Fraction expectations independently verify
+count, exact overflow-sized total, average, even/odd median, extrema and source identity;
+coverage is 1,000/1,000 or 999/1,000. Individual summary/selection SQL gives the same result.
+
+```powershell
+python docs/implementation/statistics_small_fallback_probe.py
+python docs/implementation/statistics_small_fallback_probe.py --rows 10000 --case mixed
+```
+
+The probe extracts actual production scalar SQL and grouped rank SQL. It mirrors the
+bounded dispatch, recognizing the fixed small-set branch in the repository source;
+it does not execute Kotlin. The Room regression below checks actual production dispatch.
+The trace phase executes each selection once, separately from VM measurement and plan
+inspection. Each measured VM instruction is counted using SQLite's progress handler
+with interval one. Scalar plans start at the existing Series execution index, then
+execution-value composite primary key, then snapshot Field primary key. Native sorting
+uses an ORDER BY temporary B-tree. Successful Field-first plans use the existing source
+Field and snapshot-Field value indexes. No correlated subquery or per-sample metadata
+query is introduced. Scalar output stays one row per Field.
+
+Host SQLite 3.53.1, fallback selection work only (common summaries, selected candidate
+counts, shared probes and successful Field-first selections excluded from both columns):
+
+| Kind | Selected executions | Remaining Fields | Previous grouped VM | Scalar VM | Previous passes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Activity | 1,000 | 2 | 913,274 | 136,154 | 9 |
+| Sequence | 1,000 | 2 | 895,247 | 128,156 | 9 |
+| Activity, mixed | 1,000 | 1 | 517,546 | 68,068 | 9 |
+| Sequence, mixed | 1,000 | 1 | 499,519 | 64,069 | 9 |
+| Activity, mixed | 10,000 | 1 | 7,471,058 | 680,446 | 13 |
+| Sequence, mixed | 10,000 | 1 | 7,211,019 | 640,447 | 13 |
+
+The 10,000-execution host case uses 70,000 old executions per kind. These are structural
+host observations, not Android latency claims or wall-clock CI thresholds. Both corrected
+commands passed. The unchanged single-Field case also passed with one scalar query.
+Against the immutable reviewed repository source the following command failed for each
+combination of kind (`activity`, `sequence`) and case (`two`, `mixed`), with nine traced
+grouped reads instead of zero:
+
+```powershell
+python docs/implementation/statistics_small_fallback_probe.py --repository-ref 3cfc9e45c3986ca8692a252f6040b89ea078fe72 --kind activity --case two
+```
+
+### Physical Room regression and retained protections
+
+`StatisticsRepositoryTest.smallNumberFallbackUsesScalarMediansAfterPhysicalReopen` was
+added before production correction. It covers both kinds and all three small-set cases
+with 1,000 selected / 7,000 old executions in isolated physical Room files. Expectations
+are independently calculated with sorted test-owned values, BigInteger and ExactValue.
+It checks stable typed Field identities, counts/missing/coverage, totals, rational average,
+odd/even median and min/max; canonical `numberFieldStatistics` must match Series Detail.
+Observed production SQL must contain no grouped rank read, exactly the expected scalar
+selections, one shared saturated probe (two probes in the mixed case), and indexed plans.
+The original F1 fixture helper keeps its default 100/6,000 cardinalities and values.
+
+The new case is pinned in the mandatory inventory: 623 data cases, 628 including the
+five existing nonmandatory skips. No earlier case is removed or weakened. Controller
+owns fail-first Room execution against the reviewed production head, corrected physical
+execution, all transaction interleavings/correction/deletion cases and the unfiltered
+five-API exact-head CI. No device task was run in this correction turn.
+
+The retained host checks passed: `statistics_shared_lineage_probe.py` (4/8/16/24 Fields,
+three passes and the same VM counts recorded above), `statistics_review_probe.py
+--rows 800 --fields 24 --repeats 1`, `statistics_b2_probe.py --rows 800 --fields 24
+--repeats 1`, and `statistics_s4_probe.py --rows 800 --fields 24`. The inventory harness's
+17 mocked unit tests also passed; their printed device commands are mocks and launch
+no emulator. These checks do not certify physical Room or device execution.
+
+Final focused local verification passed with:
+
+```powershell
+.\gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain
+```
+
+Data executed 29 JVM tests with no failures/errors/skips, including all ten exact-number
+summary/rank tests. The unchanged domain suite was up to date (241 cases). The changed
+AndroidTest sources compiled and the data test APK was packaged; ktlint, Detekt and
+Android lint passed. Earlier Detekt method-length and ktlint formatting findings were
+corrected before the successful final command. The B1/W1 structural host probe also
+passed separately with `--rows 800 --fields 24 --structural-only`. All 31 Statistics
+Room testcase names match the pinned inventory. `git diff --check` passed. Changes
+remain uncommitted on the reviewed branch; no commit, push, PR or CI operation occurred.

@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 621 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 623 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -201,3 +201,19 @@ independent of Field count, four binds and plans from actually executed SQL. Hos
 measurements complement these deterministic assertions. Compilation and host checks do
 not certify instrumentation; Controller owns fail-first/corrected device execution and
 the full unfiltered five-API exact-head gate.
+
+## PR37 W1 small-fallback correction
+
+Adds mandatory `StatisticsRepositoryTest.smallNumberFallbackUsesScalarMediansAfterPhysicalReopen`.
+Data now requires 623 mandatory cases (628 including the five existing nonmandatory skips).
+The physical Room regression covers Activity and Sequence with 1,000 selected executions,
+7,000 old executions and separate frozen snapshots sharing stable source Field identities.
+It covers one/two shared Fields and a successful exclusive Field-first selection followed
+by one saturated shared-lineage fallback. Signed broad-range samples include both Long
+extremes, overflow-sized exact totals, even/odd medians and missing coverage. Canonical
+Series Detail and individual Field reads must agree with independent expectations after
+reopen. Executed SQL must use at most two scalar fallback selections and no grouped rank
+passes, with indexed plans and capped probes. All existing F1 4/8/16/24-Field, B1/W1/B2,
+transaction, correction/deletion and compatibility protections remain required. The
+[host work probe](statistics_small_fallback_probe.py) supplies deterministic VM evidence;
+Controller retains physical fail-first/corrected execution and the complete five-API gate.

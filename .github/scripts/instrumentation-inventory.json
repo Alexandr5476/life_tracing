@@ -652,6 +652,7 @@
       "boundedNumberReadersPreserveSignedEligibilityAndPeriods",
       "numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen",
       "sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen",
+      "smallNumberFallbackUsesScalarMediansAfterPhysicalReopen",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
       "numberReadersRejectNonIntegerStorage",

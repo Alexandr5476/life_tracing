@@ -2849,6 +2849,136 @@ class StatisticsRepositoryTest {
         }
     }
 
+    @Test
+    fun smallNumberFallbackUsesScalarMediansAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for ((fields, exclusiveFirst) in listOf(1 to false, 2 to false, 2 to true)) {
+            val name = "statistics-small-fallback-${UUID.randomUUID()}"
+            database.close()
+            try {
+                database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                numberHistorySources()
+                seedSharedNumberLineages(fields, 1_000, 7_000, exclusiveFirst, ::broadNumberValue)
+                database.close()
+                database =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                        .build()
+                repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                for (kind in listOf("activity", "sequence")) {
+                    val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                    observedSql.clear()
+                    observedNumberReads.clear()
+                    val numbers =
+                        repository
+                            .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                            .fields
+                            .filterIsInstance<StatisticsFieldDetail.Number>()
+                    val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                    assertEquals(fields, numbers.size)
+                    numbers.forEach { number ->
+                        val field =
+                            number.field.id.value
+                                .substringAfterLast('-')
+                                .toInt()
+                        val values = List(1_000 - field % 2) { broadNumberValue(it, field) }.sorted()
+                        val count = values.size.toLong()
+                        val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                        val statistics = number.statistics
+                        val expectedId = "$kind-shared-$fields-source-$field"
+                        assertEquals(
+                            if (kind == "activity") {
+                                StatisticsFieldId.Activity(ActivityTemplateFieldId(expectedId))
+                            } else {
+                                StatisticsFieldId.Sequence(SequenceTemplateFieldId(expectedId))
+                            },
+                            number.field.id,
+                        )
+                        assertEquals(1_000L, statistics.relevantExecutionCount)
+                        assertEquals(count, statistics.recordedCount)
+                        assertEquals(1_000L - count, statistics.missingCount)
+                        assertEquals(count, statistics.coverage.numerator)
+                        assertEquals(1_000L, statistics.coverage.denominator)
+                        assertTrue(
+                            "Fixture must exceed signed-Long total range",
+                            total.abs() > BigInteger.valueOf(Long.MAX_VALUE),
+                        )
+                        assertEquals(count, statistics.values.sampleCount)
+                        assertEquals(total, statistics.values.totalScaled)
+                        assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), statistics.values.averageScaled)
+                        assertEquals(
+                            ExactValue.of(
+                                BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                    BigInteger.valueOf(values[values.size / 2]),
+                                BigInteger.valueOf(2),
+                            ),
+                            statistics.values.medianScaled,
+                        )
+                        assertEquals(values.first(), statistics.values.minimumScaled)
+                        assertEquals(values.last(), statistics.values.maximumScaled)
+                        assertEquals(
+                            repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            statistics,
+                        )
+                    }
+                    assertTrue(
+                        "One/two remaining Fields must not issue repeated grouped history scans",
+                        reads.none { it.first.contains(" AS at_or_below_count") },
+                    )
+                    val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                    assertEquals(fields, medians.size)
+                    assertEquals(
+                        if (exclusiveFirst) 1 else fields,
+                        medians.count {
+                            it.first.startsWith(
+                                "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                            )
+                        },
+                    )
+                    val probes =
+                        reads.filter {
+                            it.first.startsWith("SELECT COUNT(*) FROM (") && it.first.contains("LIMIT")
+                        }
+                    assertEquals(if (exclusiveFirst) 2 else 1, probes.size)
+                    probes.forEachIndexed { index, (sql, args) ->
+                        database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                            assertTrue(cursor.moveToFirst())
+                            val limit = (args.last() as Number).toLong()
+                            if (exclusiveFirst && index == 0) {
+                                assertTrue(cursor.getLong(0) < limit)
+                            } else {
+                                assertEquals(
+                                    "Shared old lineage must exhaust the bounded probe",
+                                    limit,
+                                    cursor.getLong(0),
+                                )
+                            }
+                        }
+                    }
+                    // Inspect only the canonical detail statements, not the parity reads above.
+                    observedNumberReads.clear()
+                    observedNumberReads.addAll(reads)
+                    assertNumberReadPlans()
+                }
+            } finally {
+                database.close()
+                context.deleteDatabase(name)
+            }
+        }
+    }
+
+    private fun broadNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index) {
+            0 -> Long.MIN_VALUE
+            1 -> Long.MAX_VALUE
+            else -> java.util.Random(37L + index * 1_000_003L + field).nextLong()
+        }
+
     private fun sharedNumberValue(
         index: Int,
         field: Int,
@@ -2874,7 +3004,13 @@ class StatisticsRepositoryTest {
             else -> -7L - field
         }
 
-    private fun seedSharedNumberLineages(fields: Int) {
+    private fun seedSharedNumberLineages(
+        fields: Int,
+        selectedExecutions: Int = 100,
+        oldExecutions: Int = 6_000,
+        exclusiveFirst: Boolean = false,
+        number: (Int, Int) -> Long = ::sharedNumberValue,
+    ) {
         database.runInTransaction {
             for (kind in listOf("activity", "sequence")) {
                 val prefix = "$kind-shared-$fields"
@@ -2920,7 +3056,7 @@ class StatisticsRepositoryTest {
                             arrayOf<Any>("$snapshot-$field", snapshot, source, field),
                         )
                     }
-                    repeat(if (era == "old") 6_000 else 100) { index ->
+                    repeat(if (era == "old") oldExecutions else selectedExecutions) { index ->
                         val id = "$seriesId-$index"
                         val columns =
                             if (kind == "activity") {
@@ -2937,11 +3073,12 @@ class StatisticsRepositoryTest {
                             arrayOf(id, snapshot, seriesId, AUG_20),
                         )
                         repeat(fields) { field ->
-                            if (era == "old" || field % 2 == 0 || index != 99) {
+                            val missing = era == "new" && field % 2 == 1 && index == selectedExecutions - 1
+                            if (!missing && !(era == "old" && exclusiveFirst && field == 0)) {
                                 database.openHelper.writableDatabase.execSQL(
                                     "INSERT INTO ${kind}_execution_field_values " +
                                         "(${kind}_execution_id,snapshot_field_id,number_scaled) VALUES (?,?,?)",
-                                    arrayOf<Any>(id, "$snapshot-$field", sharedNumberValue(index, field)),
+                                    arrayOf<Any>(id, "$snapshot-$field", number(index, field)),
                                 )
                             }
                         }

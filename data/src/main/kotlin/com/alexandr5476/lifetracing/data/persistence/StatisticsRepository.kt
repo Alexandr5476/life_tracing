@@ -408,7 +408,7 @@ class StatisticsRepository internal constructor(
     }
 
     /** Share the probe budget and execution traversal across all populated result Fields. */
-    @Suppress("LongParameterList", "CyclomaticComplexMethod", "NestedBlockDepth", "ReturnCount")
+    @Suppress("LongMethod", "LongParameterList", "CyclomaticComplexMethod", "NestedBlockDepth", "ReturnCount")
     private fun groupedNumberDistributions(
         seriesId: StatisticsSeriesId,
         kind: StatisticsSeriesKind,
@@ -460,7 +460,21 @@ class StatisticsRepository internal constructor(
             }
         }
         val remaining = summaries.filterKeys { it !in result }
-        if (remaining.isNotEmpty()) {
+        // At most two execution-first selections avoid repeated rank passes for small fallbacks.
+        // Keep this cap fixed: allowing P independent scans would restore O(P * Q) fallback work.
+        if (remaining.size <= 2) {
+            populated.filter { it.id.value in remaining }.forEach { field ->
+                result[field.id.value] =
+                    numberDistribution(
+                        seriesId,
+                        field,
+                        remaining.getValue(field.id.value),
+                        bounds,
+                        executionCandidates,
+                        false,
+                    )
+            }
+        } else {
             val selections =
                 GroupedNumberMedians(remaining).select { pivots ->
                     dao.groupedNumberRanks(groupedNumberRankQuery(kind, seriesId.value, bounds, pivots))
