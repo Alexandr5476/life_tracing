@@ -207,7 +207,20 @@ internal interface StatisticsDao {
         endDate: String?,
     ): List<StatisticsNumberSummaryRow>
 
-    // CROSS JOIN fixes the indexed Field -> value -> execution path; Fields partition the values.
+    // COUNT(*) uses SQLite's B-tree count, without hydrating any execution rows.
+    @Query("SELECT COUNT(*) FROM activity_executions")
+    fun activityHistoryExecutionCount(): Long
+
+    // Cap metadata traversal at the selected sample count plus one.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT id FROM activity_snapshot_fields WHERE source_field_id = :fieldId LIMIT :limit)",
+    )
+    fun activityNumberFieldLineageCount(
+        fieldId: String,
+        limit: Long,
+    ): Long
+
+    // Only the repository's cardinality policy may select this dense-history path.
     @Query(
         "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_snapshot_fields AS fields " +
             "CROSS JOIN activity_execution_field_values AS recorded_values " +
@@ -215,6 +228,28 @@ internal interface StatisticsDao {
             "AND recorded_values.snapshot_field_id = fields.id " +
             "AND executions.id = recorded_values.activity_execution_id AND executions.statistics_series_id = :seriesId " +
             "AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), " +
+            "median_values AS (SELECT number_scaled FROM eligible ORDER BY number_scaled " +
+            "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
+            "OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / 2 END) " +
+            "SELECT (SELECT COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, " +
+            "MIN(number_scaled) AS lower_median_scaled, MAX(number_scaled) AS upper_median_scaled FROM median_values",
+    )
+    fun activityDenseSeriesNumberSelection(
+        seriesId: String,
+        fieldId: String,
+        startDate: String?,
+        endDate: String?,
+        expectedCount: Long,
+    ): StatisticsNumberSelectionRow
+
+    @Query(
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions " +
+            "CROSS JOIN activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "CROSS JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
+            "AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
+            "AND recorded_values.number_scaled IS NOT NULL " +
             "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), " +
             "median_values AS (SELECT number_scaled FROM eligible ORDER BY number_scaled " +
             "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
@@ -312,7 +347,20 @@ internal interface StatisticsDao {
         endDate: String?,
     ): List<StatisticsNumberSummaryRow>
 
-    // CROSS JOIN fixes the indexed Field -> value -> execution path; Fields partition the values.
+    // COUNT(*) uses SQLite's B-tree count, without hydrating any execution rows.
+    @Query("SELECT COUNT(*) FROM sequence_executions")
+    fun sequenceHistoryExecutionCount(): Long
+
+    // Cap metadata traversal at the selected sample count plus one.
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT id FROM sequence_snapshot_fields WHERE source_field_id = :fieldId LIMIT :limit)",
+    )
+    fun sequenceNumberFieldLineageCount(
+        fieldId: String,
+        limit: Long,
+    ): Long
+
+    // Only the repository's cardinality policy may select this dense-history path.
     @Query(
         "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_snapshot_fields AS fields " +
             "CROSS JOIN sequence_execution_field_values AS recorded_values " +
@@ -320,6 +368,28 @@ internal interface StatisticsDao {
             "AND recorded_values.snapshot_field_id = fields.id " +
             "AND executions.id = recorded_values.sequence_execution_id AND executions.statistics_series_id = :seriesId " +
             "AND executions.status IN ('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), " +
+            "median_values AS (SELECT number_scaled FROM eligible ORDER BY number_scaled " +
+            "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
+            "OFFSET CASE WHEN :expectedCount <= 0 THEN 0 ELSE (:expectedCount - 1) / 2 END) " +
+            "SELECT (SELECT COUNT(*) FROM eligible) AS sample_count, COUNT(*) AS selected_count, " +
+            "MIN(number_scaled) AS lower_median_scaled, MAX(number_scaled) AS upper_median_scaled FROM median_values",
+    )
+    fun sequenceDenseSeriesNumberSelection(
+        seriesId: String,
+        fieldId: String,
+        startDate: String?,
+        endDate: String?,
+        expectedCount: Long,
+    ): StatisticsNumberSelectionRow
+
+    @Query(
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions " +
+            "CROSS JOIN sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "CROSS JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
+            "AND executions.status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND recorded_values.number_scaled IS NOT NULL " +
             "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), " +
             "median_values AS (SELECT number_scaled FROM eligible ORDER BY number_scaled " +
             "LIMIT CASE WHEN :expectedCount <= 0 THEN 0 WHEN :expectedCount % 2 = 0 THEN 2 ELSE 1 END " +
@@ -588,29 +658,92 @@ internal interface StatisticsDao {
     fun sequenceFieldMetadata(seriesId: String): List<StatisticsFieldMetadataRow>
 
     @Query(
-        "WITH RECURSIVE bits(bit_index) AS (SELECT 0 UNION ALL SELECT bit_index + 1 FROM bits WHERE bit_index < 63), " +
-            "eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions INNER JOIN " +
-            "activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
-            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
-            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status = " +
-            "'COMPLETED' AND executions.deleted_at_ms IS NULL AND recorded_values.number_scaled IS NOT NULL AND (:startDate " +
-            "IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), summary AS (SELECT COUNT(*) AS " +
-            "sample_count, COUNT(CASE WHEN typeof(number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +
-            "MIN(number_scaled) AS minimum_scaled, MAX(number_scaled) AS maximum_scaled FROM eligible) SELECT bit_index, " +
-            "sample_count, (SELECT COUNT(*) FROM eligible WHERE ((number_scaled >> bit_index) & 1) = 1) AS set_bit_count, " +
-            "invalid_count, minimum_scaled, maximum_scaled FROM bits CROSS JOIN summary ORDER BY bit_index",
+        "SELECT :fieldId AS source_field_id, COUNT(*) AS sample_count, " +
+            "COUNT(CASE WHEN typeof(recorded_values.number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +
+            "MIN(recorded_values.number_scaled) AS minimum_scaled, MAX(recorded_values.number_scaled) AS maximum_scaled, " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 0) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 1) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 2) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 3) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 4) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 5) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 6) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 7) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 8) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 9) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 10) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 11) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 12) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 13) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 14) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 15) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 16) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 17) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 18) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 19) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 20) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 21) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 22) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 23) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 24) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 25) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 26) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 27) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 28) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 29) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 30) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 31) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 32) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 33) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 34) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 35) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 36) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 37) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 38) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 39) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 40) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 41) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 42) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 43) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 44) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 45) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 46) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 47) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 48) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 49) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 50) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 51) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 52) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 53) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 54) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 55) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 56) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 57) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 58) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 59) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 60) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 61) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 62) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 63) & 1) = 1 THEN 1 END) AS bit_counts " +
+            "FROM activity_executions AS executions " +
+            "CROSS JOIN activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
+            "CROSS JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
+            "AND executions.status = 'COMPLETED' AND executions.deleted_at_ms IS NULL " +
+            "AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)",
     )
     fun activityNumberBitCounts(
         seriesId: String,
         fieldId: String,
         startDate: String?,
         endDate: String?,
-    ): List<StatisticsNumberBitCountRow>
+    ): StatisticsNumberSummaryRow
 
     @Query(
-        "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions INNER JOIN " +
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM activity_executions AS executions CROSS JOIN " +
             "activity_execution_field_values AS recorded_values ON recorded_values.activity_execution_id = executions.id " +
-            "INNER JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "CROSS JOIN activity_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
             "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status = " +
             "'COMPLETED' AND executions.deleted_at_ms IS NULL AND recorded_values.number_scaled IS NOT NULL AND (:startDate " +
             "IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)), median_values AS (SELECT " +
@@ -639,29 +772,92 @@ internal interface StatisticsDao {
     ): Long
 
     @Query(
-        "WITH RECURSIVE bits(bit_index) AS (SELECT 0 UNION ALL SELECT bit_index + 1 FROM bits WHERE bit_index < 63), " +
-            "eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions INNER JOIN " +
-            "sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
-            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
-            "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status IN " +
-            "('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL AND (:startDate IS NULL OR " +
-            "executions.primary_local_date BETWEEN :startDate AND :endDate)), summary AS (SELECT COUNT(*) AS sample_count, " +
-            "COUNT(CASE WHEN typeof(number_scaled) != 'integer' THEN 1 END) AS invalid_count, MIN(number_scaled) AS " +
-            "minimum_scaled, MAX(number_scaled) AS maximum_scaled FROM eligible) SELECT bit_index, sample_count, (SELECT " +
-            "COUNT(*) FROM eligible WHERE ((number_scaled >> bit_index) & 1) = 1) AS set_bit_count, invalid_count, " +
-            "minimum_scaled, maximum_scaled FROM bits CROSS JOIN summary ORDER BY bit_index",
+        "SELECT :fieldId AS source_field_id, COUNT(*) AS sample_count, " +
+            "COUNT(CASE WHEN typeof(recorded_values.number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +
+            "MIN(recorded_values.number_scaled) AS minimum_scaled, MAX(recorded_values.number_scaled) AS maximum_scaled, " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 0) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 1) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 2) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 3) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 4) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 5) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 6) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 7) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 8) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 9) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 10) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 11) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 12) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 13) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 14) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 15) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 16) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 17) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 18) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 19) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 20) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 21) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 22) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 23) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 24) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 25) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 26) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 27) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 28) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 29) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 30) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 31) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 32) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 33) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 34) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 35) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 36) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 37) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 38) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 39) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 40) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 41) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 42) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 43) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 44) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 45) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 46) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 47) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 48) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 49) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 50) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 51) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 52) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 53) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 54) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 55) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 56) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 57) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 58) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 59) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 60) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 61) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 62) & 1) = 1 THEN 1 END) || ',' || " +
+            "COUNT(CASE WHEN ((recorded_values.number_scaled >> 63) & 1) = 1 THEN 1 END) AS bit_counts " +
+            "FROM sequence_executions AS executions " +
+            "CROSS JOIN sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
+            "CROSS JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id " +
+            "WHERE executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId " +
+            "AND executions.status IN ('COMPLETED', 'ENDED_EARLY') " +
+            "AND recorded_values.number_scaled IS NOT NULL " +
+            "AND (:startDate IS NULL OR executions.primary_local_date BETWEEN :startDate AND :endDate)",
     )
     fun sequenceNumberBitCounts(
         seriesId: String,
         fieldId: String,
         startDate: String?,
         endDate: String?,
-    ): List<StatisticsNumberBitCountRow>
+    ): StatisticsNumberSummaryRow
 
     @Query(
-        "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions INNER JOIN " +
+        "WITH eligible AS (SELECT recorded_values.number_scaled FROM sequence_executions AS executions CROSS JOIN " +
             "sequence_execution_field_values AS recorded_values ON recorded_values.sequence_execution_id = executions.id " +
-            "INNER JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
+            "CROSS JOIN sequence_snapshot_fields AS fields ON fields.id = recorded_values.snapshot_field_id WHERE " +
             "executions.statistics_series_id = :seriesId AND fields.source_field_id = :fieldId AND executions.status IN " +
             "('COMPLETED', 'ENDED_EARLY') AND recorded_values.number_scaled IS NOT NULL AND (:startDate IS NULL OR " +
             "executions.primary_local_date BETWEEN :startDate AND :endDate)), median_values AS (SELECT number_scaled FROM " +

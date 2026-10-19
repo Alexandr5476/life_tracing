@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 620 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 621 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -183,3 +183,7 @@ python -m unittest discover -s .github/scripts -p "test_*.py"
 ## Archived implementation records
 
 The [pre-checkpoint-49 document](archive/android_compatibility_gate_pre_checkpoint49.md) preserves earlier implementation-turn NOT_RUN tables and the W1-W3 handoff verbatim. Those statuses and instructions are historical, superseded by this document and current workflow. They are not current outcomes and do not reopen closed B1.
+
+## PR37 Statistics query review correction
+
+Adds mandatory `StatisticsRepositoryTest.numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen`. Data now requires 621 mandatory cases (626 including five existing nonmandatory skips); app/startup counts and all five API gates are unchanged. The existing growing Number-reader regression also asserts noncorrelated bit-count plans and execution-first median plans. The new case also asserts the guarded dense plan for broad history; all preexisting eligibility, exactness, reopen and mutation/concurrency cases remain required. Host probes and APK compilation do not certify device execution. Controller must run the full unfiltered suites and independent startup at all five APIs plus exact-head CI after correction.

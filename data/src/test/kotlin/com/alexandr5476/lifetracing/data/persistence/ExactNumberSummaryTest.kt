@@ -43,6 +43,54 @@ class ExactNumberSummaryTest {
     }
 
     @Test
+    fun singleFieldProjectionIncludesEmptyAndUsesTheGroupedExactArithmetic() {
+        for (values in listOf(emptyList(), listOf(-1L), listOf(-9L, 0L, 7L), listOf(Long.MIN_VALUE, Long.MAX_VALUE))) {
+            val row =
+                StatisticsNumberSummaryRow(
+                    "field",
+                    values.size.toLong(),
+                    0,
+                    values.minOrNull(),
+                    values.maxOrNull(),
+                    rows(values).joinToString(",") { it.setBitCount.toString() },
+                )
+            val sorted = values.sorted()
+            val selection =
+                StatisticsNumberSelectionRow(
+                    values.size.toLong(),
+                    if (values.isEmpty()) 0 else 2L - values.size % 2,
+                    sorted.getOrNull((sorted.size - 1) / 2),
+                    sorted.getOrNull(sorted.size / 2),
+                )
+            assertEquals(
+                StatisticsDistributionCalculator.numbers(values),
+                ExactNumberSummary.read(row).distribution(selection),
+            )
+            assertThrows(IllegalArgumentException::class.java) { ExactNumberSummary.read(row.copy(invalidCount = 1)) }
+            assertThrows(IllegalArgumentException::class.java) { ExactNumberSummary.read(row.copy(sampleCount = -1)) }
+        }
+    }
+
+    @Test
+    fun medianReadPolicyProtectsSelectiveReadsAndBoundsDenseLineagesWithoutOverflow() {
+        assertEquals(false, NumberMedianReadPolicy.isBroad(0, 0))
+        assertEquals(false, NumberMedianReadPolicy.isBroad(2, 10_000))
+        assertEquals(false, NumberMedianReadPolicy.isBroad(2, 5))
+        assertEquals(true, NumberMedianReadPolicy.isBroad(3, 5))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(3, 5, 4))
+        assertEquals(true, NumberMedianReadPolicy.useFieldFirst(3, 5, 3))
+        assertEquals(false, NumberMedianReadPolicy.useFieldFirst(2, 10_000, 1))
+        assertEquals(false, NumberMedianReadPolicy.isBroad(Long.MAX_VALUE / 2, Long.MAX_VALUE))
+        assertEquals(true, NumberMedianReadPolicy.isBroad(Long.MAX_VALUE / 2 + 1, Long.MAX_VALUE))
+        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.lineageLimit(Long.MAX_VALUE))
+        assertEquals(Long.MAX_VALUE, NumberMedianReadPolicy.lineageLimit(Long.MAX_VALUE - 1))
+        assertEquals(2L, NumberMedianReadPolicy.lineageLimit(1))
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.isBroad(2, 1) }
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.lineageLimit(0) }
+        assertThrows(IllegalArgumentException::class.java) { NumberMedianReadPolicy.useFieldFirst(1, 1, -1) }
+    }
+
+    @Test
     fun malformedBitRowsAreRejectedAtBoundary() {
         val valid = rows(listOf(-1L, 1L))
         val invalid =

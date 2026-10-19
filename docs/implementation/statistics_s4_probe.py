@@ -9,7 +9,7 @@ from fractions import Fraction
 
 from statistics_duration_probe import SCHEMA, query, reference, scalar_distribution
 from statistics_number_probe import insert
-from statistics_number_s3_probe import fixture
+from statistics_number_s3_probe import fixture, series_selection_sql
 
 
 def timed_read(db, sql, bindings):
@@ -162,6 +162,8 @@ def compare(db, kind, date, fields, plans):
     assert len(grouped) <= fields
     median_rows = 0
     number_samples = 0
+    history_count = db.execute(query(kind + "HistoryExecutionCount")).fetchone()[0] if grouped else 0
+    lineage_reads = 0
     for field in range(fields + 1):
         field_id = f"{kind}-source-{field}"
         params = dict(bindings, fieldId=field_id)
@@ -169,8 +171,10 @@ def compare(db, kind, date, fields, plans):
         baseline, old = timed_read(db, eligible(individual_sql), params)
         expected = reference([r[0] for r in baseline])
         bits, bit_metrics = timed_read(db, query(kind + "NumberBitCounts"), params)
-        assert len(bits) == 64
-        total = sum(row["set_bit_count"] * (-(1 << 63) if bit == 63 else 1 << bit) for bit, row in enumerate(bits))
+        assert len(bits) == 1
+        counts = [int(value) for value in bits[0]["bit_counts"].split(",")]
+        assert len(counts) == 64 and bits[0]["invalid_count"] == 0
+        total = sum(value * (-(1 << 63) if bit == 63 else 1 << bit) for bit, value in enumerate(counts))
         assert total == expected[1] and bits[0]["sample_count"] == expected[0]
         params["expectedCount"] = expected[0]
         selection, selection_metrics = timed_read(db, individual_sql, params)
@@ -183,7 +187,9 @@ def compare(db, kind, date, fields, plans):
         summaries = [row for row in grouped if row["source_field_id"] == field_id]
         if expected[0]:
             assert len(summaries) == 1
-            series_selection, series_metrics = timed_read(db, query(kind + "SeriesNumberSelection"), params)
+            median_sql, preflights = series_selection_sql(db, kind, params, history_count)
+            lineage_reads += preflights
+            series_selection, series_metrics = timed_read(db, median_sql, params)
             assert len(series_selection) == 1 and distribution(summaries[0], series_selection[0]) == expected
             median_rows += 1
             number_samples += expected[0]
@@ -193,7 +199,7 @@ def compare(db, kind, date, fields, plans):
                                               individual_selection=selection_metrics)))
     assert median_rows == len(grouped)
     print(label, "combined", json.dumps(dict(number_samples=number_samples, baseline_raw_rows=number_samples,
-          summary=grouped_metrics, median_rows=median_rows, number_statements=1 + median_rows)))
+          summary=grouped_metrics, median_rows=median_rows, number_statements=1 + bool(grouped) + median_rows + lineage_reads)))
     category = db.execute(query(kind + "FieldCategoryCounts"), bindings).fetchall()
     assert len(category) <= 1
     if plans:

@@ -50,6 +50,18 @@ def fixture(db, kind, rows, fields):
     return series, samples
 
 
+def series_selection_sql(db, kind, bindings, history_count):
+    """Mirror the production cardinality policy; scalar preflight never returns IDs."""
+    count = bindings["expectedCount"]
+    if count and count >= history_count // 2 + history_count % 2:
+        lineage = db.execute(query(kind + "NumberFieldLineageCount"),
+                             dict(fieldId=bindings["fieldId"], limit=count + 1)).fetchone()[0]
+        if lineage <= count:
+            return query(kind + "DenseSeriesNumberSelection"), 1
+        return query(kind + "SeriesNumberSelection"), 1
+    return query(kind + "SeriesNumberSelection"), 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rows", type=int, default=10000)
@@ -81,13 +93,17 @@ def main():
                 summaries = db.execute(summary_sql, bindings).fetchall()
                 assert len(summaries) <= args.fields, f"unbounded raw Number rows: {len(summaries)} > F={args.fields}"
                 assert len({r["source_field_id"] for r in summaries}) == len(summaries)
+                history_count = db.execute(query(kind + "HistoryExecutionCount")).fetchone()[0] if summaries else 0
+                lineage_reads = 0
                 for row in summaries:
                     count = row["sample_count"]
                     bits = [int(v) for v in row["bit_counts"].split(",")]
                     assert len(bits) == 64 and all(0 <= bit <= count for bit in bits) and row["invalid_count"] == 0
                     total = sum(v * (-(1 << 63) if b == 63 else 1 << b) for b, v in enumerate(bits))
                     params = dict(bindings, fieldId=row["source_field_id"], expectedCount=count)
-                    selections = db.execute(query(kind + "SeriesNumberSelection"), params).fetchall()
+                    median_sql, preflights = series_selection_sql(db, kind, params, history_count)
+                    lineage_reads += preflights
+                    selections = db.execute(median_sql, params).fetchall()
                     assert len(selections) == 1
                     selected = selections[0]
                     assert selected["sample_count"] == count and selected["selected_count"] == 2 - count % 2
@@ -99,8 +115,8 @@ def main():
                 db.set_trace_callback(None)
                 expected_fields = {f for f, values in samples.items() if any(date is None or day == date for day, _ in values)}
                 assert {r["source_field_id"] for r in summaries} == expected_fields
-                # One grouped query plus one scalar median per populated result dimension, never per execution.
-                assert len(statements) == 1 + len(summaries)
+                # Summary + one history size + P medians + <=P capped lineage checks.
+                assert len(statements) == 1 + bool(summaries) + len(summaries) + lineage_reads
                 print(kind, date or "AllTime", "summary_rows", len(summaries), "median_rows", len(summaries),
                       "queries", len(statements), "PASS exact integer/Fraction reference")
                 if date != "2027-01-01":
@@ -118,7 +134,7 @@ def main():
         assert "StatisticsNumberSampleRow" not in dao_source
         assert "NumberSamples(" not in dao_source and "NumberSamples(" not in repository_source
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
-        print("PASS: F summary rows, 64F scalar counts, <=F scalar medians; database work grows with history.")
+        print("PASS: F summary rows, 64F scalar counts, <=F scalar medians and <=F capped lineage checks; database work grows with history.")
 
 
 if __name__ == "__main__":

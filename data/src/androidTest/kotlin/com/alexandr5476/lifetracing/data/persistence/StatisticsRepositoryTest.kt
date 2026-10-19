@@ -64,6 +64,7 @@ class StatisticsRepositoryTest {
     private lateinit var database: LifeTracingDatabase
     private lateinit var repository: StatisticsRepository
     private val observedSql = Collections.synchronizedList(mutableListOf<String>())
+    private val observedNumberReads = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
 
     @Before
     fun setUp() {
@@ -71,7 +72,7 @@ class StatisticsRepositoryTest {
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
                 .allowMainThreadQueries()
-                .setQueryCallback({ sql, _ -> observedSql.add(sql) }, Executor { it.run() })
+                .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
                 .build()
         repository = StatisticsRepository(database) { StatisticsSeriesId("generated-series") }
     }
@@ -169,6 +170,7 @@ class StatisticsRepositoryTest {
                 assertEquals(originalCount, queries.size)
                 assertEquals(1, queries.count { it.contains(" AS bit_counts ") })
                 assertEquals(1, queries.count { it.contains("CROSS JOIN") && it.contains("median_values") })
+                assertEquals(1, queries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") })
                 assertTrue(queries.none { it.contains("SELECT fields.source_field_id, recorded_values.number_scaled") })
                 val number =
                     detail.fields
@@ -2484,7 +2486,8 @@ class StatisticsRepositoryTest {
                     } else {
                         dao.sequenceNumberBitCounts(series.value, field.value, null, null)
                     }
-                assertEquals(64, bits.size)
+                assertEquals(Long.SIZE_BITS, bits.bitCounts.split(',').size)
+                assertNumberReadPlans()
                 val selection =
                     if (field is StatisticsFieldId.Activity) {
                         dao.activityNumberSelection(series.value, field.value, null, null, actual.recordedCount)
@@ -2620,6 +2623,137 @@ class StatisticsRepositoryTest {
                 "activity-series",
                 database.activityExecutionDao().getById("physical-number")!!.statisticsSeriesId,
             )
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-selectivity-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            numberHistorySources()
+            completedSequence(
+                "selectivity-root",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+            )
+            database.runInTransaction {
+                // Reuse frozen snapshots: even a single Field can have a very large value lineage.
+                repeat(8_000) { index ->
+                    val date = if (index == 7_999) AUG_21 else AUG_20
+                    for (kind in listOf("activity", "sequence")) {
+                        val snapshot = if (kind == "activity") "number-history" else "selectivity-root-snapshot"
+                        val field = "$snapshot-number"
+                        val columns =
+                            if (kind == "activity") {
+                                "context_type,completed_at_ms"
+                            } else {
+                                "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                            }
+                        val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_executions " +
+                                "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                                "created_at_ms,updated_at_ms,$columns) " +
+                                "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                            arrayOf("$kind-old-$index", snapshot, "$kind-series", date),
+                        )
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_execution_field_values " +
+                                "(${kind}_execution_id,snapshot_field_id,number_scaled) " +
+                                "VALUES (?,?,?)",
+                            arrayOf<Any>("$kind-old-$index", field, if (index == 7_999) -7L else index.toLong()),
+                        )
+                    }
+                }
+            }
+            val tinyValues = listOf(Long.MIN_VALUE, Long.MAX_VALUE, 9L)
+            for (kind in listOf("activity", "sequence")) {
+                series("$kind-tiny", kind.uppercase(), "New Series")
+                tinyValues.forEachIndexed { index, value ->
+                    val id = "$kind-tiny-$index"
+                    if (kind == "activity") {
+                        activitySnapshot("$id-snapshot", "activity-tiny", mode = "NO_LIVE_TRACKING", fields = true)
+                        completedActivity(
+                            id,
+                            "$id-snapshot",
+                            "activity-tiny",
+                            null,
+                            AUG_20,
+                            values = listOf(numberValue(id, "$id-snapshot-number", value)),
+                        )
+                    } else {
+                        completedSequence(id, "sequence-tiny", "number-history", 1, 0, AUG_20, true, value)
+                    }
+                }
+            }
+            assertEquals(2L, database.statisticsDao().activityNumberFieldLineageCount("number-source", 2))
+            assertEquals(2L, database.statisticsDao().sequenceNumberFieldLineageCount("sequence-number-source", 2))
+            repeat(2) {
+                database.close()
+                database =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                        .build()
+                repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                for ((oldSeries, field) in numberHistoryIdentities()) {
+                    val kind = if (field is StatisticsFieldId.Activity) "activity" else "sequence"
+                    for ((seriesId, period, values) in listOf(
+                        Triple(StatisticsSeriesId("$kind-tiny"), StatisticsPeriod.AllTime, tinyValues),
+                        Triple(oldSeries, StatisticsPeriod.Day(LocalDate.parse(AUG_21)), listOf(-7L)),
+                        Triple(oldSeries, StatisticsPeriod.AllTime, (0L..7_998L).toList() + -7L),
+                    )) {
+                        observedNumberReads.clear()
+                        val actual = repository.numberFieldStatistics(seriesId, field, period)
+                        val bundled =
+                            repository
+                                .seriesDetail(seriesId, period)
+                                .fields
+                                .filterIsInstance<StatisticsFieldDetail.Number>()
+                                .single { it.field.id == field }
+                                .statistics
+                        assertEquals(
+                            com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                                .numbers(values),
+                            actual.values,
+                        )
+                        val missing =
+                            if (field is StatisticsFieldId.Sequence &&
+                                seriesId == oldSeries &&
+                                period == StatisticsPeriod.AllTime
+                            ) {
+                                1L
+                            } else {
+                                0L
+                            }
+                        assertEquals(values.size.toLong() + missing, actual.relevantExecutionCount)
+                        assertEquals(missing, actual.missingCount)
+                        assertEquals(actual, bundled)
+                        val dense =
+                            synchronized(observedNumberReads) {
+                                observedNumberReads.any { (sql, _) ->
+                                    sql.startsWith(
+                                        "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_snapshot_fields",
+                                    )
+                                }
+                            }
+                        assertEquals(seriesId == oldSeries && period == StatisticsPeriod.AllTime, dense)
+                        assertNumberReadPlans()
+                    }
+                }
+            }
         } finally {
             database.close()
             context.deleteDatabase(name)
@@ -3569,6 +3703,53 @@ class StatisticsRepositoryTest {
                 }.sortedBy { it.toString() }
             }
         }
+    }
+
+    private fun observeStatisticsQuery(
+        sql: String,
+        args: List<Any?>,
+    ) {
+        observedSql.add(sql)
+        if (sql.contains(" AS bit_counts ") || sql.contains(" AS lower_median_scaled")) {
+            observedNumberReads.add(sql to args.toList())
+        }
+    }
+
+    private fun assertNumberReadPlans() {
+        val queries = synchronized(observedNumberReads) { observedNumberReads.toList() }
+        assertTrue("Number queries must be observed", queries.isNotEmpty())
+        queries.forEach { (sql, args) ->
+            val plan =
+                database.openHelper.readableDatabase
+                    .query("EXPLAIN QUERY PLAN $sql", args.toTypedArray())
+                    .use { cursor ->
+                        buildList {
+                            while (cursor.moveToNext()) add(cursor.getString(3))
+                        }
+                    }
+            if (sql.contains(" AS bit_counts ")) {
+                assertTrue(
+                    "Bit counts must have no correlated history scans: $plan",
+                    plan.none { it.contains("CORRELATED") },
+                )
+                assertEquals(64, Regex(Regex.escape("COUNT(CASE WHEN ((")).findAll(sql).count())
+            }
+            val searches = plan.filter { it.contains("SEARCH ") }
+            val fieldFirst =
+                sql.startsWith("WITH eligible AS (SELECT recorded_values.number_scaled FROM ") &&
+                    sql.substringBefore("CROSS JOIN").contains("snapshot_fields AS fields")
+            if (fieldFirst) {
+                assertTrue("Dense median must use the source Field index: $plan", searches.first().contains("fields"))
+                assertTrue(plan.any { it.contains("execution_values_snapshot_field_id") })
+            } else {
+                assertTrue("Eligibility must precede Field lineage: $plan", searches.first().contains("executions"))
+                assertTrue(
+                    "Field metadata must use its value's primary key: $plan",
+                    searches.none { it.contains("source_field_id=?") },
+                )
+            }
+        }
+        observedNumberReads.clear()
     }
 
     private fun numberHistorySources() {

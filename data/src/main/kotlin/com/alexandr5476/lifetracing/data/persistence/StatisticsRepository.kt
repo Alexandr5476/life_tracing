@@ -203,6 +203,16 @@ class StatisticsRepository internal constructor(
                         }
                     ExactNumberSummary.readGrouped(rows, numberFields.map { it.id.value }.toSet())
                 }
+            val historyExecutionCount =
+                if (numberSummaries.isEmpty()) {
+                    0L
+                } else {
+                    when (series.kind) {
+                        StatisticsSeriesKind.ACTIVITY -> dao.activityHistoryExecutionCount()
+                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceHistoryExecutionCount()
+                        StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable detail")
+                    }
+                }
             val (optionMetadata, categoryCounts) =
                 if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
                     when (series.kind) {
@@ -233,8 +243,8 @@ class StatisticsRepository internal constructor(
                                         seriesId,
                                         field,
                                         numberSummaries[field.id.value] ?: ExactNumberSummary.empty(),
-                                        start,
-                                        end,
+                                        period,
+                                        historyExecutionCount,
                                     ),
                                 ),
                             )
@@ -393,34 +403,54 @@ class StatisticsRepository internal constructor(
         seriesId: StatisticsSeriesId,
         field: StatisticsFieldDescriptor,
         summary: ExactNumberSummary,
-        start: String?,
-        end: String?,
+        period: StatisticsPeriod,
+        historyExecutionCount: Long,
     ): NumberDistribution {
+        val (start, end) = period.bounds()
         val dao = database.statisticsDao()
         val selection =
             if (summary.sampleCount == 0L) {
                 StatisticsNumberSelectionRow(0, 0, null, null)
             } else {
+                val fieldFirst = useFieldFirstNumberSelection(field.id, summary.sampleCount, historyExecutionCount)
                 when (field.id) {
-                    is StatisticsFieldId.Activity ->
-                        dao.activitySeriesNumberSelection(
-                            seriesId.value,
-                            field.id.value,
-                            start,
-                            end,
-                            summary.sampleCount,
-                        )
-                    is StatisticsFieldId.Sequence ->
-                        dao.sequenceSeriesNumberSelection(
-                            seriesId.value,
-                            field.id.value,
-                            start,
-                            end,
-                            summary.sampleCount,
-                        )
+                    is StatisticsFieldId.Activity -> {
+                        val select =
+                            if (fieldFirst) {
+                                dao::activityDenseSeriesNumberSelection
+                            } else {
+                                dao::activitySeriesNumberSelection
+                            }
+                        select(seriesId.value, field.id.value, start, end, summary.sampleCount)
+                    }
+                    is StatisticsFieldId.Sequence -> {
+                        val select =
+                            if (fieldFirst) {
+                                dao::sequenceDenseSeriesNumberSelection
+                            } else {
+                                dao::sequenceSeriesNumberSelection
+                            }
+                        select(seriesId.value, field.id.value, start, end, summary.sampleCount)
+                    }
                 }
             }
         return summary.distribution(selection)
+    }
+
+    private fun useFieldFirstNumberSelection(
+        fieldId: StatisticsFieldId,
+        sampleCount: Long,
+        historyExecutionCount: Long,
+    ): Boolean {
+        if (!NumberMedianReadPolicy.isBroad(sampleCount, historyExecutionCount)) return false
+        val dao = database.statisticsDao()
+        val limit = NumberMedianReadPolicy.lineageLimit(sampleCount)
+        val lineageCount =
+            when (fieldId) {
+                is StatisticsFieldId.Activity -> dao.activityNumberFieldLineageCount(fieldId.value, limit)
+                is StatisticsFieldId.Sequence -> dao.sequenceNumberFieldLineageCount(fieldId.value, limit)
+            }
+        return NumberMedianReadPolicy.useFieldFirst(sampleCount, historyExecutionCount, lineageCount)
     }
 
     private fun numberStatistics(

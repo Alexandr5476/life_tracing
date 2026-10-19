@@ -76,13 +76,13 @@ def main():
                 db.set_trace_callback(statements.append)
                 denominator = db.execute(count_sql, bindings).fetchone()[0]
                 bits = db.execute(summary_sql, bindings).fetchall()
-                assert len(bits) == 64
-                count = bits[0]["sample_count"]
-                total = 0
-                for bit, row in enumerate(bits):
-                    assert row["bit_index"] == bit and row["sample_count"] == count and row["invalid_count"] == 0
-                    assert 0 <= row["set_bit_count"] <= count
-                    total += row["set_bit_count"] * (-(1 << 63) if bit == 63 else 1 << bit)
+                assert len(bits) == 1
+                row = bits[0]
+                count = row["sample_count"]
+                counts = [int(value) for value in row["bit_counts"].split(",")]
+                assert len(counts) == 64 and row["invalid_count"] == 0
+                assert all(0 <= value <= count for value in counts)
+                total = sum(value * (-(1 << 63) if bit == 63 else 1 << bit) for bit, value in enumerate(counts))
                 bindings["expectedCount"] = count
                 selections = db.execute(selection_sql, bindings).fetchall()
                 assert len(statements) == 3 and len(selections) == 1
@@ -110,7 +110,7 @@ def main():
                 rows = db.execute(summary_sql, dict(seriesId=series, fieldId=kind + "-source", startDate=None, endDate=None)).fetchall()
                 assert all(row["invalid_count"] > 0 for row in rows)
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
-        print("PASS: exact Python integer/Fraction reference, bounded 64+1 result rows, 3 numeric queries.")
+        print("PASS: exact Python integer/Fraction reference, bounded 1+1 result rows, 3 numeric queries.")
         print("Canonical Room reader adds catalog+metadata: 5 reads. No device latency/heap/refill measurements.")
 
 

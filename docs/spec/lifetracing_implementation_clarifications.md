@@ -268,11 +268,20 @@ Series Detail now applies the same S2 arithmetic/validation to grouped stable so
 Field summaries. SQL returns one fixed-width row per recorded Field, containing count,
 min/max, integer-storage validation and the 64 decimal bit counts. Kotlin reconstructs
 exact signed totals through ExactNumberSummary and ExactSignedLongSum. Median selection
-returns at most two endpoints in one scalar row per populated Field, using existing
-source-Field and snapshot-Field value indexes. Empty catalog Fields retain the canonical
+returns at most two endpoints in one scalar row per populated Field. The PR37 review
+correction makes individual summaries one fixed-width aggregate row. Individual medians
+and selective Series Detail medians use existing execution/Series and primary-key indexes.
+Series Detail may select the source-Field index path only after scalar cardinality checks
+bound the entire execution history to at most twice the selected sample count and the
+requested source-Field snapshot lineage to at most that sample count. Metadata checks stop
+at sample-count-plus-one; no history collection enters application memory. Both paths use
+the same eligibility predicates and transaction. This avoids per-bit correlated history
+scans and forced unrelated Field-lineage traversal while preserving dense read efficiency.
+Empty catalog Fields retain the canonical
 empty distribution and the containing Series' execution denominator. Category/Text,
 source/snapshot provenance, eligibility, ordering and period semantics are unchanged.
 All reads remain in the complete Series Detail Room transaction. There is no schema,
 index, cache or durable-state change. Query count may scale with populated result Fields,
-never with executions or samples. See docs/implementation/statistics_number_s3_evidence.md
-for the indexed median trade-off, database work bounds and reproducible host plans.
+never with executions or samples. See docs/implementation/statistics_pr37_review_evidence.md
+for the current guarded median strategy, database work bounds and reproducible host plans;
+docs/implementation/statistics_number_s3_evidence.md preserves the earlier S3 evidence.

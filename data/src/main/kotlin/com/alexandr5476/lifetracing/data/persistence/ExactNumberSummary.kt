@@ -53,27 +53,32 @@ internal class ExactNumberSummary private constructor(
                 require(row.sourceFieldId in fieldIds) { "Number summary has no catalog Field" }
                 require(row.sourceFieldId !in summaries) { "Duplicate Number Field summary" }
                 require(row.sampleCount > 0) { "Grouped Number summary must contain recorded values" }
-                // COUNT renders at most 19 digits, plus separators. Reject malformed serialized projections.
-                require(
-                    row.bitCounts.length <= Long.SIZE_BITS * MAX_SERIALIZED_COUNT_WIDTH,
-                ) { "Oversized Number bit summary" }
-                val counts = row.bitCounts.split(',')
-                require(counts.size == Long.SIZE_BITS) { "Incomplete Number bit summary" }
-                summaries[row.sourceFieldId] =
-                    read(
-                        counts.mapIndexed { index, count ->
-                            StatisticsNumberBitCountRow(
-                                index,
-                                row.sampleCount,
-                                requireNotNull(count.toLongOrNull()) { "Invalid Number bit count" },
-                                row.invalidCount,
-                                row.minimumScaled,
-                                row.maximumScaled,
-                            )
-                        },
-                    )
+                summaries[row.sourceFieldId] = read(row)
             }
             return summaries
+        }
+
+        /** The single-Field aggregate also returns one row when no values are recorded. */
+        fun read(row: StatisticsNumberSummaryRow): ExactNumberSummary {
+            require(row.sampleCount >= 0) { "Negative Number sample count" }
+            // COUNT renders at most 19 digits, plus separators; no sample serialization.
+            require(row.bitCounts.length <= Long.SIZE_BITS * MAX_SERIALIZED_COUNT_WIDTH) {
+                "Oversized Number bit summary"
+            }
+            val counts = row.bitCounts.split(',')
+            require(counts.size == Long.SIZE_BITS) { "Incomplete Number bit summary" }
+            return read(
+                counts.mapIndexed { index, count ->
+                    StatisticsNumberBitCountRow(
+                        index,
+                        row.sampleCount,
+                        requireNotNull(count.toLongOrNull()) { "Invalid Number bit count" },
+                        row.invalidCount,
+                        row.minimumScaled,
+                        row.maximumScaled,
+                    )
+                },
+            )
         }
 
         fun read(rows: List<StatisticsNumberBitCountRow>): ExactNumberSummary {
@@ -87,5 +92,30 @@ internal class ExactNumberSummary private constructor(
             val total = ExactSignedLongSum.fromBitCounts(first.sampleCount, rows.map { it.setBitCount })
             return ExactNumberSummary(first.sampleCount, total, first.minimumScaled, first.maximumScaled)
         }
+    }
+}
+
+/** Bounds Field-first median work; selective reads never inspect the unrelated Field lineage. */
+internal object NumberMedianReadPolicy {
+    fun isBroad(
+        sampleCount: Long,
+        historyExecutionCount: Long,
+    ): Boolean {
+        require(sampleCount >= 0 && historyExecutionCount >= sampleCount)
+        return sampleCount > 0 && sampleCount >= historyExecutionCount / 2 + historyExecutionCount % 2
+    }
+
+    fun lineageLimit(sampleCount: Long): Long {
+        require(sampleCount > 0)
+        return if (sampleCount == Long.MAX_VALUE) Long.MAX_VALUE else sampleCount + 1
+    }
+
+    fun useFieldFirst(
+        sampleCount: Long,
+        historyExecutionCount: Long,
+        boundedLineageCount: Long,
+    ): Boolean {
+        require(boundedLineageCount >= 0)
+        return isBroad(sampleCount, historyExecutionCount) && boundedLineageCount <= sampleCount
     }
 }
