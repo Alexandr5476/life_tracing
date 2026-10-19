@@ -190,15 +190,18 @@ class StatisticsRepository internal constructor(
                 }
             val catalog = fieldCatalogLocked(series, seriesId)
             val dao = database.statisticsDao()
-            val numberSamples =
-                if (catalog.any { it.type == CustomFieldType.NUMBER }) {
-                    when (series.kind) {
-                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSamples(seriesId.value, start, end)
-                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSamples(seriesId.value, start, end)
-                        StatisticsSeriesKind.ONE_OFF_BUCKET -> emptyList()
-                    }.groupBy(StatisticsNumberSampleRow::sourceFieldId)
-                } else {
+            val numberFields = catalog.filter { it.type == CustomFieldType.NUMBER }
+            val numberSummaries =
+                if (numberFields.isEmpty()) {
                     emptyMap()
+                } else {
+                    val rows =
+                        when (series.kind) {
+                            StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSummaries(seriesId.value, start, end)
+                            StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSummaries(seriesId.value, start, end)
+                            StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable detail")
+                        }
+                    ExactNumberSummary.readGrouped(rows, numberFields.map { it.id.value }.toSet())
                 }
             val (optionMetadata, categoryCounts) =
                 if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
@@ -226,8 +229,12 @@ class StatisticsRepository internal constructor(
                                 numberStatistics(
                                     field,
                                     relevant,
-                                    numberSamples[field.id.value].orEmpty().map(
-                                        StatisticsNumberSampleRow::numberScaled,
+                                    seriesNumberDistribution(
+                                        seriesId,
+                                        field,
+                                        numberSummaries[field.id.value] ?: ExactNumberSummary.empty(),
+                                        start,
+                                        end,
                                     ),
                                 ),
                             )
@@ -382,11 +389,39 @@ class StatisticsRepository internal constructor(
         return numberStatistics(field, relevant, summary.distribution(selection))
     }
 
-    private fun numberStatistics(
+    private fun seriesNumberDistribution(
+        seriesId: StatisticsSeriesId,
         field: StatisticsFieldDescriptor,
-        relevant: Long,
-        values: List<Long>,
-    ): NumberFieldStatistics = numberStatistics(field, relevant, StatisticsDistributionCalculator.numbers(values))
+        summary: ExactNumberSummary,
+        start: String?,
+        end: String?,
+    ): NumberDistribution {
+        val dao = database.statisticsDao()
+        val selection =
+            if (summary.sampleCount == 0L) {
+                StatisticsNumberSelectionRow(0, 0, null, null)
+            } else {
+                when (field.id) {
+                    is StatisticsFieldId.Activity ->
+                        dao.activitySeriesNumberSelection(
+                            seriesId.value,
+                            field.id.value,
+                            start,
+                            end,
+                            summary.sampleCount,
+                        )
+                    is StatisticsFieldId.Sequence ->
+                        dao.sequenceSeriesNumberSelection(
+                            seriesId.value,
+                            field.id.value,
+                            start,
+                            end,
+                            summary.sampleCount,
+                        )
+                }
+            }
+        return summary.distribution(selection)
+    }
 
     private fun numberStatistics(
         field: StatisticsFieldDescriptor,

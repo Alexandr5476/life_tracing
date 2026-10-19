@@ -5,7 +5,7 @@ import com.alexandr5476.lifetracing.domain.NumberDistribution
 import com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
 import java.math.BigInteger
 
-/** Field-independent bounded summary; future grouped readers can use one instance per source identity. */
+/** Shared exact arithmetic and validation for individual and grouped source-Field readers. */
 internal class ExactNumberSummary private constructor(
     val sampleCount: Long,
     private val total: BigInteger,
@@ -39,6 +39,43 @@ internal class ExactNumberSummary private constructor(
     }
 
     companion object {
+        private const val MAX_SERIALIZED_COUNT_WIDTH = 20
+
+        fun empty(): ExactNumberSummary = ExactNumberSummary(0, BigInteger.ZERO, null, null)
+
+        fun readGrouped(
+            rows: List<StatisticsNumberSummaryRow>,
+            fieldIds: Set<String>,
+        ): Map<String, ExactNumberSummary> {
+            require(rows.size <= fieldIds.size) { "Too many Number Field summaries" }
+            val summaries = mutableMapOf<String, ExactNumberSummary>()
+            rows.forEach { row ->
+                require(row.sourceFieldId in fieldIds) { "Number summary has no catalog Field" }
+                require(row.sourceFieldId !in summaries) { "Duplicate Number Field summary" }
+                require(row.sampleCount > 0) { "Grouped Number summary must contain recorded values" }
+                // COUNT renders at most 19 digits, plus separators. Reject malformed serialized projections.
+                require(
+                    row.bitCounts.length <= Long.SIZE_BITS * MAX_SERIALIZED_COUNT_WIDTH,
+                ) { "Oversized Number bit summary" }
+                val counts = row.bitCounts.split(',')
+                require(counts.size == Long.SIZE_BITS) { "Incomplete Number bit summary" }
+                summaries[row.sourceFieldId] =
+                    read(
+                        counts.mapIndexed { index, count ->
+                            StatisticsNumberBitCountRow(
+                                index,
+                                row.sampleCount,
+                                requireNotNull(count.toLongOrNull()) { "Invalid Number bit count" },
+                                row.invalidCount,
+                                row.minimumScaled,
+                                row.maximumScaled,
+                            )
+                        },
+                    )
+            }
+            return summaries
+        }
+
         fun read(rows: List<StatisticsNumberBitCountRow>): ExactNumberSummary {
             require(rows.size == Long.SIZE_BITS) { "Incomplete Number bit summary" }
             val first = rows.first()

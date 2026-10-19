@@ -663,6 +663,8 @@
       "sequenceFieldsUseStableIdentityAndMissingDenominator",
       "sequenceSeriesDetailBatchesMixedFieldHistoryReadsAndMatchesCanonicalReaders",
       "seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults",
+        "seriesDetailRejectsRawNumberSampleMaterialization",
+        "seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory",
       "seriesSplitIsAtomicPreservesOldPlanSnapshotAndRenameMirrorsLabel",
       "seriesSplitRejectsStalePersistedMillisecondForBothKinds"
     ],

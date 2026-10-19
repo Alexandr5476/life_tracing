@@ -65,6 +65,51 @@ class ExactNumberSummaryTest {
     }
 
     @Test
+    fun groupedProjectionSharesExactArithmeticAndRejectsMalformedIdentityOrCounts() {
+        val values = listOf(Long.MIN_VALUE, Long.MIN_VALUE, Long.MAX_VALUE, 0L, 7L)
+        val row =
+            StatisticsNumberSummaryRow(
+                "field",
+                values.size.toLong(),
+                0,
+                values.minOrNull(),
+                values.maxOrNull(),
+                rows(values).joinToString(",") { it.setBitCount.toString() },
+            )
+        val summary = ExactNumberSummary.readGrouped(listOf(row), setOf("field", "empty")).getValue("field")
+        assertEquals(
+            StatisticsDistributionCalculator.numbers(values),
+            summary.distribution(StatisticsNumberSelectionRow(5, 1, 0, 0)),
+        )
+        assertEquals(
+            emptyMap<String, ExactNumberSummary>(),
+            ExactNumberSummary.readGrouped(emptyList(), setOf("field")),
+        )
+        for (bad in listOf(
+            row.copy(sourceFieldId = "unknown"),
+            row.copy(sampleCount = 0),
+            row.copy(sampleCount = -1),
+            row.copy(invalidCount = 1),
+            row.copy(bitCounts = "0"),
+            row.copy(bitCounts = row.bitCounts + ",0"),
+            row.copy(bitCounts = "broken," + row.bitCounts.substringAfter(',')),
+            row.copy(bitCounts = List(64) { "-1" }.joinToString(",")),
+            row.copy(bitCounts = List(64) { "6" }.joinToString(",")),
+            row.copy(bitCounts = "0".repeat(1_281)),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                ExactNumberSummary.readGrouped(listOf(bad), setOf("field"))
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ExactNumberSummary.readGrouped(listOf(row, row), setOf("field", "empty"))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ExactNumberSummary.readGrouped(listOf(row), emptySet())
+        }
+    }
+
+    @Test
     fun contradictoryMedianSelectionIsRejected() {
         val summary = ExactNumberSummary.read(rows(listOf(-1L, 1L)))
         for (selection in listOf(

@@ -124,14 +124,23 @@ class PlanExecutionPersistenceTest {
             assertEquals(liveStart, (live.getActiveRuntime() as ActiveActivityRuntime).execution.startedAt)
             assertEquals(livePlan.id, (live.getActiveRuntime() as ActiveActivityRuntime).execution.planEntryId)
             assertTrue(planReads.getFocusedAction(livePlan.id).engaged)
-            assertEquals(
-                liveCommit.executionId,
-                (
-                    daily
-                        .getDaily(DailyQuery(liveStart.atZone(ZoneOffset.UTC).toLocalDate(), at, 20))
-                        .active as DailyActive.Activity
-                ).runtime.execution.id,
-            )
+            val observedAt = at.plusSeconds(1)
+            val nextMidnight =
+                observedAt
+                    .atZone(ZoneOffset.UTC)
+                    .toLocalDate()
+                    .plusDays(1)
+                    .atStartOfDay(ZoneOffset.UTC)
+                    .toInstant()
+            // Active belongs to the query's Today, including after midnight; History retains the start date.
+            for (queryAt in listOf(observedAt, nextMidnight)) {
+                val today = queryAt.atZone(ZoneOffset.UTC).toLocalDate()
+                val active = daily.getDaily(DailyQuery(today, queryAt, 20)).active as DailyActive.Activity
+                assertEquals(liveCommit.executionId, active.runtime.execution.id)
+                assertEquals(liveStart, active.runtime.execution.startedAt)
+                assertEquals(liveStart.atZone(ZoneOffset.UTC).toLocalDate(), active.runtime.execution.primaryLocalDate)
+                assertNull(daily.getDaily(DailyQuery(today.minusDays(1), queryAt, 20)).active)
+            }
             live.completeActiveActivity(at.plusSeconds(2))
             assertEquals(liveCommit.executionId, plans.getPlan(livePlan.id)?.fulfilledActivityExecutionId)
 

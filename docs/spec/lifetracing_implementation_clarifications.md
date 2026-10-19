@@ -260,5 +260,19 @@ The S2 reader instead counts set bits at all 64 positions, reconstructs the sign
 two's-complement sum in BigInteger, and selects at most two exact ordered median values
 in SQL. All facts remain within the existing repository read transaction. Statistical
 eligibility, stable source Field/Series identities, scaling, missing/coverage and
-original-zone date attribution are unchanged. The combined Series Detail Number reader
-remains deferred and retains its existing sample collection path. No schema/index change.
+original-zone date attribution are unchanged. No schema/index change.
+
+## Exact grouped Number Fields in Series Detail (S3)
+
+Series Detail now applies the same S2 arithmetic/validation to grouped stable source
+Field summaries. SQL returns one fixed-width row per recorded Field, containing count,
+min/max, integer-storage validation and the 64 decimal bit counts. Kotlin reconstructs
+exact signed totals through ExactNumberSummary and ExactSignedLongSum. Median selection
+returns at most two endpoints in one scalar row per populated Field, using existing
+source-Field and snapshot-Field value indexes. Empty catalog Fields retain the canonical
+empty distribution and the containing Series' execution denominator. Category/Text,
+source/snapshot provenance, eligibility, ordering and period semantics are unchanged.
+All reads remain in the complete Series Detail Room transaction. There is no schema,
+index, cache or durable-state change. Query count may scale with populated result Fields,
+never with executions or samples. See docs/implementation/statistics_number_s3_evidence.md
+for the indexed median trade-off, database work bounds and reproducible host plans.

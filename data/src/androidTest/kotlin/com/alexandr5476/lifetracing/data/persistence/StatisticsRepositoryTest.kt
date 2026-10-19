@@ -67,6 +67,150 @@ class StatisticsRepositoryTest {
     fun tearDown() = database.close()
 
     @Test
+    fun seriesDetailRejectsRawNumberSampleMaterialization() {
+        numberHistorySources()
+        repeat(128) { index ->
+            completedActivity(
+                "bounded-detail-$index",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values = listOf(numberValue("bounded-detail-$index", "number-history-number", index.toLong())),
+            )
+        }
+        observedSql.clear()
+        val detail = repository.seriesDetail(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        val queries = synchronized(observedSql) { observedSql.toList() }
+        assertTrue(
+            "Series Detail must return scalar summaries, never historical Number samples",
+            queries.none { it.contains("SELECT fields.source_field_id, recorded_values.number_scaled") },
+        )
+        val number =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single { it.field.id.value == "number-source" }
+                .statistics
+        assertEquals(128L, number.recordedCount)
+        assertEquals(BigInteger.valueOf(8_128), number.values.totalScaled)
+        assertEquals(ExactValue.of(127, 2), number.values.medianScaled)
+        assertEquals(
+            repository.numberFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                number.field.id,
+                StatisticsPeriod.AllTime,
+            ),
+            number,
+        )
+    }
+
+    @Test
+    fun seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory() {
+        numberHistorySources()
+        val values = mutableListOf<Long>()
+        val queryCounts = mutableMapOf<String, Int>()
+        var previous = 0
+        for (size in listOf(1, 32, 512)) {
+            database.runInTransaction {
+                for (index in previous until size) {
+                    val value =
+                        when (index % 5) {
+                            0 -> Long.MIN_VALUE
+                            1 -> Long.MAX_VALUE
+                            2 -> 0L
+                            else -> index.toLong()
+                        }
+                    values.add(value)
+                    completedActivity(
+                        "detail-growth-$index",
+                        "number-history",
+                        "activity-series",
+                        null,
+                        AUG_20,
+                        values = listOf(numberValue("detail-growth-$index", "number-history-number", value)),
+                    )
+                    completedSequence(
+                        "detail-growth-root-$index",
+                        "sequence-series",
+                        "number-history",
+                        1,
+                        0,
+                        AUG_20,
+                        withNumberField = true,
+                        numberValue = value,
+                    )
+                }
+            }
+            previous = size
+            for ((series, field) in numberHistoryIdentities()) {
+                observedSql.clear()
+                val detail = repository.seriesDetail(series, StatisticsPeriod.AllTime)
+                val queries =
+                    synchronized(observedSql) {
+                        observedSql.filter {
+                            (it.trimStart().startsWith("SELECT") || it.trimStart().startsWith("WITH")) &&
+                                !it.contains("room_table_modification_log")
+                        }
+                    }
+                val originalCount = queryCounts.getOrPut(series.value) { queries.size }
+                assertEquals(originalCount, queries.size)
+                assertEquals(1, queries.count { it.contains(" AS bit_counts ") })
+                assertEquals(1, queries.count { it.contains("CROSS JOIN") && it.contains("median_values") })
+                assertTrue(queries.none { it.contains("SELECT fields.source_field_id, recorded_values.number_scaled") })
+                val number =
+                    detail.fields
+                        .filterIsInstance<StatisticsFieldDetail.Number>()
+                        .single {
+                            it.field.id ==
+                                field
+                        }.statistics
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(values),
+                    number.values,
+                )
+                assertEquals(repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime), number)
+                val dao = database.statisticsDao()
+                val summaries =
+                    when (field) {
+                        is StatisticsFieldId.Activity -> dao.activityNumberSummaries(series.value, null, null)
+                        is StatisticsFieldId.Sequence -> dao.sequenceNumberSummaries(series.value, null, null)
+                    }
+                assertEquals(1, summaries.size)
+                assertEquals(
+                    64,
+                    summaries
+                        .single()
+                        .bitCounts
+                        .split(',')
+                        .size,
+                )
+                val selection =
+                    when (field) {
+                        is StatisticsFieldId.Activity ->
+                            dao.activitySeriesNumberSelection(
+                                series.value,
+                                field.value,
+                                null,
+                                null,
+                                size.toLong(),
+                            )
+                        is StatisticsFieldId.Sequence ->
+                            dao.sequenceSeriesNumberSelection(
+                                series.value,
+                                field.value,
+                                null,
+                                null,
+                                size.toLong(),
+                            )
+                    }
+                assertEquals(size.toLong(), selection.sampleCount)
+                assertEquals(if (size % 2 == 0) 2L else 1L, selection.selectedCount)
+            }
+        }
+    }
+
+    @Test
     fun seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults() {
         fun fixture(
             prefix: String,
@@ -79,8 +223,12 @@ class StatisticsRepositoryTest {
                         "$prefix-field-$index",
                         prefix,
                         index,
-                        "Field $index",
-                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
+                        if (index == 2 || index == 4) "Same label" else "Field $index",
+                        when {
+                            index == 36 -> "TEXT"
+                            index % 2 == 0 -> "NUMBER"
+                            else -> "CATEGORY"
+                        },
                         null,
                         null,
                         null,
@@ -156,19 +304,18 @@ class StatisticsRepositoryTest {
                 val values =
                     fields.mapIndexedNotNull { index, field ->
                         val snapshotField = "$snapshotId-field-$index"
-                        if (index % 2 == 0 && execution % 2 == 0) {
+                        if (field.fieldType == "NUMBER" && index != 38 && execution % 2 == 0) {
                             numberValue(
                                 "$prefix-execution-$execution",
                                 snapshotField,
-                                if (execution ==
-                                    0
-                                ) {
-                                    0
-                                } else {
-                                    execution.toLong()
+                                when (index) {
+                                    4 -> Long.MAX_VALUE
+                                    6 -> Long.MIN_VALUE
+                                    8 -> if (execution % 4 == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                                    else -> execution.toLong()
                                 },
                             )
-                        } else if (index % 2 == 1 && execution % 3 != 2) {
+                        } else if (index % 2 == 1 && index != 37 && execution % 3 != 2) {
                             categoryValue(
                                 "$prefix-execution-$execution",
                                 snapshotField,
@@ -184,6 +331,12 @@ class StatisticsRepositoryTest {
 
         fixture("small", 2)
         fixture("large", 40)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_templates SET deleted_at_ms = 100 WHERE id = 'large'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_template_fields SET deleted_at_ms = 100 WHERE id = 'large-field-2'",
+        )
 
         fun read(prefix: String): Pair<StatisticsSeriesDetail.Activity, Int> {
             observedSql.clear()
@@ -194,7 +347,7 @@ class StatisticsRepositoryTest {
                 ) as StatisticsSeriesDetail.Activity
             val historyReads =
                 synchronized(observedSql) {
-                    observedSql.count { it.contains("FROM activity_executions", ignoreCase = true) }
+                    observedSql.count { it.contains("activity_executions AS executions", ignoreCase = true) }
                 }
             return detail to historyReads
         }
@@ -203,8 +356,18 @@ class StatisticsRepositoryTest {
         assertEquals(2, small.fields.size)
         assertEquals(40, large.fields.size)
         assertTrue(smallReads > 0)
-        assertEquals(smallReads, largeReads)
-        assertTrue(largeReads <= 6)
+        val smallNumbers =
+            small.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        val largeNumbers =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        assertEquals(smallReads + largeNumbers - smallNumbers, largeReads)
+        assertTrue(largeReads <= 6 + largeNumbers)
         large.fields.forEach { detail ->
             val expected =
                 when (detail) {
@@ -220,17 +383,69 @@ class StatisticsRepositoryTest {
                             detail.field.id,
                             StatisticsPeriod.AllTime,
                         )
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 }
             assertEquals(
                 expected,
                 when (detail) {
                     is StatisticsFieldDetail.Number -> detail.statistics
                     is StatisticsFieldDetail.Category -> detail.statistics
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 },
             )
         }
+        val numberFields =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().associateBy {
+                it.field.id.value
+            }
+        assertEquals(
+            BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(40)),
+            numberFields
+                .getValue("large-field-4")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(40)),
+            numberFields
+                .getValue("large-field-6")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            ExactValue.of(-1, 2),
+            numberFields
+                .getValue("large-field-8")
+                .statistics.values.medianScaled,
+        )
+        assertEquals(0L, numberFields.getValue("large-field-38").statistics.recordedCount)
+        assertEquals(large.statistics.executionCount, numberFields.getValue("large-field-38").statistics.missingCount)
+        assertEquals(
+            BigInteger.ZERO,
+            numberFields
+                .getValue("large-field-38")
+                .statistics.values.totalScaled,
+        )
+        assertNull(
+            numberFields
+                .getValue("large-field-38")
+                .statistics.values.medianScaled,
+        )
+        assertEquals("Same label", numberFields.getValue("large-field-2").field.displayName)
+        assertEquals("Same label", numberFields.getValue("large-field-4").field.displayName)
+        assertEquals(
+            listOf("large-field-36"),
+            large.fields.filterIsInstance<StatisticsFieldDetail.Text>().map {
+                it.field.id.value
+            },
+        )
+        val unrecordedCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single { it.field.id.value == "large-field-37" }
+                .statistics
+        assertEquals(0L, unrecordedCategory.recordedCount)
+        assertTrue(unrecordedCategory.values.isNotEmpty())
+        assertTrue(unrecordedCategory.values.all { it.count == 0L })
+        assertEquals(repository.fieldCatalog(StatisticsSeriesId("large")), large.fields.map { it.field })
         val number =
             (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
                 .statistics
@@ -270,10 +485,14 @@ class StatisticsRepositoryTest {
                         "$prefix-field-$index",
                         prefix,
                         index,
-                        "Field $index",
-                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
-                        if (index % 2 == 0) "points" else null,
-                        if (index % 2 == 0) 0 else null,
+                        if (index == 2 || index == 4) "Same label" else "Field $index",
+                        when {
+                            index == 36 -> "TEXT"
+                            index % 2 == 0 -> "NUMBER"
+                            else -> "CATEGORY"
+                        },
+                        if (index % 2 == 0 && index != 36) "points" else null,
+                        if (index % 2 == 0 && index != 36) 0 else null,
                         null,
                         null,
                         null,
@@ -340,15 +559,23 @@ class StatisticsRepositoryTest {
                 val values =
                     fields.mapIndexedNotNull { index, field ->
                         when {
-                            field.fieldType == "NUMBER" && (index == 0 || execution == 0) ->
+                            field.fieldType == "NUMBER" &&
+                                index != 38 &&
+                                (index in listOf(0, 4, 6, 8) || execution == 0) ->
                                 SequenceExecutionFieldValueEntity(
                                     "$prefix-execution-$execution",
                                     "$snapshot-field-$index",
-                                    if (index == 0) execution * 20L else index.toLong(),
+                                    when (index) {
+                                        0 -> execution * 20L
+                                        4 -> Long.MAX_VALUE
+                                        6 -> Long.MIN_VALUE
+                                        8 -> if (execution == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                                        else -> index.toLong()
+                                    },
                                     null,
                                     null,
                                 )
-                            field.fieldType == "CATEGORY" && (execution == 0 || index == 1) ->
+                            field.fieldType == "CATEGORY" && index != 37 && (execution == 0 || index == 1) ->
                                 SequenceExecutionFieldValueEntity(
                                     "$prefix-execution-$execution",
                                     "$snapshot-field-$index",
@@ -415,6 +642,12 @@ class StatisticsRepositoryTest {
         }
         fixture("sequence-small", 2)
         fixture("sequence-large", 40)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_templates SET deleted_at_ms = 100 WHERE id = 'sequence-large'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_template_fields SET deleted_at_ms = 100 WHERE id = 'sequence-large-field-2'",
+        )
         val period = StatisticsPeriod.Custom(LocalDate.parse(AUG_20), LocalDate.parse(AUG_21))
 
         fun read(id: String): Pair<StatisticsSeriesDetail.Sequence, Int> {
@@ -423,7 +656,7 @@ class StatisticsRepositoryTest {
                 repository.seriesDetail(StatisticsSeriesId(id), period) as StatisticsSeriesDetail.Sequence
             val reads =
                 synchronized(observedSql) {
-                    observedSql.count { it.contains("FROM sequence_executions", ignoreCase = true) }
+                    observedSql.count { it.contains("sequence_executions AS executions", ignoreCase = true) }
                 }
             return detail to reads
         }
@@ -432,8 +665,18 @@ class StatisticsRepositoryTest {
         assertEquals(2, small.fields.size)
         assertEquals(40, large.fields.size)
         assertTrue(smallReads > 0)
-        assertEquals(smallReads, largeReads)
-        assertTrue(largeReads <= 6)
+        val smallNumbers =
+            small.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        val largeNumbers =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        assertEquals(smallReads + largeNumbers - smallNumbers, largeReads)
+        assertTrue(largeReads <= 6 + largeNumbers)
         assertEquals(2L, large.statistics.executionCount)
         large.fields.forEach { detail ->
             val expected =
@@ -446,17 +689,74 @@ class StatisticsRepositoryTest {
                             detail.field.id,
                             period,
                         )
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 }
             assertEquals(
                 expected,
                 when (detail) {
                     is StatisticsFieldDetail.Number -> detail.statistics
                     is StatisticsFieldDetail.Category -> detail.statistics
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 },
             )
         }
+        val numberFields =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().associateBy {
+                it.field.id.value
+            }
+        assertEquals(
+            BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(2)),
+            numberFields
+                .getValue("sequence-large-field-4")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(2)),
+            numberFields
+                .getValue("sequence-large-field-6")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            ExactValue.of(-1, 2),
+            numberFields
+                .getValue("sequence-large-field-8")
+                .statistics.values.medianScaled,
+        )
+        assertEquals(0L, numberFields.getValue("sequence-large-field-38").statistics.recordedCount)
+        assertEquals(
+            large.statistics.executionCount,
+            numberFields.getValue("sequence-large-field-38").statistics.missingCount,
+        )
+        assertEquals(
+            BigInteger.ZERO,
+            numberFields
+                .getValue("sequence-large-field-38")
+                .statistics.values.totalScaled,
+        )
+        assertNull(
+            numberFields
+                .getValue("sequence-large-field-38")
+                .statistics.values.medianScaled,
+        )
+        assertEquals("Same label", numberFields.getValue("sequence-large-field-2").field.displayName)
+        assertEquals("Same label", numberFields.getValue("sequence-large-field-4").field.displayName)
+        assertEquals(
+            listOf(
+                "sequence-large-field-36",
+            ),
+            large.fields.filterIsInstance<StatisticsFieldDetail.Text>().map {
+                it.field.id.value
+            },
+        )
+        val unrecordedCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single { it.field.id.value == "sequence-large-field-37" }
+                .statistics
+        assertEquals(0L, unrecordedCategory.recordedCount)
+        assertTrue(unrecordedCategory.values.isNotEmpty())
+        assertTrue(unrecordedCategory.values.all { it.count == 0L })
+        assertEquals(repository.fieldCatalog(StatisticsSeriesId("sequence-large")), large.fields.map { it.field })
         val number =
             (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
                 .statistics
@@ -514,7 +814,16 @@ class StatisticsRepositoryTest {
             ) as StatisticsSeriesDetail.Sequence
         assertEquals(1L, day.statistics.executionCount)
         assertTrue(
-            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all { it.statistics.recordedCount == 1L },
+            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                it.statistics.recordedCount ==
+                    if (it.field.id.value
+                            .endsWith("-38")
+                    ) {
+                        0L
+                    } else {
+                        1L
+                    }
+            },
         )
         val firstDayCategory =
             day.fields
@@ -2073,6 +2382,14 @@ class StatisticsRepositoryTest {
             assertEquals(0L, empty.recordedCount)
             assertEquals(0L, empty.missingCount)
             assertNull(empty.coverage.exactValue)
+            val emptyDetail = repository.seriesDetail(series, StatisticsPeriod.Day(LocalDate.parse("2026-08-22")))
+            assertEquals(
+                empty,
+                emptyDetail.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single { it.field.id == field }
+                    .statistics,
+            )
         }
     }
 
@@ -2177,13 +2494,26 @@ class StatisticsRepositoryTest {
             database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
             repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
             numberHistorySources()
+            database.openHelper.writableDatabase.execSQL(
+                "INSERT INTO sequence_template_fields " +
+                    "(id,sequence_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                    "VALUES ('physical-category','sequence',1,'Choice','CATEGORY',0,0)",
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "INSERT INTO sequence_template_category_options (id,sequence_template_field_id,position,label) " +
+                    "VALUES ('physical-option','physical-category',0,'Choice')",
+            )
             completedActivity(
                 "physical-number",
                 "number-history",
                 "activity-series",
                 null,
                 AUG_20,
-                values = listOf(numberValue("physical-number", "number-history-number", Long.MIN_VALUE)),
+                values =
+                    listOf(
+                        numberValue("physical-number", "number-history-number", Long.MIN_VALUE),
+                        categoryValue("physical-number", "number-history-category", "number-history-tempo"),
+                    ),
             )
             completedSequence(
                 "physical-root",
@@ -2194,11 +2524,17 @@ class StatisticsRepositoryTest {
                 AUG_20,
                 withNumberField = true,
                 numberValue = Long.MAX_VALUE,
+                categoryFieldId = "physical-category",
+                categoryOptionId = "physical-option",
             )
             val identities = numberHistoryIdentities()
             val before =
                 identities.map { (series, field) ->
                     repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+            val detailBefore =
+                identities.map { (series, _) ->
+                    repository.seriesDetail(series, StatisticsPeriod.AllTime)
                 }
             database.close()
             database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
@@ -2209,6 +2545,24 @@ class StatisticsRepositoryTest {
                     repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
                 },
             )
+            assertEquals(
+                detailBefore,
+                identities.map { (series, _) -> repository.seriesDetail(series, StatisticsPeriod.AllTime) },
+            )
+            val categoryBefore =
+                detailBefore
+                    .first()
+                    .fields
+                    .filterIsInstance<StatisticsFieldDetail.Category>()
+                    .single()
+                    .statistics
+            assertEquals(1L, categoryBefore.recordedCount)
+            assertEquals(
+                "tempo-source",
+                categoryBefore.values
+                    .single()
+                    .id.value,
+            )
             database.activityExecutionDao().softDeleteCompletedStandalone(
                 "physical-number",
                 START_2330,
@@ -2216,6 +2570,28 @@ class StatisticsRepositoryTest {
             )
             val (series, field) = identities.first()
             val after = repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+            val detailAfter = repository.seriesDetail(series, StatisticsPeriod.AllTime)
+            assertEquals(
+                after,
+                detailAfter.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single {
+                        it.field.id ==
+                            field
+                    }.statistics,
+            )
+            val categoryAfter =
+                detailAfter.fields
+                    .filterIsInstance<StatisticsFieldDetail.Category>()
+                    .single()
+                    .statistics
+            assertEquals(categoryBefore.field, categoryAfter.field)
+            assertEquals(0L, categoryAfter.recordedCount)
+            assertEquals(categoryBefore.values.map { it.id }, categoryAfter.values.map { it.id })
+            assertEquals(
+                detailBefore.last(),
+                repository.seriesDetail(identities.last().first, StatisticsPeriod.AllTime),
+            )
             assertEquals(before.first().field.id, after.field.id)
             assertEquals(0L, after.recordedCount)
             assertEquals(BigInteger.ZERO, after.values.totalScaled)
@@ -2268,6 +2644,9 @@ class StatisticsRepositoryTest {
             for ((series, field) in numberHistoryIdentities()) {
                 assertThrows(IllegalArgumentException::class.java) {
                     repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+                assertThrows(IllegalArgumentException::class.java) {
+                    repository.seriesDetail(series, StatisticsPeriod.AllTime)
                 }
             }
         }

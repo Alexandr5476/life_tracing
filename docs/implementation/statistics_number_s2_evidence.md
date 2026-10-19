@@ -1,5 +1,8 @@
 # S2: exact bounded-memory individual Number Fields
 
+The historical S2 scope below is unchanged. [S3](statistics_number_s3_evidence.md)
+subsequently removes the deferred combined Series Detail sample collection path.
+
 Scope: only canonical individual Activity/Sequence Number Field reads. Combined Series
 Detail still collects samples and uses the collection calculator; its small-fixture
 equality tests establish semantics only. No migration, index, identity or scaling change.
