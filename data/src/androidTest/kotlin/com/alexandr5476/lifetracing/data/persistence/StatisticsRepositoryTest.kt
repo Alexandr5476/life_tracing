@@ -2949,7 +2949,13 @@ class StatisticsRepositoryTest {
                         fields <= 3 -> assertEquals(0, ranks)
                         fields <= 16 ->
                             assertEquals("Small wide-range fallback must stop after three shared passes", 3, ranks)
-                        else -> assertTrue("Large unresolved sets retain shared selection", ranks >= 8)
+                        else -> {
+                            assertEquals("Large unresolved sets bound the shared trial", 3, ranks)
+                            assertTrue(
+                                "Large unresolved sets use bounded exact histograms",
+                                reads.count { it.first.contains(" AS bucket_id") } in 1..9,
+                            )
+                        }
                     }
                     val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
                     assertEquals(if (fields <= 16) fields else 0, medians.size)
@@ -3001,6 +3007,152 @@ class StatisticsRepositoryTest {
             }
         }
     }
+
+    @Test
+    fun signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(16, 17, 24)) {
+            val oldBoundary = 200 * (if (fields <= 16) 9 else 14)
+            val cases =
+                listOf(
+                    Triple(200, oldBoundary, true),
+                    Triple(200, oldBoundary + 1, true),
+                    Triple(199, oldBoundary + 1, true),
+                    Triple(201, oldBoundary + 1, true),
+                    Triple(200, oldBoundary + 1, false),
+                    Triple(202, 3_001, false),
+                )
+            for ((selected, old, dense) in cases) {
+                val name = "statistics-signed-boundary-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    val valuesFor: (Int, Int) -> Long =
+                        if (selected == 202) ::clusteredNumberValue else { index, _ -> signedRankNumberValue(index) }
+                    seedSharedNumberLineages(fields, selected, old, number = valuesFor, missingOddLast = !dense)
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        observedNumberReads.clear()
+                        val numbers =
+                            repository
+                                .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                                .fields
+                                .filterIsInstance<StatisticsFieldDetail.Number>()
+                        val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                        assertTrue(
+                            "Signed values must not trigger dozens of full rank traversals",
+                            reads.count { it.first.contains(" AS at_or_below_count") } <= 3,
+                        )
+                        val histograms = reads.filter { it.first.contains(" AS bucket_id") }
+                        val saturated = selected <= 200 && old > oldBoundary || selected == 202
+                        if (fields > 16 && saturated) {
+                            assertTrue("Saturated broad sets must use bounded completion", histograms.size in 1..9)
+                            if (selected ==
+                                202
+                            ) {
+                                assertTrue("Broad values must exercise byte refinement", histograms.size >= 2)
+                            }
+                        } else {
+                            assertEquals(0, histograms.size)
+                        }
+                        histograms.forEach { (sql, args) ->
+                            assertEquals(4, args.size)
+                            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                                assertTrue(
+                                    "Histogram rows are bounded by result Fields",
+                                    cursor.count in 1..256 * fields,
+                                )
+                            }
+                        }
+                        assertEquals(fields, numbers.size)
+                        assertNumberReadPlans()
+                        numbers.forEach { number ->
+                            val index =
+                                number.field.id.value
+                                    .substringAfterLast('-')
+                                    .toInt()
+                            assertEquals("$kind-shared-$fields-source-$index", number.field.id.value)
+                            val values = List(selected - if (dense) 0 else index % 2) { valuesFor(it, index) }.sorted()
+                            val count = values.size.toLong()
+                            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                            val stats = number.statistics
+                            assertEquals(selected.toLong(), stats.relevantExecutionCount)
+                            assertEquals(count, stats.recordedCount)
+                            assertEquals(selected.toLong() - count, stats.missingCount)
+                            assertEquals(count, stats.coverage.numerator)
+                            assertEquals(selected.toLong(), stats.coverage.denominator)
+                            assertEquals(count, stats.values.sampleCount)
+                            assertEquals(total, stats.values.totalScaled)
+                            assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), stats.values.averageScaled)
+                            assertEquals(
+                                ExactValue.of(
+                                    BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                        BigInteger.valueOf(values[values.size / 2]),
+                                    BigInteger.valueOf(2),
+                                ),
+                                stats.values.medianScaled,
+                            )
+                            assertEquals(Long.MIN_VALUE, stats.values.minimumScaled)
+                            assertEquals(Long.MAX_VALUE, stats.values.maximumScaled)
+                            assertEquals(
+                                stats,
+                                repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            )
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "SELECT COUNT(DISTINCT id) FROM ${kind}_snapshot_fields WHERE source_field_id = ?",
+                                    arrayOf(number.field.id.value),
+                                ).use { cursor ->
+                                    assertTrue(cursor.moveToFirst())
+                                    assertEquals(2L, cursor.getLong(0))
+                                }
+                        }
+                        val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                        assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                        val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                        assertTrue(
+                            empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                it.statistics.recordedCount == 0L
+                            },
+                        )
+                    }
+                    assertEquals(fingerprint, numberHistoryFingerprint())
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
+            }
+        }
+    }
+
+    private fun clusteredNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index) {
+            0 -> Long.MIN_VALUE
+            1 -> Long.MAX_VALUE
+            else -> (1L shl 62) + (broadNumberValue(index, field) and ((1L shl 55) - 1))
+        }
+
+    private fun signedRankNumberValue(index: Int): Long =
+        when {
+            index < 99 -> Long.MIN_VALUE
+            index == 99 -> 0L
+            index <= 162 -> 1L shl (index - 100)
+            index == 163 -> Long.MAX_VALUE
+            else -> 1L
+        }
 
     @Test
     fun moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen() {
@@ -4390,6 +4542,7 @@ class StatisticsRepositoryTest {
         if (sql.contains(" AS bit_counts ") ||
             sql.contains(" AS lower_median_scaled") ||
             sql.contains(" AS at_or_below_count") ||
+            sql.contains(" AS bucket_id") ||
             (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN"))
         ) {
             observedNumberReads.add(sql to args.toList())

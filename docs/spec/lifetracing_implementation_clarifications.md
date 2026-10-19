@@ -292,19 +292,30 @@ keep scalar Field-first reads. Up to three unresolved Fields use execution-first
 For 4..16 unresolved Fields, try at most three shared rank passes, retaining resolved
 results, then finish any remainder with scalar ordered selections. This keeps the cheap
 three-pass duplicate-heavy path while bounding repeated traversal on broad signed values.
-Larger unresolved sets retain the full shared rank algorithm; no P independent execution
-scans are introduced as P grows. The fixed cap and trial are implementation choices
-supported by the adjacent-count VM evidence, not changes to statistical semantics.
-Parallel exact rank selection works as follows. Each pass scans the selected execution/value
-subset once, returns one count and two extrema per unresolved Field, and halves each Field's signed-Long search
-range. At most 64 halvings plus one exact-value pass are needed. Balanced binary CASE
-lookup costs O(log P) per candidate, avoiding a linear pivot-table join or CASE chain.
-The query binds only four selection/period arguments; opaque source IDs are encoded as
-UTF-8 hex text literals. No window functions or unbounded sample cursors/collections
-are required. Application calculation state and returned rows are O(P), never O(Q).
-Total fallback database work is bounded by O(65 * Q * log P), plus grouping, native
-ordered selection for at most sixteen Fields, and indexed execution discovery, rather
-than unbounded P independent complete execution/value traversals.
+Larger unresolved sets also stop after three shared rank passes, retaining resolved Fields.
+Remaining Fields use exact magnitude/byte histograms rather than up to 65 full rank scans.
+The first histogram partitions signed integers at negative/positive powers of two and zero
+(128 bins, with zero and one individually represented). Each bin returns only count and
+extrema. Locate both adjacent median ranks cumulatively; a rank at a bin edge is its
+minimum/maximum. Unresolved adjacent ranks share at most one bin per Field. Subsequent
+histograms restrict each Field to that bin and partition the highest differing byte.
+All remaining Fields share one byte shift per pass, removing at least eight bits from
+the maximum unresolved width. At most eight byte passes follow the magnitude pass.
+No floating-point arithmetic, SQLite SUM, window functions, sample cursors or persistent
+intermediate state are used. The fixed traversal bound is three trial plus nine histogram
+passes, not a general relative VM-work bound for arbitrary distributions.
+
+Rank and histogram queries start at the selected execution/value subset. Balanced binary
+CASE lookup of opaque UTF-8 hex source IDs costs O(log P) per candidate and uses only
+four period/Series binds. Each histogram returns at most 256 count/extrema rows per
+unresolved Field. Application state/rows are O(256P), independent of execution/sample
+cardinality Q. SQLite GROUP BY may use an ephemeral native B-tree over selected values;
+this ordinary exact aggregation is bounded by O(Q log Q) per pass, never P independent
+full execution scans. For at most sixteen Fields, existing bounded scalar completion
+remains. Indexed probes and admission allowances above are unchanged. See the W1 signed
+boundary section in docs/implementation/statistics_pr37_review_evidence.md for measured
+SQL VM work and plan evidence; earlier crossover measurements are fixture observations,
+not general bounds.
 
 Empty catalog Fields retain the canonical empty distribution and the containing Series'
 execution denominator. Category/Text, source/snapshot provenance, eligibility, ordering

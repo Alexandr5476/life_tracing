@@ -655,6 +655,7 @@
       "smallNumberFallbackUsesScalarMediansAfterPhysicalReopen",
       "numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen",
       "moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen",
+      "signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen",
       "numberReadersBoundResultsAndQueriesAcrossGrowingHistory",
       "numberReadersSurvivePhysicalReopenAndHistoricalDeletion",
       "numberReadersRejectNonIntegerStorage",

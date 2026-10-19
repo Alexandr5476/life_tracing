@@ -16,9 +16,10 @@ from statistics_number_probe import insert
 from statistics_review_probe import schema, plan, distribution
 from statistics_shared_lineage_probe import measured
 from statistics_small_fallback_probe import small_fixture, broad_value, grouped
+from statistics_signed_rank_probe_support import histograms
 
 
-def strategy(db, kind, series, rows, extended=True, work=True):
+def strategy(db, kind, series, rows, extended=True, work=True, bounded=None):
     """Mirror the two production fair stages; all SQL is extracted from production sources."""
     args = dict(seriesId=series, startDate=None, endDate=None)
     q = db.execute(query(kind + "NumberExecutionCandidateCount"), args).fetchone()[0]
@@ -59,10 +60,18 @@ def strategy(db, kind, series, rows, extended=True, work=True):
     remaining = [row for row in rows if row["source_field_id"] not in result]
     passes = scalars = 0
     if len(remaining) > 3:
+        source = (ROOT / "data/src/main/kotlin/com/alexandr5476/lifetracing/data/persistence/StatisticsRepository.kt").read_text(encoding="utf-8")
+        if bounded is None:
+            bounded = extended and "GroupedNumberHistograms" in source
         selected, rank_work, passes = grouped(db, kind, series, remaining, work,
-                                            3 if len(remaining) <= 16 else 65)
+                                            3 if len(remaining) <= 16 or bounded else 65)
         result.update(selected)
         native += rank_work
+        if bounded and len(remaining) > 16:
+            selected, histogram_work, _ = histograms(
+                db, kind, series, [r for r in remaining if r["source_field_id"] not in result], work)
+            result.update(selected)
+            native += histogram_work
     for row in remaining:
         field = row["source_field_id"]
         if field in result:

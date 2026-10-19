@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 623 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 626 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -251,3 +251,23 @@ and expensive-first/last fairness regressions remain mandatory. Host VM measurem
 are isolated in `statistics_lineage_boundary_probe.py`, without CI latency thresholds.
 Controller still owns unfiltered execution on all five APIs and exact-head GitHub CI;
 compiling a test APK does not certify Room test execution.
+
+
+## PR37 W1 signed-Long rank completion correction
+
+Adds mandatory `StatisticsRepositoryTest.signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen`.
+The pinned inventory contains 626 mandatory data cases (631 including the same five
+nonmandatory skips), including all 34 StatisticsRepositoryTest methods. Physical fixtures
+cover both kinds, P=16/17/24, 200 selected executions at the adjacent second-stage
+lineage boundaries (2800/2801 old executions at P=17/24, 1800/1801 at P=16), selected
+199/201 neighbors, sparse values, and clustered signed values requiring byte refinement.
+The 200-sample adversarial distribution contains 99 Long.MIN_VALUEs, zero, all positive
+powers 2^0..2^62, Long.MAX_VALUE and repeated ones. Assertions check exact arithmetic,
+coverage/missing, stable source identity through distinct frozen Fields, immutable rows,
+canonical individual/detail parity, day attribution, actual SQL traversal/returned-row
+bounds and indexed EXPLAIN plans after physical close/reopen. Existing 1/2/3-Field,
+partial-trial, fair expensive-first/last, exclusive dense/sparse, tiny-Series and narrow
+period tests remain mandatory. The large broad fallback assertion now requires three
+rank passes plus bounded exact histograms and zero independent scalar completion.
+Host reproduction and VM-work comparisons are documented in the review evidence;
+Controller still owns device execution, all five unfiltered API suites and exact-head CI.

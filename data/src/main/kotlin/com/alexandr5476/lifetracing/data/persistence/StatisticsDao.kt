@@ -130,6 +130,9 @@ internal interface StatisticsDao {
     @RawQuery
     fun groupedNumberRanks(query: SupportSQLiteQuery): List<StatisticsNumberRankRow>
 
+    @RawQuery
+    fun groupedNumberBuckets(query: SupportSQLiteQuery): List<StatisticsNumberBucketRow>
+
     @Query(
         "SELECT fields.source_field_id, COUNT(*) AS sample_count, " +
             "COUNT(CASE WHEN typeof(recorded_values.number_scaled) != 'integer' THEN 1 END) AS invalid_count, " +

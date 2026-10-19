@@ -795,11 +795,12 @@ comparable rather than nine times apart:
 | Activity / 24 | 14,000 / 14,001 | 9,508,722 | 18,911,634 |
 | Sequence / 24 | 14,000 / 14,001 | 9,412,746 | 18,891,604 |
 
-The maximum observed crossover ratio is 2.32. A deterministic 2.5x work regression guard
-covers these cost crossovers, while the reported 1,000/1,001 boundary has a tighter 1.5x
-guard and requires every Field to use its indexed median. These are relative native
-instruction assertions, never mandatory CI wall-clock thresholds. Shared long lineages
-still use grouped ranks; no unconditional history-length-dependent indexed scan exists.
+These earlier broad-value fixtures observed at most 2.32x; they did not bound other
+signed Long distributions. The signed-Long counterexample and correction below supersede
+that performance conclusion. The retained 2.5x native-work guard is fixture-specific;
+the original 1,000/1,001 cases retain their 1.5x guard and indexed-median requirement.
+Neither is a wall-clock threshold or a general theorem about relative SQL work.
+Shared long lineages now use a bounded rank trial plus exact histogram completion.
 
 ### Regression inventory and local verification
 
@@ -869,3 +870,118 @@ checks. It also validates sentinel existence against the independent bounded cou
 query instead of comparing a Boolean result to a candidate count. Fixture arithmetic,
 probe budgets, median strategy assertions and production SQL remain unchanged.
 The implementation clarification now documents the two-stage budget as well.
+
+
+## W1 signed-Long second-stage correction (2026-10-20)
+
+The reviewed head `26c77e2c1094cd1798a5b9db1812b7bc689ad29d` still sent more
+than sixteen unresolved Fields through up to 65 shared rank scans. Enlarging the fair
+indexed allowance did not bound this value-dependent work. The new physical Room test
+was added before production changes; a fail-first host run reached 64 actual rank SQL
+traversals at 2801 old executions, after exact arithmetic validation. Device fail-first
+execution is Controller-owned and has not been run here.
+
+Both Activity and Sequence canonical detail readers now retain the two fair indexed
+probe stages, scalar paths for admitted lineages and 1/2/3-Field fallback, and the small
+partial three-pass trial/scalar policy. Larger sets also stop the trial at three passes.
+Unresolved Fields then use one signed-magnitude histogram followed by at most eight byte
+histograms. SQL returns count/min/max per occupied bin, never raw samples. Adjacent
+median ranks can remain unresolved in at most one bin per Field; bin-edge ranks resolve
+to exact extrema. A byte pass partitions the highest differing byte across remaining
+ranges, so the maximum unresolved bit width decreases by eight each time. Zero, one,
+negative values and both signed Long endpoints use integer operations only. Existing
+BigInteger totals/rational averages and medians are unchanged.
+
+The hard bound is twelve selected-subset traversals (three trial plus nine histogram),
+with at most 256 rows per unresolved Field per histogram and O(256P) application memory.
+There is no lineage multiplier increase, P independent execution scans, history-sized
+sample list/cursor, schema/index change, cache or durable write. All statements remain
+inside the original complete-detail Room transaction. Native SQLite grouping may sort
+selected values in a temporary B-tree, O(Q log Q) per pass; range dispatch is O(log P).
+Existing Series/execution-value/snapshot primary-key indexes restrict each traversal.
+The magnitude query uses seven numeric comparisons per value; byte queries use exact
+shift/mask and balanced source-ID range dispatch. Four binds suffice at any P.
+
+### Reproducible native-work comparison
+
+Host Python SQLite **3.53.1**, physical v10 databases closed/reopened between fixture
+creation and reads, production DAO SQL and expanded Kotlin histogram/rank SQL templates.
+VM instructions include both indexed probe stages and median selection, exclude the
+unchanged summary/catalog work, and are not Android wall-clock measurements.
+
+P=24, 200 eligible new-Series executions, distinct old/new frozen snapshot Fields
+sharing stable source IDs; each selected Field has 99 Long.MIN_VALUEs, zero, every
+2^i for i=0..62, Long.MAX_VALUE and 36 additional ones. Each total is exactly
+`-97 * 2^63 + 34`, average is that total/200, median is 1/2, extrema span the full
+signed range. Only the old-Series candidate count changes across the boundary.
+
+| Kind | 2800 old: indexed scalar | 2801 old: reviewed 64-pass | 2801 old: corrected | Corrected path |
+| --- | ---: | ---: | ---: | --- |
+| Activity | 1,900,578 | 25,420,328 | 1,842,091 | 3 trial + 1 magnitude |
+| Sequence | 1,881,402 | 25,394,536 | 1,840,479 | 3 trial + 1 magnitude |
+
+A second witness places both middle ranks strictly inside one magnitude bin until every
+byte has been refined: 99 copies of B=2^62, B+1, B+2^i (i=1..61), Long.MAX_VALUE,
+and 38 copies of B+2. It forces all **nine** histogram passes. At P=24/2801 old,
+Activity/Sequence take 4,236,147/4,231,311 instructions (2.229x/2.249x their adjacent
+indexed cases). This is a distribution-independent traversal bound tested at its limit,
+not a claim that these relative work ratios bound arbitrary histories or SQLite builds.
+
+Indexed EXPLAIN on both histogram modes reports:
+
+```text
+SEARCH executions USING INDEX activity_executions_series_completed (statistics_series_id=?)
+SEARCH recorded_values USING INDEX sqlite_autoindex_activity_execution_field_values_1 (activity_execution_id=?)
+SEARCH fields USING INDEX sqlite_autoindex_activity_snapshot_fields_1 (id=?)
+USE TEMP B-TREE FOR GROUP BY
+```
+
+Sequence uses the corresponding `sequence_executions_series_ended` and Sequence keys.
+There is no correlated scan, source-lineage-first traversal, window function or new
+index. The physical Room regression checks EXPLAIN and row/traversal bounds against
+actual executed production statements, rather than a timing threshold.
+
+```powershell
+python docs/implementation/statistics_signed_rank_probe.py
+python docs/implementation/statistics_signed_rank_probe.py --fields 17 24 --byte-worst-only
+# Fail-first control, same reviewed probe policy/SQL; fails after observing 64 passes:
+python docs/implementation/statistics_signed_rank_probe.py --reviewed --kind sequence --fields 24 --boundaries-only
+python docs/implementation/statistics_lineage_boundary_probe.py --fields 24 --old 1000 1001
+python docs/implementation/statistics_fair_fallback_probe.py --fields 3 4 8 16 17 24 --rows 500
+python docs/implementation/statistics_fair_fallback_probe.py --case fair
+python docs/implementation/statistics_small_fallback_probe.py --rows 1000
+python docs/implementation/statistics_shared_lineage_probe.py
+```
+
+All corrected commands passed locally. Signed fixtures cover P=16/17/24, the adjacent
+second-stage boundaries, selected-execution counts 199/200/201, dense/sparse values,
+independent exact reference totals/medians and the broad clustered byte-refinement case.
+The original 1000/1001 guard, fair expensive-first/last, 1/2-Field scalar, partial trial,
+and shared duplicate-heavy probes pass. JVM tests additionally exercise 311 simultaneous
+Fields, singleton/odd/even/duplicates, 100,000 random values, signed clustered ranges,
+malformed histograms, exact 64-rank and nine-histogram witnesses, and bounded bind use.
+
+### Physical regression and final local checks
+
+`signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen` is pinned in the mandatory
+compatibility inventory. Its Activity/Sequence fixtures cover the exact 200/24/2800-2801
+case plus P=16/17 and selected-count/sparse boundaries. It validates frozen source IDs,
+archived sources, no-live data, exact arithmetic/coverage, day attribution, individual
+reader parity, actual SQL plans, returned-row/traversal bounds and complete historical
+fingerprints after physical persist/close/reopen. A clustered signed fixture forces byte
+SQL. The existing broad large-set test now requires the three-pass trial and bounded
+histograms with zero independent scalar completion; its previous fixtures/expectations
+remain. Inventory equality: 34 Statistics methods; 626 mandatory data cases, 323 app,
+2 startup per API. No required testcase was removed or skipped.
+
+```powershell
+.\gradlew.bat :domain:test :data:testDebugUnitTest :data:ktlintCheck :data:detekt :data:lintDebug :data:assembleDebugAndroidTest --console=plain
+```
+
+Final exit code 0: 241 domain and 36 data JVM tests, no failures/errors/skips; data ktlint,
+Detekt, lint, Room/Kotlin AndroidTest compilation and data test-APK packaging pass.
+The added mixed test was split into focused magnitude and byte-refinement cases to meet
+Detekt's method-length limit. Inventory/source equality and `git diff --check` pass.
+No managed-device task was launched. These local checks do not certify physical Android
+Room execution, the unfiltered five-API compatibility gate or independent exact-head CI;
+Controller owns those gates, commit/push and PR mechanics. Changes remain uncommitted.

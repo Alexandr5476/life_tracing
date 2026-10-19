@@ -186,7 +186,8 @@ def main():
     source = (subprocess.check_output(["git", "show", args.repository_ref + ":" + path], cwd=ROOT).decode("utf-8")
               if args.repository_ref else (ROOT / path).read_text(encoding="utf-8"))
     # Deliberately narrow dispatch recognition; the Room test asserts executed production statements.
-    corrected = "if (remaining.size <= 2)" in source or "smallFallbackPassLimit" in source
+    corrected = ("if (remaining.size <= 2)" in source or "smallFallbackPassLimit" in source or
+                 "GroupedNumberHistograms" in source)
     print("Host SQLite", sqlite3.sqlite_version, "small fallback enabled", corrected)
     for case, fields, mixed in (("single", 1, False), ("two", 2, False), ("mixed", 2, True)):
         if args.case and case != args.case:

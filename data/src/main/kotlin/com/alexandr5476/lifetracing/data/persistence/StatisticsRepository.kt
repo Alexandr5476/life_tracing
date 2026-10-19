@@ -487,14 +487,24 @@ class StatisticsRepository internal constructor(
         }
         val remaining = summaries.filterKeys { it !in result }
         if (remaining.size > DIRECT_SCALAR_FIELD_LIMIT) {
-            val smallFallbackPassLimit =
-                if (remaining.size <= SMALL_FALLBACK_FIELD_LIMIT) SMALL_FALLBACK_TRIAL_PASSES else Long.SIZE_BITS + 1
             val selections =
-                GroupedNumberMedians(remaining).select(smallFallbackPassLimit) { pivots ->
+                GroupedNumberMedians(remaining).select(SMALL_FALLBACK_TRIAL_PASSES) { pivots ->
                     dao.groupedNumberRanks(groupedNumberRankQuery(kind, seriesId.value, bounds, pivots))
                 }
             selections.forEach { (fieldId, selection) ->
                 result[fieldId] = remaining.getValue(fieldId).distribution(selection)
+            }
+            if (remaining.size > SMALL_FALLBACK_FIELD_LIMIT) {
+                val unresolved = remaining.filterKeys { it !in result }
+                val completion =
+                    GroupedNumberHistograms(unresolved).select { ranges, shift ->
+                        dao.groupedNumberBuckets(
+                            groupedNumberHistogramQuery(kind, seriesId.value, bounds, ranges, shift),
+                        )
+                    }
+                completion.forEach { (fieldId, selection) ->
+                    result[fieldId] = remaining.getValue(fieldId).distribution(selection)
+                }
             }
         }
         // Up to three Fields skip the trial entirely. The scalar cap stays constant as P grows.

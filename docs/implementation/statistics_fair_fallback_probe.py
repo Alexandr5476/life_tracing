@@ -142,7 +142,7 @@ def run(args, corrected):
                             assert shape[2] == (0 if fields <= 3 else 3) and shape[3] > 0, "F1: small broad fallback repeats grouped traversals"
                             assert work < previous
                         else:
-                            assert shape[2] >= 8 and shape[3] == 0
+                            assert shape[2] == 3 and shape[3] == 0
                             assert work <= previous * 1.1
     print("PASS exact reopened SQL, individual parity, bounded probes/selection and indexed plans")
 
@@ -158,7 +158,7 @@ def main():
     source_path = "data/src/main/kotlin/com/alexandr5476/lifetracing/data/persistence/StatisticsRepository.kt"
     source = (subprocess.check_output(["git", "show", args.repository_ref + ":" + source_path], cwd=ROOT).decode()
               if args.repository_ref else (ROOT / source_path).read_text(encoding="utf-8"))
-    corrected = "smallFallbackPassLimit" in source
+    corrected = "smallFallbackPassLimit" in source or "GroupedNumberHistograms" in source
     global STAGED
     STAGED = "INDEXED_NUMBER_SORT_WORK" in source
     run(args, corrected)

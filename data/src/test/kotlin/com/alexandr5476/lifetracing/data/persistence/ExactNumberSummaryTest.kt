@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.data.persistence
 
 import com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
@@ -156,6 +157,161 @@ class ExactNumberSummaryTest {
         repeat(100) {
             assertEquals(1L, many.nextLimit)
             assertEquals(false, many.record(1))
+        }
+    }
+
+    @Test
+    fun histogramsBoundSignedWorstCaseAndRefineBytesWithExactAdjacentRanks() {
+        val signed = signedRankSamples()
+        val random = kotlin.random.Random(37)
+        val samples =
+            (
+                listOf(
+                    signed,
+                    signed.dropLast(1),
+                    signed + 1L,
+                    listOf(Long.MIN_VALUE),
+                    listOf(Long.MAX_VALUE),
+                    listOf(-2L, -1L),
+                    listOf(0L),
+                    listOf(Long.MIN_VALUE, Long.MAX_VALUE),
+                    List(10_000) { 7L },
+                    List(100_000) { random.nextLong() },
+                    byteWorstSamples(),
+                ) +
+                    List(100) { List(200 + it % 2) { random.nextLong() } } +
+                    List(100) { List(200 + it % 2) { Long.MAX_VALUE - random.nextLong(1L shl 55) } } +
+                    List(100) { List(200 + it % 2) { Long.MIN_VALUE + random.nextLong(1L shl 55) } }
+            ).mapIndexed { index, values -> "$index" to values }
+                .toMap()
+        val summaries = samples.mapValues { ExactNumberSummary.read(rows(it.value)) }
+        var passes = 0
+        var bytePasses = 0
+        val selections =
+            GroupedNumberHistograms(summaries).select { ranges, shift ->
+                passes++
+                if (shift != null) bytePasses++
+                val buckets = histogramRows(samples, ranges, shift)
+                assertEquals(true, buckets.size <= 256 * ranges.size)
+                buckets
+            }
+        assertEquals(9, passes)
+        assertEquals(true, bytePasses > 0)
+        samples.forEach { (field, values) ->
+            assertEquals(
+                StatisticsDistributionCalculator.numbers(values),
+                summaries.getValue(field).distribution(selections.getValue(field)),
+            )
+        }
+    }
+
+    @Test
+    fun magnitudeHistogramResolvesSignedRankAdversaryInOneTraversal() {
+        val signed = signedRankSamples()
+        val signedSummary = ExactNumberSummary.read(rows(signed))
+        var rankPasses = 0
+        GroupedNumberMedians(mapOf("signed" to signedSummary)).select { pivots ->
+            rankPasses++
+            listOf(rankRow("signed", signed, pivots.getValue("signed")))
+        }
+        assertEquals(64, rankPasses)
+        var signedPasses = 0
+        GroupedNumberHistograms(mapOf("signed" to signedSummary)).select { ranges, shift ->
+            signedPasses++
+            histogramRows(mapOf("signed" to signed), ranges, shift)
+        }
+        assertEquals(1, signedPasses)
+        assertEquals(
+            emptyMap<String, StatisticsNumberSelectionRow>(),
+            GroupedNumberHistograms(emptyMap()).select { _, _ ->
+                error("Empty summary must not read")
+            },
+        )
+    }
+
+    private fun byteWorstSamples(): List<Long> {
+        val base = 1L shl 62
+        return List(99) { base } + listOf(base + 1) +
+            (1..61).map { base + (1L shl it) } + listOf(Long.MAX_VALUE) + List(38) { base + 2 }
+    }
+
+    private fun signedRankSamples(): List<Long> =
+        List(200) { index ->
+            when {
+                index < 99 -> Long.MIN_VALUE
+                index == 99 -> 0L
+                index <= 162 -> 1L shl (index - 100)
+                index == 163 -> Long.MAX_VALUE
+                else -> 1L
+            }
+        }
+
+    private fun histogramRows(
+        samples: Map<String, List<Long>>,
+        ranges: Map<String, LongRange>,
+        shift: Int?,
+    ): List<StatisticsNumberBucketRow> =
+        ranges.flatMap { (field, range) ->
+            samples
+                .getValue(field)
+                .filter { it in range }
+                .groupBy { value ->
+                    if (shift == null) {
+                        if (value < 0) {
+                            63 - (64 - java.lang.Long.numberOfLeadingZeros(value.inv()))
+                        } else {
+                            64 + (64 - java.lang.Long.numberOfLeadingZeros(value))
+                        }
+                    } else {
+                        ((value ushr shift) and 255).toInt()
+                    }
+                }.toSortedMap()
+                .map { (bucket, values) ->
+                    StatisticsNumberBucketRow(field, bucket, values.size.toLong(), values.min(), values.max())
+                }
+        }
+
+    @Test
+    fun histogramsRejectIncoherentCountsFieldsAndUnorderedRanges() {
+        val samples = mapOf("field" to listOf(-1L, 1L))
+        val summary = mapOf("field" to ExactNumberSummary.read(rows(samples.getValue("field"))))
+        val valid = histogramRows(samples, mapOf("field" to -1L..1L), null)
+        for (invalid in listOf(
+            emptyList(),
+            valid + valid.first(),
+            valid.reversed(),
+            valid.map { it.copy(sourceFieldId = "foreign") },
+            valid.map { it.copy(sampleCount = 0) },
+            valid.map { it.copy(sampleCount = 2) },
+            valid.map { it.copy(bucketId = 256) },
+            valid.map { it.copy(minimumScaled = Long.MIN_VALUE) },
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                GroupedNumberHistograms(summary).select { _, _ -> invalid }
+            }
+        }
+    }
+
+    @Test
+    fun histogramQueriesUseFixedBindsSafeIdentitiesAndIntegerApi26Sql() {
+        for (kind in listOf(
+            StatisticsSeriesKind.ACTIVITY,
+            StatisticsSeriesKind.SEQUENCE,
+        )) {
+            for (shift in listOf(null, 56, 0)) {
+                val query =
+                    groupedNumberHistogramQuery(
+                        kind,
+                        "series",
+                        null to null,
+                        mapOf("opaque'??" to Long.MIN_VALUE..Long.MAX_VALUE),
+                        shift,
+                    )
+                assertEquals(4, query.argCount)
+                assertEquals(false, query.sql.contains("opaque'??"))
+                assertEquals(false, query.sql.contains("OVER ("))
+                assertEquals(true, query.sql.contains("GROUP BY fields.source_field_id, bucket_id"))
+            }
         }
     }
 
