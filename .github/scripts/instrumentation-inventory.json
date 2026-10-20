@@ -967,6 +967,8 @@
       "russianOrganizationControlsRemainActionableAtCompactWidth"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceAccessibilityPersistenceTest": [
+      "canonicalCurrentValuesRemainEditableThroughSaveCompleteAndPhysicalReopen",
+      "canonicalSavedCurrentValuesKeepSnapshotAndMissingAfterPhysicalReopen",
       "runningAndPausedCountdownUseBaselineWithoutFabricatingCurrentOrCompletingAtZero",
       "semanticEarlyEndCancelThenConfirmFulfillsOnlyExplicitPlanAfterReopen",
       "semanticMakeNextUsesClickedRepeatedOccurrenceAndPreservesProvenanceAfterReopen",
@@ -986,7 +988,9 @@
       "disabledConfirmationPoliciesDispatchExistingCommandsDirectly",
       "doAgainForwardsEachAuthorizedPlacementWithoutOpeningOldExecution",
       "doAgainStartNowIsAvailableOnlyWithoutCurrentAndForwardsCompletedId",
+      "duplicateCatalogControlsKeepNativeActionsAndExactIdsAcrossPaging",
       "englishAndRussianControlsReflowAtCombinedSystemAndAppScales",
+      "frozenMainValueSummaryKeepsContextTypeMissingAndZeroInBothLanguages",
       "globalOverflowPreservesEarlyEndConfirmationAndRuntimeAddDialog",
       "globalSecondaryOverflowIsStateAwareAndNeverPermanentlyRendersItsActions",
       "jumpConfirmationCancelAndConfirmRetainOriginalTarget",

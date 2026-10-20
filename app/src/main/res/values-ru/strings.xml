@@ -670,7 +670,10 @@
     <string name="expanded_sequence_position">Шаг %1$d</string>
     <string name="expanded_sequence_occurrence_identity">%1$s, шаг %2$d</string>
     <string name="expanded_sequence_missing_field">Отметить %1$s как отсутствующее значение</string>
-    <string name="expanded_sequence_draft_values">Текущие несохранённые значения</string>
+    <string name="expanded_sequence_draft_values">Текущие редактируемые значения</string>
+    <string name="expanded_sequence_main_value_field">%1$s, основное значение</string>
+    <string name="expanded_sequence_field_summary">%1$s, %2$s, %3$s: %4$s</string>
+    <string name="expanded_sequence_catalog_identity">%1$s, %2$s, элемент каталога %3$d</string>
     <string name="expanded_sequence_actual_values">Записанные значения</string>
     <string name="expanded_sequence_configured_values">Настроенные значения по умолчанию</string>
     <string name="expanded_sequence_stopwatch_elapsed">Секундомер: прошло %1$s</string>

@@ -670,7 +670,10 @@
     <string name="expanded_sequence_position">Step %1$d</string>
     <string name="expanded_sequence_occurrence_identity">%1$s, step %2$d</string>
     <string name="expanded_sequence_missing_field">Set %1$s to Missing</string>
-    <string name="expanded_sequence_draft_values">Current draft values</string>
+    <string name="expanded_sequence_draft_values">Current editable values</string>
+    <string name="expanded_sequence_main_value_field">%1$s, Main Value</string>
+    <string name="expanded_sequence_field_summary">%1$s, %2$s, %3$s: %4$s</string>
+    <string name="expanded_sequence_catalog_identity">%1$s, %2$s, catalog item %3$d</string>
     <string name="expanded_sequence_actual_values">Recorded values</string>
     <string name="expanded_sequence_configured_values">Configured defaults</string>
     <string name="expanded_sequence_stopwatch_elapsed">Stopwatch elapsed %1$s</string>

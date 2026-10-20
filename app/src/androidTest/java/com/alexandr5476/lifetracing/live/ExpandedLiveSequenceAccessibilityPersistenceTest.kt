@@ -12,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -115,6 +116,101 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
     }
 
     @Test
+    fun canonicalCurrentValuesRemainEditableThroughSaveCompleteAndPhysicalReopen() {
+        assertCanonicalValuesAfterReopen(complete = true)
+    }
+
+    @Test
+    fun canonicalSavedCurrentValuesKeepSnapshotAndMissingAfterPhysicalReopen() {
+        assertCanonicalValuesAfterReopen(complete = false)
+    }
+
+    private fun assertCanonicalValuesAfterReopen(complete: Boolean) {
+        Fixture(withValues = true).use { fixture ->
+            val before = fixture.active()
+            val child = before.currentChild!!
+            val snapshot = before.activitySnapshots.getValue(child.snapshotId)
+            val quantity = snapshot.fields.first()
+            val zero = snapshot.fields[1]
+            val optional = snapshot.fields.last()
+            fixture.mount()
+            val draft = fixture.controller.state.value.currentValueDraft!!
+            assertEquals(child.values.associateBy { it.snapshotFieldId }, draft.values.filterValues { it != null })
+            assertEquals(
+                com.alexandr5476.lifetracing.domain
+                    .NumberExecutionValue(quantity.id, 0),
+                draft.values[quantity.id],
+            )
+            assertNull(draft.values[optional.id])
+            compose
+                .onLazyNode(
+                    hasContentDescription(
+                        fixture.string(
+                            R.string.expanded_sequence_field_summary,
+                            fixture.string(R.string.expanded_sequence_draft_values),
+                            fixture.string(R.string.expanded_sequence_main_value_field, "Quantity kg"),
+                            fixture.string(R.string.activity_editor_number),
+                            "0",
+                        ),
+                    ),
+                ).assertExists()
+            compose
+                .onLazyNode(
+                    androidx.compose.ui.test
+                        .hasTestTag("expanded-sequence-current-value-${quantity.id.value}"),
+                ).performTextReplacement("2")
+            assertEquals(0, fixture.writes.get())
+            assertEquals(child, fixture.active().currentChild)
+            fixture.invoke(R.string.expanded_sequence_save_values)
+            fixture.awaitWrites(1)
+            val saved = fixture.active().currentChild!!
+            val command = fixture.commands.single() as ExpandedSequenceCommand.SaveValues
+            assertEquals(before.execution.currentOccurrenceId, command.occurrenceId)
+            assertEquals(snapshot.fields.map { it.id }, command.values.map { it.snapshotFieldId })
+            assertEquals(
+                com.alexandr5476.lifetracing.domain
+                    .NumberExecutionValue(quantity.id, 2_000),
+                command.values.first().value,
+            )
+            assertNull(command.values.last().value)
+            val retained = fixture.controller.state.value.currentValueDraft!!
+            assertEquals(
+                com.alexandr5476.lifetracing.domain
+                    .NumberExecutionValue(quantity.id, 2_000),
+                retained.values[quantity.id],
+            )
+            assertNull(retained.values[optional.id])
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_draft_values))).assertExists()
+            if (complete) {
+                fixture.invoke(R.string.expanded_sequence_complete)
+                fixture.awaitWrites(2)
+            }
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            val projection =
+                fixture.store.live.getExpandedSequence(
+                    before.execution.id,
+                ) as ExpandedLiveSequenceRead.Active
+            val row = projection.value.occurrences.single { it.occurrence.id == before.execution.currentOccurrenceId }
+            assertEquals(
+                if (complete) RuntimeOccurrenceStatus.COMPLETED else RuntimeOccurrenceStatus.CURRENT,
+                row.occurrence.status,
+            )
+            assertEquals(snapshot, row.activity)
+            assertEquals(saved.id, row.childExecution!!.id)
+            assertEquals(saved.snapshotId, row.childExecution!!.snapshotId)
+            assertEquals(saved.values, row.childExecution!!.values)
+            assertEquals(
+                com.alexandr5476.lifetracing.domain
+                    .NumberExecutionValue(zero.id, 0),
+                row.childExecution!!.values.single { it.snapshotFieldId == zero.id },
+            )
+            assertTrue(row.childExecution!!.values.none { it.snapshotFieldId == optional.id })
+            assertEquals(facts, fixture.store.durableFacts())
+        }
+    }
+
+    @Test
     fun semanticMakeNextUsesClickedRepeatedOccurrenceAndPreservesProvenanceAfterReopen() {
         Fixture().use { fixture ->
             val before = fixture.active()
@@ -155,6 +251,11 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                     ActivityTemplateDraft("Runtime reusable", null, TimeTrackingMode.STOPWATCH, null),
                     createdAt = fixture.now,
                 )
+            val duplicate =
+                fixture.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Runtime reusable", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = fixture.now,
+                )
             val before = fixture.active()
             fixture.mount()
             fixture.invoke(R.string.expanded_sequence_complete)
@@ -166,7 +267,19 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             fixture.invoke(R.string.expanded_sequence_runtime_add)
             compose.waitUntil(10_000) { fixture.controller.state.value.catalog != null }
             fixture.invoke(R.string.expanded_sequence_start_now)
-            compose.onNodeWithText("Runtime reusable").performSemanticsAction(SemanticsActions.OnClick) { it() }
+            val catalog = fixture.controller.state.value.catalog!!
+            val position = catalog.indexOfFirst { it.id == reusable.id } + 1
+            assertTrue(catalog.any { it.id == duplicate.id && it.name == reusable.name })
+            assertEquals(1, fixture.writes.get())
+            compose
+                .onNodeWithContentDescription(
+                    fixture.string(
+                        R.string.expanded_sequence_catalog_identity,
+                        "Runtime reusable",
+                        fixture.string(R.string.expanded_sequence_stopwatch),
+                        position,
+                    ),
+                ).performSemanticsAction(SemanticsActions.OnClick) { it() }
             fixture.awaitWrites(2)
             val after = fixture.active()
             val added = after.execution.occurrences.single { it.isRuntimeAdded }
@@ -379,6 +492,7 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
 
     private inner class Fixture(
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+        withValues: Boolean = false,
         settings: SequenceTemplateSettings = SequenceTemplateSettings(autoAdvance = false),
     ) : AutoCloseable {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -389,6 +503,7 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
         val generation = MutableStateFlow(0L)
         val clock = AtomicReference(now)
         val writes = AtomicInteger()
+        val commands = java.util.concurrent.CopyOnWriteArrayList<ExpandedSequenceCommand>()
         val staleExits = AtomicInteger()
         val visible = mutableStateOf(true)
         val activity =
@@ -398,6 +513,38 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                     null,
                     mode,
                     if (mode == TimeTrackingMode.TIMER) java.time.Duration.ofSeconds(60) else null,
+                    fields =
+                        if (withValues) {
+                            listOf(
+                                com.alexandr5476.lifetracing.domain.ActivityFieldDraft(
+                                    DraftIdentity.New("quantity"),
+                                    0,
+                                    "Quantity",
+                                    com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                    unit = "kg",
+                                    displayPrecision = 0,
+                                    defaultNumberScaled = 0,
+                                    isMainValue = true,
+                                ),
+                                com.alexandr5476.lifetracing.domain.ActivityFieldDraft(
+                                    DraftIdentity.New("zero"),
+                                    1,
+                                    "Zero",
+                                    com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                    displayPrecision = 0,
+                                    defaultNumberScaled = 0,
+                                ),
+                                com.alexandr5476.lifetracing.domain.ActivityFieldDraft(
+                                    DraftIdentity.New("optional"),
+                                    2,
+                                    "Optional",
+                                    com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                    displayPrecision = 0,
+                                ),
+                            )
+                        } else {
+                            emptyList()
+                        },
                     settings =
                         com.alexandr5476.lifetracing.domain.ActivityTemplateSettings(
                             timerZeroBehavior = com.alexandr5476.lifetracing.domain.TimerZeroBehavior.OVERTIME,
@@ -437,6 +584,7 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                 started.execution.id,
                 store.live::getExpandedSequence,
                 { command ->
+                    commands += command
                     executeExpandedSequenceCommand(command, store.live)
                     writes.incrementAndGet()
                 },

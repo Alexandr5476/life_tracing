@@ -688,7 +688,19 @@ class ExpandedLiveSequenceScreenTest {
         composeRule.onNodeWithText(string(R.string.expanded_sequence_save_values)).assertDoesNotExist()
         composeRule.onLazyNode(hasText(string(R.string.expanded_sequence_no_live))).assertIsDisplayed()
         if (withMainValue) {
-            composeRule.onLazyNode(hasTestTag("expanded-sequence-current-value-value")).assertTextContains("6")
+            composeRule
+                .onLazyNode(hasTestTag("expanded-sequence-current-value-value"))
+                .assertTextContains("6")
+                .assertTextContains(string(R.string.expanded_sequence_main_value_field, "Value"))
+            composeRule
+                .onLazyNode(
+                    hasContentDescription(
+                        string(
+                            R.string.expanded_sequence_missing_field,
+                            string(R.string.expanded_sequence_main_value_field, "Value"),
+                        ),
+                    ),
+                ).assertIsEnabled()
         }
         assertTrue(commands.isEmpty())
     }
@@ -1114,7 +1126,8 @@ class ExpandedLiveSequenceScreenTest {
         composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).assertIsNotEnabled()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_to_end)).assertIsNotEnabled()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_stopwatch)).assertIsNotEnabled()
-        composeRule.onNodeWithText("Reusable target").assertIsNotEnabled()
+        composeRule.onNodeWithTag("expanded-sequence-add-catalog").performScrollTo()
+        composeRule.onNodeWithText("Reusable target").assertIsNotEnabled().performClick()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel)).performClick()
         assertTrue(commands.isEmpty())
     }
@@ -1142,6 +1155,275 @@ class ExpandedLiveSequenceScreenTest {
             )
         }
         assertTrue(commands.isEmpty())
+    }
+
+    @Test
+    fun frozenMainValueSummaryKeepsContextTypeMissingAndZeroInBothLanguages() {
+        val original = InstrumentationRegistry.getInstrumentation().targetContext
+        val language = mutableStateOf("en")
+        val field =
+            ActivitySnapshotField(
+                ActivitySnapshotFieldId("quantity"),
+                com.alexandr5476.lifetracing.domain
+                    .ActivityTemplateFieldId("source-quantity"),
+                0,
+                "Quantity",
+                type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                unit = "kg",
+                displayPrecision = 0,
+                defaultNumberScaled = 7_000,
+                isMainValue = true,
+            )
+        val base = expanded(3, listOf(field))
+        val current = base.occurrences[1]
+        val child =
+            ActivityExecutionFactory { ActivityExecutionId("current-child") }
+                .startSequenceChildTimed(
+                    current.activity,
+                    base.runtime.execution.id,
+                    current.occurrence.id,
+                    Instant.EPOCH,
+                    Instant.EPOCH,
+                    ZoneOffset.UTC,
+                ).copy(values = listOf(NumberExecutionValue(field.id, 0)))
+        val timed = current.copy(childExecution = child)
+        val noLive =
+            current.copy(
+                activity = current.activity.copy(timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING),
+            )
+        val completed =
+            base.occurrences[0].copy(
+                childExecution =
+                    base.occurrences[0].childExecution!!.copy(
+                        values = listOf(NumberExecutionValue(field.id, 0)),
+                    ),
+            )
+        val row = mutableStateOf(base.occurrences[2])
+        val draft = mutableStateOf<CurrentValueDraft?>(null)
+        composeRule.setContent {
+            val configuration =
+                android.content.res.Configuration(original.resources.configuration).apply {
+                    setLocale(java.util.Locale.forLanguageTag(language.value))
+                }
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalContext provides original.createConfigurationContext(configuration),
+                androidx.compose.ui.platform.LocalConfiguration provides configuration,
+            ) {
+                LifeTracingTheme { ValueSummary(row.value, draft.value) }
+            }
+        }
+        for (locale in listOf("en", "ru")) {
+            composeRule.runOnIdle { language.value = locale }
+            val context =
+                original.createConfigurationContext(
+                    android.content.res.Configuration(original.resources.configuration).apply {
+                        setLocale(java.util.Locale.forLanguageTag(locale))
+                    },
+                )
+            assertEquals(
+                if (locale == "en") "Current editable values" else "Текущие редактируемые значения",
+                context.getString(R.string.expanded_sequence_draft_values),
+            )
+            // Frozen defaults, childless current, timed current and completed actuals.
+            val cases =
+                listOf(
+                    Triple(base.occurrences[2], null, "7"),
+                    Triple(
+                        noLive,
+                        CurrentValueDraft(
+                            noLive.occurrence.id,
+                            mapOf(
+                                field.id to NumberExecutionValue(field.id, 7_000),
+                            ),
+                            emptyMap(),
+                        ),
+                        "7",
+                    ),
+                    Triple(
+                        timed,
+                        CurrentValueDraft(
+                            timed.occurrence.id,
+                            mapOf(field.id to NumberExecutionValue(field.id, 0)),
+                            emptyMap(),
+                        ),
+                        "0",
+                    ),
+                    Triple(completed, null, "0"),
+                    Triple(
+                        noLive,
+                        CurrentValueDraft(noLive.occurrence.id, mapOf(field.id to null), emptyMap()),
+                        context.getString(R.string.expanded_sequence_missing),
+                    ),
+                    Triple(
+                        noLive,
+                        CurrentValueDraft(
+                            noLive.occurrence.id,
+                            mapOf(
+                                field.id to NumberExecutionValue(field.id, 0),
+                            ),
+                            emptyMap(),
+                        ),
+                        "0",
+                    ),
+                    Triple(
+                        noLive.copy(activity = noLive.activity.copy(fields = listOf(field.copy(isMainValue = false)))),
+                        CurrentValueDraft(
+                            noLive.occurrence.id,
+                            mapOf(field.id to NumberExecutionValue(field.id, 7_000)),
+                            emptyMap(),
+                        ),
+                        "7",
+                    ),
+                )
+            for ((target, values, expectedValue) in cases) {
+                composeRule.runOnIdle {
+                    row.value = target
+                    draft.value = values
+                }
+                val projection =
+                    when {
+                        values != null -> R.string.expanded_sequence_draft_values
+                        target.occurrence.status == RuntimeOccurrenceStatus.COMPLETED ->
+                            R.string.expanded_sequence_actual_values
+                        else -> R.string.expanded_sequence_configured_values
+                    }
+                val name =
+                    if (target.activity.fields
+                            .single()
+                            .isMainValue
+                    ) {
+                        context.getString(R.string.expanded_sequence_main_value_field, "Quantity kg")
+                    } else {
+                        "Quantity kg"
+                    }
+                val description =
+                    context.getString(
+                        R.string.expanded_sequence_field_summary,
+                        context.getString(projection),
+                        name,
+                        context.getString(R.string.activity_editor_number),
+                        expectedValue,
+                    )
+                composeRule.onNode(hasContentDescription(description)).assertExists()
+                assertEquals(
+                    field.id,
+                    target.activity.fields
+                        .single()
+                        .id,
+                )
+                assertEquals(
+                    field.sourceFieldId,
+                    target.activity.fields
+                        .single()
+                        .sourceFieldId,
+                )
+                assertEquals(
+                    7_000L,
+                    target.activity.fields
+                        .single()
+                        .defaultNumberScaled,
+                )
+                if (target.activity.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING) {
+                    assertEquals(null, target.childExecution)
+                }
+            }
+            composeRule.runOnIdle {
+                row.value = noLive.copy(activity = noLive.activity.copy(fields = emptyList()))
+                draft.value = null
+            }
+            composeRule
+                .onAllNodes(hasText(context.getString(R.string.activity_editor_main_value), substring = true))
+                .fetchSemanticsNodes()
+                .also { assertTrue(it.isEmpty()) }
+        }
+    }
+
+    @Test
+    fun duplicateCatalogControlsKeepNativeActionsAndExactIdsAcrossPaging() {
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        val first = catalogItem("first", "Same activity")
+        val second = catalogItem("second", "Same activity")
+        val later = catalogItem("later", "Same activity")
+        val page = listOf(first, second) + (2 until 50).map { catalogItem("filler-$it", "Filler $it") }
+        val cursors = mutableListOf<com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem?>()
+        val controller =
+            controller(expanded(5), commands) { after ->
+                cursors += after
+                if (after == null) page else listOf(later)
+            }
+        composeRule.setContent { LifeTracingTheme { ExpandedLiveSequenceRoute(controller, {}, {}) } }
+
+        fun open() {
+            composeRule.onNodeWithTag("expanded-sequence-global-actions").performClick()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
+        }
+
+        fun label(position: Int) =
+            string(
+                R.string.expanded_sequence_catalog_identity,
+                "Same activity",
+                string(R.string.expanded_sequence_stopwatch),
+                position,
+            )
+        open()
+        for (position in listOf(1, 2)) {
+            val matcher =
+                hasContentDescription(label(position)) and
+                    androidx.compose.ui.test
+                        .hasClickAction()
+            for (unmerged in listOf(false, true)) {
+                assertEquals(1, composeRule.onAllNodes(matcher, useUnmergedTree = unmerged).fetchSemanticsNodes().size)
+            }
+        }
+        composeRule
+            .onNode(hasContentDescription(label(1)))
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        assertTrue(commands.isEmpty())
+        composeRule.onNode(hasContentDescription(label(1))).performClick()
+        open()
+        composeRule.onNode(hasContentDescription(label(2))).performClick()
+        open()
+        composeRule.onNodeWithTag("expanded-sequence-add-catalog").performScrollToNode(
+            hasText(string(R.string.sequence_editor_load_more)),
+        )
+        composeRule.onNodeWithText(string(R.string.sequence_editor_load_more)).performClick()
+        composeRule.onNodeWithTag("expanded-sequence-add-catalog").performScrollToNode(hasContentDescription(label(51)))
+        assertEquals(2, commands.size)
+        for (unmerged in listOf(false, true)) {
+            assertEquals(
+                1,
+                composeRule
+                    .onAllNodes(
+                        hasContentDescription(label(51)) and
+                            androidx.compose.ui.test
+                                .hasClickAction(),
+                        useUnmergedTree = unmerged,
+                    ).fetchSemanticsNodes()
+                    .size,
+            )
+        }
+        composeRule.onNodeWithTag("expanded-sequence-add-catalog").performScrollToNode(hasContentDescription(label(1)))
+        composeRule.onNode(hasContentDescription(label(1))).assertIsEnabled()
+        composeRule.onNodeWithTag("expanded-sequence-add-catalog").performScrollToNode(hasContentDescription(label(51)))
+        composeRule.onNode(hasContentDescription(label(51))).performClick()
+        assertEquals(listOf(null, page.last()), cursors)
+        assertEquals(
+            listOf(
+                first,
+                second,
+                later,
+            ).map {
+                com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                    .Template(it.id)
+            },
+            commands.map { (it as ExpandedSequenceCommand.RuntimeAdd).source },
+        )
+        assertTrue(
+            commands.all {
+                (it as ExpandedSequenceCommand.RuntimeAdd).placement ==
+                    com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement.TO_END
+            },
+        )
     }
 
     private fun catalogItem(

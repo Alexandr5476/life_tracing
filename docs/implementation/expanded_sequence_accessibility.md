@@ -20,7 +20,7 @@ Each lazy row retains its occurrence-ID key. Its heading and menu trigger includ
 the Activity name and 1-based runtime position; repeat iteration, runtime-added
 provenance and each of the five occurrence statuses remain separate readable text.
 Commands capture the original occurrence ID, never the spoken position or label.
-Configured defaults, draft values and recorded values have distinct labels. Deleted
+Configured defaults, current editable values and recorded values have distinct labels. Deleted
 executions have no value summary. Childless No-live current rows retain their frozen
 Field metadata and defaults/draft without inventing a child or duration.
 
@@ -93,8 +93,9 @@ Confirmation performs one O(N) target lookup per composition while open. Row
 descriptions use only that row's canonical projection and Field metadata: no per-row occurrence rescan,
 database query or eager occurrence materialization was added.
 
-The inventory adds 33 original JUnit identities: 627 data, 389 app and two startup
-cases per API. The unfiltered 26/31/33/35/36 gate and separate startup verification
+The original S3 inventory added 33 JUnit identities, reaching 627 data, 389 app and
+two startup cases per API (see S3C1 below for current totals). The unfiltered
+26/31/33/35/36 gate and separate startup verification
 remain mandatory. Controller owns device execution and final exact-head CI evidence.
 Source/APK compilation is not evidence that instrumentation assertions passed.
 No TalkBack or Switch Access session was performed during implementation.
@@ -175,6 +176,67 @@ the revised target assertions still require Controller verification.
 The target-assertion repair passed `:app:assembleDebugAndroidTest :app:ktlintCheck
 :app:detekt --continue --console=plain` and `git diff --check`. No instrumentation
 testcase identity or inventory count changed.
+
+## S3C1 corrective presentation
+
+Current drafts are labeled **Current editable values** / **Текущие редактируемые
+значения**. This describes both canonical hydration and retained post-save drafts
+without asserting that either is dirty. Configured defaults and recorded actual
+values retain separate labels. Draft retention, edit admission and Save/Complete
+commands are unchanged; editing alone performs no write.
+
+Each Field summary exposes its context, frozen name/unit, localized Field type and
+exact formatted value, including Missing versus numeric zero. Only the frozen
+`ActivitySnapshotField.isMainValue` flag adds the Main Value designation. It is
+visible and accessible in configured, childless No-live current, timed current and
+completed states. Childless rows still use defaults/editable values and have no
+invented execution or duration; completed summaries use actuals even when defaults
+differ. The same frozen Field label marks Main Value in native editors and their
+Field-specific Missing controls. Native editable/clickable descendants remain separate.
+
+Reusable catalog buttons announce name, tracking mode and 1-based catalog position.
+Positions disambiguate otherwise identical metadata and remain stable as the
+existing controller appends pages. Native buttons retain one action each and
+capture the clicked `ActivityTemplateId`; position and name never drive dispatch.
+There are no extra projections, per-item reads, persistent flags or writes.
+Only expanded Sequence resources and presentation changed; Daily, launcher and
+shared accessible-target components keep their existing labels and behavior.
+
+Two new screen cases cover the English/Russian Main Value projection matrix and
+duplicate catalog controls, including a later page, focus without activation,
+merged/unmerged action identity and exact Template/placement dispatch. The existing
+in-flight case additionally attempts a disabled catalog touch. Two physical cases
+use real repositories/controller commands to hydrate zero/Missing, edit without a
+write, Save with exact Field IDs, retain the draft after canonical publication,
+optionally Complete, then reopen and compare canonical values, frozen snapshot and
+durable facts. The existing Runtime Add physical case now selects between distinct
+Templates with identical names and preserves source, placement, runtime-added
+occurrence and child/snapshot provenance after reopen. A new JVM controller case
+gates command confirmation explicitly and verifies canonical hydration and draft
+retention after refresh.
+
+The inventory now includes 34 expanded screen and eight expanded persistence cases:
+627 data, 393 app and two independent startup identities per API. Existing mandatory
+identities are retained. Device regression execution, including fail-first evidence,
+the Controller-owned app-unit/gmd-app/lint gates and independent exact-head five-API
+GitHub verification remain Controller responsibilities. No local device task or
+manual TalkBack/Switch Access validation was performed for this slice.
+
+S3C1 local preparation passed:
+
+```powershell
+cmd.exe /d /s /c "gradlew.bat :app:testDebugUnitTest :app:assembleDebugAndroidTest :app:lintDebug :app:ktlintCheck :app:detekt --continue --console=plain"
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The app JVM reports contain 402 tests, including 13 expanded controller cases,
+with zero failures, errors or skips. AndroidTest APK assembly, app ktlint and Detekt
+passed; lint reported zero errors and 29 warnings. The 17 Python runner tests use
+mocked device invocations and passed without starting a device. An explicit source
+and inventory comparison confirmed all 34 screen/eight persistence method names
+and preservation of every prior mandatory identity. These results do not establish
+that the newly compiled instrumentation assertions passed on a device.
 
 ## Reproducible device walkthrough (manual, pending)
 

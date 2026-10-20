@@ -262,6 +262,78 @@ class ExpandedLiveSequenceControllerTest {
         }
 
     @Test
+    fun timedDraftHydratesCanonicalZeroAndMissingAndRetainsExactFieldsAfterConfirmedSave() =
+        runBlocking {
+            val initial = expanded(mode = TimeTrackingMode.TIMER, withAllValueTypes = true)
+            val row = initial.occurrences.first()
+            val number = row.activity.fields.first()
+            val child = row.childExecution!!.copy(values = listOf(NumberExecutionValue(number.id, 0)))
+            var canonical =
+                ExpandedLiveSequenceProjector.project(
+                    initial.runtime.copy(currentChild = child),
+                    listOf(child),
+                )
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val committed = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    initial.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(canonical) },
+                    { command ->
+                        commands += command
+                        committed.await()
+                        val save = command as ExpandedSequenceCommand.SaveValues
+                        val saved = child.copy(values = save.values.mapNotNull { it.value })
+                        canonical =
+                            ExpandedLiveSequenceProjector.project(
+                                initial.runtime.copy(currentChild = saved),
+                                listOf(saved),
+                            )
+                    },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitLoaded()
+            val hydrated = controller.state.value.currentValueDraft!!
+            assertEquals(NumberExecutionValue(number.id, 0), hydrated.values[number.id])
+            assertTrue(
+                row.activity.fields.drop(1).all {
+                    hydrated.values.containsKey(it.id) &&
+                        hydrated.values[it.id] == null
+                },
+            )
+            controller.editNumber(number.id, "2")
+            assertTrue(commands.isEmpty())
+            assertEquals(
+                NumberExecutionValue(number.id, 0),
+                canonical.occurrences
+                    .first()
+                    .childExecution!!
+                    .values
+                    .single(),
+            )
+            controller.saveCurrentValues()
+            withTimeout(1_000) { controller.state.first { it.commandInFlight } }
+            val retained = controller.state.value.currentValueDraft!!
+            committed.complete(Unit)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+            controller.refresh()
+            withTimeout(1_000) { controller.state.first { it.sequence == canonical } }
+            assertSame(retained, controller.state.value.currentValueDraft)
+            val save = commands.single() as ExpandedSequenceCommand.SaveValues
+            assertEquals(row.occurrence.id, save.occurrenceId)
+            assertEquals(row.activity.fields.map { it.id }, save.values.map { it.snapshotFieldId })
+            assertEquals(NumberExecutionValue(number.id, 2_000), save.values.first().value)
+            assertTrue(save.values.drop(1).all { it.value == null })
+            assertEquals(row.activity, canonical.occurrences.first().activity)
+            controller.close()
+        }
+
+    @Test
     fun noLiveDraftKeepsMissingDistinctFromZeroAcrossRetainedRouteSession() =
         runBlocking {
             val expanded = expanded(mode = TimeTrackingMode.NO_LIVE_TRACKING, withValue = true)

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -585,7 +586,7 @@ private fun CategoryEditor(
 }
 
 @Composable
-private fun ValueSummary(
+internal fun ValueSummary(
     row: ExpandedLiveSequenceOccurrence,
     draft: CurrentValueDraft?,
 ) {
@@ -602,9 +603,29 @@ private fun ValueSummary(
         )
     if (row.activity.fields.isNotEmpty()) Text(projectionLabel)
     row.activity.fields.sortedBy(ActivitySnapshotField::position).forEach { field ->
+        val fieldName = field.label()
+        val type =
+            stringResource(
+                when (field.type) {
+                    CustomFieldType.NUMBER -> R.string.activity_editor_number
+                    CustomFieldType.CATEGORY -> R.string.activity_editor_category
+                    CustomFieldType.TEXT -> R.string.activity_editor_text
+                },
+            )
+        val value = field.valueText(values[field.id])
+        val description =
+            stringResource(
+                R.string.expanded_sequence_field_summary,
+                projectionLabel,
+                fieldName,
+                type,
+                value,
+            )
         Text(
-            stringResource(R.string.expanded_sequence_field_value, field.label(), field.valueText(values[field.id])),
-            Modifier.testTag("expanded-sequence-value-${row.occurrence.id.value}-${field.id.value}"),
+            stringResource(R.string.expanded_sequence_field_value, fieldName, value),
+            Modifier.testTag("expanded-sequence-value-${row.occurrence.id.value}-${field.id.value}").semantics {
+                contentDescription = description
+            },
         )
     }
 }
@@ -908,8 +929,11 @@ private fun modeLabel(mode: TimeTrackingMode): String =
         },
     )
 
-private fun ActivitySnapshotField.label(): String =
-    listOfNotNull(localNameOverride ?: nameAtCreation, unit).joinToString(" ")
+@Composable
+private fun ActivitySnapshotField.label(): String {
+    val name = listOfNotNull(localNameOverride ?: nameAtCreation, unit).joinToString(" ")
+    return if (isMainValue) stringResource(R.string.expanded_sequence_main_value_field, name) else name
+}
 
 private fun com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOption.label(): String =
     localLabelOverride ?: labelAtCreation
@@ -1024,8 +1048,17 @@ private fun RuntimeAddCatalog(
         ) { Text(stringResource(R.string.expanded_sequence_retry)) }
     }
     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp).testTag("expanded-sequence-add-catalog")) {
-        items(state.catalog.orEmpty(), key = { it.id.value }) { item ->
+        itemsIndexed(state.catalog.orEmpty(), key = { _, item -> item.id.value }) { index, item ->
+            // Appending a page preserves existing positions. Dispatch still captures the Template ID.
+            val identity =
+                stringResource(
+                    R.string.expanded_sequence_catalog_identity,
+                    item.name,
+                    modeLabel(item.timeTrackingMode),
+                    index + 1,
+                )
             TextButton(
+                modifier = Modifier.semantics { contentDescription = identity },
                 enabled = canAdd,
                 onClick = {
                     controller.runtimeAddTemplate(item.id, placement)
