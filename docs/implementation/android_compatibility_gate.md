@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 331 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 350 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -300,3 +300,32 @@ See [Daily accessibility evidence and walkthrough](daily_accessibility.md) for
 coverage, local verification boundaries, and the pending manual TalkBack procedure.
 Controller owns authoritative app-unit, gmd-app, lint and exact-head CI evidence.
 APK compilation and semantics assertions do not certify TalkBack operation.
+
+## S2 Start Activity accessibility boundary
+
+The pinned inventory adds nine launcher presentation cases and ten isolated physical-
+database route/controller cases, bringing the mandatory app count to **350 per API**.
+Data remains 627 and the independent production-startup invocation remains two.
+All original testcase identities and the five unfiltered API gates remain mandatory.
+The existing production Sequence launch, organization, stale-target, transaction and
+route-session tests are retained.
+
+See [Start Activity accessibility evidence and walkthrough](start_activity_accessibility.md)
+for semantic activation, exact identity/snapshot reopening, quick zero/Missing/default,
+one-off, pinned immutability, DST/overlap, commit gating, localization/scaling, shared-
+component impact and manual validation boundaries. Daily reuses its existing target
+provider through a shared extraction; S1 semantics remain required. Controller owns
+authoritative app-unit, gmd-app, lint and exact-head GitHub verification on all five APIs.
+Local APK compilation does not establish device or manual TalkBack execution.
+
+The initial Controller API 35 run completed all 350 app cases with four failures.
+The scoped repair tightens button selectors and establishes keyboard-mode focus
+prerequisites without removing assertions or testcase identities. The authorized
+repair probe returned "No active repair-probe lease" before executing any testcase;
+Controller instrumentation confirmation is pending. See the linked evidence for
+the repair and local check results. A subsequent focused run confirmed the Timer
+selector repair but failed three cases in composition-time input-mode setup.
+The shared keyboard fixture now enters native keyboard mode after owner attachment
+and restores the previous mode on teardown. Its APK compilation and static checks
+passed; the new repair-probe invocation also had no active lease, so device
+confirmation remains pending.

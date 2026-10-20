@@ -216,8 +216,8 @@
     <string name="launcher_browse_failure">Не удалось загрузить папку.</string>
     <string name="launcher_activity">Действие</string>
     <string name="launcher_sequence">Последовательность</string>
-    <string name="launcher_target_loading">Загрузка выбранного действия…</string>
-    <string name="launcher_target_failure">Выбранное действие недоступно.</string>
+    <string name="launcher_target_loading">Загрузка выбранного элемента…</string>
+    <string name="launcher_target_failure">Выбранный элемент недоступен.</string>
     <string name="launcher_checking">Проверка доступности…</string>
     <string name="launcher_committing">Сохранение…</string>
     <string name="launcher_countdown">Начало через %1$s</string>
@@ -226,7 +226,7 @@
     <string name="launcher_conflict_detail">Текущее действие не изменено.</string>
     <string name="launcher_rejected">Не удалось начать действие.</string>
     <string name="launcher_committed">Сохранено.</string>
-    <string name="launcher_committed_coordination">Сохранено. Координация будет восстановлена.</string>
+    <string name="launcher_committed_coordination">Сохранено. Требуется восстановление координации выполнения.</string>
     <string name="launcher_invalid_number">Введите корректное число.</string>
     <string name="launcher_complete">Завершить</string>
     <string name="daily_library">Библиотека</string>
@@ -649,4 +649,17 @@
     <string name="daily_no_live_value">Без измерения времени. Основное значение: %1$s</string>
     <string name="daily_no_main_value">Не задано</string>
     <string name="daily_current_occurrence">Текущий шаг %1$d: %2$s</string>
+    <string name="launcher_select_template">Выбрать %1$s</string>
+    <string name="launcher_options_for">Параметры запуска: %1$s</string>
+    <string name="launcher_field_actual">%1$s: фактическое значение</string>
+    <string name="launcher_field_action">%1$s: %2$s</string>
+    <string name="launcher_offset_choice">%1$s: %2$s</string>
+    <string name="launcher_value_missing">Значение не указано</string>
+    <string name="launcher_value_present">Ввод значения включён</string>
+    <string name="launcher_value_default">Заданное значение по умолчанию, без изменений</string>
+    <string name="launcher_value_edited">Изменённое значение</string>
+    <string name="launcher_preflight">Обратный отсчёт до запуска. Запуск можно отменить.</string>
+    <string name="launcher_preflight_progress">Идёт обратный отсчёт до запуска. Общая длительность %1$s</string>
+    <string name="launcher_cancel_overlap">Отменить подтверждение пересечения</string>
+    <string name="launcher_target_ready">Выбрано: %1$s, %2$s</string>
 </resources>

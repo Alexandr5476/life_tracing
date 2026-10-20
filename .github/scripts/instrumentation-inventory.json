@@ -798,6 +798,18 @@
     "com.alexandr5476.lifetracing.SettingsProductionRouteTest": [
       "settings_controls_recreation_and_back_preserve_daily_and_live_runtime"
     ],
+    "com.alexandr5476.lifetracing.StartActivityAccessibilityPersistenceTest": [
+      "semanticActivitySelectionPreservesCanonicalRuntimeAndSnapshotAfterPhysicalReopen",
+      "semanticSequenceSelectionUsesExactWriterAndSurvivesPhysicalReopen",
+      "semanticQuickZeroPreservesFieldAndStatisticsIdentityWithoutTouchingLiveSession",
+      "semanticQuickMissingIsNeverNumericZeroAfterPhysicalReopen",
+      "semanticUntouchedQuickDefaultPreservesUnroundedStoredValue",
+      "semanticOneOffNoLiveCompletionCreatesOnlyOneHistoricalSystemBucketRoot",
+      "semanticPinnedMoveUsesCompleteOrderAndLeavesAllTemplateAndSnapshotFactsUnchanged",
+      "semanticHistoricalOptionsValidateTimesAndPreserveExplicitOffsetsAndOverlapProposal",
+      "semanticPreflightCancellationAndBothBackActionsRespectPendingDurableCommit",
+      "semanticConflictRetryAndCommittedCoordinationFailureNeverDuplicateLaunch"
+    ],
     "com.alexandr5476.lifetracing.daily.DailyAccessibilityPersistenceTest": [
       "semanticPauseResumeFinishPreserveCanonicalExecutionAfterPhysicalReopen"
     ],
@@ -923,7 +935,16 @@
       "pointerDragFollowsIdentityAcrossMultipleMovesAndCancellationRestoresOrder",
       "preflightConflictRejectedAndCommitStatesExposeOnlyTheirAcceptedActions",
       "roundedDefaultRemainsEnabledAndPinnedMoveUsesTheCompleteOrder",
-      "secondaryStartOptionsOpensWithoutChangingOneActionPrimarySelection"
+      "secondaryStartOptionsOpensWithoutChangingOneActionPrimarySelection",
+      "launcherHeadingsAndOneOffSelectedModeExposeNativeSemantics",
+      "typedDuplicateNamesKeepPrimaryAndOptionsActionsIndependentInBothTrees",
+      "pinnedBoundaryMovesAndDragMetadataDoNotOfferImpossibleCommands",
+      "quickEditableValueDistinguishesDefaultZeroMissingNegativeAndInvalidWithoutFocusCommit",
+      "historicalFieldsKeepNativeSetTextAndExactCategoryIdentityWithMissingSelection",
+      "bothAmbiguousTimestampsRequireExplicitOffsetSemanticActivation",
+      "commandFeedbackIsDistinctAndPreflightTicksHaveStableNoninteractiveSemantics",
+      "nativeBackAndToolbarBackShareFolderAndNestedEditorContext",
+      "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes"
     ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
       "activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent",
