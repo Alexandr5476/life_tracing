@@ -97,6 +97,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1014,7 +1015,7 @@ class MainActivityRouteSessionTest {
             LifeTracingRuntimeGraph
                 .from(composeTestRule.activity)
                 .dailyController
-                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
         }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(planned.name).fetchSemanticsNodes().isNotEmpty()
@@ -1193,7 +1194,7 @@ class MainActivityRouteSessionTest {
             LifeTracingRuntimeGraph
                 .from(composeTestRule.activity)
                 .dailyController
-                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
         }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(template.name).fetchSemanticsNodes().isNotEmpty()
@@ -1265,16 +1266,10 @@ class MainActivityRouteSessionTest {
             )
 
         openDailyPlan(plan.id, template.name)
-        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule.activity.planExecutionRouteSessions.activeSession
-                ?.controller
-                ?.state
-                ?.value
-                ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
+        launchPlanWithBlockedCommit {
+            assertNull(live.getActiveSession())
+            assertEquals(0, planExecutionCount(plan.id.value))
         }
-        assertNull(live.getActiveSession())
-        assertEquals(0, planExecutionCount(plan.id.value))
 
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.planExecutionRouteSessions.activeSession == null
@@ -1420,18 +1415,22 @@ class MainActivityRouteSessionTest {
         val plan =
             plans.createActivityPlanFromTemplate(planned.id, PlanSchedule.FloatingDay(today), now.plusMillis(2))
 
-        openDailyPlan(plan.id, planned.name)
-        composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
-        composeTestRule.waitUntil(5_000) {
-            composeTestRule.activity.planExecutionRouteSessions.activeSession
-                ?.controller
-                ?.state
-                ?.value
-                ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Preflight
+        // Daily retains its selected day across Activity instances and midnight.
+        val dailyController = LifeTracingRuntimeGraph.from(composeTestRule.activity).dailyController
+        composeTestRule.runOnUiThread {
+            dailyController.dispatch(DailyAction.Today)
+            dailyController.dispatch(DailyAction.PreviousDay)
         }
-        val unrelatedStartedAt = Instant.now()
+        assertEquals(today.minusDays(1), dailyController.state.value.selectedDate)
+        openDailyPlan(plan.id, planned.name)
+        assertEquals(today, dailyController.state.value.selectedDate)
         val unrelatedExecution =
-            library.startActivityFromTemplate(unrelated.id, unrelatedStartedAt, unrelatedStartedAt, zone)
+            launchPlanWithBlockedCommit {
+                assertNull(live.getActiveSession())
+                assertEquals(0, planExecutionCount(plan.id.value))
+                val unrelatedStartedAt = Instant.now()
+                library.startActivityFromTemplate(unrelated.id, unrelatedStartedAt, unrelatedStartedAt, zone)
+            }
         composeTestRule.waitUntil(5_000) {
             composeTestRule
                 .onAllNodesWithText(
@@ -1441,6 +1440,7 @@ class MainActivityRouteSessionTest {
         }
 
         assertEquals(0, planExecutionCount(plan.id.value))
+        assertEquals(PlanEntryStatus.PLANNED, plans.getPlan(plan.id)?.status)
         assertEquals(unrelatedExecution.id, live.getActiveSession()?.activityExecutionId)
         assertFalse(library.getRecent(100).any { it.id == LibraryTemplateId.Activity(planned.id) })
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
@@ -1583,7 +1583,7 @@ class MainActivityRouteSessionTest {
             LifeTracingRuntimeGraph
                 .from(composeTestRule.activity)
                 .dailyController
-                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
         }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(sequence.name).fetchSemanticsNodes().isNotEmpty()
@@ -2430,6 +2430,28 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitForIdle()
     }
 
+    // Keep the real countdown and production writer, but hold the final write until the fixture is ready.
+    private fun <T> launchPlanWithBlockedCommit(beforeCommit: () -> T): T {
+        val turn =
+            LifeTracingRuntimeGraph
+                .from(composeTestRule.activity)
+                .coordinator.mutationGate
+                .admit()
+        try {
+            composeTestRule.onNodeWithTag("plan-execution-submit").performClick()
+            composeTestRule.waitUntil(5_000) {
+                composeTestRule.activity.planExecutionRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.command is com.alexandr5476.lifetracing.plan.PlanExecutionCommandState.Committing
+            }
+            return beforeCommit()
+        } finally {
+            runBlocking { turn.run {} }
+        }
+    }
+
     private fun openDailyPlan(
         planId: PlanEntryId,
         title: String,
@@ -2438,7 +2460,7 @@ class MainActivityRouteSessionTest {
             LifeTracingRuntimeGraph
                 .from(composeTestRule.activity)
                 .dailyController
-                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+                .dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
         }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty()
