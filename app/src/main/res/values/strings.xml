@@ -659,7 +659,7 @@
     <string name="launcher_value_default">Configured default, unchanged</string>
     <string name="launcher_value_edited">Edited value</string>
     <string name="launcher_preflight">Pre-start countdown. You can cancel before starting.</string>
-    <string name="launcher_preflight_progress">Pre-start countdown in progress. Total duration %1$s</string>
+    <string name="launcher_countdown_remaining">Time remaining before start: %1$s</string>
     <string name="launcher_cancel_overlap">Cancel overlap confirmation</string>
     <string name="launcher_target_ready">Selected %1$s: %2$s</string>
 </resources>

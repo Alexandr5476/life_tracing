@@ -30,19 +30,26 @@ untouched defaults, edited values and Missing through localized state descriptio
 invalid Complete is disabled. An explicit Missing action uses the same blank-value
 edit path. Opening/focusing never parses a rounded display value into an override.
 
-Only isolated material status/failure text uses polite live regions. Preflight has
-a static announcement plus a noninteractive indicator describing its total duration.
-The visual 250 ms countdown text has cleared semantics, and progress exposes a
-stable indeterminate range instead of a changing announced percentage. Its existing
-display loop, deadline, attempt and cancellation command are unchanged. Committed
+Only isolated material status/failure text uses polite live regions. Preflight retains
+its isolated static polite entry announcement. The visual countdown exposes localized
+passive remaining-time semantics from the same deadline calculation, including 0:00
+at or after the deadline. It never implies durable commit. The redundant visual
+progress indicator is hidden from accessibility and exposes no progress range. Neither
+the timer nor its ancestors are live regions; no focus request or per-tick announcement
+is introduced. Its existing 250 ms display loop, deadline, attempt and cancellation
+command are unchanged. Committed
 coordination failure explicitly says the execution is saved and coordination needs
 recovery. One-off retries have one visible command path, through the existing form
 operation, without a duplicate generic Retry. Overlap cancellation has a distinct
 label from closing Start Options.
 
-System Back and toolbar Back share the existing context policy: nested forms close,
-folders go up, and route exits arbitrate through LauncherRouteExitPolicy. Committing
-waits at the durable boundary; committed results deliver once. No focus or semantics
+System Back and toolbar Back share the existing context policy: nested forms close
+through the controller's existing guards. Only Idle admits folder Back and mutates
+breadcrumbs. Checking and Preflight use LauncherRouteExitPolicy/controller arbitration
+to cancel before route exit; Conflict and Rejected exit through the same route owner
+without leaving a stale target in a parent folder. Committing waits at the durable
+boundary; committed and committed-coordination-failure results deliver once. Back
+intended for cancellation or route exit never eagerly mutates the Browse path. No focus or semantics
 callback selects or writes. Editors scroll into view and request keyboard focus at
 their first input on composition. Dismissal and preflight cancellation return
 keyboard focus to Back while idle. Focus state is ephemeral and stores no Template
@@ -163,8 +170,12 @@ fields, a short preflight, folders and a Sequence.
 11. Create a genuine overlap with completed history. Cancel confirmation, edit a
     Field, and Save again. Proceed must authorize the current proposal only.
     Exercise stale-template Review current in a controlled fixture.
-12. Start a countdown. Hear its static state and target; wait several display ticks:
-    no repeated announcements or focus movement. Cancel and verify no execution.
+12. Start a countdown from a nested Browse folder. Hear its static state and target;
+    inspect the remaining-time node midway through the countdown and at zero. Wait
+    several display ticks: no repeated announcements or focus movement. Use toolbar
+    and system Back in independent attempts; each must cancel and exit without
+    launching. Re-enter and verify no abandoned selection replays. Cancel explicitly
+    in another attempt and verify no execution.
     Repeat and let it commit. While a commit is held by a test gate, both Back paths
     must stay within the route. After success, Daily receives exactly one execution.
 13. Exercise live conflict, rejected launch and recoverable Retry in a controlled
@@ -242,3 +253,101 @@ passed again. The authorized repair probe was invoked again and returned "No
 active repair-probe lease" before running any testcase. The three reported cases
 therefore still require Controller runtime confirmation; compilation is not a
 passing device result. KeyboardInputFixture adds no testcase or inventory change.
+
+
+## S2C1 corrective evidence (2026-10-20)
+
+Production changes are limited to state-dependent Back dispatch, passive countdown
+presentation and English/Russian remaining-time resources. StartActivityController,
+LauncherRouteExitPolicy, transaction admission, scheduler identity/generation checks,
+post-commit delivery and shared LifeTracingControls/accessible-target provider remain
+unchanged. Inspection found the sibling Browse root/folder controls already disabled
+outside admitted selection state; both Back inputs use the corrected single lambda.
+Shared progress-control consumers retain their existing semantics because the
+accessibility modifier is local to preflight.
+
+Two additional presentation identities exercise Idle, Checking, Preflight, Committing,
+Conflict, Rejected, Committed and CommittedCoordinationFailure with nested Browse and
+both Back mechanisms. They check unchanged breadcrumbs on route arbitration, commit
+waiting and once-only result delivery. Controlled instants verify 0:12 remaining from
+a 0:30 total, exact zero and stale overdue zero, matching visual/spoken values and no
+live-region ancestors or accessible progress range. The retained full-screen feedback
+case also checks passive recomposition, accessible Cancel through CancelPreflight, and
+removal of timing semantics on Committing or cancellation.
+
+Four additional controller-backed physical-database identities independently establish
+two real folder levels and a timed Template, activate the rendered row through native
+semantics, and exercise toolbar/system Back in Checking (a CompletableDeferred gate
+before scheduler registration) and Preflight. They verify ordinary Idle folder Back,
+route exit, cancellation, stale callback rejection, unchanged active-session/execution
+and durable facts after physical reopen, fresh route ownership without selection
+replay, then exactly one independent later launch with the expected source/revision,
+Statistics and snapshot identity after another reopen. The existing held-commit case
+now also uses real nested Browse and checks unchanged breadcrumbs for both Back paths.
+Every original S2 identity remains mandatory. Inventory totals are now 22 launcher
+presentation and 14 accessibility-persistence cases; the full app inventory is 356.
+A focused Jupiter test also covers the deadline/zero/overdue calculation as executable
+evidence without changing that calculation.
+
+Final local verification passed:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --console=plain
+python -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The app JVM reports contain 401 tests with zero failures, errors or skips, including
+38 controller and three route-exit-policy tests. Ktlint, Detekt, Android lint and
+AndroidTest APK assembly passed on the final source. Initial attempts exposed a
+missing test import and formatting issues; those were corrected before the final
+successful combined check. The 17 host runner tests passed with mocked Gradle
+invocations; their printed device commands did not launch devices. An explicit
+inventory/source audit matched all 22 presentation and 14 persistence identities,
+retained every preexisting mandatory identity, and confirmed 627 data/356 app/two
+startup cases. English/Russian resources have the same replacement timing key with
+no duplicate names; existing BOM and line-ending styles were preserved.
+
+The regressions were added before the production correction and compiled, but no
+fail-first or corrected device testcase was executed here. Device execution,
+Controller's authoritative app-unit/gmd-app/lint checks and the mandatory independent
+exact-head five-API CI gate remain pending Controller verification. Manual TalkBack
+validation has not been performed. Compilation does not establish device or manual
+accessibility results. Changes are left uncommitted in the target worktree.
+
+## S2C1 system-Back fixture synchronization repair (2026-10-20)
+
+Controller's API 35 run completed 356 cases: 354 passed and two failed at the
+route-exit count assertion in nestedBackCancellation. The affected identities were
+nestedSystemBackCancelsCheckingBeforeSchedulerRegistration and
+nestedSystemBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry.
+
+The fixture observed Checking/Preflight in controller state and then injected
+system Back with runOnUiThread, which does not wait for Compose to render the new
+state and update its Back handler. The previous Idle folder handler could therefore
+handle the event. Toolbar activation already synchronizes through the Compose
+semantics APIs. Native Back injection now uses runOnIdle to establish the same
+rendered-state prerequisite before dispatch; the existing post-action idle wait and
+all cancellation, breadcrumbs, selected-identity, stale-callback, physical-reopen
+and later exactly-once launch assertions are retained. The sibling native-Back
+injections in the held-commit fixture and launcher presentation tests use the same
+synchronization. Scheduler callbacks and commit gates retain their direct controlled
+UI-thread dispatch. Production route/controller code and all testcase identities
+are unchanged by this repair; the app inventory remains 356.
+
+Repair verification passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest --console=plain
+git diff --check
+```
+
+The inventory audit still matches all 22 launcher presentation and 14 persistence
+methods. No JVM behavior changed, so the earlier 401-test app-unit result is not a
+new execution. The authorized command
+`D:\controller\.runtime\agent-tools\repair-probe.cmd` was invoked once and returned
+exit code 1 with "No active repair-probe lease" before any device testcase ran.
+This probe refusal does not reclassify the original assertion failures as an
+infrastructure failure and is not a passing runtime result. Controller must rerun
+the two failing identities and the mandatory full gate. No raw managed-device task
+was launched, and manual TalkBack validation remains unperformed.

@@ -2,9 +2,13 @@ package com.alexandr5476.lifetracing.launcher
 
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import java.time.Duration
+import java.time.Instant
 
 class LauncherNumberFormatTest {
     @Test
@@ -27,6 +31,22 @@ class LauncherNumberFormatTest {
     fun countdownClampsAtZero() {
         assertEquals("0:00", formatLauncherCountdown(java.time.Duration.ofSeconds(-1)))
         assertEquals("1:05", formatLauncherCountdown(java.time.Duration.ofSeconds(65)))
+    }
+
+    @Test
+    fun preflightRemainingUsesTheDeadlineAtAndAfterZero() {
+        val at = Instant.parse("2026-10-20T12:00:00Z")
+        val preflight =
+            LauncherCommandState.Preflight(
+                7,
+                LibraryTemplateId.Activity(ActivityTemplateId("timer")),
+                Duration.ofSeconds(30),
+                at,
+                at.plusSeconds(30),
+            )
+        assertEquals(Duration.ofSeconds(12), preflightCountdownRemaining(preflight, at.plusSeconds(18)))
+        assertEquals(Duration.ZERO, preflightCountdownRemaining(preflight, preflight.endsAt))
+        assertEquals(Duration.ZERO, preflightCountdownRemaining(preflight, preflight.endsAt.plusSeconds(5)))
     }
 
     @Test

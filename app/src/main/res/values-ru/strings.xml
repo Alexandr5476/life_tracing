@@ -659,7 +659,7 @@
     <string name="launcher_value_default">Заданное значение по умолчанию, без изменений</string>
     <string name="launcher_value_edited">Изменённое значение</string>
     <string name="launcher_preflight">Обратный отсчёт до запуска. Запуск можно отменить.</string>
-    <string name="launcher_preflight_progress">Идёт обратный отсчёт до запуска. Общая длительность %1$s</string>
+    <string name="launcher_countdown_remaining">До начала осталось: %1$s</string>
     <string name="launcher_cancel_overlap">Отменить подтверждение пересечения</string>
     <string name="launcher_target_ready">Выбрано: %1$s, %2$s</string>
 </resources>

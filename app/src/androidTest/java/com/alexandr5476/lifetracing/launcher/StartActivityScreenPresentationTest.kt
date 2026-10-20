@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
@@ -1061,22 +1062,194 @@ class StartActivityScreenPresentationTest {
                         at.plusSeconds(30),
                     ),
             )
-        val progress =
-            composeTestRule.onNodeWithContentDescription(
-                composeTestRule.activity.getString(R.string.launcher_preflight_progress, "0:30"),
-            )
-        val before = progress.fetchSemanticsNode().config
+        val remainingPrefix =
+            composeTestRule.activity
+                .getString(R.string.launcher_countdown_remaining, "COUNTDOWN")
+                .substringBefore("COUNTDOWN")
+        val timerMatcher =
+            SemanticsMatcher("passive remaining countdown") {
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.any { label ->
+                    label.startsWith(remainingPrefix)
+                } == true
+            }
+        composeTestRule.onLazyNode(timerMatcher)
         composeTestRule.mainClock.advanceTimeBy(1_000)
-        progress
-            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
-            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.LiveRegion))
+        val timer =
+            composeTestRule
+                .onNode(timerMatcher)
+                .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+        val config = timer.fetchSemanticsNode().config
+        val visual = config[SemanticsProperties.Text].single().text
+        val remaining = visual.substringAfterLast(' ')
         assertEquals(
-            before[SemanticsProperties.ProgressBarRangeInfo],
-            progress.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo],
+            listOf(composeTestRule.activity.getString(R.string.launcher_countdown_remaining, remaining)),
+            config[SemanticsProperties.ContentDescription],
         )
+        var node: androidx.compose.ui.semantics.SemanticsNode? = timer.fetchSemanticsNode()
+        while (node != null) {
+            assertFalse(node.config.contains(SemanticsProperties.LiveRegion))
+            node = node.parent
+        }
+        composeTestRule
+            .onAllNodes(
+                SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo),
+            ).assertCountEquals(0)
+        assertEquals(emptyList<StartActivityAction>(), actions)
+        state =
+            state.copy(
+                command =
+                    LauncherCommandState.Preflight(
+                        8,
+                        LibraryTemplateId.Activity(ActivityTemplateId("preflight")),
+                        Duration.ofSeconds(30),
+                        Instant.EPOCH,
+                        Instant.EPOCH.plusSeconds(30),
+                    ),
+            )
+        composeTestRule
+            .onNodeWithContentDescription(
+                composeTestRule.activity.getString(R.string.launcher_countdown_remaining, "0:00"),
+            ).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.launcher_preflight)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.launcher_committed)).assertDoesNotExist()
         assertEquals(emptyList<StartActivityAction>(), actions)
         composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).performSemanticsAction(SemanticsActions.OnClick)
         assertEquals(listOf(StartActivityAction.CancelPreflight), actions)
+        state = state.copy(command = LauncherCommandState.Committing(8))
+        composeTestRule.onNode(timerMatcher).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).assertDoesNotExist()
+        state = state.copy(command = LauncherCommandState.Idle)
+        composeTestRule.onNode(timerMatcher).assertDoesNotExist()
+        assertEquals(listOf(StartActivityAction.CancelPreflight), actions)
+    }
+
+    @Test
+    fun nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        val folder = Folder(FolderId("nested"), "Nested", null, Instant.EPOCH, Instant.EPOCH)
+        val result =
+            LauncherCommit.Activity(
+                com.alexandr5476.lifetracing.domain
+                    .ActivityExecutionId("saved"),
+                false,
+            )
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        var policy = LauncherRouteExitPolicy()
+        var exits = 0
+        var deliveries = 0
+        var arbitrations = 0
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                StartActivityScreen(state, actions::add, interaction) {
+                    policy.requestExit(
+                        {
+                            arbitrations++
+                            when (state.command) {
+                                is LauncherCommandState.Committing -> LauncherRouteExitDecision.WAIT_FOR_COMMIT
+                                is LauncherCommandState.Committed,
+                                is LauncherCommandState.CommittedCoordinationFailure,
+                                -> LauncherRouteExitDecision.DELIVER_COMMIT
+                                else -> LauncherRouteExitDecision.BACK
+                            }
+                        },
+                        { exits++ },
+                        { deliveries++ },
+                    )
+                }
+            }
+        }
+        for (command in listOf(
+            LauncherCommandState.Idle,
+            LauncherCommandState.Checking(1),
+            LauncherCommandState.Preflight(
+                1,
+                LibraryTemplateId.Activity(ActivityTemplateId("target")),
+                Duration.ofSeconds(30),
+                Instant.now(),
+                Instant.now().plusSeconds(30),
+            ),
+            LauncherCommandState.Committing(1),
+            LauncherCommandState.Conflict("busy"),
+            LauncherCommandState.Rejected("invalid"),
+            LauncherCommandState.Committed(result),
+            LauncherCommandState.CommittedCoordinationFailure(result, "coordination"),
+        )) {
+            for (system in listOf(false, true)) {
+                composeTestRule.runOnIdle {
+                    interaction.openRoot()
+                    interaction.openFolder(folder)
+                    state = state.copy(command = command, browseFolderId = folder.id)
+                    actions.clear()
+                    policy = LauncherRouteExitPolicy()
+                    exits = 0
+                    deliveries = 0
+                    arbitrations = 0
+                }
+                repeat(2) {
+                    if (system) {
+                        composeTestRule.runOnIdle {
+                            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+                        }
+                    } else {
+                        composeTestRule
+                            .onLazyNode(hasText(text(R.string.launcher_browse_back)) and hasClickAction())
+                            .performSemanticsAction(SemanticsActions.OnClick)
+                    }
+                    composeTestRule.waitForIdle()
+                }
+                if (command == LauncherCommandState.Idle) {
+                    assertEquals(listOf(StartActivityAction.Browse(null)), actions)
+                    assertTrue(interaction.browsePath.isEmpty())
+                    assertEquals(1, exits)
+                } else {
+                    assertTrue(actions.isEmpty())
+                    assertEquals(listOf(folder.id), interaction.browsePath.map { it.id })
+                    assertEquals(2, arbitrations)
+                    assertEquals(if (command.isCommittedResult()) 1 else 0, deliveries)
+                    val waitsOrDelivers = command is LauncherCommandState.Committing || command.isCommittedResult()
+                    assertEquals(if (waitsOrDelivers) 0 else 2, exits)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries() {
+        val at = Instant.parse("2026-10-20T12:00:00Z")
+        val preflight =
+            LauncherCommandState.Preflight(
+                9,
+                LibraryTemplateId.Activity(ActivityTemplateId("timer")),
+                Duration.ofSeconds(30),
+                at,
+                at.plusSeconds(30),
+            )
+        var now by mutableStateOf(at.plusSeconds(18))
+        composeTestRule.setContent {
+            LifeTracingTheme { PreflightCountdown(preflight, now) }
+        }
+        for (instant in listOf(at.plusSeconds(18), preflight.endsAt, preflight.endsAt.plusSeconds(5))) {
+            composeTestRule.runOnIdle { now = instant }
+            val remaining = if (instant < preflight.endsAt) "0:12" else "0:00"
+            assertEquals(remaining, formatLauncherCountdown(preflightCountdownRemaining(preflight, instant)))
+            val visual = composeTestRule.activity.getString(R.string.launcher_countdown, remaining)
+            val spoken = composeTestRule.activity.getString(R.string.launcher_countdown_remaining, remaining)
+            val timer =
+                composeTestRule
+                    .onNodeWithText(visual)
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf(spoken)))
+                    .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+            var node: androidx.compose.ui.semantics.SemanticsNode? = timer.fetchSemanticsNode()
+            while (node != null) {
+                assertFalse(node.config.contains(SemanticsProperties.LiveRegion))
+                node = node.parent
+            }
+            composeTestRule
+                .onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo))
+                .assertCountEquals(0)
+            composeTestRule.onNodeWithText(text(R.string.launcher_committed)).assertDoesNotExist()
+        }
     }
 
     @Test
@@ -1096,12 +1269,12 @@ class StartActivityScreenPresentationTest {
                 ) { exits++ }
             }
         }
-        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.runOnIdle { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         assertEquals(StartActivityAction.Browse(null), actions.single())
         assertEquals(0, exits)
         state = state.copy(oneOff = OneOffDraft())
         composeTestRule.waitForIdle()
-        composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.runOnIdle { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         assertEquals(StartActivityAction.CloseOneOff, actions.last())
         state = state.copy(oneOff = null, options = LauncherLoad.Loading)
         composeTestRule

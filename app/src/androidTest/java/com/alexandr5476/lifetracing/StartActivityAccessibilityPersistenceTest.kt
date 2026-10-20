@@ -547,8 +547,19 @@ class StartActivityAccessibilityPersistenceTest {
                     ),
                     createdAt = fixture.now,
                 )
-            fixture.store.library.pin(LibraryTemplateId.Activity(template.id))
+            val folder =
+                com.alexandr5476.lifetracing.domain
+                    .FolderId("commit-folder")
+            fixture.store.library.createFolder(folder, "Commit folder", null, fixture.now)
+            fixture.store.library.moveActivityTemplateToFolder(template.id, folder, fixture.now)
             fixture.start()
+            invoke(R.string.launcher_browse_open)
+            compose.waitUntil(10_000) { fixture.controller.state.value.browse is LauncherLoad.Content }
+            invoke("Commit folder")
+            compose.waitUntil(10_000) {
+                fixture.controller.state.value.browseFolderId == folder &&
+                    fixture.controller.state.value.browse is LauncherLoad.Content
+            }
             invoke("Countdown")
             compose.waitUntil(10_000) {
                 fixture.controller.state.value.command is LauncherCommandState.Preflight &&
@@ -572,11 +583,182 @@ class StartActivityAccessibilityPersistenceTest {
             compose.waitUntil(10_000) { fixture.commitEntered.isCompleted }
             assertTrue(fixture.controller.state.value.command is LauncherCommandState.Committing)
             invoke(R.string.launcher_browse_back)
-            compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+            compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
             assertEquals(false, fixture.hidden.value)
+            assertEquals(0, fixture.backs.get())
+            assertEquals(
+                listOf(folder),
+                fixture.session.interaction.browsePath
+                    .map { it.id },
+            )
+            assertEquals(folder, fixture.controller.state.value.browseFolderId)
             assertEquals(0L to 0L, fixture.store.executionCounts())
             compose.runOnUiThread { fixture.commitGate!!.complete(Unit) }
             fixture.awaitCommit()
+            assertEquals(1L to 0L, fixture.store.executionCounts())
+            assertEquals(1, fixture.commits.get())
+        }
+    }
+
+    @Test
+    fun nestedToolbarBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry() =
+        nestedBackCancellation(system = false, checking = false)
+
+    @Test
+    fun nestedSystemBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry() =
+        nestedBackCancellation(system = true, checking = false)
+
+    @Test
+    fun nestedToolbarBackCancelsCheckingBeforeSchedulerRegistration() =
+        nestedBackCancellation(system = false, checking = true)
+
+    @Test
+    fun nestedSystemBackCancelsCheckingBeforeSchedulerRegistration() =
+        nestedBackCancellation(system = true, checking = true)
+
+    private fun nestedBackCancellation(
+        system: Boolean,
+        checking: Boolean,
+    ) {
+        Fixture().use { fixture ->
+            val parent =
+                com.alexandr5476.lifetracing.domain
+                    .FolderId("parent")
+            val child =
+                com.alexandr5476.lifetracing.domain
+                    .FolderId("child")
+            fixture.store.library.createFolder(parent, "Parent folder", null, fixture.now)
+            fixture.store.library.createFolder(child, "Child folder", parent, fixture.now)
+            val template =
+                fixture.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Nested countdown",
+                        null,
+                        TimeTrackingMode.TIMER,
+                        java.time.Duration.ofMinutes(2),
+                        settings =
+                            com.alexandr5476.lifetracing.domain.ActivityTemplateSettings(
+                                startCountdown = java.time.Duration.ofSeconds(30),
+                            ),
+                    ),
+                    createdAt = fixture.now,
+                )
+            fixture.store.library.moveActivityTemplateToFolder(template.id, child, fixture.now)
+            val facts = fixture.store.durableFacts()
+            val sessionBefore = fixture.store.live.getActiveSession()
+            if (checking) fixture.checkingGate = kotlinx.coroutines.CompletableDeferred()
+            fixture.start()
+
+            fun back() {
+                // Controller state may publish before Compose installs the corresponding Back handler.
+                if (system) {
+                    compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+                } else {
+                    invoke(R.string.launcher_browse_back)
+                }
+                compose.waitForIdle()
+            }
+
+            fun enterChild() {
+                invoke(R.string.launcher_browse_open)
+                compose.waitUntil(10_000) { fixture.controller.state.value.browse is LauncherLoad.Content }
+                invoke("Parent folder")
+                compose.waitUntil(10_000) {
+                    fixture.controller.state.value.browseFolderId == parent &&
+                        fixture.controller.state.value.browse is LauncherLoad.Content
+                }
+                invoke("Child folder")
+                compose.waitUntil(10_000) {
+                    fixture.controller.state.value.browseFolderId == child &&
+                        fixture.controller.state.value.browse is LauncherLoad.Content
+                }
+            }
+            enterChild()
+            back()
+            compose.waitUntil(10_000) {
+                fixture.controller.state.value.browseFolderId == parent &&
+                    fixture.controller.state.value.browse is LauncherLoad.Content
+            }
+            assertEquals(
+                listOf(parent),
+                fixture.session.interaction.browsePath
+                    .map { it.id },
+            )
+            assertEquals(0, fixture.backs.get())
+            invoke("Child folder")
+            compose.waitUntil(10_000) {
+                fixture.controller.state.value.browseFolderId == child &&
+                    fixture.controller.state.value.browse is LauncherLoad.Content
+            }
+            invoke("Nested countdown")
+            compose.waitUntil(10_000) {
+                if (checking) {
+                    fixture.controller.state.value.command is LauncherCommandState.Checking &&
+                        fixture.checkingEntered.isCompleted
+                } else {
+                    fixture.controller.state.value.command is LauncherCommandState.Preflight &&
+                        fixture.preflightBoundary.get() != null
+                }
+            }
+            val obsolete = fixture.preflightBoundary.get()
+            val path = fixture.session.interaction.browsePath
+            val selected = fixture.controller.state.value.selected
+            back()
+            assertEquals(1, fixture.backs.get())
+            assertEquals(true, fixture.hidden.value)
+            assertEquals(LauncherCommandState.Idle, fixture.controller.state.value.command)
+            assertEquals(path, fixture.session.interaction.browsePath)
+            assertEquals(child, fixture.controller.state.value.browseFolderId)
+            assertEquals(selected, fixture.controller.state.value.selected)
+            assertNull(fixture.session.interaction.pendingSelectionId)
+            compose.runOnUiThread {
+                fixture.checkingGate?.complete(Unit)
+                obsolete?.invoke()
+            }
+            if (checking) assertNull(fixture.preflightBoundary.get())
+            assertEquals(if (checking) 0 else 1, fixture.preflightCancellations.get())
+            assertEquals(0, fixture.commits.get())
+            assertTrue(fixture.writes.isEmpty())
+            assertEquals(sessionBefore, fixture.store.live.getActiveSession())
+            assertEquals(0L to 0L, fixture.store.executionCounts())
+            assertEquals(facts, fixture.store.durableFacts())
+            fixture.reopen()
+            assertEquals(sessionBefore, fixture.store.live.getActiveSession())
+            assertEquals(0L to 0L, fixture.store.executionCounts())
+            assertEquals(facts, fixture.store.durableFacts())
+            fixture.checkingGate = null
+            fixture.preflightBoundary.set(null)
+            fixture.start(reentry = true)
+            assertTrue(
+                fixture.session.interaction.browsePath
+                    .isEmpty(),
+            )
+            assertNull(fixture.session.interaction.pendingSelectionId)
+            assertEquals(LauncherLoad.Idle, fixture.controller.state.value.selected)
+            assertTrue(fixture.writes.isEmpty())
+            enterChild()
+            invoke("Nested countdown")
+            compose.waitUntil(10_000) {
+                fixture.controller.state.value.command is LauncherCommandState.Preflight &&
+                    fixture.preflightBoundary.get() != null
+            }
+            compose.runOnUiThread {
+                obsolete?.invoke()
+                assertTrue(fixture.controller.state.value.command is LauncherCommandState.Preflight)
+                fixture.preflightBoundary.get()!!.invoke()
+            }
+            fixture.awaitCommit()
+            val runtime = fixture.store.live.getActiveRuntime() as ActiveActivityRuntime
+            assertEquals(template.id, runtime.snapshot.sourceTemplateId)
+            assertEquals(template.revision, runtime.snapshot.sourceRevision)
+            assertEquals(template.statisticsSeriesId, runtime.snapshot.statisticsSeriesId)
+            assertEquals(runtime.snapshot.id, runtime.execution.snapshotId)
+            assertEquals(
+                template.id,
+                (fixture.writes.single() as LauncherDurableCommand.StartActivity).templateId,
+            )
+            fixture.reopen()
+            assertEquals(runtime, fixture.store.live.getActiveRuntime())
             assertEquals(1L to 0L, fixture.store.executionCounts())
             assertEquals(1, fixture.commits.get())
         }
@@ -640,7 +822,11 @@ class StartActivityAccessibilityPersistenceTest {
             java.util.concurrent.atomic
                 .AtomicReference<(() -> Unit)?>(null)
         var store = RuntimeRecoveryStore(context, name)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var checkingGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        val checkingEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val preflightCancellations = AtomicInteger()
+        val backs = AtomicInteger()
         val writes = java.util.Collections.synchronizedList(mutableListOf<LauncherDurableCommand>())
         val reorders = java.util.Collections.synchronizedList(mutableListOf<List<LibraryTemplateId>>())
         val commits = AtomicInteger()
@@ -648,7 +834,8 @@ class StartActivityAccessibilityPersistenceTest {
         lateinit var controller: StartActivityController
         lateinit var session: StartActivityRouteSession
 
-        fun start() {
+        fun start(reentry: Boolean = false) {
+            if (reentry) scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             controller =
                 StartActivityController(
                     scope,
@@ -687,9 +874,11 @@ class StartActivityAccessibilityPersistenceTest {
                     { zone },
                     PreflightScheduler { _, boundary ->
                         preflightBoundary.set(boundary)
-                        PreflightHandle {}
+                        PreflightHandle { preflightCancellations.incrementAndGet() }
                     },
                     initialLiveConflict = { target ->
+                        checkingEntered.complete(Unit)
+                        checkingGate?.await()
                         withContext(Dispatchers.IO) { store.library.hasLiveLaunchConflict(target.id, target.revision) }
                     },
                     readActivityTemplate = { id ->
@@ -708,19 +897,26 @@ class StartActivityAccessibilityPersistenceTest {
                     com.alexandr5476.lifetracing.launcher
                         .LauncherRouteExitPolicy(),
                 )
-            compose.setContent {
-                LifeTracingTheme {
-                    if (hidden.value) {
-                        Text("Daily received committed launch")
-                    } else {
-                        StartActivityRoute(
-                            session,
-                            onBack = { hidden.value = true },
-                            onCommitted = {
-                                commits.incrementAndGet()
-                                hidden.value = true
-                            },
-                        )
+            if (reentry) {
+                compose.runOnIdle { hidden.value = false }
+            } else {
+                compose.setContent {
+                    LifeTracingTheme {
+                        if (hidden.value) {
+                            Text("Daily received committed launch")
+                        } else {
+                            StartActivityRoute(
+                                session,
+                                onBack = {
+                                    backs.incrementAndGet()
+                                    hidden.value = true
+                                },
+                                onCommitted = {
+                                    commits.incrementAndGet()
+                                    hidden.value = true
+                                },
+                            )
+                        }
                     }
                 }
             }

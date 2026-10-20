@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 350 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 356 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -305,7 +305,13 @@ APK compilation and semantics assertions do not certify TalkBack operation.
 
 The pinned inventory adds nine launcher presentation cases and ten isolated physical-
 database route/controller cases, bringing the mandatory app count to **350 per API**.
-Data remains 627 and the independent production-startup invocation remains two.
+S2C1 adds two presentation regressions and four isolated nested-Browse cancellation
+cases, bringing the current mandatory app count to **356 per API**. The command-state
+matrix covers both Back mechanisms; physical reopen cases cover Checking/Preflight
+cancellation and a later independent successful launch. Passive remaining-time
+semantics cover exact-zero and overdue display without a live region or misleading
+indeterminate progress. Data remains 627 and the independent production-startup
+invocation remains two.
 All original testcase identities and the five unfiltered API gates remain mandatory.
 The existing production Sequence launch, organization, stale-target, transaction and
 route-session tests are retained.

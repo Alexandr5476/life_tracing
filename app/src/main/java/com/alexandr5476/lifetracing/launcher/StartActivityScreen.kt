@@ -49,7 +49,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -57,7 +56,6 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -132,6 +130,7 @@ internal fun StartActivityScreen(
                 state.command is LauncherCommandState.CommittedCoordinationFailure -> onRouteBack()
             state.oneOff != null -> onAction(StartActivityAction.CloseOneOff)
             state.options != LauncherLoad.Idle -> onAction(StartActivityAction.CloseOptions)
+            state.command != LauncherCommandState.Idle -> onRouteBack()
             interaction.browsePath.isNotEmpty() ->
                 onAction(StartActivityAction.Browse(interaction.browseBack()))
             else -> onRouteBack()
@@ -518,29 +517,34 @@ private fun PreflightCard(
             elapsedNow = SystemClock.elapsedRealtime()
         }
     }
-    val remaining = preflightCountdownRemaining(preflight, wallAtStart.plusMillis(elapsedNow - elapsedAtStart))
-    val progress = 1f - remaining.toMillis().toFloat() / preflight.duration.toMillis().coerceAtLeast(1L)
     LauncherCard(container = MaterialTheme.colorScheme.primaryContainer) {
         targetName?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
         LauncherStatus(stringResource(R.string.launcher_preflight))
-        Text(
-            stringResource(R.string.launcher_countdown, formatLauncherCountdown(remaining)),
-            modifier = Modifier.clearAndSetSemantics {},
-        )
-        val progressLabel =
-            stringResource(R.string.launcher_preflight_progress, formatLauncherCountdown(preflight.duration))
-        LifeTracingLinearProgressIndicator(
-            progress = { progress.coerceIn(0f, 1f) },
-            modifier =
-                Modifier.clearAndSetSemantics {
-                    contentDescription = progressLabel
-                    progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
-                },
-        )
+        PreflightCountdown(preflight, wallAtStart.plusMillis(elapsedNow - elapsedAtStart))
         LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.CancelPreflight) }) {
             Text(stringResource(R.string.launcher_cancel))
         }
     }
+}
+
+/** Passive timing presentation; the existing display loop supplies its only clock. */
+@Composable
+internal fun PreflightCountdown(
+    preflight: LauncherCommandState.Preflight,
+    now: Instant,
+) {
+    val remaining = preflightCountdownRemaining(preflight, now)
+    val formatted = formatLauncherCountdown(remaining)
+    val remainingLabel = stringResource(R.string.launcher_countdown_remaining, formatted)
+    Text(
+        stringResource(R.string.launcher_countdown, formatted),
+        modifier = Modifier.semantics { contentDescription = remainingLabel },
+    )
+    val progress = 1f - remaining.toMillis().toFloat() / preflight.duration.toMillis().coerceAtLeast(1L)
+    LifeTracingLinearProgressIndicator(
+        progress = { progress.coerceIn(0f, 1f) },
+        modifier = Modifier.clearAndSetSemantics { hideFromAccessibility() },
+    )
 }
 
 internal fun preflightCountdownRemaining(

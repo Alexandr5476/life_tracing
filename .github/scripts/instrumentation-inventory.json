@@ -808,7 +808,11 @@
       "semanticPinnedMoveUsesCompleteOrderAndLeavesAllTemplateAndSnapshotFactsUnchanged",
       "semanticHistoricalOptionsValidateTimesAndPreserveExplicitOffsetsAndOverlapProposal",
       "semanticPreflightCancellationAndBothBackActionsRespectPendingDurableCommit",
-      "semanticConflictRetryAndCommittedCoordinationFailureNeverDuplicateLaunch"
+      "semanticConflictRetryAndCommittedCoordinationFailureNeverDuplicateLaunch",
+      "nestedToolbarBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry",
+      "nestedSystemBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry",
+      "nestedToolbarBackCancelsCheckingBeforeSchedulerRegistration",
+      "nestedSystemBackCancelsCheckingBeforeSchedulerRegistration"
     ],
     "com.alexandr5476.lifetracing.daily.DailyAccessibilityPersistenceTest": [
       "semanticPauseResumeFinishPreserveCanonicalExecutionAfterPhysicalReopen"
@@ -944,7 +948,9 @@
       "bothAmbiguousTimestampsRequireExplicitOffsetSemanticActivation",
       "commandFeedbackIsDistinctAndPreflightTicksHaveStableNoninteractiveSemantics",
       "nativeBackAndToolbarBackShareFolderAndNestedEditorContext",
-      "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes"
+      "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes",
+      "nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand",
+      "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
     ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
       "activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent",
