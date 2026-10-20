@@ -32,6 +32,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -87,6 +89,7 @@ fun DailyRoute(
     onSettings: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
     var entered by remember(controller) { mutableStateOf(false) }
     DisposableEffect(controller) {
@@ -106,6 +109,7 @@ fun DailyRoute(
         onSettings = onSettings,
         onExpandSequence = onExpandSequence,
         onExecutePlan = onExecutePlan,
+        isRouteVisible = isRouteVisible,
     )
 }
 
@@ -122,8 +126,26 @@ internal fun DailyScreen(
     onSettings: () -> Unit = {},
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
     val scrollState = rememberScrollState()
+    val landingFocus = remember { FocusRequester() }
+    val canonical =
+        when (val load = state.load) {
+            is DailyLoadState.Content -> load.daily
+            is DailyLoadState.Empty -> load.daily
+            else -> null
+        }
+    var hadActive by remember(state.selectedDate) { mutableStateOf(false) }
+    // Route entry and removal of an active surface are meaningful keyboard boundaries.
+    // Neither a display tick nor a refresh of the same runtime requests focus.
+    LaunchedEffect(isRouteVisible) { if (isRouteVisible) landingFocus.requestFocus() }
+    LaunchedEffect(canonical != null, canonical?.active != null) {
+        if (canonical != null) {
+            if (isRouteVisible && hadActive && canonical.active == null) landingFocus.requestFocus()
+            hadActive = canonical.active != null
+        }
+    }
     LifeTracingAccessibleTargets {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(
@@ -145,6 +167,7 @@ internal fun DailyScreen(
                     onHistory,
                     onStatistics,
                     onSettings,
+                    landingFocus,
                 )
                 CommandFailure(state.commandFailure)
                 when (val load = state.load) {
@@ -185,6 +208,7 @@ private fun DateHeader(
     onHistory: () -> Unit,
     onStatistics: () -> Unit,
     onSettings: () -> Unit,
+    landingFocus: FocusRequester,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -196,7 +220,7 @@ private fun DateHeader(
         TextButton(
             onClick = { onAction(DailyAction.PreviousDay) },
             modifier =
-                Modifier.semantics {
+                Modifier.focusRequester(landingFocus).semantics {
                     contentDescription = previous
                     traversalIndex = 1f
                 },

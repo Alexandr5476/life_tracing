@@ -34,6 +34,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -82,10 +84,19 @@ fun HistoryRoute(
     onAddCompletedActivity: () -> Unit,
     onOpenActivity: (CompletedActivityHistoryRoot) -> Unit,
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     LaunchedEffect(controller) { controller.onRouteEntered() }
     val state by controller.state.collectAsState()
-    HistoryScreen(state, controller::dispatch, onBack, onAddCompletedActivity, onOpenActivity, onOpenSequence)
+    HistoryScreen(
+        state,
+        controller::dispatch,
+        onBack,
+        onAddCompletedActivity,
+        onOpenActivity,
+        onOpenSequence,
+        isRouteVisible,
+    )
 }
 
 @Composable
@@ -146,7 +157,10 @@ internal fun HistoryScreen(
     onAddCompletedActivity: () -> Unit = {},
     onOpenActivity: (CompletedActivityHistoryRoot) -> Unit = {},
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(isRouteVisible) { if (isRouteVisible) backFocus.requestFocus() }
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
@@ -154,7 +168,9 @@ internal fun HistoryScreen(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.history_title), style = MaterialTheme.typography.headlineSmall)
-                TextButton(onClick = onBack) { Text(stringResource(R.string.history_back)) }
+                TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+                    Text(stringResource(R.string.history_back))
+                }
             }
             LifeTracingPrimaryButton(
                 onClick = onAddCompletedActivity,

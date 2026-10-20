@@ -85,6 +85,7 @@ internal fun StartActivityRoute(
     session: StartActivityRouteSession,
     onBack: () -> Unit,
     onCommitted: () -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     val controller = session.controller
     val state by controller.state.collectAsState()
@@ -95,7 +96,13 @@ internal fun StartActivityRoute(
     LaunchedEffect(state.command) {
         exitPolicy.onCommand(state.command, onCommitted)
     }
-    StartActivityScreen(state, controller::dispatch, session.interaction, exitRoute)
+    StartActivityScreen(
+        state,
+        controller::dispatch,
+        session.interaction,
+        onRouteBack = exitRoute,
+        isRouteVisible = isRouteVisible,
+    )
 }
 
 @Suppress("CyclomaticComplexMethod") // Launcher sections remain in their product order.
@@ -104,6 +111,7 @@ internal fun StartActivityScreen(
     state: StartActivityState,
     onAction: (StartActivityAction) -> Unit,
     interaction: StartActivityRouteInteraction,
+    isRouteVisible: Boolean = true,
     onRouteBack: () -> Unit = {},
 ) {
     val selected = state.selected
@@ -146,6 +154,12 @@ internal fun StartActivityScreen(
             else -> null
         }
     val backFocus = remember { FocusRequester() }
+    LaunchedEffect(interaction, isRouteVisible) {
+        if (isRouteVisible && editorKind == null) {
+            listState.scrollToItem(0)
+            backFocus.requestFocus()
+        }
+    }
     var editorWasOpen by remember { mutableStateOf(false) }
     var preflightWasOpen by remember { mutableStateOf(false) }
     val preflightOpen = state.command is LauncherCommandState.Preflight
@@ -153,7 +167,7 @@ internal fun StartActivityScreen(
         val returning = (editorWasOpen && editorKind == null) || (preflightWasOpen && !preflightOpen)
         if (editorKind != null || (returning && state.command == LauncherCommandState.Idle)) {
             listState.scrollToItem(0)
-            if (editorKind == null) backFocus.requestFocus()
+            if (isRouteVisible && editorKind == null) backFocus.requestFocus()
         }
         editorWasOpen = editorKind != null
         preflightWasOpen = preflightOpen

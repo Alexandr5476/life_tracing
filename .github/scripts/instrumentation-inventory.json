@@ -855,7 +855,8 @@
       "sequence_current_stopwatch_and_total_progress_independently_then_freeze_when_paused",
       "sequence_timer_and_no_live_current_use_their_frozen_values",
       "stopwatch_honors_frozen_show_seconds_while_timer_keeps_second_precision",
-      "waiting_and_transition_states_never_fabricate_a_current_child_or_countdown"
+      "waiting_and_transition_states_never_fabricate_a_current_child_or_countdown",
+      "accessibilityKeyboardFocusRecoversOnTerminalRemovalWithoutFollowingTicksOrRefreshes"
     ],
     "com.alexandr5476.lifetracing.editor.ActivityTemplateEditorPersistenceTest": [
       "categoryOptionLabelRenamePreservesSparseActiveOptionPositionsAndRevision",
@@ -1206,6 +1207,21 @@
       "noDurationSamplesAndSampledZeroRemainDistinctAndLifecycleMetadataIsVisible",
       "numberCategoryAndTextFieldsUseStableIdentityAndCanonicalSamples",
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
+    ],
+    "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
+      "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
+      "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",
+      "planOriginSequenceEndEarlyFulfillsTheSameFrozenPlanAndExecutionAfterReopen",
+      "dailyNoLivePlanZeroReturnsToDailyAndRetainsFrozenFieldAfterReopen",
+      "planNoLivePlanZeroReturnsToPlanAndRetainsFrozenFieldAfterReopen",
+      "idleLauncherToolbarAndSystemBackReturnKeyboardFocusWithoutWriting",
+      "launcherPreflightCancellationAndRetainedRecreationNeverReplaySelection",
+      "focusedTimeEntryBackAndStaleOriginReloadNeverWriteOrRestoreObsoleteActions",
+      "planReadRetryAndBackDuringCommitDeliverSavedCoordinationFailureOnceToDaily",
+      "launcherBackDuringCommitDeliversSavedCoordinationFailureOnceToDaily",
+      "russianLargeFontProductionActivityJourneyKeepsActionsReachable",
+      "englishReducedScaleProductionActivityJourneyKeepsNativeTargets"
     ]
   },
   "startup": {

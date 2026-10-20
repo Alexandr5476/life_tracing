@@ -17,9 +17,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -46,9 +50,10 @@ fun PlanRoute(
     controller: PlanController,
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
     val state by controller.state.collectAsState()
-    PlanScreen(state, controller::dispatch, onBack, onExecute)
+    PlanScreen(state, controller::dispatch, onBack, onExecute, isRouteVisible)
 }
 
 @Composable
@@ -57,14 +62,19 @@ fun PlanScreen(
     onAction: (PlanAction) -> Unit,
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(isRouteVisible) { if (isRouteVisible) backFocus.requestFocus() }
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = onBack) { Text(stringResource(R.string.plan_back)) }
+            TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+                Text(stringResource(R.string.plan_back))
+            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(

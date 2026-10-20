@@ -27,6 +27,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
@@ -99,6 +100,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
@@ -120,6 +122,8 @@ import java.util.TimeZone
 class DailyScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule val keyboard = KeyboardInputFixture(composeTestRule)
 
     @Test
     fun repeated_hour_labels_use_canonical_occurrence_offsets() {
@@ -1173,6 +1177,52 @@ class DailyScreenPresentationTest {
         assertEquals(perLocale + perLocale + listOf(DailyAction.PauseActivity, DailyAction.FinishActivity), actions)
     }
 
+    @Test
+    fun accessibilityKeyboardFocusRecoversOnTerminalRemovalWithoutFollowingTicksOrRefreshes() {
+        val actions = mutableListOf<DailyAction>()
+        val running = activity("Focus timer", TimeTrackingMode.TIMER)
+        val content = daily(DailyActive.Activity(running), baseline(running, 2))
+        val harness = screen(content, actions, 2_000)
+        keyboard.enter()
+        val finish = runtimeAction(R.string.daily_finish)
+        finish.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+        for (tick in listOf(4_999L, 5_000L, 5_001L)) {
+            composeTestRule.runOnIdle { harness.tick.longValue = tick }
+            finish.assertIsFocused()
+            assertTrue(actions.isEmpty())
+        }
+        val history = composeTestRule.onNode(hasText(string(R.string.daily_history)) and hasClickAction())
+        history.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        harness.state.value = content.copy(load = DailyLoadState.Loading)
+        history.assertIsFocused()
+        harness.state.value = content
+        history.assertIsFocused()
+        harness.state.value =
+            content.copy(
+                selectedDate = content.selectedDate.plusDays(1),
+                load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)),
+            )
+        history.assertIsFocused()
+        harness.state.value = content
+        history.assertIsFocused()
+        finish.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsFocused()
+        assertTrue(actions.isEmpty())
+        runtimeAction(R.string.daily_finish).assertDoesNotExist()
+        harness.visible.value = false
+        history.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        harness.state.value = content
+        history.assertIsFocused()
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        history.assertIsFocused()
+        harness.visible.value = true
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsFocused()
+        assertTrue(actions.isEmpty())
+    }
+
     private fun activateScaledControls(
         locale: Locale,
         controls: List<Int>,
@@ -1241,6 +1291,7 @@ class DailyScreenPresentationTest {
     ): ScreenHarness {
         val stateHolder = mutableStateOf(state)
         val tickHolder = mutableLongStateOf(tick ?: 0)
+        val visibleHolder = mutableStateOf(true)
         composeTestRule.setContent {
             LifeTracingTheme {
                 DailyScreen(
@@ -1250,15 +1301,17 @@ class DailyScreenPresentationTest {
                     onExpandSequence = expanded::add,
                     onExecutePlan = planExecutions::add,
                     onStatistics = onStatistics,
+                    isRouteVisible = visibleHolder.value,
                 )
             }
         }
-        return ScreenHarness(stateHolder, tickHolder)
+        return ScreenHarness(stateHolder, tickHolder, visibleHolder)
     }
 
     private data class ScreenHarness(
         val state: androidx.compose.runtime.MutableState<DailyPresentationState>,
         val tick: androidx.compose.runtime.MutableLongState,
+        val visible: androidx.compose.runtime.MutableState<Boolean>,
     )
 
     private fun presentation(

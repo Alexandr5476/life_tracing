@@ -83,6 +83,7 @@ internal fun PlanExecutionRoute(
     onBack: () -> Unit,
     onReloadOrigin: () -> Unit,
     onCommitted: (PlanExecutionCommit) -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     val state by session.controller.state.collectAsState()
     val exit = {
@@ -99,7 +100,7 @@ internal fun PlanExecutionRoute(
         val activity = (prepared?.action?.snapshot as? FocusedPlanAction.Snapshot.Activity)?.value
         if (activity != null) session.prepareQuickDraft(activity)
     }
-    PlanExecutionScreen(state, session, exit, onReloadOrigin)
+    PlanExecutionScreen(state, session, exit, onReloadOrigin, isRouteVisible)
 }
 
 @Composable
@@ -108,12 +109,16 @@ internal fun PlanExecutionScreen(
     session: PlanExecutionRouteSession,
     onBack: () -> Unit,
     onReloadOrigin: () -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     val backFocus = remember(session) { FocusRequester() }
     val timeEntryOpen = session.timeDraft != null
+    LaunchedEffect(session, isRouteVisible) {
+        if (isRouteVisible && !timeEntryOpen) backFocus.requestFocus()
+    }
     var hadTimeEntry by remember(session) { mutableStateOf(false) }
     LaunchedEffect(timeEntryOpen) {
-        if (hadTimeEntry && !timeEntryOpen) backFocus.requestFocus()
+        if (isRouteVisible && hadTimeEntry && !timeEntryOpen) backFocus.requestFocus()
         hadTimeEntry = timeEntryOpen
     }
     LifeTracingAccessibleTargets {

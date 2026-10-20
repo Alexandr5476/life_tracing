@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -91,12 +92,13 @@ internal fun ExpandedLiveSequenceRoute(
     controller: ExpandedLiveSequenceController,
     onBack: () -> Unit,
     onStale: () -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     val state by controller.state.collectAsState()
     LaunchedEffect(state.stale) {
         if (state.stale) onStale()
     }
-    ExpandedLiveSequenceScreen(state, controller, onBack)
+    ExpandedLiveSequenceScreen(state, controller, onBack, isRouteVisible = isRouteVisible)
 }
 
 @Composable
@@ -105,9 +107,10 @@ internal fun ExpandedLiveSequenceScreen(
     controller: ExpandedLiveSequenceController,
     onBack: () -> Unit,
     displayElapsedRealtimeMs: Long? = null,
+    isRouteVisible: Boolean = true,
 ) {
     LifeTracingAccessibleTargets {
-        ExpandedSequenceContent(state, controller, onBack, displayElapsedRealtimeMs)
+        ExpandedSequenceContent(state, controller, onBack, displayElapsedRealtimeMs, isRouteVisible)
     }
 }
 
@@ -139,14 +142,21 @@ private fun ExpandedSequenceContent(
     controller: ExpandedLiveSequenceController,
     onBack: () -> Unit,
     displayElapsedRealtimeMs: Long?,
+    isRouteVisible: Boolean,
 ) {
     // Remove command surfaces synchronously; onStale exits the route asynchronously.
     val sequence = state.sequence.takeUnless { state.stale }
     val elapsedNow = displayTick(state.displayBaseline, displayElapsedRealtimeMs)
     var addOpen by remember(sequence?.runtime?.execution?.id, sequence?.state, state.stale) { mutableStateOf(false) }
     val backFocus = remember { FocusRequester() }
+    val listState = rememberLazyListState()
     val pane = stringResource(R.string.expanded_sequence_pane)
-    LaunchedEffect(sequence?.runtime?.execution?.id, state.stale) { backFocus.requestFocus() }
+    LaunchedEffect(sequence?.runtime?.execution?.id, state.stale, isRouteVisible) {
+        if (isRouteVisible && !state.stale) {
+            if (sequence != null) listState.scrollToItem(0)
+            backFocus.requestFocus()
+        }
+    }
     Surface(modifier = Modifier.semantics { paneTitle = pane }, color = MaterialTheme.colorScheme.background) {
         if (sequence == null) {
             Column(
@@ -175,6 +185,7 @@ private fun ExpandedSequenceContent(
         }
         val actions = expandedActions(sequence.state)
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
         ) {
