@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 606 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 626 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -36,6 +36,32 @@ The pinned inventory includes all existing nonignored instrumentation, encompass
 | Production app | LifeTracingAppTest, ProductionLauncherCoordinationTest, PlanExecutionPersistenceTest and navigation/persistence regressions |
 | Platform services | RuntimeCapabilityAndroidTest and RuntimePlatformAndroidTest: real AlarmManager registration/cancellation, notification posting/replacement/cancellation, denial, PendingIntent payload/identity and vibration |
 | Actual device | Both AndroidCompatibilityDeviceTest classes: observed SDK, expected-API assertion and fingerprint logging |
+
+S1C1 replaces the obsolete duration Cursor cleanup case with
+`StatisticsRepositoryTest.durationSelectionRejectsCountMismatchAndInvalidCachedValues`.
+The bounded scalar selection no longer exposes a Cursor; the replacement pins independent
+count/median consistency and invalid persisted durations. The other two S1 additions and
+the pre-S2 mandatory data count of 609 remain unchanged. S2 adds four Number reader cases
+(eligibility/periods, growing history/query cardinality, physical reopen/deletion and
+malformed storage), bringing the S2 mandatory data count to 613. S3 adds two Series Detail cases
+(raw-sample rejection and increasing-history result/query bounds), bringing the S3
+mandatory data count to 615. Existing mixed-Field fixtures now cover exact signed totals,
+empty Number/Category Fields and Text descriptors; the physical reopen/deletion and
+malformed-storage cases also exercise canonical Series Detail. The five-API gate and
+independent startup inventory remain mandatory; host probes and APK compilation do not
+certify device execution.
+
+## S4 Statistics integration additions
+
+S4 adds five mandatory `StatisticsRepositoryTest` identities: mixed physical reopen with
+supported correction/deletion, separate-connection correction/deletion/child-deletion
+interleavings, and read failure/cancellation without durable writes. Data now requires
+620 mandatory cases (625 including the five existing nonmandatory skips); app and
+independent startup remain 323 and two. Every original case is retained. See
+[the S4 closure evidence](statistics_s4_evidence.md) for the independent ledger,
+transaction gates, read graph, host-only comparison and remaining acceptance risks.
+Compilation and host probes do not certify these new Android cases. Controller must
+execute the complete unfiltered inventory at all five APIs and exact-head GitHub CI.
 
 ## System alarm and notification evidence
 
@@ -157,3 +183,109 @@ python -m unittest discover -s .github/scripts -p "test_*.py"
 ## Archived implementation records
 
 The [pre-checkpoint-49 document](archive/android_compatibility_gate_pre_checkpoint49.md) preserves earlier implementation-turn NOT_RUN tables and the W1-W3 handoff verbatim. Those statuses and instructions are historical, superseded by this document and current workflow. They are not current outcomes and do not reopen closed B1.
+
+## PR37 Statistics query review correction
+
+Adds mandatory `StatisticsRepositoryTest.numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen`. Data now requires 621 mandatory cases (626 including five existing nonmandatory skips); app/startup counts and all five API gates are unchanged. The existing growing Number-reader regression also asserts noncorrelated bit-count plans and execution-first median plans. The new case also asserts the guarded dense plan for broad history; all preexisting eligibility, exactness, reopen and mutation/concurrency cases remain required. Host probes and APK compilation do not certify device execution. Controller must run the full unfiltered suites and independent startup at all five APIs plus exact-head CI after correction.
+
+## PR37 F1 shared-lineage correction
+
+Adds mandatory `StatisticsRepositoryTest.sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen`.
+Data now requires 622 mandatory cases (627 including the five existing nonmandatory skips).
+All prior B1/W1/B2, concurrency, cancellation, mutation and post-reopen cases remain required.
+The new physical Room fixture holds selected execution cardinality at 100 and varies
+populated Number Fields across 4/8/16/24, for Activity and Sequence. Every Field shares
+6,000 old-Series values through separate old/new immutable snapshot Field IDs. It checks
+exact signed distributions, missing/coverage, stable identities, three shared rank passes
+independent of Field count, four binds and plans from actually executed SQL. Host VM-work
+measurements complement these deterministic assertions. Compilation and host checks do
+not certify instrumentation; Controller owns fail-first/corrected device execution and
+the full unfiltered five-API exact-head gate.
+
+## PR37 W1 small-fallback correction
+
+Adds mandatory `StatisticsRepositoryTest.smallNumberFallbackUsesScalarMediansAfterPhysicalReopen`.
+Data now requires 623 mandatory cases (628 including the five existing nonmandatory skips).
+The physical Room regression covers Activity and Sequence with 1,000 selected executions,
+7,000 old executions and separate frozen snapshots sharing stable source Field identities.
+It covers one/two shared Fields and a successful exclusive Field-first selection followed
+by one saturated shared-lineage fallback. Signed broad-range samples include both Long
+extremes, overflow-sized exact totals, even/odd medians and missing coverage. Canonical
+Series Detail and individual Field reads must agree with independent expectations after
+reopen. Executed SQL must use at most two scalar fallback selections and no grouped rank
+passes, with indexed plans and capped probes. All existing F1 4/8/16/24-Field, B1/W1/B2,
+transaction, correction/deletion and compatibility protections remain required. The
+[host work probe](statistics_small_fallback_probe.py) supplies deterministic VM evidence;
+Controller retains physical fail-first/corrected execution and the complete five-API gate.
+
+## PR37 round-two F1/F2 query-strategy correction
+
+Adds mandatory `StatisticsRepositoryTest.numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen`.
+Data now requires 624 mandatory cases (629 including five existing nonmandatory skips).
+The existing small-fallback case retains one/two-Field scenarios and adds broad signed
+3/4/8/16/17/24-Field histories for both Activity and Sequence. The original duplicate-heavy
+4/8/16/24-Field case still requires three shared passes and now checks every fair probe.
+The new physical case has 1,000 selected executions, 24 Fields, 50,000 old values only
+for the expensive Field, archived sources and distinct old/new snapshot Field IDs.
+Renaming current source metadata puts the expensive Field first and last without changing
+historical facts. Both orders must retain 23 indexed Field-first medians and one scalar
+fallback, individual-reader parity, exact distributions and original-date Day selection.
+All prior testcase identities and the unfiltered five-API gates remain mandatory.
+Controller owns physical fail-first/corrected execution and independent exact-head CI;
+local APK compilation and host VM evidence do not certify device execution.
+
+## PR37 W1 fair-probe boundary correction
+
+Adds mandatory `StatisticsRepositoryTest.moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen`.
+The pinned inventory now contains 625 mandatory data cases (630 including the same five
+nonmandatory skips), including all 33 StatisticsRepositoryTest methods. This test uses
+physical databases for both Activity and Sequence at 16/17/24 populated Fields,
+1,000 selected executions and 999/1,000/1,001/1,002 old executions, plus sparse values
+and 999/1,001 selected-execution neighbors. It checks actual canonical SQL dispatch,
+indexed plans, bounded probes, independent exact arithmetic, individual-reader parity,
+source rename/archive, distinct old/new snapshot Field IDs, dates and historical rows.
+The existing broad fallback fixture now uses 16,000 old executions at 8+ Fields so it
+continues to test saturation of the larger, cost-bounded allowance; its selected values,
+three-pass/scalar and large grouped assertions remain intact. Shared duplicate-heavy
+and expensive-first/last fairness regressions remain mandatory. Host VM measurements
+are isolated in `statistics_lineage_boundary_probe.py`, without CI latency thresholds.
+Controller still owns unfiltered execution on all five APIs and exact-head GitHub CI;
+compiling a test APK does not certify Room test execution.
+
+
+## PR37 W1 signed-Long rank completion correction
+
+Adds mandatory `StatisticsRepositoryTest.signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen`.
+The pinned inventory contains 626 mandatory data cases (631 including the same five
+nonmandatory skips), including all 34 StatisticsRepositoryTest methods. Physical fixtures
+cover both kinds, P=16/17/24, 200 selected executions at the adjacent second-stage
+lineage boundaries (2800/2801 old executions at P=17/24, 1800/1801 at P=16), selected
+199/201 neighbors, sparse values, and clustered signed values requiring byte refinement.
+The 200-sample adversarial distribution contains 99 Long.MIN_VALUEs, zero, all positive
+powers 2^0..2^62, Long.MAX_VALUE and repeated ones. Assertions check exact arithmetic,
+coverage/missing, stable source identity through distinct frozen Fields, immutable rows,
+canonical individual/detail parity, day attribution, actual SQL traversal/returned-row
+bounds and indexed EXPLAIN plans after physical close/reopen. Existing 1/2/3-Field,
+partial-trial, fair expensive-first/last, exclusive dense/sparse, tiny-Series and narrow
+period tests remain mandatory. The large broad fallback assertion now requires three
+rank passes plus bounded exact histograms and zero independent scalar completion.
+Host reproduction and VM-work comparisons are documented in the review evidence;
+Controller still owns device execution, all five unfiltered API suites and exact-head CI.
+
+## PR37 W1 mixed post-trial completion correction
+
+Adds mandatory `StatisticsRepositoryTest.mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen`.
+The pinned inventory now contains 627 mandatory data cases (632 including the same five
+nonmandatory skips), including all 35 StatisticsRepositoryTest methods. Physical fixtures
+cover Activity and Sequence with 17/24 initially unresolved Fields, 200 selected and
+3,001 old-Series executions, distinct old/new snapshot Fields, archived sources, sparse
+odd Fields and one/two/three broad signed Fields remaining after three shared rank trials.
+Executed SQL must reject Field-first access in both fair stages, resolve the constant
+Fields in the first rank trial, run exactly one indexed execution-first scalar selection
+per remaining Field and never run a histogram for this small remainder. Tests compare
+independent BigInteger totals, exact odd/even medians, extrema, coverage and missing
+counts with canonical individual/detail reads after physical reopen, verify historical
+date attribution and unchanged history, and inspect EXPLAIN for executed statements.
+All earlier signed-rank, nine-byte-pass, fair-probe, eligibility and coherence regressions
+remain mandatory. The host mixed-trial probe supplies reproducible native VM evidence;
+Controller owns fail-first/corrected Room execution and the unfiltered five-API CI gate.

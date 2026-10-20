@@ -241,6 +241,51 @@ class StatisticsControllerTest {
             scope.cancel()
         }
 
+    @Test
+    fun cancelledReadDoesNotPublishFailure() {
+        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        val pending = CompletableDeferred<StatisticsOverview>()
+        val controller = StatisticsController(scope, StatisticsPeriod.AllTime) { pending.await() }
+        try {
+            scope.cancel()
+            assertEquals(StatisticsLoadState.Loading, controller.state.value.load)
+        } finally {
+            controller.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun routeExitSuppressesPendingSuccessAndFailureAfterReentry() {
+        for (fails in listOf(false, true)) {
+            val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+            val owner = StatisticsControllerOwner()
+            val pending = CompletableDeferred<StatisticsOverview>()
+            try {
+                val old = owner.get { StatisticsController(scope, it) { pending.await() } }
+                owner.onRouteExited()
+                val expected = overview(2)
+                val current = owner.get { StatisticsController(scope, it) { expected } }
+                if (fails) {
+                    pending.completeExceptionally(
+                        IllegalStateException("obsolete failure"),
+                    )
+                } else {
+                    pending.complete(overview(9))
+                }
+                assertNotSame(old, current)
+                assertEquals(StatisticsLoadState.Loading, old.state.value.load)
+                assertSame(expected, (current.state.value.load as StatisticsLoadState.Content).overview)
+                old.refresh()
+                old.retry()
+                assertEquals(StatisticsLoadState.Loading, old.state.value.load)
+            } finally {
+                owner.onRouteExited()
+                scope.cancel()
+            }
+        }
+    }
+
     private suspend fun StatisticsController.awaitState(
         predicate: (StatisticsPresentationState) -> Boolean,
     ): StatisticsPresentationState = withTimeout(3_000) { state.first(predicate) }

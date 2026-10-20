@@ -335,9 +335,10 @@ class ProductionLauncherCoordinationTest {
                         ),
                     ),
                 )
+                val sequenceReadAt = now.plusSeconds(2)
                 val activeSequence =
                     dailyReader
-                        .getDaily(DailyQuery(now.atZone(ZoneOffset.UTC).toLocalDate(), now.plusSeconds(2), 100))
+                        .getDaily(DailyQuery(sequenceReadAt.atZone(ZoneOffset.UTC).toLocalDate(), sequenceReadAt, 100))
                         .active as DailyActive.Sequence
                 assertEquals(sequenceCommit.executionId, activeSequence.runtime.execution.id)
                 assertEquals(sequence.id, activeSequence.runtime.snapshot.sourceTemplateId)

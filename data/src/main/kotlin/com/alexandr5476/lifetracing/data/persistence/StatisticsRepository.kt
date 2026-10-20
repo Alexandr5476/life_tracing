@@ -12,8 +12,10 @@ import com.alexandr5476.lifetracing.domain.CategoryOptionId
 import com.alexandr5476.lifetracing.domain.CategoryValueStatistics
 import com.alexandr5476.lifetracing.domain.CountRatio
 import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.DurationDistribution
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.GlobalStatistics
+import com.alexandr5476.lifetracing.domain.NumberDistribution
 import com.alexandr5476.lifetracing.domain.NumberFieldStatistics
 import com.alexandr5476.lifetracing.domain.SequenceSeriesStatistics
 import com.alexandr5476.lifetracing.domain.SequenceTemplateCategoryOptionId
@@ -34,11 +36,46 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import com.alexandr5476.lifetracing.domain.dateRangeOrNull
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.Callable
+
+// The selection independently counts all eligible samples but returns only scalar order statistics.
+internal fun StatisticsDurationSelectionRow.readDurationDistribution(
+    aggregate: StatisticsSeriesAggregateRow?,
+): DurationDistribution {
+    val expectedCount = aggregate?.durationSampleCount ?: 0
+    require(sampleCount == expectedCount) { "Duration aggregate disagrees with eligible sample count" }
+    val expectedSelection =
+        when {
+            expectedCount == 0L -> 0
+            expectedCount % 2 == 0L -> 2
+            else -> 1
+        }
+    require(selectedCount == expectedSelection.toLong()) { "Duration median selection is incomplete" }
+    val endpoints =
+        when (expectedSelection) {
+            0 -> {
+                require(lowerMedianMs == null && upperMedianMs == null) { "Unexpected empty median endpoints" }
+                emptyList()
+            }
+            1 -> {
+                require(lowerMedianMs == upperMedianMs) { "Odd median endpoints disagree" }
+                listOf(requireNotNull(lowerMedianMs) { "Missing median endpoint" })
+            }
+            else -> listOf(requireNotNull(lowerMedianMs), requireNotNull(upperMedianMs))
+        }
+    return StatisticsDistributionCalculator.durations(
+        expectedCount,
+        BigInteger.valueOf(aggregate?.totalDurationMs ?: 0),
+        aggregate?.minimumDurationMs,
+        aggregate?.maximumDurationMs,
+        endpoints,
+    )
+}
 
 class StatisticsRepository internal constructor(
     private val database: LifeTracingDatabase,
@@ -153,16 +190,30 @@ class StatisticsRepository internal constructor(
                 }
             val catalog = fieldCatalogLocked(series, seriesId)
             val dao = database.statisticsDao()
-            val numberSamples =
-                if (catalog.any { it.type == CustomFieldType.NUMBER }) {
-                    when (series.kind) {
-                        StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSamples(seriesId.value, start, end)
-                        StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSamples(seriesId.value, start, end)
-                        StatisticsSeriesKind.ONE_OFF_BUCKET -> emptyList()
-                    }.groupBy(StatisticsNumberSampleRow::sourceFieldId)
-                } else {
+            val numberFields = catalog.filter { it.type == CustomFieldType.NUMBER }
+            val numberSummaries =
+                if (numberFields.isEmpty()) {
                     emptyMap()
+                } else {
+                    val rows =
+                        when (series.kind) {
+                            StatisticsSeriesKind.ACTIVITY -> dao.activityNumberSummaries(seriesId.value, start, end)
+                            StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberSummaries(seriesId.value, start, end)
+                            StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable detail")
+                        }
+                    ExactNumberSummary.readGrouped(rows, numberFields.map { it.id.value }.toSet())
                 }
+            val executionCandidates =
+                if (numberSummaries.isEmpty()) 0L else numberExecutionCandidates(seriesId, series.kind, start to end)
+            val numberDistributions =
+                groupedNumberDistributions(
+                    seriesId,
+                    series.kind,
+                    numberFields,
+                    numberSummaries,
+                    start to end,
+                    executionCandidates,
+                )
             val (optionMetadata, categoryCounts) =
                 if (catalog.any { it.type == CustomFieldType.CATEGORY }) {
                     when (series.kind) {
@@ -189,9 +240,10 @@ class StatisticsRepository internal constructor(
                                 numberStatistics(
                                     field,
                                     relevant,
-                                    numberSamples[field.id.value].orEmpty().map(
-                                        StatisticsNumberSampleRow::numberScaled,
-                                    ),
+                                    numberDistributions[field.id.value]
+                                        ?: ExactNumberSummary.empty().distribution(
+                                            StatisticsNumberSelectionRow(0, 0, null, null),
+                                        ),
                                 ),
                             )
                         CustomFieldType.CATEGORY ->
@@ -231,11 +283,11 @@ class StatisticsRepository internal constructor(
         end: String?,
     ): ActivitySeriesStatistics {
         val row = database.statisticsDao().activitySeriesAggregates(series.id.value, start, end).singleOrNull()
-        val values = database.statisticsDao().activityDurationValues(series.id.value, start, end)
-        val distribution = StatisticsDistributionCalculator.durations(values)
-        require(row == null || row.durationSampleCount == distribution.sampleCount) {
-            "Activity duration aggregate disagrees with its scalar samples"
-        }
+        val distribution =
+            database
+                .statisticsDao()
+                .activityDurationSelection(series.id.value, start, end, row?.durationSampleCount ?: 0)
+                .readDurationDistribution(row)
         return ActivitySeriesStatistics(
             series,
             row?.executionCount ?: 0,
@@ -253,11 +305,11 @@ class StatisticsRepository internal constructor(
         end: String?,
     ): SequenceSeriesStatistics {
         val row = database.statisticsDao().sequenceSeriesAggregates(series.id.value, start, end).singleOrNull()
-        val values = database.statisticsDao().sequenceDurationValues(series.id.value, start, end)
-        val distribution = StatisticsDistributionCalculator.durations(values)
-        require(row == null || row.durationSampleCount == distribution.sampleCount) {
-            "Sequence duration aggregate disagrees with its scalar samples"
-        }
+        val distribution =
+            database
+                .statisticsDao()
+                .sequenceDurationSelection(series.id.value, start, end, row?.durationSampleCount ?: 0)
+                .readDurationDistribution(row)
         val count = row?.executionCount ?: 0
         val pause = row?.totalPauseMs ?: 0
         return SequenceSeriesStatistics(
@@ -285,7 +337,14 @@ class StatisticsRepository internal constructor(
             val series = requireSeries(seriesId)
             val field = requireField(series, seriesId, fieldId, CustomFieldType.NUMBER)
             val (start, end) = period.bounds()
-            val relevant = executionCount(series.kind, seriesId, start, end)
+            val relevant =
+                when (series.kind) {
+                    StatisticsSeriesKind.ACTIVITY ->
+                        database.statisticsDao().activityNumberExecutionCount(seriesId.value, start, end)
+                    StatisticsSeriesKind.SEQUENCE ->
+                        database.statisticsDao().sequenceNumberExecutionCount(seriesId.value, start, end)
+                    StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off reusable Field Statistics are not supported")
+                }
             numberFieldStatisticsLocked(series, field, relevant, start, end)
         }
 
@@ -309,22 +368,223 @@ class StatisticsRepository internal constructor(
         start: String?,
         end: String?,
     ): NumberFieldStatistics {
-        val values =
+        val dao = database.statisticsDao()
+        val bits =
             when (field.id) {
                 is StatisticsFieldId.Activity ->
-                    database.statisticsDao().activityNumberValues(series.id.value, field.id.value, start, end)
+                    dao.activityNumberBitCounts(
+                        series.id.value,
+                        field.id.value,
+                        start,
+                        end,
+                    )
                 is StatisticsFieldId.Sequence ->
-                    database.statisticsDao().sequenceNumberValues(series.id.value, field.id.value, start, end)
+                    dao.sequenceNumberBitCounts(
+                        series.id.value,
+                        field.id.value,
+                        start,
+                        end,
+                    )
             }
-        return numberStatistics(field, relevant, values)
+        val summary = ExactNumberSummary.read(bits)
+        val candidates =
+            if (summary.sampleCount == 0L) 0L else numberExecutionCandidates(series.id, series.kind, start to end)
+        val distribution = numberDistribution(series.id, field, summary, start to end, candidates)
+        return numberStatistics(field, relevant, distribution)
+    }
+
+    private fun numberExecutionCandidates(
+        seriesId: StatisticsSeriesId,
+        kind: StatisticsSeriesKind,
+        bounds: Pair<String?, String?>,
+    ): Long {
+        val (start, end) = bounds
+        val dao = database.statisticsDao()
+        return when (kind) {
+            StatisticsSeriesKind.ACTIVITY -> dao.activityNumberExecutionCandidateCount(seriesId.value, start, end)
+            StatisticsSeriesKind.SEQUENCE -> dao.sequenceNumberExecutionCandidateCount(seriesId.value, start, end)
+            StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable Fields")
+        }
+    }
+
+    /** Share the probe budget and execution traversal across all populated result Fields. */
+    @Suppress("LongMethod", "LongParameterList", "CyclomaticComplexMethod", "NestedBlockDepth", "ReturnCount")
+    private fun groupedNumberDistributions(
+        seriesId: StatisticsSeriesId,
+        kind: StatisticsSeriesKind,
+        fields: List<StatisticsFieldDescriptor>,
+        summaries: Map<String, ExactNumberSummary>,
+        bounds: Pair<String?, String?>,
+        executionCandidates: Long,
+    ): Map<String, NumberDistribution> {
+        if (summaries.isEmpty()) return emptyMap()
+        val populated = fields.filter { it.id.value in summaries }
+        if (populated.size == 1) {
+            val field = populated.single()
+            return mapOf(
+                field.id.value to
+                    numberDistribution(
+                        seriesId,
+                        field,
+                        summaries.getValue(field.id.value),
+                        bounds,
+                        executionCandidates,
+                    ),
+            )
+        }
+        val dao = database.statisticsDao()
+        val result = mutableMapOf<String, NumberDistribution>()
+
+        fun probe(workMultiplier: Int) {
+            val budget = NumberMedianProbeBudget(executionCandidates, populated.size, workMultiplier)
+            for (field in populated.filter { it.id.value !in result }) {
+                val limit = requireNotNull(budget.nextLimit)
+                val candidates =
+                    when (kind) {
+                        StatisticsSeriesKind.ACTIVITY ->
+                            if (workMultiplier == INITIAL_NUMBER_PROBE_WORK) {
+                                dao.activityNumberFieldCandidateCount(field.id.value, limit)
+                            } else {
+                                if (dao.activityNumberFieldCandidateLimitReached(field.id.value, limit)) limit else 0L
+                            }
+                        StatisticsSeriesKind.SEQUENCE ->
+                            if (workMultiplier == INITIAL_NUMBER_PROBE_WORK) {
+                                dao.sequenceNumberFieldCandidateCount(field.id.value, limit)
+                            } else {
+                                if (dao.sequenceNumberFieldCandidateLimitReached(field.id.value, limit)) limit else 0L
+                            }
+                        StatisticsSeriesKind.ONE_OFF_BUCKET -> error("One-off Series has no reusable Fields")
+                    }
+                if (budget.record(candidates)) {
+                    result[field.id.value] =
+                        numberDistribution(
+                            seriesId,
+                            field,
+                            summaries.getValue(field.id.value),
+                            bounds,
+                            executionCandidates,
+                            true,
+                        )
+                }
+            }
+        }
+        probe(INITIAL_NUMBER_PROBE_WORK)
+        // Reprobe each unresolved lineage fairly against the bounded indexed-sort work allowance.
+        // The old 2Q/P sentinel is not a rejection threshold for the entire result anymore.
+        val unresolvedCount = populated.size - result.size
+        if (unresolvedCount > DIRECT_SCALAR_FIELD_LIMIT) {
+            // Bounded scalar completion is cheaper than the large-set repeated-rank alternative,
+            // so spend less on probing when that cheaper fallback is available.
+            probe(
+                if (unresolvedCount <=
+                    SMALL_FALLBACK_FIELD_LIMIT
+                ) {
+                    SMALL_NUMBER_SORT_WORK
+                } else {
+                    INDEXED_NUMBER_SORT_WORK
+                },
+            )
+        }
+        val remaining = summaries.filterKeys { it !in result }
+        if (remaining.size > DIRECT_SCALAR_FIELD_LIMIT) {
+            val selections =
+                GroupedNumberMedians(remaining).select(SMALL_FALLBACK_TRIAL_PASSES) { pivots ->
+                    dao.groupedNumberRanks(groupedNumberRankQuery(kind, seriesId.value, bounds, pivots))
+                }
+            selections.forEach { (fieldId, selection) ->
+                result[fieldId] = remaining.getValue(fieldId).distribution(selection)
+            }
+            val unresolved = remaining.filterKeys { it !in result }
+            // Trial results can reduce a large starting set to a cheap, fixed scalar remainder.
+            if (unresolved.size > SMALL_FALLBACK_FIELD_LIMIT) {
+                val completion =
+                    GroupedNumberHistograms(unresolved).select { ranges, shift ->
+                        dao.groupedNumberBuckets(
+                            groupedNumberHistogramQuery(kind, seriesId.value, bounds, ranges, shift),
+                        )
+                    }
+                completion.forEach { (fieldId, selection) ->
+                    result[fieldId] = remaining.getValue(fieldId).distribution(selection)
+                }
+            }
+        }
+        // Up to three Fields skip the trial entirely. The scalar cap stays constant as P grows.
+        populated.filter { it.id.value !in result }.forEach { field ->
+            result[field.id.value] =
+                numberDistribution(
+                    seriesId,
+                    field,
+                    remaining.getValue(field.id.value),
+                    bounds,
+                    executionCandidates,
+                    false,
+                )
+        }
+        return result
+    }
+
+    @Suppress("LongParameterList")
+    private fun numberDistribution(
+        seriesId: StatisticsSeriesId,
+        field: StatisticsFieldDescriptor,
+        summary: ExactNumberSummary,
+        bounds: Pair<String?, String?>,
+        executionCandidateCount: Long,
+        fieldFirstOverride: Boolean? = null,
+    ): NumberDistribution {
+        val (start, end) = bounds
+        val dao = database.statisticsDao()
+        val selection =
+            if (summary.sampleCount == 0L) {
+                StatisticsNumberSelectionRow(0, 0, null, null)
+            } else {
+                val fieldFirst =
+                    fieldFirstOverride
+                        ?: useFieldFirstNumberSelection(field.id, summary.sampleCount, executionCandidateCount)
+                when (field.id) {
+                    is StatisticsFieldId.Activity -> {
+                        val select =
+                            if (fieldFirst) {
+                                dao::activityDenseSeriesNumberSelection
+                            } else {
+                                dao::activitySeriesNumberSelection
+                            }
+                        select(seriesId.value, field.id.value, start, end, summary.sampleCount)
+                    }
+                    is StatisticsFieldId.Sequence -> {
+                        val select =
+                            if (fieldFirst) {
+                                dao::sequenceDenseSeriesNumberSelection
+                            } else {
+                                dao::sequenceSeriesNumberSelection
+                            }
+                        select(seriesId.value, field.id.value, start, end, summary.sampleCount)
+                    }
+                }
+            }
+        return summary.distribution(selection)
+    }
+
+    private fun useFieldFirstNumberSelection(
+        fieldId: StatisticsFieldId,
+        sampleCount: Long,
+        executionCandidateCount: Long,
+    ): Boolean {
+        val dao = database.statisticsDao()
+        val limit = NumberMedianReadPolicy.candidateLimit(executionCandidateCount)
+        val candidates =
+            when (fieldId) {
+                is StatisticsFieldId.Activity -> dao.activityNumberFieldCandidateCount(fieldId.value, limit)
+                is StatisticsFieldId.Sequence -> dao.sequenceNumberFieldCandidateCount(fieldId.value, limit)
+            }
+        return NumberMedianReadPolicy.useFieldFirst(sampleCount, executionCandidateCount, candidates)
     }
 
     private fun numberStatistics(
         field: StatisticsFieldDescriptor,
         relevant: Long,
-        values: List<Long>,
+        distribution: NumberDistribution,
     ): NumberFieldStatistics {
-        val distribution = StatisticsDistributionCalculator.numbers(values)
         require(distribution.sampleCount <= relevant) { "Recorded Number values exceed relevant executions" }
         return NumberFieldStatistics(
             field,
@@ -639,6 +899,16 @@ class StatisticsRepository internal constructor(
     private fun <T> transaction(block: () -> T): T = database.runInTransaction(Callable(block))
 
     companion object {
+        private const val INITIAL_NUMBER_PROBE_WORK = 2
+        private const val SMALL_NUMBER_SORT_WORK = 10
+
+        // Native work comparisons cover both sides of this sort/rank crossover; unlike the
+        // old 2Q/P cap, indexed sorts near 15Q do comparable work to the fallback.
+        private const val INDEXED_NUMBER_SORT_WORK = NumberMedianProbeBudget.INDEXED_SORT_WORK
+        private const val DIRECT_SCALAR_FIELD_LIMIT = 3
+        private const val SMALL_FALLBACK_FIELD_LIMIT = 16
+        private const val SMALL_FALLBACK_TRIAL_PASSES = 3
+
         fun create(context: Context): StatisticsRepository =
             StatisticsRepository(
                 LifeTracingDatabase.builder(context.applicationContext, "lifetracing.db").build(),

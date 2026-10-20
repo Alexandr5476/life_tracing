@@ -8,13 +8,19 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
+import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
+import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ExactValue
+import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
@@ -43,13 +49,22 @@ import java.time.Year
 import java.time.YearMonth
 import java.time.ZoneOffset
 import java.util.Collections
+import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class StatisticsRepositoryTest {
     private lateinit var database: LifeTracingDatabase
     private lateinit var repository: StatisticsRepository
     private val observedSql = Collections.synchronizedList(mutableListOf<String>())
+    private val observedNumberReads = Collections.synchronizedList(mutableListOf<Pair<String, List<Any?>>>())
 
     @Before
     fun setUp() {
@@ -57,13 +72,158 @@ class StatisticsRepositoryTest {
             LifeTracingDatabase
                 .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
                 .allowMainThreadQueries()
-                .setQueryCallback({ sql, _ -> observedSql.add(sql) }, Executor { it.run() })
+                .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
                 .build()
         repository = StatisticsRepository(database) { StatisticsSeriesId("generated-series") }
     }
 
     @After
     fun tearDown() = database.close()
+
+    @Test
+    fun seriesDetailRejectsRawNumberSampleMaterialization() {
+        numberHistorySources()
+        repeat(128) { index ->
+            completedActivity(
+                "bounded-detail-$index",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values = listOf(numberValue("bounded-detail-$index", "number-history-number", index.toLong())),
+            )
+        }
+        observedSql.clear()
+        val detail = repository.seriesDetail(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+        val queries = synchronized(observedSql) { observedSql.toList() }
+        assertTrue(
+            "Series Detail must return scalar summaries, never historical Number samples",
+            queries.none { it.contains("SELECT fields.source_field_id, recorded_values.number_scaled") },
+        )
+        val number =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single { it.field.id.value == "number-source" }
+                .statistics
+        assertEquals(128L, number.recordedCount)
+        assertEquals(BigInteger.valueOf(8_128), number.values.totalScaled)
+        assertEquals(ExactValue.of(127, 2), number.values.medianScaled)
+        assertEquals(
+            repository.numberFieldStatistics(
+                StatisticsSeriesId("activity-series"),
+                number.field.id,
+                StatisticsPeriod.AllTime,
+            ),
+            number,
+        )
+    }
+
+    @Test
+    fun seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory() {
+        numberHistorySources()
+        val values = mutableListOf<Long>()
+        val queryCounts = mutableMapOf<String, Int>()
+        var previous = 0
+        for (size in listOf(1, 32, 512)) {
+            database.runInTransaction {
+                for (index in previous until size) {
+                    val value =
+                        when (index % 5) {
+                            0 -> Long.MIN_VALUE
+                            1 -> Long.MAX_VALUE
+                            2 -> 0L
+                            else -> index.toLong()
+                        }
+                    values.add(value)
+                    completedActivity(
+                        "detail-growth-$index",
+                        "number-history",
+                        "activity-series",
+                        null,
+                        AUG_20,
+                        values = listOf(numberValue("detail-growth-$index", "number-history-number", value)),
+                    )
+                    completedSequence(
+                        "detail-growth-root-$index",
+                        "sequence-series",
+                        "number-history",
+                        1,
+                        0,
+                        AUG_20,
+                        withNumberField = true,
+                        numberValue = value,
+                    )
+                }
+            }
+            previous = size
+            for ((series, field) in numberHistoryIdentities()) {
+                observedSql.clear()
+                val detail = repository.seriesDetail(series, StatisticsPeriod.AllTime)
+                val queries =
+                    synchronized(observedSql) {
+                        observedSql.filter {
+                            (it.trimStart().startsWith("SELECT") || it.trimStart().startsWith("WITH")) &&
+                                !it.contains("room_table_modification_log")
+                        }
+                    }
+                val originalCount = queryCounts.getOrPut(series.value) { queries.size }
+                assertEquals(originalCount, queries.size)
+                assertEquals(1, queries.count { it.contains(" AS bit_counts ") })
+                assertEquals(1, queries.count { it.contains("CROSS JOIN") && it.contains("median_values") })
+                assertEquals(1, queries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") })
+                assertTrue(queries.none { it.contains("SELECT fields.source_field_id, recorded_values.number_scaled") })
+                val number =
+                    detail.fields
+                        .filterIsInstance<StatisticsFieldDetail.Number>()
+                        .single {
+                            it.field.id ==
+                                field
+                        }.statistics
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(values),
+                    number.values,
+                )
+                assertEquals(repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime), number)
+                val dao = database.statisticsDao()
+                val summaries =
+                    when (field) {
+                        is StatisticsFieldId.Activity -> dao.activityNumberSummaries(series.value, null, null)
+                        is StatisticsFieldId.Sequence -> dao.sequenceNumberSummaries(series.value, null, null)
+                    }
+                assertEquals(1, summaries.size)
+                assertEquals(
+                    64,
+                    summaries
+                        .single()
+                        .bitCounts
+                        .split(',')
+                        .size,
+                )
+                val selection =
+                    when (field) {
+                        is StatisticsFieldId.Activity ->
+                            dao.activitySeriesNumberSelection(
+                                series.value,
+                                field.value,
+                                null,
+                                null,
+                                size.toLong(),
+                            )
+                        is StatisticsFieldId.Sequence ->
+                            dao.sequenceSeriesNumberSelection(
+                                series.value,
+                                field.value,
+                                null,
+                                null,
+                                size.toLong(),
+                            )
+                    }
+                assertEquals(size.toLong(), selection.sampleCount)
+                assertEquals(if (size % 2 == 0) 2L else 1L, selection.selectedCount)
+            }
+        }
+    }
 
     @Test
     fun seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults() {
@@ -78,8 +238,12 @@ class StatisticsRepositoryTest {
                         "$prefix-field-$index",
                         prefix,
                         index,
-                        "Field $index",
-                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
+                        if (index == 2 || index == 4) "Same label" else "Field $index",
+                        when {
+                            index == 36 -> "TEXT"
+                            index % 2 == 0 -> "NUMBER"
+                            else -> "CATEGORY"
+                        },
                         null,
                         null,
                         null,
@@ -155,19 +319,18 @@ class StatisticsRepositoryTest {
                 val values =
                     fields.mapIndexedNotNull { index, field ->
                         val snapshotField = "$snapshotId-field-$index"
-                        if (index % 2 == 0 && execution % 2 == 0) {
+                        if (field.fieldType == "NUMBER" && index != 38 && execution % 2 == 0) {
                             numberValue(
                                 "$prefix-execution-$execution",
                                 snapshotField,
-                                if (execution ==
-                                    0
-                                ) {
-                                    0
-                                } else {
-                                    execution.toLong()
+                                when (index) {
+                                    4 -> Long.MAX_VALUE
+                                    6 -> Long.MIN_VALUE
+                                    8 -> if (execution % 4 == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                                    else -> execution.toLong()
                                 },
                             )
-                        } else if (index % 2 == 1 && execution % 3 != 2) {
+                        } else if (index % 2 == 1 && index != 37 && execution % 3 != 2) {
                             categoryValue(
                                 "$prefix-execution-$execution",
                                 snapshotField,
@@ -183,6 +346,12 @@ class StatisticsRepositoryTest {
 
         fixture("small", 2)
         fixture("large", 40)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_templates SET deleted_at_ms = 100 WHERE id = 'large'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_template_fields SET deleted_at_ms = 100 WHERE id = 'large-field-2'",
+        )
 
         fun read(prefix: String): Pair<StatisticsSeriesDetail.Activity, Int> {
             observedSql.clear()
@@ -193,7 +362,7 @@ class StatisticsRepositoryTest {
                 ) as StatisticsSeriesDetail.Activity
             val historyReads =
                 synchronized(observedSql) {
-                    observedSql.count { it.contains("FROM activity_executions", ignoreCase = true) }
+                    observedSql.count { it.contains("activity_executions AS executions", ignoreCase = true) }
                 }
             return detail to historyReads
         }
@@ -202,8 +371,18 @@ class StatisticsRepositoryTest {
         assertEquals(2, small.fields.size)
         assertEquals(40, large.fields.size)
         assertTrue(smallReads > 0)
-        assertEquals(smallReads, largeReads)
-        assertTrue(largeReads <= 6)
+        val smallNumbers =
+            small.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        val largeNumbers =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        assertEquals(smallReads + largeNumbers - smallNumbers, largeReads)
+        assertTrue(largeReads <= 6 + largeNumbers)
         large.fields.forEach { detail ->
             val expected =
                 when (detail) {
@@ -219,17 +398,69 @@ class StatisticsRepositoryTest {
                             detail.field.id,
                             StatisticsPeriod.AllTime,
                         )
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 }
             assertEquals(
                 expected,
                 when (detail) {
                     is StatisticsFieldDetail.Number -> detail.statistics
                     is StatisticsFieldDetail.Category -> detail.statistics
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 },
             )
         }
+        val numberFields =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().associateBy {
+                it.field.id.value
+            }
+        assertEquals(
+            BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(40)),
+            numberFields
+                .getValue("large-field-4")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(40)),
+            numberFields
+                .getValue("large-field-6")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            ExactValue.of(-1, 2),
+            numberFields
+                .getValue("large-field-8")
+                .statistics.values.medianScaled,
+        )
+        assertEquals(0L, numberFields.getValue("large-field-38").statistics.recordedCount)
+        assertEquals(large.statistics.executionCount, numberFields.getValue("large-field-38").statistics.missingCount)
+        assertEquals(
+            BigInteger.ZERO,
+            numberFields
+                .getValue("large-field-38")
+                .statistics.values.totalScaled,
+        )
+        assertNull(
+            numberFields
+                .getValue("large-field-38")
+                .statistics.values.medianScaled,
+        )
+        assertEquals("Same label", numberFields.getValue("large-field-2").field.displayName)
+        assertEquals("Same label", numberFields.getValue("large-field-4").field.displayName)
+        assertEquals(
+            listOf("large-field-36"),
+            large.fields.filterIsInstance<StatisticsFieldDetail.Text>().map {
+                it.field.id.value
+            },
+        )
+        val unrecordedCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single { it.field.id.value == "large-field-37" }
+                .statistics
+        assertEquals(0L, unrecordedCategory.recordedCount)
+        assertTrue(unrecordedCategory.values.isNotEmpty())
+        assertTrue(unrecordedCategory.values.all { it.count == 0L })
+        assertEquals(repository.fieldCatalog(StatisticsSeriesId("large")), large.fields.map { it.field })
         val number =
             (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
                 .statistics
@@ -269,10 +500,14 @@ class StatisticsRepositoryTest {
                         "$prefix-field-$index",
                         prefix,
                         index,
-                        "Field $index",
-                        if (index % 2 == 0) "NUMBER" else "CATEGORY",
-                        if (index % 2 == 0) "points" else null,
-                        if (index % 2 == 0) 0 else null,
+                        if (index == 2 || index == 4) "Same label" else "Field $index",
+                        when {
+                            index == 36 -> "TEXT"
+                            index % 2 == 0 -> "NUMBER"
+                            else -> "CATEGORY"
+                        },
+                        if (index % 2 == 0 && index != 36) "points" else null,
+                        if (index % 2 == 0 && index != 36) 0 else null,
                         null,
                         null,
                         null,
@@ -339,15 +574,23 @@ class StatisticsRepositoryTest {
                 val values =
                     fields.mapIndexedNotNull { index, field ->
                         when {
-                            field.fieldType == "NUMBER" && (index == 0 || execution == 0) ->
+                            field.fieldType == "NUMBER" &&
+                                index != 38 &&
+                                (index in listOf(0, 4, 6, 8) || execution == 0) ->
                                 SequenceExecutionFieldValueEntity(
                                     "$prefix-execution-$execution",
                                     "$snapshot-field-$index",
-                                    if (index == 0) execution * 20L else index.toLong(),
+                                    when (index) {
+                                        0 -> execution * 20L
+                                        4 -> Long.MAX_VALUE
+                                        6 -> Long.MIN_VALUE
+                                        8 -> if (execution == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                                        else -> index.toLong()
+                                    },
                                     null,
                                     null,
                                 )
-                            field.fieldType == "CATEGORY" && (execution == 0 || index == 1) ->
+                            field.fieldType == "CATEGORY" && index != 37 && (execution == 0 || index == 1) ->
                                 SequenceExecutionFieldValueEntity(
                                     "$prefix-execution-$execution",
                                     "$snapshot-field-$index",
@@ -414,6 +657,12 @@ class StatisticsRepositoryTest {
         }
         fixture("sequence-small", 2)
         fixture("sequence-large", 40)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_templates SET deleted_at_ms = 100 WHERE id = 'sequence-large'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_template_fields SET deleted_at_ms = 100 WHERE id = 'sequence-large-field-2'",
+        )
         val period = StatisticsPeriod.Custom(LocalDate.parse(AUG_20), LocalDate.parse(AUG_21))
 
         fun read(id: String): Pair<StatisticsSeriesDetail.Sequence, Int> {
@@ -422,7 +671,7 @@ class StatisticsRepositoryTest {
                 repository.seriesDetail(StatisticsSeriesId(id), period) as StatisticsSeriesDetail.Sequence
             val reads =
                 synchronized(observedSql) {
-                    observedSql.count { it.contains("FROM sequence_executions", ignoreCase = true) }
+                    observedSql.count { it.contains("sequence_executions AS executions", ignoreCase = true) }
                 }
             return detail to reads
         }
@@ -431,8 +680,18 @@ class StatisticsRepositoryTest {
         assertEquals(2, small.fields.size)
         assertEquals(40, large.fields.size)
         assertTrue(smallReads > 0)
-        assertEquals(smallReads, largeReads)
-        assertTrue(largeReads <= 6)
+        val smallNumbers =
+            small.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        val largeNumbers =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().count {
+                it.statistics.recordedCount >
+                    0
+            }
+        assertEquals(smallReads + largeNumbers - smallNumbers, largeReads)
+        assertTrue(largeReads <= 6 + largeNumbers)
         assertEquals(2L, large.statistics.executionCount)
         large.fields.forEach { detail ->
             val expected =
@@ -445,17 +704,74 @@ class StatisticsRepositoryTest {
                             detail.field.id,
                             period,
                         )
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 }
             assertEquals(
                 expected,
                 when (detail) {
                     is StatisticsFieldDetail.Number -> detail.statistics
                     is StatisticsFieldDetail.Category -> detail.statistics
-                    is StatisticsFieldDetail.Text -> error("Unexpected Text Field")
+                    is StatisticsFieldDetail.Text -> detail.field
                 },
             )
         }
+        val numberFields =
+            large.fields.filterIsInstance<StatisticsFieldDetail.Number>().associateBy {
+                it.field.id.value
+            }
+        assertEquals(
+            BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(2)),
+            numberFields
+                .getValue("sequence-large-field-4")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.valueOf(2)),
+            numberFields
+                .getValue("sequence-large-field-6")
+                .statistics.values.totalScaled,
+        )
+        assertEquals(
+            ExactValue.of(-1, 2),
+            numberFields
+                .getValue("sequence-large-field-8")
+                .statistics.values.medianScaled,
+        )
+        assertEquals(0L, numberFields.getValue("sequence-large-field-38").statistics.recordedCount)
+        assertEquals(
+            large.statistics.executionCount,
+            numberFields.getValue("sequence-large-field-38").statistics.missingCount,
+        )
+        assertEquals(
+            BigInteger.ZERO,
+            numberFields
+                .getValue("sequence-large-field-38")
+                .statistics.values.totalScaled,
+        )
+        assertNull(
+            numberFields
+                .getValue("sequence-large-field-38")
+                .statistics.values.medianScaled,
+        )
+        assertEquals("Same label", numberFields.getValue("sequence-large-field-2").field.displayName)
+        assertEquals("Same label", numberFields.getValue("sequence-large-field-4").field.displayName)
+        assertEquals(
+            listOf(
+                "sequence-large-field-36",
+            ),
+            large.fields.filterIsInstance<StatisticsFieldDetail.Text>().map {
+                it.field.id.value
+            },
+        )
+        val unrecordedCategory =
+            large.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single { it.field.id.value == "sequence-large-field-37" }
+                .statistics
+        assertEquals(0L, unrecordedCategory.recordedCount)
+        assertTrue(unrecordedCategory.values.isNotEmpty())
+        assertTrue(unrecordedCategory.values.all { it.count == 0L })
+        assertEquals(repository.fieldCatalog(StatisticsSeriesId("sequence-large")), large.fields.map { it.field })
         val number =
             (large.fields.first { it is StatisticsFieldDetail.Number } as StatisticsFieldDetail.Number)
                 .statistics
@@ -513,7 +829,16 @@ class StatisticsRepositoryTest {
             ) as StatisticsSeriesDetail.Sequence
         assertEquals(1L, day.statistics.executionCount)
         assertTrue(
-            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all { it.statistics.recordedCount == 1L },
+            day.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                it.statistics.recordedCount ==
+                    if (it.field.id.value
+                            .endsWith("-38")
+                    ) {
+                        0L
+                    } else {
+                        1L
+                    }
+            },
         )
         val firstDayCategory =
             day.fields
@@ -1611,15 +1936,2995 @@ class StatisticsRepositoryTest {
             }
         }
 
-        val bounded =
-            repository.activitySeries(
-                StatisticsSeriesId("large-series"),
-                StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
+        statement.close()
+        series("small-series", "ACTIVITY", "Small")
+        activitySnapshot("small-snapshot", "small-series")
+        completedActivity("small-row", "small-snapshot", "small-series", 1_000, AUG_20)
+
+        fun selectCount(): Int =
+            synchronized(observedSql) {
+                observedSql.count {
+                    val statement = it.trimStart()
+                    val isRead =
+                        statement.startsWith("SELECT", ignoreCase = true) ||
+                            statement.startsWith("WITH", ignoreCase = true)
+                    isRead && !statement.contains("room_table_modification_log", ignoreCase = true)
+                }
+            }
+        observedSql.clear()
+        repository.activitySeries(StatisticsSeriesId("small-series"), StatisticsPeriod.AllTime)
+        val smallActivityQueries = selectCount()
+        series("large-sequence-series", "SEQUENCE", "Large Sequence")
+        completedSequence("large-root", "large-sequence-series", "large-snapshot", 1_000, 0, AUG_20)
+        observedSql.clear()
+        repository.sequenceSeries(StatisticsSeriesId("large-sequence-series"), StatisticsPeriod.AllTime)
+        val smallSequenceQueries = selectCount()
+        val sequenceStatement =
+            database.openHelper.writableDatabase.compileStatement(
+                "INSERT INTO sequence_executions " +
+                    "(id,snapshot_id,statistics_series_id,status,started_at_ms,ended_at_ms,active_duration_ms," +
+                    "pause_duration_ms,wall_duration_ms,original_zone_id,primary_local_date," +
+                    "created_at_ms,updated_at_ms) " +
+                    "VALUES (?, 'large-root-snapshot', 'large-sequence-series', 'COMPLETED', ?, ?, " +
+                    "1000, 0, 1000, 'UTC', ?, ?, ?)",
             )
-        assertEquals(2_000L, bounded.executionCount)
-        assertEquals(Duration.ofSeconds(2_000), bounded.durations.total)
-        assertTrue(database.sequenceExecutionDao().getIntervals("missing").isEmpty())
+        sequenceStatement.use { insert ->
+            database.runInTransaction {
+                repeat(2_999) { index ->
+                    val date = if (index < 1_999) AUG_20 else "2026-07-01"
+                    val start = millis("${date}T00:00:00Z") + index * 2_000L
+                    insert.bindString(1, "large-sequence-$index")
+                    insert.bindLong(2, start)
+                    insert.bindLong(3, start + 1_000)
+                    insert.bindString(4, date)
+                    insert.bindLong(5, start)
+                    insert.bindLong(6, start + 1_000)
+                    insert.executeInsert()
+                }
+            }
+        }
+        val periods =
+            listOf(
+                StatisticsPeriod.Day(LocalDate.parse(AUG_20)) to 2_000L,
+                StatisticsPeriod.AllTime to 3_000L,
+            )
+        for ((period, expected) in periods) {
+            observedSql.clear()
+            val activity = repository.activitySeries(StatisticsSeriesId("large-series"), period)
+            assertEquals(smallActivityQueries, selectCount())
+            assertEquals(3, selectCount())
+            observedSql.clear()
+            val sequence = repository.sequenceSeries(StatisticsSeriesId("large-sequence-series"), period)
+            assertEquals(smallSequenceQueries, selectCount())
+            assertEquals(3, selectCount())
+            assertEquals(expected, activity.executionCount)
+            assertEquals(expected, sequence.executionCount)
+            assertEquals(activity.durations, sequence.activeDurations)
+            assertEquals(expected, activity.durations.sampleCount)
+            assertEquals(Duration.ofMillis(expected * 1_000), activity.durations.total)
+            assertEquals(ExactValue.of(1_000, 1), activity.durations.medianMilliseconds)
+            assertEquals(ExactValue.of(1_000, 1), activity.durations.averageMilliseconds)
+            assertEquals(Duration.ofSeconds(1), activity.durations.minimum)
+            assertEquals(Duration.ofSeconds(1), activity.durations.maximum)
+            val dao = database.statisticsDao()
+            val start = if (period is StatisticsPeriod.Day) AUG_20 else null
+            val selections =
+                listOf(
+                    dao.activityDurationSelection("large-series", start, start, expected),
+                    dao.sequenceDurationSelection("large-sequence-series", start, start, expected),
+                )
+            selections.forEach {
+                assertEquals(expected, it.sampleCount)
+                assertEquals(2L, it.selectedCount)
+                assertEquals(1_000L, it.lowerMedianMs)
+                assertEquals(1_000L, it.upperMedianMs)
+            }
+        }
     }
+
+    @Test
+    fun orderedDurationReadersPreserveEligibilityPeriodsAndDetail() {
+        series("duration-activity", "ACTIVITY", "Activity")
+        series("duration-other", "ACTIVITY", "Other")
+        series("duration-sequence", "SEQUENCE", "Sequence")
+        series("duration-other-sequence", "SEQUENCE", "Other Sequence")
+        activitySnapshot("duration-snapshot", "duration-activity")
+        activitySnapshot("duration-no-live", "duration-activity", mode = "NO_LIVE_TRACKING")
+        activitySnapshot("duration-other-snapshot", "duration-other")
+        val activityId = StatisticsSeriesId("duration-activity")
+        val sequenceId = StatisticsSeriesId("duration-sequence")
+        val day = StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+        assertEquals(0L, repository.activitySeries(activityId, day).durations.sampleCount)
+        assertEquals(0L, repository.sequenceSeries(sequenceId, day).activeDurations.sampleCount)
+        completedActivity("duration-missing", "duration-no-live", activityId.value, null, AUG_20)
+        val noLive = repository.activitySeries(activityId, day)
+        assertEquals(1L, noLive.executionCount)
+        assertEquals(0L, noLive.durations.sampleCount)
+        assertEquals(Duration.ZERO, noLive.durations.total)
+        assertNull(noLive.durations.minimum)
+        assertNull(noLive.durations.maximum)
+        assertNull(noLive.durations.medianMilliseconds)
+        listOf(0L, 2L, 9L).forEachIndexed { index, duration ->
+            completedActivity("duration-$index", "duration-snapshot", activityId.value, duration, AUG_20)
+        }
+        val child = completedSequence("duration-root", sequenceId.value, "duration-snapshot", 3, 0, AUG_20)
+        completedActivity(
+            "duration-child",
+            "duration-snapshot",
+            activityId.value,
+            3,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = child.first,
+            occurrenceId = child.second,
+        )
+        completedActivity(
+            "duration-outside",
+            "duration-snapshot",
+            activityId.value,
+            20,
+            AUG_21,
+            startedAtMs = millis("2026-08-21T23:30:00Z"),
+        )
+        completedActivity("duration-deleted", "duration-snapshot", activityId.value, 100, AUG_20)
+        database.activityExecutionDao().softDelete("duration-deleted", START_2330 + 1_000)
+        completedActivity("duration-other-row", "duration-other-snapshot", "duration-other", 101, AUG_20)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedActivity("duration-$status", "duration-snapshot", activityId.value, null, AUG_20, status = status)
+        }
+        completedSequence("duration-second-root", sequenceId.value, "duration-snapshot", 2, 0, AUG_20)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'COMPLETED' WHERE id = 'duration-second-root'",
+        )
+        completedSequence(
+            "duration-third-root",
+            sequenceId.value,
+            "duration-snapshot",
+            9,
+            0,
+            AUG_21,
+            startedAtMs = millis("2026-08-21T23:30:00Z"),
+        )
+        completedSequence("duration-other-root", "duration-other-sequence", "duration-snapshot", 101, 0, AUG_20)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedSequence("duration-live-$status", sequenceId.value, "duration-snapshot", 100, 0, AUG_20)
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET status = ?, ended_at_ms = NULL, active_duration_ms = NULL, " +
+                    "pause_duration_ms = NULL, wall_duration_ms = NULL WHERE id = ?",
+                arrayOf(status, "duration-live-$status"),
+            )
+        }
+        val activity = repository.activitySeries(activityId, day)
+        assertEquals(5L, activity.executionCount)
+        assertEquals(4L, activity.durations.sampleCount)
+        assertEquals(Duration.ofMillis(14), activity.durations.total)
+        assertEquals(ExactValue.of(7, 2), activity.durations.averageMilliseconds)
+        assertEquals(ExactValue.of(5, 2), activity.durations.medianMilliseconds)
+        assertEquals(Duration.ZERO, activity.durations.minimum)
+        assertEquals(Duration.ofMillis(9), activity.durations.maximum)
+        val allActivity = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+        assertEquals(6L, allActivity.executionCount)
+        assertEquals(5L, allActivity.durations.sampleCount)
+        assertEquals(Duration.ofMillis(34), allActivity.durations.total)
+        assertEquals(ExactValue.of(3, 1), allActivity.durations.medianMilliseconds)
+        val sequence = repository.sequenceSeries(sequenceId, day)
+        assertEquals(2L, sequence.executionCount)
+        assertEquals(2L, sequence.activeDurations.sampleCount)
+        assertEquals(Duration.ofMillis(5), sequence.activeDurations.total)
+        assertEquals(ExactValue.of(5, 2), sequence.activeDurations.medianMilliseconds)
+        val allSequence = repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime)
+        assertEquals(3L, allSequence.executionCount)
+        assertEquals(Duration.ofMillis(14), allSequence.activeDurations.total)
+        assertEquals(ExactValue.of(3, 1), allSequence.activeDurations.medianMilliseconds)
+        assertEquals(activity, (repository.seriesDetail(activityId, day) as StatisticsSeriesDetail.Activity).statistics)
+        assertEquals(sequence, (repository.seriesDetail(sequenceId, day) as StatisticsSeriesDetail.Sequence).statistics)
+        activitySnapshot("duration-one-off", null)
+        activitySnapshot("duration-one-off-no-live", null, mode = "NO_LIVE_TRACKING")
+        completedActivity("duration-one-off-row", "duration-one-off", ONE_OFF, 7, AUG_20)
+        completedActivity("duration-one-off-missing", "duration-one-off-no-live", ONE_OFF, null, AUG_20)
+        val overview = repository.overview(day)
+        assertEquals(repository.seriesSummaries(day), overview.series)
+        assertEquals(repository.global(day), overview.global)
+        val oneOff = overview.series.single { it.series.id.value == ONE_OFF }
+        assertEquals(2L, oneOff.executionCount)
+        assertEquals(1L, oneOff.durationSampleCount)
+        assertEquals(Duration.ofMillis(7), oneOff.totalDuration)
+        val aggregate = requireNotNull(database.statisticsDao().oneOffAggregate(ONE_OFF, AUG_20, AUG_20))
+        assertEquals(7L, aggregate.minimumDurationMs)
+        assertEquals(7L, aggregate.maximumDurationMs)
+    }
+
+    @Test
+    fun durationSelectionRejectsCountMismatchAndInvalidCachedValues() {
+        series("selection-series", "ACTIVITY", "Selection")
+        series("selection-sequence", "SEQUENCE", "Sequence")
+        activitySnapshot("selection-snapshot", "selection-series")
+        completedActivity("selection-row", "selection-snapshot", "selection-series", 3, AUG_20)
+        completedSequence("selection-root", "selection-sequence", "selection-snapshot", 3, 0, AUG_20)
+        val dao = database.statisticsDao()
+        val aggregate = dao.activitySeriesAggregates("selection-series", null, null).single()
+        val selected = dao.activityDurationSelection("selection-series", null, null, 1)
+        assertEquals(1L, selected.sampleCount)
+        assertEquals(1L, selected.selectedCount)
+        assertEquals(
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime).durations,
+            selected.readDurationDistribution(aggregate),
+        )
+        assertThrows(IllegalArgumentException::class.java) { selected.readDurationDistribution(null) }
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(sampleCount = 0).readDurationDistribution(aggregate)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(selectedCount = 0).readDurationDistribution(aggregate)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            selected.copy(lowerMedianMs = null).readDurationDistribution(aggregate)
+        }
+        val wrongRank = dao.activityDurationSelection("selection-series", null, null, 0)
+        assertEquals(1L, wrongRank.sampleCount)
+        assertEquals(0L, wrongRank.selectedCount)
+        assertThrows(IllegalArgumentException::class.java) { wrongRank.readDurationDistribution(null) }
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("PRAGMA ignore_check_constraints = ON")
+        try {
+            sql.execSQL("UPDATE activity_executions SET active_duration_ms = -1 WHERE id = 'selection-row'")
+            sql.execSQL("UPDATE sequence_executions SET active_duration_ms = -1 WHERE id = 'selection-root'")
+        } finally {
+            sql.execSQL("PRAGMA ignore_check_constraints = OFF")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.sequenceSeries(StatisticsSeriesId("selection-sequence"), StatisticsPeriod.AllTime)
+        }
+        assertEquals(-1L, database.activityExecutionDao().getById("selection-row")?.activeDurationMs)
+        assertEquals(-1L, database.sequenceExecutionDao().getById("selection-root")?.activeDurationMs)
+        sql.execSQL("PRAGMA ignore_check_constraints = ON")
+        try {
+            sql.execSQL("UPDATE activity_executions SET active_duration_ms = 0.5 WHERE id = 'selection-row'")
+            sql.execSQL("UPDATE sequence_executions SET active_duration_ms = 0.5 WHERE id = 'selection-root'")
+        } finally {
+            sql.execSQL("PRAGMA ignore_check_constraints = OFF")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.activitySeries(StatisticsSeriesId("selection-series"), StatisticsPeriod.AllTime)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.sequenceSeries(StatisticsSeriesId("selection-sequence"), StatisticsPeriod.AllTime)
+        }
+    }
+
+    @Test
+    fun durationReadersSurvivePhysicalReopenAndHistoricalDeletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-duration-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            series("reopen-activity", "ACTIVITY", "Activity")
+            series("reopen-sequence", "SEQUENCE", "Sequence")
+            activitySnapshot("reopen-snapshot", "reopen-activity")
+            completedActivity("reopen-row", "reopen-snapshot", "reopen-activity", 3, AUG_20)
+            completedSequence("reopen-root", "reopen-sequence", "reopen-snapshot", 7, 0, AUG_20)
+            val activityId = StatisticsSeriesId("reopen-activity")
+            val sequenceId = StatisticsSeriesId("reopen-sequence")
+            val activity = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+            val sequence = repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime)
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            assertEquals(activity, repository.activitySeries(activityId, StatisticsPeriod.AllTime))
+            assertEquals(sequence, repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime))
+            database.activityExecutionDao().softDelete("reopen-row", START_2330 + 100)
+            val deleted = repository.activitySeries(activityId, StatisticsPeriod.AllTime)
+            assertEquals(0L, deleted.executionCount)
+            assertEquals(0L, deleted.durations.sampleCount)
+            assertEquals(Duration.ZERO, deleted.durations.total)
+            assertNull(deleted.durations.medianMilliseconds)
+            assertEquals(sequence, repository.sequenceSeries(sequenceId, StatisticsPeriod.AllTime))
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun boundedNumberReadersPreserveSignedEligibilityAndPeriods() {
+        numberHistorySources()
+        val values = listOf(Long.MIN_VALUE, Long.MAX_VALUE, -9L, 0L, 11L)
+        values.forEachIndexed { index, value ->
+            completedActivity(
+                "number-$index",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values = listOf(numberValue("number-$index", "number-history-number", value)),
+            )
+            completedSequence(
+                "number-root-$index",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = value,
+            )
+        }
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'COMPLETED' WHERE id = 'number-root-0'",
+        )
+        completedActivity("number-missing", "number-history", "activity-series", null, AUG_20)
+        completedSequence("number-root-missing", "sequence-series", "number-history", 1, 0, AUG_20)
+        for ((date, value) in listOf(AUG_21 to Long.MAX_VALUE, "2026-08-24" to Long.MIN_VALUE)) {
+            val performedAtMs = millis("${date}T10:00:00Z")
+            repeat(2) { index ->
+                val id = "number-extreme-$date-$index"
+                completedActivity(
+                    id,
+                    "number-history",
+                    "activity-series",
+                    null,
+                    date,
+                    startedAtMs = performedAtMs,
+                    values = listOf(numberValue(id, "number-history-number", value)),
+                )
+                completedSequence(
+                    "$id-root",
+                    "sequence-series",
+                    "number-history",
+                    1,
+                    0,
+                    date,
+                    withNumberField = true,
+                    numberValue = value,
+                    startedAtMs = performedAtMs,
+                )
+            }
+        }
+        series("other-activity", "ACTIVITY", "Other")
+        series("other-sequence", "SEQUENCE", "Other")
+        activitySnapshot("other-number-history", "other-activity", mode = "NO_LIVE_TRACKING", fields = true)
+        completedActivity(
+            "other-number",
+            "other-number-history",
+            "other-activity",
+            null,
+            AUG_20,
+            values = listOf(numberValue("other-number", "other-number-history-number", 999)),
+        )
+        completedSequence(
+            "other-number-root",
+            "other-sequence",
+            "number-history",
+            1,
+            0,
+            AUG_20,
+            withNumberField = true,
+            numberValue = 999,
+        )
+        // A second stable Number identity with the same display label must stay separate.
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_template_fields SET name = 'Distnace' WHERE id = 'calories-source'",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_snapshot_fields " +
+                "(id,snapshot_id,source_field_id,position,name_at_creation,field_type,unit,display_precision) " +
+                "VALUES ('other-number-field','number-history','calories-source',2,'Distnace','NUMBER','kcal',0)",
+        )
+        database.activityExecutionDao().upsertValue(numberValue("number-0", "other-number-field", 999))
+        activitySnapshot("number-live-history", "activity-series", fields = true)
+        for (status in listOf("RUNNING", "PAUSED")) {
+            completedActivity(
+                "number-$status",
+                "number-live-history",
+                "activity-series",
+                null,
+                AUG_20,
+                status = status,
+                values = listOf(numberValue("number-$status", "number-live-history-number", 100)),
+            )
+            completedSequence(
+                "number-root-$status",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = 100,
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_executions SET status = ?, ended_at_ms = NULL, active_duration_ms = NULL, " +
+                    "pause_duration_ms = NULL, wall_duration_ms = NULL WHERE id = ?",
+                arrayOf(status, "number-root-$status"),
+            )
+        }
+        completedActivity(
+            "number-deleted",
+            "number-history",
+            "activity-series",
+            null,
+            AUG_20,
+            values = listOf(numberValue("number-deleted", "number-history-number", 100)),
+        )
+        database.activityExecutionDao().softDelete("number-deleted", START_2330 + 100)
+        // Both eligible child values and tombstone exclusion are also pinned by the existing
+        // deletedSequenceChildLeavesDurableValuesButExitsActivityStatisticsOnly case.
+        // Archiving sources and Fields preserves the frozen historical contribution.
+        for (kind in listOf("activity", "sequence")) {
+            database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 1")
+            database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_template_fields SET deleted_at_ms = 1")
+        }
+        val expectations =
+            listOf(
+                StatisticsPeriod.Day(LocalDate.parse(AUG_20)) to values,
+                StatisticsPeriod.Day(LocalDate.parse(AUG_21)) to listOf(Long.MAX_VALUE, Long.MAX_VALUE),
+                StatisticsPeriod.Day(LocalDate.parse("2026-08-24")) to listOf(Long.MIN_VALUE, Long.MIN_VALUE),
+                StatisticsPeriod.AllTime to
+                    (values + listOf(Long.MAX_VALUE, Long.MAX_VALUE, Long.MIN_VALUE, Long.MIN_VALUE)),
+            )
+        for ((period, expected) in expectations) {
+            val missing = if (period == StatisticsPeriod.AllTime || period == expectations.first().first) 1L else 0L
+            val reference =
+                com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                    .numbers(expected)
+            for ((series, field) in numberHistoryIdentities()) {
+                val actual = repository.numberFieldStatistics(series, field, period)
+                assertEquals(reference, actual.values)
+                assertEquals(expected.size.toLong() + missing, actual.relevantExecutionCount)
+                assertEquals(missing, actual.missingCount)
+                assertEquals(
+                    actual,
+                    (
+                        repository.seriesDetail(series, period).fields.single {
+                            it.field.id == field
+                        } as StatisticsFieldDetail.Number
+                    ).statistics,
+                )
+            }
+        }
+        for ((series, field) in numberHistoryIdentities()) {
+            val empty =
+                repository.numberFieldStatistics(
+                    series,
+                    field,
+                    StatisticsPeriod.Day(LocalDate.parse("2026-08-22")),
+                )
+            assertEquals(0L, empty.recordedCount)
+            assertEquals(0L, empty.missingCount)
+            assertNull(empty.coverage.exactValue)
+            val emptyDetail = repository.seriesDetail(series, StatisticsPeriod.Day(LocalDate.parse("2026-08-22")))
+            assertEquals(
+                empty,
+                emptyDetail.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single { it.field.id == field }
+                    .statistics,
+            )
+        }
+    }
+
+    @Test
+    fun numberReadersBoundResultsAndQueriesAcrossGrowingHistory() {
+        numberHistorySources()
+        completedSequence("bulk-root", "sequence-series", "number-history", 1, 0, AUG_20, withNumberField = true)
+        val reference = mutableListOf<Long>()
+        var previous = 0
+        for (size in listOf(1, 100, 4_000)) {
+            database.runInTransaction {
+                for (index in previous until size) {
+                    val value =
+                        when (index % 7) {
+                            0 -> Long.MIN_VALUE
+                            1 -> Long.MAX_VALUE
+                            2 -> 0L
+                            3 -> -7L
+                            else -> index * 1_000_000_007L
+                        }
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO activity_executions " +
+                            "(id,snapshot_id,context_type,statistics_series_id,status,completed_at_ms," +
+                            "original_zone_id,primary_local_date,created_at_ms,updated_at_ms) " +
+                            "VALUES (?, 'number-history', 'STANDALONE', 'activity-series', 'COMPLETED', " +
+                            "0, 'UTC', ?, 0, 0)",
+                        arrayOf("bulk-$index", AUG_20),
+                    )
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO sequence_executions " +
+                            "(id,snapshot_id,statistics_series_id,status,started_at_ms,ended_at_ms," +
+                            "active_duration_ms,pause_duration_ms,wall_duration_ms,original_zone_id," +
+                            "primary_local_date,created_at_ms,updated_at_ms) " +
+                            "VALUES (?, 'bulk-root-snapshot', 'sequence-series', 'COMPLETED', " +
+                            "0, 1, 1, 0, 1, 'UTC', ?, 0, 1)",
+                        arrayOf("bulk-sequence-$index", AUG_20),
+                    )
+                    // Sparse rows coexist with dense, repeated, distinct and extreme signed values.
+                    if (index % 5 != 4) {
+                        reference.add(value)
+                        database.activityExecutionDao().upsertValue(
+                            numberValue("bulk-$index", "number-history-number", value),
+                        )
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO sequence_execution_field_values" +
+                                "(sequence_execution_id,snapshot_field_id,number_scaled) " +
+                                "VALUES (?, 'bulk-root-snapshot-number', ?)",
+                            arrayOf<Any>("bulk-sequence-$index", value),
+                        )
+                    }
+                }
+            }
+            previous = size
+            for ((series, field) in numberHistoryIdentities()) {
+                observedSql.clear()
+                val actual = repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                val reads =
+                    synchronized(observedSql) {
+                        observedSql.filter {
+                            val statement = it.trimStart()
+                            val isRead = statement.startsWith("SELECT") || statement.startsWith("WITH")
+                            isRead && !statement.contains("room_table_modification_log", ignoreCase = true)
+                        }
+                    }
+                assertEquals(7, reads.size)
+                assertTrue(reads.none { it.contains("active_duration_ms") })
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(reference),
+                    actual.values,
+                )
+                val relevant = size.toLong() + if (field is StatisticsFieldId.Sequence) 1 else 0
+                assertEquals(relevant, actual.relevantExecutionCount)
+                assertEquals(relevant - reference.size, actual.missingCount)
+                val dao = database.statisticsDao()
+                val bits =
+                    if (field is StatisticsFieldId.Activity) {
+                        dao.activityNumberBitCounts(series.value, field.value, null, null)
+                    } else {
+                        dao.sequenceNumberBitCounts(series.value, field.value, null, null)
+                    }
+                assertEquals(Long.SIZE_BITS, bits.bitCounts.split(',').size)
+                assertNumberReadPlans()
+                val selection =
+                    if (field is StatisticsFieldId.Activity) {
+                        dao.activityNumberSelection(series.value, field.value, null, null, actual.recordedCount)
+                    } else {
+                        dao.sequenceNumberSelection(series.value, field.value, null, null, actual.recordedCount)
+                    }
+                assertEquals(actual.recordedCount, selection.sampleCount)
+                assertEquals(if (actual.recordedCount % 2 == 0L) 2L else 1L, selection.selectedCount)
+                assertEquals(actual.values, ExactNumberSummary.read(bits).distribution(selection))
+            }
+        }
+    }
+
+    @Test
+    fun numberReadersSurvivePhysicalReopenAndHistoricalDeletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-number-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            numberHistorySources()
+            database.openHelper.writableDatabase.execSQL(
+                "INSERT INTO sequence_template_fields " +
+                    "(id,sequence_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                    "VALUES ('physical-category','sequence',1,'Choice','CATEGORY',0,0)",
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "INSERT INTO sequence_template_category_options (id,sequence_template_field_id,position,label) " +
+                    "VALUES ('physical-option','physical-category',0,'Choice')",
+            )
+            completedActivity(
+                "physical-number",
+                "number-history",
+                "activity-series",
+                null,
+                AUG_20,
+                values =
+                    listOf(
+                        numberValue("physical-number", "number-history-number", Long.MIN_VALUE),
+                        categoryValue("physical-number", "number-history-category", "number-history-tempo"),
+                    ),
+            )
+            completedSequence(
+                "physical-root",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+                numberValue = Long.MAX_VALUE,
+                categoryFieldId = "physical-category",
+                categoryOptionId = "physical-option",
+            )
+            val identities = numberHistoryIdentities()
+            val before =
+                identities.map { (series, field) ->
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+            val detailBefore =
+                identities.map { (series, _) ->
+                    repository.seriesDetail(series, StatisticsPeriod.AllTime)
+                }
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            assertEquals(
+                before,
+                identities.map { (series, field) ->
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                },
+            )
+            assertEquals(
+                detailBefore,
+                identities.map { (series, _) -> repository.seriesDetail(series, StatisticsPeriod.AllTime) },
+            )
+            val categoryBefore =
+                detailBefore
+                    .first()
+                    .fields
+                    .filterIsInstance<StatisticsFieldDetail.Category>()
+                    .single()
+                    .statistics
+            assertEquals(1L, categoryBefore.recordedCount)
+            assertEquals(
+                "tempo-source",
+                categoryBefore.values
+                    .single()
+                    .id.value,
+            )
+            database.activityExecutionDao().softDeleteCompletedStandalone(
+                "physical-number",
+                START_2330,
+                START_2330 + 100,
+            )
+            val (series, field) = identities.first()
+            val after = repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+            val detailAfter = repository.seriesDetail(series, StatisticsPeriod.AllTime)
+            assertEquals(
+                after,
+                detailAfter.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single {
+                        it.field.id ==
+                            field
+                    }.statistics,
+            )
+            val categoryAfter =
+                detailAfter.fields
+                    .filterIsInstance<StatisticsFieldDetail.Category>()
+                    .single()
+                    .statistics
+            assertEquals(categoryBefore.field, categoryAfter.field)
+            assertEquals(0L, categoryAfter.recordedCount)
+            assertEquals(categoryBefore.values.map { it.id }, categoryAfter.values.map { it.id })
+            assertEquals(
+                detailBefore.last(),
+                repository.seriesDetail(identities.last().first, StatisticsPeriod.AllTime),
+            )
+            assertEquals(before.first().field.id, after.field.id)
+            assertEquals(0L, after.recordedCount)
+            assertEquals(BigInteger.ZERO, after.values.totalScaled)
+            assertEquals(
+                before.last(),
+                repository.numberFieldStatistics(
+                    identities.last().first,
+                    identities.last().second,
+                    StatisticsPeriod.AllTime,
+                ),
+            )
+            assertEquals(
+                "activity-series",
+                database.activityExecutionDao().getById("physical-number")!!.statisticsSeriesId,
+            )
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun numberQueriesRestrictTinySeriesAndNarrowPeriodsBeforeFieldLineageAfterReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-selectivity-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            numberHistorySources()
+            completedSequence(
+                "selectivity-root",
+                "sequence-series",
+                "number-history",
+                1,
+                0,
+                AUG_20,
+                withNumberField = true,
+            )
+            database.runInTransaction {
+                // Reuse frozen snapshots: even a single Field can have a very large value lineage.
+                repeat(8_000) { index ->
+                    val date = if (index == 7_999) AUG_21 else AUG_20
+                    for (kind in listOf("activity", "sequence")) {
+                        val snapshot = if (kind == "activity") "number-history" else "selectivity-root-snapshot"
+                        val field = "$snapshot-number"
+                        val columns =
+                            if (kind == "activity") {
+                                "context_type,completed_at_ms"
+                            } else {
+                                "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                            }
+                        val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_executions " +
+                                "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                                "created_at_ms,updated_at_ms,$columns) " +
+                                "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                            arrayOf("$kind-old-$index", snapshot, "$kind-series", date),
+                        )
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_execution_field_values " +
+                                "(${kind}_execution_id,snapshot_field_id,number_scaled) " +
+                                "VALUES (?,?,?)",
+                            arrayOf<Any>("$kind-old-$index", field, if (index == 7_999) -7L else index.toLong()),
+                        )
+                    }
+                }
+            }
+            val tinyValues = listOf(Long.MIN_VALUE, Long.MAX_VALUE, 9L)
+            for (kind in listOf("activity", "sequence")) {
+                series("$kind-tiny", kind.uppercase(), "New Series")
+                tinyValues.forEachIndexed { index, value ->
+                    val id = "$kind-tiny-$index"
+                    if (kind == "activity") {
+                        activitySnapshot("$id-snapshot", "activity-tiny", mode = "NO_LIVE_TRACKING", fields = true)
+                        completedActivity(
+                            id,
+                            "$id-snapshot",
+                            "activity-tiny",
+                            null,
+                            AUG_20,
+                            values = listOf(numberValue(id, "$id-snapshot-number", value)),
+                        )
+                    } else {
+                        completedSequence(id, "sequence-tiny", "number-history", 1, 0, AUG_20, true, value)
+                    }
+                }
+            }
+            seedMinorityNumberHistory()
+            assertEquals(2L, database.statisticsDao().activityNumberFieldCandidateCount("number-source", 2))
+            assertEquals(2L, database.statisticsDao().sequenceNumberFieldCandidateCount("sequence-number-source", 2))
+            repeat(2) {
+                database.close()
+                database =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                        .build()
+                repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+                for ((oldSeries, field) in numberHistoryIdentities()) {
+                    val kind = if (field is StatisticsFieldId.Activity) "activity" else "sequence"
+                    for ((seriesId, period, values) in listOf(
+                        Triple(StatisticsSeriesId("$kind-tiny"), StatisticsPeriod.AllTime, tinyValues),
+                        Triple(oldSeries, StatisticsPeriod.Day(LocalDate.parse(AUG_21)), listOf(-7L)),
+                        Triple(oldSeries, StatisticsPeriod.AllTime, (0L..7_998L).toList() + -7L),
+                    )) {
+                        observedNumberReads.clear()
+                        val actual = repository.numberFieldStatistics(seriesId, field, period)
+                        val bundled =
+                            repository
+                                .seriesDetail(seriesId, period)
+                                .fields
+                                .filterIsInstance<StatisticsFieldDetail.Number>()
+                                .single { it.field.id == field }
+                                .statistics
+                        assertEquals(
+                            com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                                .numbers(values),
+                            actual.values,
+                        )
+                        val missing =
+                            if (field is StatisticsFieldId.Sequence &&
+                                seriesId == oldSeries &&
+                                period == StatisticsPeriod.AllTime
+                            ) {
+                                1L
+                            } else {
+                                0L
+                            }
+                        assertEquals(values.size.toLong() + missing, actual.relevantExecutionCount)
+                        assertEquals(missing, actual.missingCount)
+                        assertEquals(actual, bundled)
+                        val dense =
+                            synchronized(observedNumberReads) {
+                                observedNumberReads.any { (sql, _) ->
+                                    sql.startsWith(
+                                        "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_snapshot_fields",
+                                    )
+                                }
+                            }
+                        assertEquals(seriesId == oldSeries && period == StatisticsPeriod.AllTime, dense)
+                        assertNumberReadPlans()
+                    }
+                }
+                assertMinorityNumberHistory()
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun sharedNumberLineagesUseOneGroupedTraversalAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-shared-fields-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            numberHistorySources()
+            for (fields in listOf(4, 8, 16, 24)) seedSharedNumberLineages(fields)
+            database.close()
+            database =
+                LifeTracingDatabase
+                    .builder(context, name)
+                    .allowMainThreadQueries()
+                    .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                    .build()
+            repository = StatisticsRepository(database) { StatisticsSeriesId("unused") }
+            for (fields in listOf(4, 8, 16, 24)) {
+                for (kind in listOf("activity", "sequence")) {
+                    observedSql.clear()
+                    observedNumberReads.clear()
+                    val numbers =
+                        repository
+                            .seriesDetail(
+                                StatisticsSeriesId("$kind-shared-$fields-new"),
+                                StatisticsPeriod.AllTime,
+                            ).fields
+                            .filterIsInstance<StatisticsFieldDetail.Number>()
+                    assertEquals(fields, numbers.size)
+                    numbers.forEach { number ->
+                        val field =
+                            number.field.id.value
+                                .substringAfterLast('-')
+                                .toInt()
+                        assertEquals("$kind-shared-$fields-source-$field", number.field.id.value)
+                        val values = List(if (field % 2 == 0) 100 else 99) { sharedNumberValue(it, field) }
+                        val statistics = number.statistics
+                        assertEquals(100L, statistics.relevantExecutionCount)
+                        assertEquals(values.size.toLong(), statistics.recordedCount)
+                        assertEquals(100L - values.size, statistics.missingCount)
+                        assertEquals(values.size.toLong(), statistics.coverage.numerator)
+                        assertEquals(100L, statistics.coverage.denominator)
+                        assertEquals(
+                            com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                                .numbers(values),
+                            statistics.values,
+                        )
+                    }
+                    val queries = synchronized(observedSql) { observedSql.toList() }
+                    assertEquals(
+                        "No per-Field execution/value traversal is allowed for the shared fallback",
+                        0,
+                        queries.count {
+                            it.startsWith(
+                                "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                            )
+                        },
+                    )
+                    val ranks =
+                        synchronized(observedNumberReads) {
+                            observedNumberReads.filter { it.first.contains(" AS at_or_below_count") }
+                        }
+                    assertEquals("Shared pass count must not grow with populated Field count", 3, ranks.size)
+                    assertEquals(
+                        2 * fields,
+                        queries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") },
+                    )
+                    ranks.forEach { (sql, args) ->
+                        assertEquals("Bind count is independent of Field count", 4, args.size)
+                        val plan =
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "EXPLAIN QUERY PLAN $sql",
+                                    args.toTypedArray(),
+                                ).use {
+                                    buildList { while (it.moveToNext()) add(it.getString(3)) }
+                                }
+                        val searches = plan.filter { it.contains("SEARCH ", ignoreCase = true) }
+                        assertTrue("Selected executions must lead: $plan", searches.first().contains("executions"))
+                        assertEquals("One execution/value/Field join per shared pass: $plan", 3, searches.size)
+                        assertTrue(plan.none { it.contains("CORRELATED", ignoreCase = true) })
+                    }
+                }
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun smallNumberFallbackUsesScalarMediansAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cases =
+            listOf(
+                1 to false,
+                2 to false,
+                2 to true,
+                3 to false,
+                4 to false,
+                8 to false,
+                16 to false,
+                17 to false,
+                24 to false,
+            )
+        for ((fields, exclusiveFirst) in cases) {
+            val name = "statistics-small-fallback-${UUID.randomUUID()}"
+            database.close()
+            try {
+                database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                numberHistorySources()
+                seedSharedNumberLineages(
+                    fields,
+                    1_000,
+                    if (fields >= 8) 16_000 else 7_000,
+                    exclusiveFirst,
+                    ::broadNumberValue,
+                )
+                database.close()
+                database =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                        .build()
+                repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                for (kind in listOf("activity", "sequence")) {
+                    val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                    observedSql.clear()
+                    observedNumberReads.clear()
+                    val numbers =
+                        repository
+                            .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                            .fields
+                            .filterIsInstance<StatisticsFieldDetail.Number>()
+                    val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                    assertEquals(fields, numbers.size)
+                    numbers.forEach { number ->
+                        val field =
+                            number.field.id.value
+                                .substringAfterLast('-')
+                                .toInt()
+                        val values = List(1_000 - field % 2) { broadNumberValue(it, field) }.sorted()
+                        val count = values.size.toLong()
+                        val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                        val statistics = number.statistics
+                        val expectedId = "$kind-shared-$fields-source-$field"
+                        assertEquals(
+                            if (kind == "activity") {
+                                StatisticsFieldId.Activity(ActivityTemplateFieldId(expectedId))
+                            } else {
+                                StatisticsFieldId.Sequence(SequenceTemplateFieldId(expectedId))
+                            },
+                            number.field.id,
+                        )
+                        assertEquals(1_000L, statistics.relevantExecutionCount)
+                        assertEquals(count, statistics.recordedCount)
+                        assertEquals(1_000L - count, statistics.missingCount)
+                        assertEquals(count, statistics.coverage.numerator)
+                        assertEquals(1_000L, statistics.coverage.denominator)
+                        assertTrue(
+                            "Fixture must exceed signed-Long total range",
+                            total.abs() > BigInteger.valueOf(Long.MAX_VALUE),
+                        )
+                        assertEquals(count, statistics.values.sampleCount)
+                        assertEquals(total, statistics.values.totalScaled)
+                        assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), statistics.values.averageScaled)
+                        assertEquals(
+                            ExactValue.of(
+                                BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                    BigInteger.valueOf(values[values.size / 2]),
+                                BigInteger.valueOf(2),
+                            ),
+                            statistics.values.medianScaled,
+                        )
+                        assertEquals(values.first(), statistics.values.minimumScaled)
+                        assertEquals(values.last(), statistics.values.maximumScaled)
+                        assertEquals(
+                            repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            statistics,
+                        )
+                    }
+                    val ranks = reads.count { it.first.contains(" AS at_or_below_count") }
+                    when {
+                        fields <= 3 -> assertEquals(0, ranks)
+                        fields <= 16 ->
+                            assertEquals("Small wide-range fallback must stop after three shared passes", 3, ranks)
+                        else -> {
+                            assertEquals("Large unresolved sets bound the shared trial", 3, ranks)
+                            assertTrue(
+                                "Large unresolved sets use bounded exact histograms",
+                                reads.count { it.first.contains(" AS bucket_id") } in 1..9,
+                            )
+                        }
+                    }
+                    val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                    assertEquals(if (fields <= 16) fields else 0, medians.size)
+                    val executionFirstCount = if (exclusiveFirst) 1 else fields
+                    assertEquals(
+                        if (fields > 16) 0 else executionFirstCount,
+                        medians.count {
+                            it.first.startsWith(
+                                "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                            )
+                        },
+                    )
+                    val probes =
+                        reads.filter {
+                            it.first.startsWith("SELECT COUNT(*) FROM (") && it.first.contains("LIMIT")
+                        }
+                    assertEquals(if (fields > 3) 2 * fields else fields, probes.size)
+                    var probeVisits = 0L
+                    probes.forEachIndexed { index, (sql, args) ->
+                        val count = assertNumberProbe(sql, args)
+                        val limit = (args.last() as Number).toLong()
+                        probeVisits += count
+                        if (exclusiveFirst && index == 0) {
+                            assertTrue(count < limit)
+                        } else {
+                            assertEquals("Shared old lineage must exhaust the bounded probe", limit, count)
+                        }
+                    }
+                    val candidates =
+                        if (kind == "activity") {
+                            database.statisticsDao().activityNumberExecutionCandidateCount(seriesId.value, null, null)
+                        } else {
+                            database.statisticsDao().sequenceNumberExecutionCandidateCount(seriesId.value, null, null)
+                        }
+                    assertTrue(
+                        "Total probe work includes every saturated sentinel",
+                        probeVisits <= 17 * candidates + 2 * fields,
+                    )
+                    val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                    assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                    // Inspect only the canonical detail statements, not the parity reads above.
+                    observedNumberReads.clear()
+                    observedNumberReads.addAll(reads)
+                    assertNumberReadPlans()
+                }
+            } finally {
+                database.close()
+                context.deleteDatabase(name)
+            }
+        }
+    }
+
+    @Test
+    fun mixedPostTrialNumberRemaindersUseScalarMediansAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(17, 24)) {
+            for (hardFields in 1..3) {
+                val name = "statistics-mixed-trial-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    seedSharedNumberLineages(fields, 200, 3_001, number = { index, field ->
+                        mixedTrialNumberValue(index, field, hardFields)
+                    })
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        observedNumberReads.clear()
+                        val detail = repository.seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                        val numbers = detail.fields.filterIsInstance<StatisticsFieldDetail.Number>()
+                        val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                        assertEquals(fields, numbers.size)
+                        assertEquals(3, reads.count { it.first.contains(" AS at_or_below_count") })
+                        assertEquals(
+                            "Only the post-trial remainder determines histogram dispatch",
+                            0,
+                            reads.count { it.first.contains(" AS bucket_id") },
+                        )
+                        val scalars = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                        assertEquals("One exact scalar selection per difficult Field", hardFields, scalars.size)
+                        assertTrue(
+                            scalars.all {
+                                val source = it.second[1] as String
+                                source.substringAfterLast('-').toInt() < hardFields
+                            },
+                        )
+                        val probes = reads.filter { it.first.startsWith("SELECT COUNT(*) FROM (") }
+                        assertEquals(2 * fields, probes.size)
+                        probes.forEach { (sql, args) ->
+                            assertEquals(
+                                "Both fair stages must reject Field-first access",
+                                args.last(),
+                                assertNumberProbe(sql, args),
+                            )
+                        }
+                        val ranks = reads.filter { it.first.contains(" AS at_or_below_count") }
+                        ranks.forEachIndexed { pass, (sql, args) ->
+                            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                                assertEquals(if (pass == 0) fields else hardFields, cursor.count)
+                            }
+                        }
+                        assertNumberReadPlans()
+                        numbers.forEach { number ->
+                            val field =
+                                number.field.id.value
+                                    .substringAfterLast('-')
+                                    .toInt()
+                            assertEquals("$kind-shared-$fields-source-$field", number.field.id.value)
+                            val values = List(200 - field % 2) { mixedTrialNumberValue(it, field, hardFields) }.sorted()
+                            val count = values.size.toLong()
+                            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                            val stats = number.statistics
+                            assertEquals(200L, stats.relevantExecutionCount)
+                            assertEquals(count, stats.recordedCount)
+                            assertEquals(200L - count, stats.missingCount)
+                            assertEquals(count, stats.coverage.numerator)
+                            assertEquals(200L, stats.coverage.denominator)
+                            assertEquals(count, stats.values.sampleCount)
+                            assertEquals(total, stats.values.totalScaled)
+                            assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), stats.values.averageScaled)
+                            assertEquals(
+                                ExactValue.of(
+                                    BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                        BigInteger.valueOf(values[values.size / 2]),
+                                    BigInteger.valueOf(2),
+                                ),
+                                stats.values.medianScaled,
+                            )
+                            assertEquals(values.first(), stats.values.minimumScaled)
+                            assertEquals(values.last(), stats.values.maximumScaled)
+                            if (field < hardFields) assertTrue(total.abs() > BigInteger.valueOf(Long.MAX_VALUE))
+                            assertEquals(
+                                stats,
+                                repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            )
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "SELECT COUNT(DISTINCT id) FROM ${kind}_snapshot_fields WHERE source_field_id = ?",
+                                    arrayOf(number.field.id.value),
+                                ).use { cursor ->
+                                    assertTrue(cursor.moveToFirst())
+                                    assertEquals(2L, cursor.getLong(0))
+                                }
+                        }
+                        val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                        assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                        val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                        assertTrue(
+                            empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                it.statistics.recordedCount == 0L
+                            },
+                        )
+                        database.openHelper.readableDatabase
+                            .query("SELECT deleted_at_ms FROM ${kind}_templates")
+                            .use { cursor ->
+                                assertTrue(cursor.moveToFirst())
+                                assertEquals(2L, cursor.getLong(0))
+                            }
+                    }
+                    assertEquals(fingerprint, numberHistoryFingerprint())
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
+            }
+        }
+    }
+
+    private fun mixedTrialNumberValue(
+        index: Int,
+        field: Int,
+        hardFields: Int,
+    ): Long {
+        if (field >= hardFields) return 7L
+        val base = 1L shl 62
+        val positive =
+            when {
+                index < 99 -> base
+                index == 99 -> base + 1
+                index <= 160 -> base + (1L shl (index - 99))
+                index == 161 -> Long.MAX_VALUE
+                else -> base + 2
+            }
+        return if (field % 2 == 0) positive else -positive
+    }
+
+    @Test
+    fun signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(16, 17, 24)) {
+            val oldBoundary = 200 * (if (fields <= 16) 9 else 14)
+            val cases =
+                listOf(
+                    Triple(200, oldBoundary, true),
+                    Triple(200, oldBoundary + 1, true),
+                    Triple(199, oldBoundary + 1, true),
+                    Triple(201, oldBoundary + 1, true),
+                    Triple(200, oldBoundary + 1, false),
+                    Triple(202, 3_001, false),
+                )
+            for ((selected, old, dense) in cases) {
+                val name = "statistics-signed-boundary-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    val valuesFor: (Int, Int) -> Long =
+                        if (selected == 202) ::clusteredNumberValue else { index, _ -> signedRankNumberValue(index) }
+                    seedSharedNumberLineages(fields, selected, old, number = valuesFor, missingOddLast = !dense)
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        observedNumberReads.clear()
+                        val numbers =
+                            repository
+                                .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                                .fields
+                                .filterIsInstance<StatisticsFieldDetail.Number>()
+                        val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                        assertTrue(
+                            "Signed values must not trigger dozens of full rank traversals",
+                            reads.count { it.first.contains(" AS at_or_below_count") } <= 3,
+                        )
+                        val histograms = reads.filter { it.first.contains(" AS bucket_id") }
+                        val saturated = selected <= 200 && old > oldBoundary || selected == 202
+                        if (fields > 16 && saturated) {
+                            assertTrue("Saturated broad sets must use bounded completion", histograms.size in 1..9)
+                            if (selected ==
+                                202
+                            ) {
+                                assertTrue("Broad values must exercise byte refinement", histograms.size >= 2)
+                            }
+                        } else {
+                            assertEquals(0, histograms.size)
+                        }
+                        histograms.forEach { (sql, args) ->
+                            assertEquals(4, args.size)
+                            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                                assertTrue(
+                                    "Histogram rows are bounded by result Fields",
+                                    cursor.count in 1..256 * fields,
+                                )
+                            }
+                        }
+                        assertEquals(fields, numbers.size)
+                        assertNumberReadPlans()
+                        numbers.forEach { number ->
+                            val index =
+                                number.field.id.value
+                                    .substringAfterLast('-')
+                                    .toInt()
+                            assertEquals("$kind-shared-$fields-source-$index", number.field.id.value)
+                            val values = List(selected - if (dense) 0 else index % 2) { valuesFor(it, index) }.sorted()
+                            val count = values.size.toLong()
+                            val total = values.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+                            val stats = number.statistics
+                            assertEquals(selected.toLong(), stats.relevantExecutionCount)
+                            assertEquals(count, stats.recordedCount)
+                            assertEquals(selected.toLong() - count, stats.missingCount)
+                            assertEquals(count, stats.coverage.numerator)
+                            assertEquals(selected.toLong(), stats.coverage.denominator)
+                            assertEquals(count, stats.values.sampleCount)
+                            assertEquals(total, stats.values.totalScaled)
+                            assertEquals(ExactValue.of(total, BigInteger.valueOf(count)), stats.values.averageScaled)
+                            assertEquals(
+                                ExactValue.of(
+                                    BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                        BigInteger.valueOf(values[values.size / 2]),
+                                    BigInteger.valueOf(2),
+                                ),
+                                stats.values.medianScaled,
+                            )
+                            assertEquals(Long.MIN_VALUE, stats.values.minimumScaled)
+                            assertEquals(Long.MAX_VALUE, stats.values.maximumScaled)
+                            assertEquals(
+                                stats,
+                                repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                            )
+                            database.openHelper.readableDatabase
+                                .query(
+                                    "SELECT COUNT(DISTINCT id) FROM ${kind}_snapshot_fields WHERE source_field_id = ?",
+                                    arrayOf(number.field.id.value),
+                                ).use { cursor ->
+                                    assertTrue(cursor.moveToFirst())
+                                    assertEquals(2L, cursor.getLong(0))
+                                }
+                        }
+                        val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                        assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                        val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                        assertTrue(
+                            empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                it.statistics.recordedCount == 0L
+                            },
+                        )
+                    }
+                    assertEquals(fingerprint, numberHistoryFingerprint())
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
+            }
+        }
+    }
+
+    private fun clusteredNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index) {
+            0 -> Long.MIN_VALUE
+            1 -> Long.MAX_VALUE
+            else -> (1L shl 62) + (broadNumberValue(index, field) and ((1L shl 55) - 1))
+        }
+
+    private fun signedRankNumberValue(index: Int): Long =
+        when {
+            index < 99 -> Long.MIN_VALUE
+            index == 99 -> 0L
+            index <= 162 -> 1L shl (index - 100)
+            index == 163 -> Long.MAX_VALUE
+            else -> 1L
+        }
+
+    @Test
+    fun moderateNumberLineagesAvoidFairProbeCliffAfterPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fields in listOf(16, 17, 24)) {
+            val cases =
+                listOf(
+                    Triple(1_000, 999, true),
+                    Triple(1_000, 1_000, true),
+                    Triple(1_000, 1_001, true),
+                    Triple(1_000, 1_002, true),
+                    Triple(1_000, 1_001, false),
+                    Triple(999, 1_000, true),
+                    Triple(1_001, 1_000, true),
+                )
+            for ((selectedExecutions, oldExecutions, dense) in cases) {
+                val name = "statistics-moderate-lineages-${UUID.randomUUID()}"
+                database.close()
+                try {
+                    database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+                    numberHistorySources()
+                    seedSharedNumberLineages(
+                        fields,
+                        selectedExecutions,
+                        oldExecutions,
+                        number = ::broadNumberValue,
+                        missingOddLast = !dense,
+                    )
+                    for (kind in listOf("activity", "sequence")) {
+                        database.openHelper.readableDatabase
+                            .query(
+                                "SELECT source_field_id, COUNT(DISTINCT id) FROM ${kind}_snapshot_fields " +
+                                    "WHERE source_field_id LIKE '$kind-shared-$fields-source-%' GROUP BY source_field_id",
+                            ).use { cursor ->
+                                var count = 0
+                                while (cursor.moveToNext()) {
+                                    assertEquals(2L, cursor.getLong(1))
+                                    count++
+                                }
+                                assertEquals(fields, count)
+                            }
+                    }
+                    val fingerprint = numberHistoryFingerprint()
+                    database.close()
+                    database =
+                        LifeTracingDatabase
+                            .builder(context, name)
+                            .allowMainThreadQueries()
+                            .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                            .build()
+                    repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+                    for (kind in listOf("activity", "sequence")) {
+                        val seriesId = StatisticsSeriesId("$kind-shared-$fields-new")
+                        // Equal mutable labels, then renamed labels, preserve stable source identities.
+                        for (rename in listOf(false, true)) {
+                            if (rename) {
+                                database.openHelper.writableDatabase.execSQL(
+                                    "UPDATE ${kind}_template_fields SET name = 'Renamed ' || (1000 - position)",
+                                )
+                            }
+                            observedNumberReads.clear()
+                            val numbers =
+                                repository
+                                    .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                                    .fields
+                                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                            val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                            assertEquals(fields, numbers.size)
+                            assertEquals(0, reads.count { it.first.contains(" AS at_or_below_count") })
+                            val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                            assertEquals(fields, medians.size)
+                            assertTrue(
+                                medians.none {
+                                    it.first.startsWith(
+                                        "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                                    )
+                                },
+                            )
+                            val probes = reads.filter { it.first.startsWith("SELECT COUNT(*) FROM (") }
+                            if (dense) {
+                                assertEquals(
+                                    if (oldExecutions <=
+                                        selectedExecutions
+                                    ) {
+                                        fields
+                                    } else {
+                                        2 * fields
+                                    },
+                                    probes.size,
+                                )
+                            } else {
+                                assertTrue(probes.size in fields..2 * fields)
+                            }
+                            var visits = 0L
+                            probes.forEach { (sql, args) -> visits += assertNumberProbe(sql, args) }
+                            val candidates =
+                                if (kind == "activity") {
+                                    database.statisticsDao().activityNumberExecutionCandidateCount(
+                                        seriesId.value,
+                                        null,
+                                        null,
+                                    )
+                                } else {
+                                    database.statisticsDao().sequenceNumberExecutionCandidateCount(
+                                        seriesId.value,
+                                        null,
+                                        null,
+                                    )
+                                }
+                            assertEquals(
+                                selectedExecutions.toLong() * fields - if (dense) 0 else fields / 2,
+                                candidates,
+                            )
+                            assertTrue(visits <= 17 * candidates + 2 * fields)
+                            numbers.forEach { number ->
+                                val index =
+                                    number.field.id.value
+                                        .substringAfterLast('-')
+                                        .toInt()
+                                val expectedId = "$kind-shared-$fields-source-$index"
+                                assertEquals(expectedId, number.field.id.value)
+                                val values =
+                                    List(
+                                        selectedExecutions - if (dense) 0 else index % 2,
+                                    ) { broadNumberValue(it, index) }.sorted()
+                                val count = values.size.toLong()
+                                val total =
+                                    values.fold(
+                                        BigInteger.ZERO,
+                                    ) { sum, value -> sum + BigInteger.valueOf(value) }
+                                val statistics = number.statistics
+                                assertEquals(selectedExecutions.toLong(), statistics.relevantExecutionCount)
+                                assertEquals(count, statistics.recordedCount)
+                                assertEquals(selectedExecutions.toLong() - count, statistics.missingCount)
+                                assertEquals(count, statistics.coverage.numerator)
+                                assertEquals(selectedExecutions.toLong(), statistics.coverage.denominator)
+                                assertEquals(count, statistics.values.sampleCount)
+                                assertEquals(total, statistics.values.totalScaled)
+                                assertEquals(
+                                    ExactValue.of(total, BigInteger.valueOf(count)),
+                                    statistics.values.averageScaled,
+                                )
+                                assertEquals(
+                                    ExactValue.of(
+                                        BigInteger.valueOf(values[(values.size - 1) / 2]) +
+                                            BigInteger.valueOf(values[values.size / 2]),
+                                        BigInteger.valueOf(2),
+                                    ),
+                                    statistics.values.medianScaled,
+                                )
+                                assertEquals(Long.MIN_VALUE, statistics.values.minimumScaled)
+                                assertEquals(Long.MAX_VALUE, statistics.values.maximumScaled)
+                                assertEquals(
+                                    statistics,
+                                    repository.numberFieldStatistics(
+                                        seriesId,
+                                        number.field.id,
+                                        StatisticsPeriod.AllTime,
+                                    ),
+                                )
+                            }
+                            val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                            assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                            val empty = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_21)))
+                            assertTrue(
+                                empty.fields.filterIsInstance<StatisticsFieldDetail.Number>().all {
+                                    it.statistics.recordedCount == 0L
+                                },
+                            )
+                            assertEquals(fingerprint, numberHistoryFingerprint())
+                            observedNumberReads.clear()
+                            observedNumberReads.addAll(reads)
+                            assertNumberReadPlans()
+                        }
+                    }
+                } finally {
+                    database.close()
+                    context.deleteDatabase(name)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun numberProbeFairnessSurvivesDisplayRenameAndPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-fair-probes-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            numberHistorySources()
+            seedSharedNumberLineages(24, 1_000, 50_000, number = ::broadNumberValue, exclusiveOthers = true)
+            val historicalFingerprint = numberHistoryFingerprint()
+            database.close()
+            database =
+                LifeTracingDatabase
+                    .builder(context, name)
+                    .allowMainThreadQueries()
+                    .setQueryCallback(::observeStatisticsQuery, Executor { it.run() })
+                    .build()
+            repository = StatisticsRepository(database) { error("Read must not allocate identity") }
+            for (kind in listOf("activity", "sequence")) {
+                val seriesId = StatisticsSeriesId("$kind-shared-24-new")
+                val before =
+                    mutableMapOf<StatisticsFieldId, com.alexandr5476.lifetracing.domain.NumberDistribution>()
+                for (expensiveName in listOf("A expensive", "Z expensive")) {
+                    // Only current presentation metadata changes; frozen snapshots and values stay untouched.
+                    database.openHelper.writableDatabase
+                        .execSQL(
+                            "UPDATE ${kind}_template_fields SET name = CASE WHEN id = ? THEN ? ELSE 'M cheap' END",
+                            arrayOf("$kind-shared-24-source-0", expensiveName),
+                        )
+                    observedNumberReads.clear()
+                    val numbers =
+                        repository
+                            .seriesDetail(seriesId, StatisticsPeriod.AllTime)
+                            .fields
+                            .filterIsInstance<StatisticsFieldDetail.Number>()
+                    val reads = synchronized(observedNumberReads) { observedNumberReads.toList() }
+                    assertEquals(24, numbers.size)
+                    assertEquals(
+                        if (expensiveName.startsWith("A")) 0 else 23,
+                        numbers.indexOfFirst {
+                            it.field.id.value
+                                .endsWith("-0")
+                        },
+                    )
+                    assertEquals(24, reads.count { it.first.startsWith("SELECT COUNT(*) FROM (") })
+                    assertEquals(0, reads.count { it.first.contains(" AS at_or_below_count") })
+                    val medians = reads.filter { it.first.contains(" AS lower_median_scaled") }
+                    assertEquals(24, medians.size)
+                    assertEquals(
+                        "Only the expensive Field may use execution-first scalar selection",
+                        1,
+                        medians.count {
+                            it.first.startsWith(
+                                "WITH eligible AS (SELECT recorded_values.number_scaled FROM ${kind}_executions",
+                            )
+                        },
+                    )
+                    numbers.forEach { number ->
+                        val field =
+                            number.field.id.value
+                                .substringAfterLast('-')
+                                .toInt()
+                        val expectedId = "$kind-shared-24-source-$field"
+                        assertEquals(
+                            if (kind == "activity") {
+                                StatisticsFieldId.Activity(ActivityTemplateFieldId(expectedId))
+                            } else {
+                                StatisticsFieldId.Sequence(SequenceTemplateFieldId(expectedId))
+                            },
+                            number.field.id,
+                        )
+                        val values = List(1_000 - field % 2) { broadNumberValue(it, field) }
+                        val statistics = number.statistics
+                        assertEquals(1_000L, statistics.relevantExecutionCount)
+                        assertEquals(values.size.toLong(), statistics.recordedCount)
+                        assertEquals((field % 2).toLong(), statistics.missingCount)
+                        assertEquals(values.size.toLong(), statistics.coverage.numerator)
+                        assertEquals(1_000L, statistics.coverage.denominator)
+                        assertEquals(
+                            com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                                .numbers(values),
+                            statistics.values,
+                        )
+                        assertEquals(
+                            statistics,
+                            repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                        )
+                        before
+                            .putIfAbsent(number.field.id, statistics.values)
+                            ?.let { assertEquals(it, statistics.values) }
+                    }
+                    val day = repository.seriesDetail(seriesId, StatisticsPeriod.Day(LocalDate.parse(AUG_20)))
+                    assertEquals(numbers, day.fields.filterIsInstance<StatisticsFieldDetail.Number>())
+                    assertEquals(
+                        "Presentation rename and reads preserve every historical row",
+                        historicalFingerprint,
+                        numberHistoryFingerprint(),
+                    )
+                    observedNumberReads.clear()
+                    observedNumberReads.addAll(reads)
+                    assertNumberReadPlans()
+                }
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    private fun numberHistoryFingerprint(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val tables =
+            listOf("activity", "sequence").flatMap { kind ->
+                listOf("executions", "execution_field_values", "snapshots", "snapshot_fields").map { "${kind}_$it" }
+            }
+        for (table in tables) {
+            digest.update(table.toByteArray())
+            database.openHelper.readableDatabase.query("SELECT * FROM $table ORDER BY rowid").use { cursor ->
+                while (cursor.moveToNext()) {
+                    repeat(cursor.columnCount) { column ->
+                        digest.update((cursor.getString(column) ?: "<NULL>").toByteArray())
+                        digest.update(0.toByte())
+                    }
+                }
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun broadNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index) {
+            0 -> Long.MIN_VALUE
+            1 -> Long.MAX_VALUE
+            else -> java.util.Random(37L + index * 1_000_003L + field).nextLong()
+        }
+
+    private fun sharedNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when {
+            field % 2 == 0 ->
+                when (index % 4) {
+                    0 -> Long.MIN_VALUE
+                    1, 3 -> Long.MAX_VALUE
+                    else -> 0L
+                }
+            else -> sharedOddNumberValue(index, field)
+        }
+
+    private fun sharedOddNumberValue(
+        index: Int,
+        field: Int,
+    ): Long =
+        when (index % 5) {
+            0 -> Long.MIN_VALUE
+            1, 2 -> Long.MAX_VALUE
+            3 -> 0L
+            else -> -7L - field
+        }
+
+    private fun seedSharedNumberLineages(
+        fields: Int,
+        selectedExecutions: Int = 100,
+        oldExecutions: Int = 6_000,
+        exclusiveFirst: Boolean = false,
+        number: (Int, Int) -> Long = ::sharedNumberValue,
+        exclusiveOthers: Boolean = false,
+        missingOddLast: Boolean = true,
+    ) {
+        database.runInTransaction {
+            for (kind in listOf("activity", "sequence")) {
+                val prefix = "$kind-shared-$fields"
+                for (era in listOf("old", "new")) {
+                    val seriesId = "$prefix-$era"
+                    val snapshot = "$seriesId-snapshot"
+                    series(seriesId, kind.uppercase(), "Shared lineage")
+                    if (kind == "activity") {
+                        activitySnapshot(snapshot, seriesId, mode = "NO_LIVE_TRACKING")
+                    } else {
+                        database.sequenceSnapshotDao().insertAggregate(
+                            SequenceSnapshotAggregateEntity(
+                                SequenceSnapshotEntity(snapshot, "Shared", null, null, null, seriesId, 0),
+                                sequenceSettings(snapshot),
+                            ),
+                        )
+                    }
+                    repeat(fields) { field ->
+                        val source = "$prefix-source-$field"
+                        if (era == "old") {
+                            database.openHelper.writableDatabase.execSQL(
+                                "INSERT INTO ${kind}_template_fields " +
+                                    "(id,${kind}_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                                    "VALUES (?,?,?,'Same label','NUMBER',0,0)",
+                                arrayOf<Any>(
+                                    source,
+                                    if (kind ==
+                                        "activity"
+                                    ) {
+                                        "activity"
+                                    } else {
+                                        "sequence"
+                                    },
+                                    fields * 100 + field,
+                                ),
+                            )
+                        }
+                        val owner = if (kind == "activity") "snapshot_id" else "sequence_snapshot_id"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_snapshot_fields " +
+                                "(id,$owner,source_field_id,position,name_at_creation,field_type) " +
+                                "VALUES (?,?,?,?,'Same label','NUMBER')",
+                            arrayOf<Any>("$snapshot-$field", snapshot, source, field),
+                        )
+                    }
+                    repeat(if (era == "old") oldExecutions else selectedExecutions) { index ->
+                        val id = "$seriesId-$index"
+                        val columns =
+                            if (kind == "activity") {
+                                "context_type,completed_at_ms"
+                            } else {
+                                "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                            }
+                        val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                        database.openHelper.writableDatabase.execSQL(
+                            "INSERT INTO ${kind}_executions " +
+                                "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                                "created_at_ms,updated_at_ms,$columns) " +
+                                "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                            arrayOf(id, snapshot, seriesId, AUG_20),
+                        )
+                        repeat(fields) { field ->
+                            val missing =
+                                missingOddLast && era == "new" && field % 2 == 1 && index == selectedExecutions - 1
+                            val exclusive = (exclusiveFirst && field == 0) || (exclusiveOthers && field > 0)
+                            if (!missing && !(era == "old" && exclusive)) {
+                                database.openHelper.writableDatabase.execSQL(
+                                    "INSERT INTO ${kind}_execution_field_values " +
+                                        "(${kind}_execution_id,snapshot_field_id,number_scaled) VALUES (?,?,?)",
+                                    arrayOf<Any>(id, "$snapshot-$field", number(index, field)),
+                                )
+                            }
+                        }
+                    }
+                }
+                database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 2")
+            }
+        }
+    }
+
+    @Test
+    fun numberReadersRejectNonIntegerStorage() {
+        numberHistorySources()
+        completedActivity(
+            "malformed-number",
+            "number-history",
+            "activity-series",
+            null,
+            AUG_20,
+            values = listOf(numberValue("malformed-number", "number-history-number", 1)),
+        )
+        completedSequence(
+            "malformed-root",
+            "sequence-series",
+            "number-history",
+            1,
+            0,
+            AUG_20,
+            withNumberField = true,
+            numberValue = 1,
+        )
+        for (literal in listOf("0.5", "'corrupt'")) {
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE activity_execution_field_values SET number_scaled = $literal",
+            )
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sequence_execution_field_values SET number_scaled = $literal",
+            )
+            for ((series, field) in numberHistoryIdentities()) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    repository.numberFieldStatistics(series, field, StatisticsPeriod.AllTime)
+                }
+                assertThrows(IllegalArgumentException::class.java) {
+                    repository.seriesDetail(series, StatisticsPeriod.AllTime)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun mixedStatisticsSurviveReopenCorrectionAndDeletionWithIndependentExpectations() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "statistics-s4-${UUID.randomUUID()}"
+        database.close()
+        try {
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { error("A Statistics read must not allocate identity") }
+            mixedStatisticsHistory()
+            assertMixedStatistics()
+            val before = statisticsProjections(repository)
+            val facts = statisticsFacts(database)
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { error("A Statistics read must not allocate identity") }
+            assertEquals(facts, statisticsFacts(database))
+            assertEquals(before, statisticsProjections(repository))
+            assertMixedStatistics()
+
+            val unaffected = repository.seriesDetail(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
+            val other = repository.activitySeries(StatisticsSeriesId("s4-other-series"), StatisticsPeriod.AllTime)
+            mutateStatisticsHistory(database, "correct")
+            assertEquals(Duration.ofMinutes(142), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
+            assertEquals(
+                Duration.ofMinutes(75),
+                repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_20))).totalTrackedDuration,
+            )
+            assertEquals(
+                Duration.ofMinutes(60),
+                repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_21))).totalTrackedDuration,
+            )
+            val corrected = repository.seriesDetail(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+            val number =
+                corrected.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single {
+                        it.field.id.value ==
+                            "number-source"
+                    }.statistics
+            assertEquals(BigInteger.valueOf(Long.MAX_VALUE) + BigInteger.valueOf(8), number.values.totalScaled)
+            assertEquals(ExactValue.of(8, 1), number.values.medianScaled)
+            assertEquals(4L, number.relevantExecutionCount)
+            assertEquals(3L, number.recordedCount)
+            assertEquals(1L, number.missingCount)
+            assertEquals(
+                1L,
+                repository
+                    .numberFieldStatistics(
+                        StatisticsSeriesId("activity-series"),
+                        number.field.id,
+                        StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
+                    ).recordedCount,
+            )
+            assertEquals(
+                2L,
+                repository
+                    .numberFieldStatistics(
+                        StatisticsSeriesId("activity-series"),
+                        number.field.id,
+                        StatisticsPeriod.Day(LocalDate.parse(AUG_21)),
+                    ).recordedCount,
+            )
+
+            mutateStatisticsHistory(database, "delete")
+            mutateStatisticsHistory(database, "child")
+            val after =
+                repository.seriesDetail(
+                    StatisticsSeriesId("activity-series"),
+                    StatisticsPeriod.AllTime,
+                ) as StatisticsSeriesDetail.Activity
+            assertEquals(2L, after.statistics.executionCount)
+            assertEquals(Duration.ofMinutes(45), after.statistics.durations.total)
+            assertEquals(ExactValue.of(45 * MINUTE, 2), after.statistics.durations.medianMilliseconds)
+            val remaining =
+                after.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single {
+                        it.field.id.value ==
+                            "number-source"
+                    }.statistics
+            assertEquals(1L, remaining.recordedCount)
+            assertEquals(1L, remaining.missingCount)
+            assertEquals(BigInteger.valueOf(8), remaining.values.totalScaled)
+            assertEquals(ExactValue.of(8, 1), remaining.values.medianScaled)
+            val remainingDense =
+                after.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+                    .single {
+                        it.field.id.value ==
+                            "s4-dense"
+                    }.statistics
+            assertEquals(2L, remainingDense.recordedCount)
+            assertEquals(BigInteger.valueOf(5), remainingDense.values.totalScaled)
+            assertEquals(Duration.ofMinutes(142), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
+            assertEquals(
+                Duration.ofMinutes(5),
+                repository
+                    .activitySeries(
+                        StatisticsSeriesId("activity-series"),
+                        StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
+                    ).durations.total,
+            )
+            assertEquals(
+                Duration.ofMinutes(40),
+                repository
+                    .activitySeries(
+                        StatisticsSeriesId("activity-series"),
+                        StatisticsPeriod.Day(LocalDate.parse(AUG_21)),
+                    ).durations.total,
+            )
+            val category =
+                after.fields
+                    .filterIsInstance<StatisticsFieldDetail.Category>()
+                    .single()
+                    .statistics
+            assertEquals(1L, category.recordedCount)
+            assertEquals(1L, category.missingCount)
+            assertEquals(
+                unaffected,
+                repository.seriesDetail(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime),
+            )
+            assertEquals(
+                other,
+                repository.activitySeries(StatisticsSeriesId("s4-other-series"), StatisticsPeriod.AllTime),
+            )
+            assertEquals("FULFILLED", database.planEntryDao().getById("s4-plan")!!.status)
+            assertEquals("activity-series", database.activityExecutionDao().getById("s4-timed")!!.statisticsSeriesId)
+            assertEquals(
+                "number-source",
+                database
+                    .activitySnapshotDao()
+                    .getAggregate("s4-timed-snapshot")!!
+                    .fields
+                    .first()
+                    .sourceFieldId,
+            )
+            assertEquals(
+                "DELETED_EXECUTION",
+                database
+                    .sequenceExecutionDao()
+                    .getOccurrences("s4-removed")
+                    .single()
+                    .status,
+            )
+            assertTrue(
+                database
+                    .sequenceExecutionDao()
+                    .getOccurrences("s4-removed")
+                    .single()
+                    .isDeletedFromHistory,
+            )
+            val afterMutations = statisticsProjections(repository)
+            database.close()
+            database = LifeTracingDatabase.builder(context, name).allowMainThreadQueries().build()
+            repository = StatisticsRepository(database) { error("A Statistics read must not allocate identity") }
+            assertEquals(afterMutations, statisticsProjections(repository))
+        } finally {
+            database.close()
+            assertTrue(context.deleteDatabase(name))
+        }
+    }
+
+    @Test
+    fun concurrentStandaloneCorrectionKeepsEveryStatisticsProjectionInOneTransaction() =
+        statisticsMutationInterleavings("correct")
+
+    @Test
+    fun concurrentStandaloneDeletionKeepsEveryStatisticsProjectionInOneTransaction() =
+        statisticsMutationInterleavings("delete")
+
+    @Test
+    fun concurrentChildDeletionKeepsEveryStatisticsProjectionInOneTransaction() =
+        statisticsMutationInterleavings("child")
+
+    @Test
+    fun statisticsReadFailureAndCancellationReleaseTransactionWithoutDurableWrites() {
+        val failure = AtomicReference<RuntimeException?>()
+        database.close()
+        database =
+            LifeTracingDatabase
+                .inMemoryBuilder(ApplicationProvider.getApplicationContext<Context>())
+                .allowMainThreadQueries()
+                .openHelperFactory(
+                    StatisticsReadTestOpenHelperFactory(beforeQuery = { _, sql ->
+                        if (sql.contains("median_values")) failure.getAndSet(null)?.let { throw it }
+                    }),
+                ).build()
+        repository = StatisticsRepository(database) { error("Read allocated an identity") }
+        mixedStatisticsHistory()
+        val before = statisticsFacts(database)
+        val expected = statisticsProjections(repository)
+        for (exception in listOf(
+            IllegalStateException("injected read failure"),
+            CancellationException("injected cancellation"),
+        )) {
+            failure.set(exception)
+            val thrown =
+                assertThrows(exception.javaClass) {
+                    repository.seriesDetail(StatisticsSeriesId("activity-series"), StatisticsPeriod.AllTime)
+                }
+            assertEquals(exception, thrown)
+            assertTrue(!database.inTransaction())
+            assertEquals(before, statisticsFacts(database))
+            assertEquals(expected, statisticsProjections(repository))
+        }
+    }
+
+    private fun statisticsMutationInterleavings(mutation: String) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val activityId = StatisticsSeriesId("activity-series")
+        val sequenceId = StatisticsSeriesId("sequence-series")
+        val period =
+            if (mutation ==
+                "delete"
+            ) {
+                StatisticsPeriod.AllTime
+            } else {
+                StatisticsPeriod.Day(LocalDate.parse(AUG_20))
+            }
+        // Pause only after at least one history SELECT has established the canonical transaction.
+        val readers =
+            listOf<Pair<String, (StatisticsRepository) -> Any>>(
+                "overview" to { it.overview(period) },
+                "summaries" to { it.seriesSummaries(period) },
+                "activity" to { it.activitySeries(activityId, period) },
+                "sequence" to { it.sequenceSeries(sequenceId, period) },
+                "detail" to { it.seriesDetail(activityId, period) },
+                "sequence-detail" to { it.seriesDetail(sequenceId, period) },
+                "number" to
+                    {
+                        it.numberFieldStatistics(
+                            activityId,
+                            StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+                            period,
+                        )
+                    },
+                "category" to
+                    {
+                        it.categoryFieldStatistics(
+                            activityId,
+                            StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
+                            period,
+                        )
+                    },
+            )
+        for ((label, read) in readers) {
+            val name = "statistics-race-$mutation-$label-${UUID.randomUUID()}"
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val writerAttempt = CountDownLatch(1)
+            val remainingReads = AtomicInteger(Int.MAX_VALUE)
+            val readingThread = AtomicReference<Thread?>()
+            val writingThread = AtomicReference<Thread?>()
+            val workers = Executors.newFixedThreadPool(2)
+            var writer: LifeTracingDatabase? = null
+            database.close()
+            try {
+                database =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .openHelperFactory(
+                            StatisticsReadTestOpenHelperFactory(beforeQuery = { actual, sql ->
+                                if (Thread.currentThread() === readingThread.get() &&
+                                    (sql.startsWith("SELECT", true) || sql.startsWith("WITH", true)) &&
+                                    remainingReads.decrementAndGet() == 0
+                                ) {
+                                    check(actual.inTransaction()) { "Canonical $label read lost its transaction" }
+                                    entered.countDown()
+                                    check(release.await(30, TimeUnit.SECONDS)) { "Reader gate timed out" }
+                                }
+                            }),
+                        ).build()
+                repository = StatisticsRepository(database) { error("Read allocated identity") }
+                mixedStatisticsHistory()
+                writer =
+                    LifeTracingDatabase
+                        .builder(context, name)
+                        .allowMainThreadQueries()
+                        .openHelperFactory(
+                            StatisticsReadTestOpenHelperFactory(beforeTransaction = {
+                                if (Thread.currentThread() === writingThread.get()) writerAttempt.countDown()
+                            }),
+                        ).build()
+                val writerConnection = writer
+                writerConnection.openHelper.writableDatabase
+                val expectedOld = read(repository)
+                // Detail: catalog/aggregate precede duration selection. Other compound readers
+                // also have at least two SELECTs. The second SELECT gates the read deterministically.
+                remainingReads.set(2)
+                val reading =
+                    workers.submit(
+                        Callable {
+                            readingThread.set(Thread.currentThread())
+                            read(repository)
+                        },
+                    )
+                assertTrue("$mutation/$label did not reach reader gate", entered.await(30, TimeUnit.SECONDS))
+                val writing =
+                    workers.submit {
+                        writingThread.set(Thread.currentThread())
+                        mutateStatisticsHistory(writerConnection, mutation)
+                    }
+                assertTrue(
+                    "Writer did not attempt a separate Room transaction",
+                    writerAttempt.await(30, TimeUnit.SECONDS),
+                )
+                release.countDown()
+                assertEquals("Mixed $mutation/$label result", expectedOld, reading.get(30, TimeUnit.SECONDS))
+                writing.get(30, TimeUnit.SECONDS)
+                val writerStatistics = StatisticsRepository(writerConnection) { error("Read allocated identity") }
+                assertEquals(read(writerStatistics), read(repository))
+                val number =
+                    repository.numberFieldStatistics(
+                        activityId,
+                        StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+                        period,
+                    )
+                when (mutation) {
+                    "correct" -> {
+                        assertEquals(2L, number.relevantExecutionCount)
+                        assertEquals(BigInteger.valueOf(Long.MAX_VALUE), number.values.totalScaled)
+                    }
+                    "delete" -> {
+                        assertEquals(3L, number.relevantExecutionCount)
+                        assertEquals(2L, number.recordedCount)
+                        assertEquals(BigInteger.valueOf(-1), number.values.totalScaled)
+                        assertEquals(ExactValue.of(-1, 2), number.values.medianScaled)
+                    }
+                    "child" -> {
+                        assertEquals(2L, number.relevantExecutionCount)
+                        assertEquals(BigInteger.valueOf(Long.MIN_VALUE), number.values.totalScaled)
+                    }
+                }
+            } finally {
+                release.countDown()
+                workers.shutdownNow()
+                try {
+                    assertTrue("Statistics workers leaked", workers.awaitTermination(30, TimeUnit.SECONDS))
+                } finally {
+                    writer?.close()
+                    database.close()
+                    assertTrue(context.deleteDatabase(name))
+                }
+            }
+        }
+    }
+
+    private fun statisticsProjections(reader: StatisticsRepository): List<Any> =
+        listOf(
+            StatisticsPeriod.AllTime,
+            StatisticsPeriod.Day(LocalDate.parse(AUG_20)),
+            StatisticsPeriod.Day(LocalDate.parse(AUG_21)),
+        ).flatMap { period ->
+            val activity = StatisticsSeriesId("activity-series")
+            val sequence = StatisticsSeriesId("sequence-series")
+            listOf(
+                reader.global(period),
+                reader.overview(period),
+                reader.seriesCatalog(),
+                reader.seriesSummaries(period),
+                reader.activitySeries(activity, period),
+                reader.sequenceSeries(sequence, period),
+                reader.seriesDetail(activity, period),
+                reader.seriesDetail(sequence, period),
+                reader.fieldCatalog(activity),
+                reader.numberFieldStatistics(
+                    activity,
+                    StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+                    period,
+                ),
+                reader.categoryFieldStatistics(
+                    activity,
+                    StatisticsFieldId.Activity(ActivityTemplateFieldId("category-source")),
+                    period,
+                ),
+            )
+        }
+
+    private fun assertMixedStatistics() {
+        val tombstone = database.sequenceExecutionDao().getOccurrences("s4-tombstone").single()
+        assertEquals("DELETED_EXECUTION", tombstone.status)
+        assertTrue(!tombstone.isDeletedFromHistory)
+        assertEquals(1, database.activityExecutionDao().getValues("s4-tombstone-child").size)
+        assertNull(database.activityExecutionDao().getById("s4-sourceless-child")!!.statisticsSeriesId)
+        assertNull(database.activitySnapshotDao().getById("s4-sourceless")!!.statisticsSeriesId)
+        val all = StatisticsPeriod.AllTime
+        val activityId = StatisticsSeriesId("activity-series")
+        val sequenceId = StatisticsSeriesId("sequence-series")
+        val global = repository.global(all)
+        // Independent ledger: standalone 30 + Plan 5 + other 7; roots 60 + 20 + tombstone 10 + removed 0.
+        assertEquals(Duration.ofMinutes(132), global.totalTrackedDuration)
+        assertEquals(8L, global.topLevelExecutionCount)
+        assertEquals(3L, global.activeDayCount)
+        assertEquals(Duration.ofMinutes(25), global.totalSequencePauseIdleDuration)
+        assertEquals(0L, global.oneOffActivityExecutionCount)
+        val activity = repository.activitySeries(activityId, all)
+        assertEquals(4L, activity.executionCount)
+        assertEquals(3L, activity.durations.sampleCount)
+        assertEquals(Duration.ofMinutes(95), activity.durations.total)
+        assertEquals(ExactValue.of(95 * MINUTE, 3), activity.durations.averageMilliseconds)
+        assertEquals(ExactValue.of(30 * MINUTE, 1), activity.durations.medianMilliseconds)
+        assertEquals(Duration.ofMinutes(5), activity.durations.minimum)
+        assertEquals(Duration.ofMinutes(60), activity.durations.maximum)
+        assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, activity.series.sourceState)
+        val sequence = repository.sequenceSeries(sequenceId, all)
+        assertEquals(4L, sequence.executionCount)
+        assertEquals(Duration.ofMinutes(90), sequence.activeDurations.total)
+        assertEquals(ExactValue.of(15 * MINUTE, 1), sequence.activeDurations.medianMilliseconds)
+        assertEquals(Duration.ZERO, sequence.activeDurations.minimum)
+        val sequenceDetail = repository.seriesDetail(sequenceId, all) as StatisticsSeriesDetail.Sequence
+        assertEquals(sequence, sequenceDetail.statistics)
+        val sequenceNumber =
+            sequenceDetail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single()
+                .statistics
+        assertEquals(4L, sequenceNumber.relevantExecutionCount)
+        assertEquals(2L, sequenceNumber.recordedCount)
+        assertEquals(2L, sequenceNumber.missingCount)
+        assertEquals(BigInteger.valueOf(-2), sequenceNumber.values.totalScaled)
+        assertEquals(ExactValue.of(-1, 1), sequenceNumber.values.averageScaled)
+        assertEquals(ExactValue.of(-1, 1), sequenceNumber.values.medianScaled)
+        val sequenceCategory =
+            sequenceDetail.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single()
+                .statistics
+        assertEquals(2L, sequenceCategory.recordedCount)
+        assertEquals(2L, sequenceCategory.missingCount)
+        assertEquals(
+            "s4-sequence-option",
+            sequenceCategory.values
+                .single()
+                .id.value,
+        )
+        val overview = repository.overview(all)
+        assertEquals(global, overview.global)
+        assertEquals(repository.seriesSummaries(all), overview.series)
+        assertEquals(4L, overview.series.single { it.series.id == activityId }.executionCount)
+        assertEquals(Duration.ofMinutes(95), overview.series.single { it.series.id == activityId }.totalDuration)
+        val detail = repository.seriesDetail(activityId, all) as StatisticsSeriesDetail.Activity
+        assertEquals(activity, detail.statistics)
+        assertEquals(repository.fieldCatalog(activityId), detail.fields.map { it.field })
+        assertEquals(1, detail.fields.filterIsInstance<StatisticsFieldDetail.Text>().size)
+        val number =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single {
+                    it.field.id.value ==
+                        "number-source"
+                }.statistics
+        assertEquals(4L, number.relevantExecutionCount)
+        assertEquals(3L, number.recordedCount)
+        assertEquals(1L, number.missingCount)
+        assertEquals(BigInteger.valueOf(-1), number.values.totalScaled)
+        assertEquals(ExactValue.of(-1, 3), number.values.averageScaled)
+        assertEquals(ExactValue.of(0, 1), number.values.medianScaled)
+        assertEquals(Long.MIN_VALUE, number.values.minimumScaled)
+        assertEquals(Long.MAX_VALUE, number.values.maximumScaled)
+        val absent =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single {
+                    it.field.id.value ==
+                        "calories-source"
+                }.statistics
+        assertEquals(0L, absent.recordedCount)
+        assertEquals(4L, absent.missingCount)
+        assertNull(absent.values.medianScaled)
+        val dense =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .single {
+                    it.field.id.value ==
+                        "s4-dense"
+                }.statistics
+        assertEquals(4L, dense.recordedCount)
+        assertEquals(0L, dense.missingCount)
+        assertEquals(BigInteger.TEN, dense.values.totalScaled)
+        assertEquals(ExactValue.of(5, 2), dense.values.medianScaled)
+        val category =
+            detail.fields
+                .filterIsInstance<StatisticsFieldDetail.Category>()
+                .single()
+                .statistics
+        assertEquals(3L, category.recordedCount)
+        assertEquals(1L, category.missingCount)
+        assertEquals(
+            mapOf("tempo-source" to 2L, "s4-no-live-tempo" to 1L),
+            category.values.associate {
+                it.id.value to
+                    it.count
+            },
+        )
+        assertTrue(
+            category.values
+                .single {
+                    it.id.value == "s4-no-live-tempo"
+                }.id is StatisticsCategoryOptionId.SnapshotFallback,
+        )
+        for (id in listOf(activityId, sequenceId)) {
+            for (field in repository.seriesDetail(id, all).fields) {
+                when (field) {
+                    is StatisticsFieldDetail.Number ->
+                        assertEquals(
+                            repository.numberFieldStatistics(id, field.field.id, all),
+                            field.statistics,
+                        )
+                    is StatisticsFieldDetail.Category ->
+                        assertEquals(
+                            repository.categoryFieldStatistics(id, field.field.id, all),
+                            field.statistics,
+                        )
+                    is StatisticsFieldDetail.Text -> Unit
+                }
+            }
+        }
+        assertEquals(
+            Duration.ofMinutes(105),
+            repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_20))).totalTrackedDuration,
+        )
+        assertEquals(
+            Duration.ofMinutes(20),
+            repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_21))).totalTrackedDuration,
+        )
+        for (period in listOf(
+            StatisticsPeriod.Week(LocalDate.parse("2026-08-17")),
+            StatisticsPeriod.Month(YearMonth.of(2026, 8)),
+            StatisticsPeriod.Custom(LocalDate.parse(AUG_20), LocalDate.parse(AUG_21)),
+        )) {
+            assertEquals(Duration.ofMinutes(125), repository.global(period).totalTrackedDuration)
+        }
+        assertEquals(
+            global,
+            repository
+                .global(
+                    StatisticsPeriod.Year(Year.of(2026)),
+                ).copy(calendarDayCount = null, averageTrackedMillisecondsPerCalendarDay = null),
+        )
+        val empty =
+            repository.seriesDetail(
+                activityId,
+                StatisticsPeriod.Day(LocalDate.parse("2025-01-01")),
+            ) as StatisticsSeriesDetail.Activity
+        assertEquals(0L, empty.statistics.executionCount)
+        assertEquals(detail.fields.map { it.field }, empty.fields.map { it.field })
+        assertEquals(
+            BigInteger.ZERO,
+            empty.fields
+                .filterIsInstance<StatisticsFieldDetail.Number>()
+                .first()
+                .statistics.values.totalScaled,
+        )
+        val originalZone = java.util.TimeZone.getDefault()
+        val expected = statisticsProjections(repository)
+        try {
+            for (zone in listOf("Pacific/Kiritimati", "America/New_York")) {
+                java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(zone))
+                assertEquals(expected, statisticsProjections(repository))
+            }
+        } finally {
+            java.util.TimeZone.setDefault(originalZone)
+        }
+    }
+
+    private fun mixedStatisticsHistory() {
+        numberHistorySources()
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_template_fields " +
+                "(id,activity_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                "VALUES ('s4-dense','activity',4,'Dense','NUMBER',0,0)",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO sequence_template_fields " +
+                "(id,sequence_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                "VALUES ('s4-sequence-category','sequence',1,'Choice','CATEGORY',0,0), " +
+                "('s4-sequence-text','sequence',2,'Text','TEXT',0,0)",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO sequence_template_category_options (id,sequence_template_field_id,position,label) " +
+                "VALUES ('s4-sequence-option','s4-sequence-category',0,'Choice')",
+        )
+        activitySnapshot("s4-timed-snapshot", "activity-series", fields = true)
+        denseStatisticsSnapshotField("s4-timed-snapshot", 1)
+        activitySnapshot("s4-no-live", "activity-series", mode = "NO_LIVE_TRACKING", fields = true)
+        denseStatisticsSnapshotField("s4-no-live", 2)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_snapshot_category_options SET source_option_id = NULL WHERE id = 's4-no-live-tempo'",
+        )
+        completedActivity(
+            "s4-timed",
+            "s4-timed-snapshot",
+            "activity-series",
+            30 * MINUTE,
+            AUG_20,
+            values =
+                listOf(
+                    numberValue("s4-timed", "s4-timed-snapshot-number", Long.MIN_VALUE),
+                    numberValue("s4-timed", "s4-timed-snapshot-dense", 1),
+                    categoryValue("s4-timed", "s4-timed-snapshot-category", "s4-timed-snapshot-tempo"),
+                ),
+        )
+        completedActivity(
+            "s4-no-live",
+            "s4-no-live",
+            "activity-series",
+            null,
+            AUG_21,
+            completedAtMs = millis("2026-08-21T12:00:00Z"),
+            values =
+                listOf(
+                    numberValue("s4-no-live", "s4-no-live-number", 0),
+                    numberValue("s4-no-live", "s4-no-live-dense", 2),
+                    categoryValue("s4-no-live", "s4-no-live-category", "s4-no-live-tempo"),
+                ),
+        )
+        activitySnapshot("s4-child-snapshot", "activity-series", fields = true)
+        denseStatisticsSnapshotField("s4-child-snapshot", 3)
+        completedSequence(
+            "s4-root",
+            "sequence-series",
+            "s4-child-snapshot",
+            60 * MINUTE,
+            15 * MINUTE,
+            AUG_20,
+            withNumberField = true,
+            numberValue = 0,
+            categoryFieldId = "s4-sequence-category",
+            categoryOptionId = "s4-sequence-option",
+        )
+        completedActivity(
+            "s4-child",
+            "s4-child-snapshot",
+            "activity-series",
+            60 * MINUTE,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = "s4-root",
+            occurrenceId = "s4-root-occurrence",
+            values =
+                listOf(
+                    numberValue("s4-child", "s4-child-snapshot-number", Long.MAX_VALUE),
+                    numberValue("s4-child", "s4-child-snapshot-dense", 3),
+                    categoryValue("s4-child", "s4-child-snapshot-category", "s4-child-snapshot-tempo"),
+                ),
+        )
+        activitySnapshot("s4-sourceless", null)
+        val nextDay = millis("2026-08-21T12:00:00Z")
+        completedSequence(
+            "s4-sourceless-root",
+            "sequence-series",
+            "s4-sourceless",
+            20 * MINUTE,
+            0,
+            AUG_21,
+            withNumberField = true,
+            numberValue = -2,
+            categoryFieldId = "s4-sequence-category",
+            categoryOptionId = "s4-sequence-option",
+            startedAtMs = nextDay,
+        )
+        completedActivity(
+            "s4-sourceless-child",
+            "s4-sourceless",
+            null,
+            20 * MINUTE,
+            AUG_21,
+            startedAtMs = nextDay,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = "s4-sourceless-root",
+            occurrenceId = "s4-sourceless-root-occurrence",
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE sequence_executions SET status = 'COMPLETED' WHERE id = 's4-sourceless-root'",
+        )
+        completedSequence("s4-tombstone", "sequence-series", "s4-child-snapshot", 10 * MINUTE, 0, AUG_20)
+        completedActivity(
+            "s4-tombstone-child",
+            "s4-child-snapshot",
+            "activity-series",
+            10 * MINUTE,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = "s4-tombstone",
+            occurrenceId = "s4-tombstone-occurrence",
+            values = listOf(numberValue("s4-tombstone-child", "s4-child-snapshot-number", 888)),
+        )
+        deleteStatisticsChild(database, "s4-tombstone", "s4-tombstone-child")
+        completedSequence("s4-removed", "sequence-series", "s4-child-snapshot", 10 * MINUTE, 0, AUG_20)
+        completedActivity(
+            "s4-removed-child",
+            "s4-child-snapshot",
+            "activity-series",
+            10 * MINUTE,
+            AUG_20,
+            context = "SEQUENCE_CHILD",
+            sequenceExecutionId = "s4-removed",
+            occurrenceId = "s4-removed-occurrence",
+            values = listOf(numberValue("s4-removed-child", "s4-child-snapshot-number", 999)),
+        )
+        deleteStatisticsChild(database, "s4-removed", "s4-removed-child")
+        val removed = database.sequenceExecutionDao().getHistoryAggregate("s4-removed")!!
+        SequenceHistoryCommandRepository(database).removeOccurrenceHistory(
+            SequenceExecutionId("s4-removed"),
+            SequenceHistoryStructuralRemovalCommand(
+                Instant.ofEpochMilli(removed.execution.updatedAtMs),
+                SequenceOccurrenceId("s4-removed-occurrence"),
+                ActivityExecutionId("s4-removed-child"),
+                SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                Instant.ofEpochMilli(removed.execution.endedAtMs!!),
+                removed.toDomain().intervals.filter {
+                    it.occurrenceId !=
+                        SequenceOccurrenceId(
+                            "s4-removed-occurrence",
+                        )
+                },
+            ),
+            Instant.ofEpochMilli(removed.execution.updatedAtMs + 1),
+        )
+        completedActivity(
+            "s4-deleted",
+            "s4-timed-snapshot",
+            "activity-series",
+            90 * MINUTE,
+            AUG_20,
+            values = listOf(numberValue("s4-deleted", "s4-timed-snapshot-number", 77)),
+        )
+        val deleted = database.activityExecutionDao().getById("s4-deleted")!!
+        statisticsCommands(database).softDeleteHistory(
+            ActivityExecutionId("s4-deleted"),
+            Instant.ofEpochMilli(deleted.updatedAtMs),
+            Instant.ofEpochMilli(
+                deleted.updatedAtMs + 1,
+            ),
+        )
+        for (status in listOf(
+            "RUNNING",
+            "PAUSED",
+        )) {
+            completedActivity("s4-$status", "s4-timed-snapshot", "activity-series", null, AUG_20, status = status)
+        }
+        series("s4-other-series", "ACTIVITY", "Other")
+        activitySnapshot("s4-other-snapshot", "s4-other-series")
+        completedActivity(
+            "s4-other",
+            "s4-other-snapshot",
+            "s4-other-series",
+            7 * MINUTE,
+            "2026-11-01",
+            startedAtMs = millis("2026-11-01T06:30:00Z"),
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_executions SET original_zone_id = 'America/New_York', " +
+                "original_utc_offset_minutes = -300 WHERE id = 's4-other'",
+        )
+        activitySnapshot("plan-snapshot", "activity-series", sourceTemplate = "activity", sourceRevision = 1)
+        denseStatisticsSnapshotField("plan-snapshot", 4)
+        database.planEntryDao().insert(
+            PlanEntryEntity(
+                "s4-plan",
+                "ACTIVITY",
+                "activity",
+                null,
+                1,
+                "plan-snapshot",
+                null,
+                "DAY",
+                AUG_20,
+                null,
+                null,
+                null,
+                null,
+                "PLANNED",
+                null,
+                null,
+                PLAN_CREATED,
+                PLAN_CREATED,
+                null,
+                null,
+            ),
+        )
+        val live = liveRepository()
+        live.startActivityFromPlan(
+            PlanEntryId("s4-plan"),
+            instant("2026-08-20T11:00:00Z"),
+            instant("2026-08-20T11:00:00Z"),
+            ZoneOffset.UTC,
+        )
+        live.completeActiveActivity(instant("2026-08-20T11:05:00Z"))
+        database.activityTemplateDao().archive("activity", millis("2026-08-22T00:00:00Z"))
+    }
+
+    private fun denseStatisticsSnapshotField(
+        snapshotId: String,
+        defaultValue: Long,
+    ) {
+        // Fixture schema is completed before any execution owns this snapshot.
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO activity_snapshot_fields " +
+                "(id,snapshot_id,source_field_id,position,name_at_creation,field_type,default_number_scaled) " +
+                "VALUES (?,?,'s4-dense',4,'Dense','NUMBER',?)",
+            arrayOf<Any>("$snapshotId-dense", snapshotId, defaultValue),
+        )
+    }
+
+    private fun statisticsCommands(db: LifeTracingDatabase): ActivityCommandRepository =
+        ActivityCommandRepository(
+            db,
+            LiveSessionRepository(db, {
+                error("No runtime creation")
+            }, {
+                error("No pause creation")
+            }, {
+                error(
+                    "No Sequence creation",
+                )
+            }, { error("No occurrence creation") }, { error("No interval creation") }),
+            ActivitySnapshotFactory({
+                error("No snapshot replacement")
+            }, { error("No Field replacement") }, { error("No option replacement") }),
+            { error("No execution creation") },
+        )
+
+    private fun mutateStatisticsHistory(
+        db: LifeTracingDatabase,
+        mutation: String,
+    ) {
+        val commands = statisticsCommands(db)
+        when (mutation) {
+            "correct" -> {
+                val current = commands.getHistory(ActivityExecutionId("s4-timed"))!!
+                val start = instant("2026-08-21T10:00:00Z")
+                commands.correctHistory(
+                    current.execution.id,
+                    ActivityHistoryCorrection(
+                        current.execution.updatedAt,
+                        ActivityHistoryTimeCorrection.Timed(start, start.plusSeconds(40 * 60)),
+                        ZoneOffset.UTC,
+                        current.execution.values.map {
+                            if (it is NumberExecutionValue && it.snapshotFieldId.value == "s4-timed-snapshot-number") {
+                                it.copy(
+                                    scaledValue = 8,
+                                )
+                            } else {
+                                it
+                            }
+                        },
+                        current.snapshot.shortComment,
+                    ),
+                    instant("2026-08-23T00:00:00Z"),
+                )
+            }
+            "delete" -> {
+                val row = db.activityExecutionDao().getById("s4-no-live")!!
+                commands.softDeleteHistory(
+                    ActivityExecutionId(row.id),
+                    Instant.ofEpochMilli(row.updatedAtMs),
+                    instant("2026-08-23T00:00:00Z"),
+                )
+            }
+            "child" -> deleteStatisticsChild(db, "s4-root", "s4-child")
+            else -> error("Unknown mutation")
+        }
+    }
+
+    private fun deleteStatisticsChild(
+        db: LifeTracingDatabase,
+        rootId: String,
+        childId: String,
+    ) {
+        val root = db.sequenceExecutionDao().getById(rootId)!!
+        SequenceHistoryCommandRepository(db).deleteChildHistory(
+            SequenceExecutionId(rootId),
+            SequenceChildHistoryDeletionCommand(
+                Instant.ofEpochMilli(root.updatedAtMs),
+                SequenceOccurrenceId("$rootId-occurrence"),
+                ActivityExecutionId(childId),
+            ),
+            Instant.ofEpochMilli(root.updatedAtMs + 1),
+        )
+    }
+
+    private fun statisticsFacts(db: LifeTracingDatabase): Map<String, List<List<String?>>> {
+        val tables =
+            db.openHelper.writableDatabase
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                ).use { cursor ->
+                    buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+                }
+        return tables.associateWith { table ->
+            db.openHelper.writableDatabase.query("SELECT * FROM `$table`").use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(
+                            (0 until cursor.columnCount).map {
+                                if (cursor.isNull(it)) null else cursor.getString(it)
+                            },
+                        )
+                    }
+                }.sortedBy { it.toString() }
+            }
+        }
+    }
+
+    private fun observeStatisticsQuery(
+        sql: String,
+        args: List<Any?>,
+    ) {
+        observedSql.add(sql)
+        if (sql.contains(" AS bit_counts ") ||
+            sql.contains(" AS lower_median_scaled") ||
+            sql.contains(" AS at_or_below_count") ||
+            sql.contains(" AS bucket_id") ||
+            (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN"))
+        ) {
+            observedNumberReads.add(sql to args.toList())
+        }
+    }
+
+    /** Validate OFFSET admission against the independent bounded counting query, including its sentinel. */
+    private fun assertNumberProbe(
+        sql: String,
+        args: List<Any?>,
+    ): Long {
+        val result =
+            database.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                cursor.getLong(0)
+            }
+        val limit = (args.last() as Number).toLong()
+        val count =
+            if (sql.contains("OFFSET")) {
+                val source = args.first() as String
+                val actual =
+                    if (sql.contains("activity_snapshot_fields")) {
+                        database.statisticsDao().activityNumberFieldCandidateCount(source, limit)
+                    } else {
+                        database.statisticsDao().sequenceNumberFieldCandidateCount(source, limit)
+                    }
+                assertEquals(if (actual == limit) 1L else 0L, result)
+                actual
+            } else {
+                result
+            }
+        assertTrue(count in 0..limit)
+        return count
+    }
+
+    private fun assertNumberReadPlans() {
+        val queries = synchronized(observedNumberReads) { observedNumberReads.toList() }
+        assertTrue("Number queries must be observed", queries.isNotEmpty())
+        queries.forEach { (sql, args) ->
+            val plan =
+                database.openHelper.readableDatabase
+                    .query("EXPLAIN QUERY PLAN $sql", args.toTypedArray())
+                    .use { cursor ->
+                        buildList {
+                            while (cursor.moveToNext()) add(cursor.getString(3))
+                        }
+                    }
+            if (sql.contains(" AS bit_counts ")) {
+                assertTrue(
+                    "Bit counts must have no correlated history scans: $plan",
+                    plan.none { it.contains("CORRELATED") },
+                )
+                assertEquals(64, Regex(Regex.escape("COUNT(CASE WHEN ((")).findAll(sql).count())
+            }
+            val searches = plan.filter { it.contains("SEARCH ") }
+            if (sql.startsWith("SELECT COUNT(*) FROM (") && sql.contains("LEFT JOIN")) {
+                assertTrue(
+                    "Candidate probe must stop at its bound",
+                    sql.endsWith("LIMIT ?)") || sql.endsWith("LIMIT 1 OFFSET (? - 1))"),
+                )
+                assertEquals(2, args.size)
+                assertTrue("Candidate bound must be positive", (args.last() as Number).toLong() > 0)
+                assertTrue(
+                    "Candidate probe must use the source Field index: $plan",
+                    searches.first().contains("fields"),
+                )
+                assertTrue(plan.any { it.contains("execution_values_snapshot_field_id") })
+                assertNumberProbe(sql, args)
+                return@forEach
+            }
+            val fieldFirst =
+                sql.startsWith("WITH eligible AS (SELECT recorded_values.number_scaled FROM ") &&
+                    sql.substringBefore("CROSS JOIN").contains("snapshot_fields AS fields")
+            if (fieldFirst) {
+                assertTrue("Dense median must use the source Field index: $plan", searches.first().contains("fields"))
+                assertTrue(plan.any { it.contains("execution_values_snapshot_field_id") })
+            } else {
+                assertTrue("Eligibility must precede Field lineage: $plan", searches.first().contains("executions"))
+                assertTrue(
+                    "Field metadata must use its value's primary key: $plan",
+                    searches.none { it.contains("source_field_id=?") },
+                )
+            }
+        }
+        observedNumberReads.clear()
+    }
+
+    private fun seedMinorityNumberHistory() {
+        database.runInTransaction {
+            for (kind in listOf("activity", "sequence")) {
+                val seriesId = "$kind-minority"
+                val snapshot = "$kind-minority-snapshot"
+                series(seriesId, kind.uppercase(), "Minority")
+                if (kind == "activity") {
+                    activitySnapshot(snapshot, seriesId, mode = "NO_LIVE_TRACKING")
+                } else {
+                    database.sequenceSnapshotDao().insertAggregate(
+                        SequenceSnapshotAggregateEntity(
+                            SequenceSnapshotEntity(snapshot, "Minority", null, null, null, seriesId, 0),
+                            sequenceSettings(snapshot),
+                        ),
+                    )
+                }
+                repeat(24) { field ->
+                    val source = "$kind-minority-$field"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_template_fields " +
+                            "(id,${kind}_template_id,position,name,field_type,created_at_ms,updated_at_ms) " +
+                            "VALUES (?,?,?,'Same label','NUMBER',0,0)",
+                        arrayOf<Any>(source, if (kind == "activity") "activity" else "sequence", 100 + field),
+                    )
+                    val owner = if (kind == "activity") "snapshot_id" else "sequence_snapshot_id"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_snapshot_fields " +
+                            "(id,$owner,source_field_id,position,name_at_creation,field_type) " +
+                            "VALUES (?,?,?,?,'Same label','NUMBER')",
+                        arrayOf<Any>("$snapshot-$field", snapshot, source, field),
+                    )
+                }
+                repeat(800) { index ->
+                    val id = "$kind-minority-execution-$index"
+                    val columns =
+                        if (kind == "activity") {
+                            "context_type,completed_at_ms"
+                        } else {
+                            "started_at_ms,ended_at_ms,active_duration_ms,pause_duration_ms,wall_duration_ms"
+                        }
+                    val facts = if (kind == "activity") "'STANDALONE',1" else "0,1,1,0,1"
+                    database.openHelper.writableDatabase.execSQL(
+                        "INSERT INTO ${kind}_executions " +
+                            "(id,snapshot_id,statistics_series_id,status,original_zone_id,primary_local_date," +
+                            "created_at_ms,updated_at_ms,$columns) " +
+                            "VALUES (?,?,?,'COMPLETED','UTC',?,0,1,$facts)",
+                        arrayOf(id, snapshot, seriesId, AUG_20),
+                    )
+                    repeat(24) { field ->
+                        if (field != 23 || index == 0) {
+                            val value = if (index % 2 == 0) Long.MIN_VALUE else Long.MAX_VALUE
+                            database.openHelper.writableDatabase.execSQL(
+                                "INSERT INTO ${kind}_execution_field_values " +
+                                    "(${kind}_execution_id,snapshot_field_id,number_scaled) VALUES (?,?,?)",
+                                arrayOf<Any>(id, "$snapshot-$field", value),
+                            )
+                        }
+                    }
+                }
+                database.openHelper.writableDatabase.execSQL("UPDATE ${kind}_templates SET deleted_at_ms = 2")
+            }
+        }
+    }
+
+    private fun assertMinorityNumberHistory() {
+        for (kind in listOf("activity", "sequence")) {
+            val seriesId = StatisticsSeriesId("$kind-minority")
+            observedNumberReads.clear()
+            observedSql.clear()
+            val detail = repository.seriesDetail(seriesId, StatisticsPeriod.AllTime)
+            val numbers =
+                detail.fields
+                    .filterIsInstance<StatisticsFieldDetail.Number>()
+            assertEquals(24, numbers.size)
+            // Room can record background invalidation queries while these assertions inspect the log.
+            val detailQueries = synchronized(observedSql) { observedSql.toList() }
+            assertEquals(
+                1,
+                detailQueries.count {
+                    it.startsWith("SELECT COUNT(*) FROM ${kind}_executions AS executions LEFT JOIN")
+                },
+            )
+            assertEquals(24, detailQueries.count { it.startsWith("SELECT COUNT(*) FROM (") && it.contains("LIMIT") })
+            numbers.forEach { number ->
+                val fieldId = number.field.id.value
+                val sparse = fieldId.endsWith("-23")
+                val values =
+                    if (sparse) {
+                        listOf(Long.MIN_VALUE)
+                    } else {
+                        List(800) { if (it % 2 == 0) Long.MIN_VALUE else Long.MAX_VALUE }
+                    }
+                val expected =
+                    com.alexandr5476.lifetracing.domain.StatisticsDistributionCalculator
+                        .numbers(values)
+                assertEquals(expected, number.statistics.values)
+                assertEquals(800L, number.statistics.relevantExecutionCount)
+                assertEquals(if (sparse) 799L else 0L, number.statistics.missingCount)
+                assertEquals(
+                    number.statistics,
+                    repository.numberFieldStatistics(seriesId, number.field.id, StatisticsPeriod.AllTime),
+                )
+            }
+            val numberQueries = synchronized(observedNumberReads) { observedNumberReads.toList() }
+            val medians = numberQueries.filter { it.first.contains(" AS lower_median_scaled") }
+            assertEquals(48, medians.size)
+            assertTrue(
+                "Every dense/sparse median must avoid repeated all-Field execution scans",
+                medians.all { it.first.substringBefore("CROSS JOIN").contains("snapshot_fields AS fields") },
+            )
+            assertNumberReadPlans()
+        }
+    }
+
+    private fun numberHistorySources() {
+        series("activity-series", "ACTIVITY", "Activity")
+        series("sequence-series", "SEQUENCE", "Sequence")
+        activityTemplateWithFields()
+        sequenceTemplate(
+            "sequence",
+            "Sequence",
+            "sequence-series",
+            fields =
+                listOf(
+                    SequenceTemplateFieldEntity(
+                        "sequence-number-source",
+                        "sequence",
+                        0,
+                        "Effort",
+                        "NUMBER",
+                        "points",
+                        0,
+                        null,
+                        null,
+                        null,
+                        true,
+                        0,
+                        0,
+                        null,
+                    ),
+                ),
+        )
+        activitySnapshot("number-history", "activity-series", mode = "NO_LIVE_TRACKING", fields = true)
+    }
+
+    private fun numberHistoryIdentities(): List<Pair<StatisticsSeriesId, StatisticsFieldId>> =
+        listOf(
+            StatisticsSeriesId("activity-series") to
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("number-source")),
+            StatisticsSeriesId("sequence-series") to
+                StatisticsFieldId.Sequence(SequenceTemplateFieldId("sequence-number-source")),
+        )
 
     private fun series(
         id: String,
@@ -1921,6 +5226,12 @@ class StatisticsRepositoryTest {
                     startedAtMs,
                     if (status == "COMPLETED") completedAtMs else startedAtMs,
                 ),
+                pauses =
+                    if (status == "PAUSED") {
+                        listOf(ActivityExecutionPauseEntity("$id-pause", id, startedAtMs, null))
+                    } else {
+                        emptyList()
+                    },
                 values = values,
             ),
         )
@@ -1937,11 +5248,12 @@ class StatisticsRepositoryTest {
         numberValue: Long? = null,
         categoryFieldId: String? = null,
         categoryOptionId: String? = null,
+        startedAtMs: Long = START_2330,
     ): Pair<String, String> {
         require((categoryFieldId == null) == (categoryOptionId == null))
         val snapshotId = "$id-snapshot"
         val occurrenceId = "$id-occurrence"
-        val started = START_2330
+        val started = startedAtMs
         val ended = started + activeMs + pauseMs
         database.sequenceSnapshotDao().insertAggregate(
             SequenceSnapshotAggregateEntity(

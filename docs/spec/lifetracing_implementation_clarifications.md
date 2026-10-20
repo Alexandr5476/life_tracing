@@ -249,3 +249,80 @@ Canonical Day/Week reads capture one effective ZoneId and query timestamp. The r
 Visible controllers serialize request admission, calendar navigation, route lifecycle, final read publication, and boundary arming. Publication requires the current request, selected calendar context, semantic generation, and effective zone. Obsolete successes and failures cannot replace newer state or re-arm boundaries. Hidden routes cancel their one-shot boundary and invalidate pending reads; re-entry reads current context while preserving the selected date. A delayed projection crossing midnight or an ExactDay strict-overdue boundary schedules an immediate one-shot reread using its captured boundary. System-time/timezone and foreground signals continue through the existing runtime coordinator, including without active runtime.
 
 This changes only read-time metadata and publication: no target, snapshot, lifecycle, linkage, historical attribution, Statistics identity, or stored timestamp is rewritten, and no migration or temporal cache is introduced.
+
+## Exact individual Number Field aggregation (S2)
+
+Database schema v0.6 sections 26.4 and 44 describe ordinary integer SUM and application
+median computation. For individual Number Field Statistics, signed scaled Long inputs
+require exact BigInteger totals even beyond either Long boundary and through mixed-sign
+cancellation. SQLite SUM(number_scaled), TOTAL and floating AVG cannot supply that total.
+The S2 reader instead counts set bits at all 64 positions, reconstructs the signed
+two's-complement sum in BigInteger, and selects at most two exact ordered median values
+in SQL. All facts remain within the existing repository read transaction. Statistical
+eligibility, stable source Field/Series identities, scaling, missing/coverage and
+original-zone date attribution are unchanged. No schema/index change.
+
+## Exact grouped Number Fields in Series Detail (S3)
+
+Series Detail applies the same S2 arithmetic/validation to grouped stable source
+Field summaries. SQL returns one fixed-width row per recorded Field, containing count,
+min/max, integer-storage validation and the 64 decimal bit counts. Kotlin reconstructs
+exact signed totals through ExactNumberSummary and ExactSignedLongSum.
+
+Individual Number Field reads retain their bounded source-Field/value probe and exact
+scalar ordered selection. The probe stops at twice the selected eligible execution/value
+candidate count Q plus one; it includes unused metadata through LEFT JOIN. Reaching the
+sentinel selects execution-first access, protecting tiny new Series and narrow periods
+from large old lineages. Otherwise Field-first access protects exclusive dense/sparse
+lineages. Unrelated global history cardinality never gates the choice.
+
+For P populated Fields, Series Detail first allocates each Field an equal probe capped at
+min(floor(2Q / P) + 1, candidateLimit(Q)), using the existing saturated individual bound
+candidateLimit(Q) = min(2Q + 1, Long.MAX_VALUE). Every Field is inspected independently
+of display-name order or another Field's saturated lineage. If more than three Fields
+remain unresolved, a second fair stage tests the capped candidate's existence with
+LIMIT 1 OFFSET (cap - 1). Its cap is min(floor(kQ / P) + 1, candidateLimit(Q)), where
+k is 10 for up to sixteen unresolved Fields and 15 for larger sets. Both stages use the
+original P denominator. The second stage walks at most its cap, including unused
+metadata; it does not count or return the preceding candidates. Combined probe visits
+are bounded by 17Q + 2P. Admitted lineage cardinalities total at most 15Q, and scalar
+median SQL may traverse each lineage twice. These cost allowances retain moderately
+shared lineages without unbounded independent execution-first scans. Admitted Fields
+keep scalar Field-first reads. Up to three unresolved Fields use execution-first scalar medians directly.
+For 4..16 unresolved Fields, try at most three shared rank passes, retaining resolved
+results, then finish any remainder with scalar ordered selections. This keeps the cheap
+three-pass duplicate-heavy path while bounding repeated traversal on broad signed values.
+Larger unresolved sets also stop after three shared rank passes, retaining resolved Fields.
+Completion uses the post-trial unresolved count: at most sixteen remaining Fields use
+scalar ordered selections, regardless of the starting count. Only larger remaining sets
+use exact magnitude/byte histograms rather than up to 65 full rank scans.
+The first histogram partitions signed integers at negative/positive powers of two and zero
+(128 bins, with zero and one individually represented). Each bin returns only count and
+extrema. Locate both adjacent median ranks cumulatively; a rank at a bin edge is its
+minimum/maximum. Unresolved adjacent ranks share at most one bin per Field. Subsequent
+histograms restrict each Field to that bin and partition the highest differing byte.
+All remaining Fields share one byte shift per pass, removing at least eight bits from
+the maximum unresolved width. At most eight byte passes follow the magnitude pass.
+No floating-point arithmetic, SQLite SUM, window functions, sample cursors or persistent
+intermediate state are used. The fixed traversal bound is three trial plus nine histogram
+passes, not a general relative VM-work bound for arbitrary distributions.
+
+Rank and histogram queries start at the selected execution/value subset. Balanced binary
+CASE lookup of opaque UTF-8 hex source IDs costs O(log P) per candidate and uses only
+four period/Series binds. Each histogram returns at most 256 count/extrema rows per
+unresolved Field. Application state/rows are O(256P), independent of execution/sample
+cardinality Q. SQLite GROUP BY may use an ephemeral native B-tree over selected values;
+this ordinary exact aggregation is bounded by O(Q log Q) per pass, never P independent
+full execution scans. For at most sixteen Fields, existing bounded scalar completion
+remains. Indexed probes and admission allowances above are unchanged. See the W1 signed
+boundary section in docs/implementation/statistics_pr37_review_evidence.md for measured
+SQL VM work and plan evidence; earlier crossover measurements are fixture observations,
+not general bounds.
+
+Empty catalog Fields retain the canonical empty distribution and the containing Series'
+execution denominator. Category/Text, source/snapshot provenance, eligibility, ordering
+and period semantics are unchanged. All summaries, probes and rank passes remain in the
+complete Series Detail Room transaction. There is no schema, index, cache or durable-state
+change. Query count can scale with populated result Fields, never executions or samples.
+See docs/implementation/statistics_pr37_review_evidence.md for current evidence;
+docs/implementation/statistics_number_s3_evidence.md preserves earlier S3 evidence.

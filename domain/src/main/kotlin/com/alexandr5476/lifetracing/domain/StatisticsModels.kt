@@ -126,11 +126,143 @@ data class NumberDistribution(
     val maximumScaled: Long?,
 )
 
+/** Exact two's-complement sum. Each entry counts set bits at its position, from 0 to 63. */
+object ExactSignedLongSum {
+    fun fromBitCounts(
+        sampleCount: Long,
+        setBitCounts: List<Long>,
+    ): BigInteger {
+        require(sampleCount >= 0) { "Negative Number sample count" }
+        require(setBitCounts.size == Long.SIZE_BITS) { "Number sum requires all 64 bit counts" }
+        return setBitCounts.foldIndexed(BigInteger.ZERO) { bit, total, count ->
+            require(count in 0..sampleCount) { "Invalid Number bit count" }
+            val contribution = BigInteger.valueOf(count).shiftLeft(bit)
+            if (bit == Long.SIZE_BITS - 1) total - contribution else total + contribution
+        }
+    }
+}
+
 object StatisticsDistributionCalculator {
+    /** Builds a signed, exact Number distribution from bounded aggregate/selection facts. */
+    fun numbers(
+        sampleCount: Long,
+        totalScaled: BigInteger,
+        minimumScaled: Long?,
+        maximumScaled: Long?,
+        medianEndpoints: List<Long>,
+    ): NumberDistribution {
+        require(sampleCount >= 0) { "Negative Number sample count" }
+        if (sampleCount == 0L) {
+            require(totalScaled == BigInteger.ZERO && minimumScaled == null && maximumScaled == null)
+            require(medianEndpoints.isEmpty()) { "Empty Number summary has median samples" }
+            return NumberDistribution(0, BigInteger.ZERO, null, null, null, null)
+        }
+        val minimum = requireNotNull(minimumScaled) { "Missing Number minimum" }
+        val maximum = requireNotNull(maximumScaled) { "Missing Number maximum" }
+        require(maximum >= minimum) { "Invalid Number bounds" }
+        val endpointCount = if (sampleCount % 2 == 0L) 2 else 1
+        require(medianEndpoints.size == endpointCount) { "Number median selection disagrees with sample count" }
+        val lower = medianEndpoints.first()
+        val upper = medianEndpoints.last()
+        require(lower >= minimum && upper >= lower && upper <= maximum) { "Invalid Number median endpoints" }
+        val count = BigInteger.valueOf(sampleCount)
+        require(totalScaled >= BigInteger.valueOf(minimum) * count)
+        require(totalScaled <= BigInteger.valueOf(maximum) * count)
+        val midpointTotal = medianEndpoints.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+        if (sampleCount <= 2) {
+            require(lower == minimum && upper == maximum) { "Small Number endpoints disagree with bounds" }
+            require(totalScaled == midpointTotal) { "Small Number total disagrees with endpoints" }
+        } else {
+            val (smallestTotal, largestTotal) = numberTotalBounds(sampleCount, minimum, maximum, lower, upper)
+            require(totalScaled in smallestTotal..largestTotal) { "Number total contradicts order statistics" }
+        }
+        return NumberDistribution(
+            sampleCount,
+            totalScaled,
+            ExactValue.of(totalScaled, count),
+            ExactValue.of(midpointTotal, BigInteger.valueOf(endpointCount.toLong())),
+            minimum,
+            maximum,
+        )
+    }
+
+    // Extremes each occur at least once; sorted positions on either side of the median
+    // constrain the remaining sum more tightly than sampleCount * min/max alone.
+    private fun numberTotalBounds(
+        count: Long,
+        minimum: Long,
+        maximum: Long,
+        lower: Long,
+        upper: Long,
+    ): Pair<BigInteger, BigInteger> {
+        val half = BigInteger.valueOf(count / 2)
+        val min = BigInteger.valueOf(minimum)
+        val max = BigInteger.valueOf(maximum)
+        val low = BigInteger.valueOf(lower)
+        val high = BigInteger.valueOf(upper)
+        return if (count % 2 == 1L) {
+            (half * min + half * low + max) to (min + half * low + half * max)
+        } else {
+            val side = half - BigInteger.ONE
+            (side * min + low + side * high + max) to (min + side * low + high + side * max)
+        }
+    }
+
+    /** Builds an exact duration result from an integral summary and at most two median endpoints. */
+    fun durations(
+        sampleCount: Long,
+        totalMilliseconds: BigInteger,
+        minimumMilliseconds: Long?,
+        maximumMilliseconds: Long?,
+        medianEndpoints: List<Long>,
+    ): DurationDistribution {
+        require(sampleCount >= 0 && totalMilliseconds.signum() >= 0) { "Invalid duration summary" }
+        if (sampleCount == 0L) {
+            require(totalMilliseconds == BigInteger.ZERO && minimumMilliseconds == null && maximumMilliseconds == null)
+            require(medianEndpoints.isEmpty()) { "Empty duration summary has median samples" }
+            return durationDistribution(ScalarDistribution.EMPTY)
+        }
+        val minimum = requireNotNull(minimumMilliseconds) { "Missing duration minimum" }
+        val maximum = requireNotNull(maximumMilliseconds) { "Missing duration maximum" }
+        require(minimum >= 0 && maximum >= minimum) { "Invalid duration bounds" }
+        val endpointCount = if (sampleCount % 2 == 0L) 2 else 1
+        require(medianEndpoints.size == endpointCount) { "Duration median selection disagrees with sample count" }
+        val lower = medianEndpoints.first()
+        val upper = medianEndpoints.last()
+        require(lower >= minimum && upper >= lower && upper <= maximum) { "Invalid duration median endpoints" }
+        val count = BigInteger.valueOf(sampleCount)
+        require(totalMilliseconds >= BigInteger.valueOf(minimum) * count)
+        require(totalMilliseconds <= BigInteger.valueOf(maximum) * count)
+        if (sampleCount <= 2) {
+            require(lower == minimum && upper == maximum) { "Small distribution endpoints disagree with bounds" }
+            val expectedTotal =
+                if (sampleCount == 1L) {
+                    BigInteger.valueOf(lower)
+                } else {
+                    BigInteger.valueOf(lower) + BigInteger.valueOf(upper)
+                }
+            require(totalMilliseconds == expectedTotal) { "Small distribution total disagrees with endpoints" }
+        }
+        val midpointTotal = medianEndpoints.fold(BigInteger.ZERO) { sum, value -> sum + BigInteger.valueOf(value) }
+        return durationDistribution(
+            ScalarDistribution(
+                sampleCount,
+                totalMilliseconds,
+                ExactValue.of(totalMilliseconds, count),
+                ExactValue.of(midpointTotal, BigInteger.valueOf(endpointCount.toLong())),
+                minimum,
+                maximum,
+            ),
+        )
+    }
+
     fun durations(milliseconds: Iterable<Long>): DurationDistribution {
         val values = milliseconds.sorted()
         values.forEach { require(it >= 0) { "Duration samples cannot be negative" } }
-        val scalar = scalar(values)
+        return durationDistribution(scalar(values))
+    }
+
+    private fun durationDistribution(scalar: ScalarDistribution): DurationDistribution {
         // Samples are nonnegative; check the upper bound before narrowing on older Android runtimes.
         if (scalar.total > BigInteger.valueOf(Long.MAX_VALUE)) {
             throw ArithmeticException("Duration total overflows Long milliseconds")
