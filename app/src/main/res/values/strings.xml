@@ -202,7 +202,7 @@
     <string name="plan_timer_target">Timer target: %1$s</string>
     <string name="plan_complete_action">Complete</string>
     <string name="plan_start_action">Start</string>
-    <string name="plan_execution_title">Plan action</string>
+    <string name="plan_execution_title">Plan execution</string>
     <string name="plan_execution_loading">Loading the frozen plan…</string>
     <string name="plan_execution_load_failed">The plan action could not be loaded.</string>
     <string name="plan_execution_checking">Checking availability…</string>
@@ -687,4 +687,26 @@
     <string name="expanded_sequence_waiting_next">Waiting to start next; no current step</string>
     <string name="expanded_sequence_running_countdown">Transition countdown running; no current step</string>
     <string name="expanded_sequence_paused_countdown">Transition countdown paused; no current step</string>
+    <string name="plan_execution_action">%1$s: %2$s</string>
+    <string name="plan_execution_sequence">Sequence</string>
+    <string name="plan_execution_no_live">Activity · No-live completion</string>
+    <string name="plan_execution_timed">Activity · Live tracking</string>
+    <string name="plan_execution_day">Day: %1$s, any time</string>
+    <string name="plan_execution_week">Week starting %1$s</string>
+    <string name="plan_execution_exact">Scheduled instant: %1$s</string>
+    <string name="plan_execution_creation_zone">Creation time zone: %1$s; local time %2$s, UTC%3$s</string>
+    <string name="plan_execution_legacy_zone">Creation time zone unavailable</string>
+    <string name="plan_execution_main_value">%1$s, Main Value</string>
+    <string name="plan_execution_field_missing">%1$s: Set missing</string>
+    <string name="plan_execution_category_value">%1$s: %2$s</string>
+    <string name="plan_execution_offset_prompt">%1$s: choose an occurrence and UTC offset</string>
+    <string name="plan_execution_offset">%1$s: %2$s</string>
+    <string name="plan_execution_ambiguous_start">Start time occurs twice. Choose its UTC offset.</string>
+    <string name="plan_execution_ambiguous_end">Completion time occurs twice. Choose its UTC offset.</string>
+    <string name="plan_execution_overlap_interval">The interval from %1$s to %2$s overlaps completed history. Save anyway?</string>
+    <string name="plan_execution_cancel_overlap">Cancel overlap confirmation</string>
+    <string name="plan_execution_preflight">Preparing to start. You can still cancel.</string>
+    <string name="plan_execution_remaining">Countdown remaining: %1$s</string>
+    <string name="plan_execution_status">Plan status: %1$s</string>
+    <string name="plan_execution_selected_category">Selected: %1$s</string>
 </resources>

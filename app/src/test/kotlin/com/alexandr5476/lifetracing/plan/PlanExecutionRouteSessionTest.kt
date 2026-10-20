@@ -3,11 +3,13 @@ package com.alexandr5476.lifetracing.plan
 import com.alexandr5476.lifetracing.PlanExecutionRoot
 import com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionValueOverride
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOption
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotField
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.FocusedPlanAction
@@ -20,6 +22,7 @@ import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
@@ -358,6 +361,128 @@ class PlanExecutionRouteSessionTest {
             assertEquals(1, deliveries)
             owner.release(session)
             assertNull(owner.activeSession)
+        }
+
+    @Test
+    fun manualTimedOpenCompletedAndNoLiveRequestsUseExactInstantsAndOnlyChangedFields() =
+        runBlocking {
+            for (mode in listOf(TimeTrackingMode.STOPWATCH, TimeTrackingMode.NO_LIVE_TRACKING)) {
+                for (completed in listOf(false, true)) {
+                    if (mode == TimeTrackingMode.NO_LIVE_TRACKING && !completed) continue
+                    val frozen = snapshot(fields()).copy(timeTrackingMode = mode)
+                    val action = focused(frozen)
+                    val commands = mutableListOf<PlanExecutionDurableCommand>()
+                    val controller =
+                        controller(this, action, execute = {
+                            commands += it
+                            PlanExecutionCommit.Activity(ActivityExecutionId("saved"), !completed)
+                        })
+                    withTimeout(2_000) { controller.state.first { it.prepared is PlanExecutionLoad.Content } }
+                    val session =
+                        PlanExecutionRouteSession(
+                            action.identity,
+                            PlanExecutionOrigin.PLAN,
+                            controller,
+                            now = { NOW },
+                            deviceZone = { ZoneOffset.UTC },
+                        )
+                    session.openTimeEntry(frozen)
+                    if (mode != TimeTrackingMode.NO_LIVE_TRACKING) session.editStarted("2026-09-15T09:00")
+                    session.editCompleted(if (completed) "2026-09-15T10:00" else "")
+                    val main = frozen.fields.single { it.isMainValue }
+                    session.editNumber(main, "0")
+                    session.submitTimeEntry(frozen)
+                    withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Committed } }
+                    val request = commands.single().timeEntry!!
+                    assertEquals(
+                        if (mode == TimeTrackingMode.NO_LIVE_TRACKING) null else Instant.parse("2026-09-15T09:00:00Z"),
+                        request.startedAt,
+                    )
+                    assertEquals(if (completed) NOW else null, request.completedAt)
+                    assertEquals(ZoneOffset.UTC, request.zoneId)
+                    assertEquals(
+                        listOf(ActivityExecutionValueOverride(main.id, NumberExecutionValue(main.id, 0))),
+                        request.values,
+                    )
+                    controller.close()
+                }
+            }
+        }
+
+    @Test
+    fun invalidFutureReversedAndFinishBoundaryRetainFrozenFieldDraftWithoutDispatch() =
+        runBlocking {
+            val frozen =
+                snapshot(fields()).copy(
+                    timeTrackingMode = TimeTrackingMode.TIMER,
+                    timerTarget = Duration.ofMinutes(10),
+                    settings = ActivityTemplateSettings(timerZeroBehavior = TimerZeroBehavior.FINISH),
+                )
+            val action = focused(frozen)
+            val controller = controller(this, action)
+            val session =
+                PlanExecutionRouteSession(
+                    action.identity,
+                    PlanExecutionOrigin.PLAN,
+                    controller,
+                    now = { NOW },
+                    deviceZone = { ZoneOffset.UTC },
+                )
+            session.openTimeEntry(frozen)
+            session.editNumber(frozen.fields.single { it.isMainValue }, "-1.25")
+            val values = session.quickDraft
+            for ((start, end, issue) in listOf(
+                Triple("invalid", "", PlanTimeEntryIssue.INVALID_TIME),
+                Triple("2026-09-15T10:01", "", PlanTimeEntryIssue.FUTURE),
+                Triple("2026-09-15T09:55", "2026-09-15T09:50", PlanTimeEntryIssue.REVERSED),
+                Triple("2026-09-15T09:50", "", PlanTimeEntryIssue.EXPIRED_FINISH),
+                Triple("2026-09-15T09:49", "", PlanTimeEntryIssue.EXPIRED_FINISH),
+            )) {
+                session.editStarted(start)
+                session.editCompleted(end)
+                session.submitTimeEntry(frozen)
+                assertEquals(issue, session.timeDraft?.issue)
+                assertSame(values, session.quickDraft)
+                assertEquals(PlanExecutionCommandState.Idle, controller.state.value.command)
+            }
+            controller.close()
+        }
+
+    @Test
+    fun overtimeTimerMayContinuePastZeroAndFinishTimerMayStartBeforeDeadline() =
+        runBlocking {
+            for (behavior in listOf(TimerZeroBehavior.OVERTIME, TimerZeroBehavior.FINISH)) {
+                val frozen =
+                    snapshot(emptyList()).copy(
+                        timeTrackingMode = TimeTrackingMode.TIMER,
+                        timerTarget = Duration.ofMinutes(10),
+                        settings = ActivityTemplateSettings(timerZeroBehavior = behavior),
+                    )
+                val action = focused(frozen)
+                val commands = mutableListOf<PlanExecutionDurableCommand>()
+                val controller =
+                    controller(this, action, execute = {
+                        commands += it
+                        PlanExecutionCommit.Activity(ActivityExecutionId("live"), true)
+                    })
+                withTimeout(2_000) { controller.state.first { it.prepared is PlanExecutionLoad.Content } }
+                val session =
+                    PlanExecutionRouteSession(
+                        action.identity,
+                        PlanExecutionOrigin.DAILY,
+                        controller,
+                        now = { NOW },
+                        deviceZone = { ZoneOffset.UTC },
+                    )
+                session.openTimeEntry(frozen)
+                val start = if (behavior == TimerZeroBehavior.OVERTIME) "2026-09-15T09:40" else "2026-09-15T09:51"
+                session.editStarted(start)
+                session.submitTimeEntry(frozen)
+                withTimeout(2_000) { controller.state.first { it.command is PlanExecutionCommandState.Committed } }
+                assertEquals(Instant.parse(start + ":00Z"), commands.single().timeEntry?.startedAt)
+                assertNull(commands.single().timeEntry?.completedAt)
+                controller.close()
+            }
         }
 
     private fun controller(

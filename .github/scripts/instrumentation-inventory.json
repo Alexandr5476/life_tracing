@@ -769,6 +769,17 @@
       "sequencePlanStartUsesProductionRouteAndReturnsToUsableDailyRuntime",
       "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation"
     ],
+    "com.alexandr5476.lifetracing.PlanExecutionAccessibilityPersistenceTest": [
+      "dailyOriginSemanticTimedStartPreservesExactFrozenIdentityAfterReopen",
+      "explicitIndependentDstOffsetsAndCurrentOverlapConfirmationPersistExactHistoricalFacts",
+      "noLiveExplicitZeroUsesOnlyEditedOverrideAndFulfillsWithoutLiveSession",
+      "noLiveMissingUsesExactFieldAndRetainsMissingDurationAfterReopen",
+      "overlapIntroducedAfterControllerCheckIsRevalidatedByWriterBeforeAnyPlanMutation",
+      "planOriginSemanticSequenceStartPreservesExactFrozenIdentityAfterReopen",
+      "semanticPreflightCancelExitsBeforeAdmissionAndRejectsObsoleteBoundary",
+      "toolbarAndSystemBackWaitForAdmittedCommitThenDeliverSavedResultOnce",
+      "untouchedRoundedDefaultRemainsConfiguredRatherThanExplicitActual"
+    ],
     "com.alexandr5476.lifetracing.PlanExecutionPersistenceTest": [
       "activitySourceDivergenceDuringRealPreflightKeepsAndExecutesTheFrozenPlan",
       "finalLiveSlotOwnershipRejectsTimedActivityAndSequenceAfterRealPreflight",
@@ -1047,6 +1058,14 @@
     ],
     "com.alexandr5476.lifetracing.plan.PlanExecutionScreenTest": [
       "activityOffersSecondaryTimeEntry",
+      "countdownIsPassiveAtBeforeExactAndAfterZeroWithoutCommitClaim",
+      "englishRussianKeyboardAndNativeTargetsRemainReachableAtCombinedScaleExtremes",
+      "focusedHeadingAndFrozenSourceContextAreDiscoverable",
+      "frozenExactLegacyAndWeekContextsKeepSourceStateSeparateFromScheduling",
+      "loadingReadFailureRetryAndStaleReloadAreIndependentNativeActions",
+      "localizedTimedOffsetChoicesStayIndependentAtMaximumScaleAndZoneReviewRetainsText",
+      "materialCommandFeedbackRemainsDistinctAndCannotExposeSecondStart",
+      "quickFieldsExposeNativeEditingMainValueSelectedCategoryAndMissingWithoutFocusWrites",
       "sequenceDoesNotOfferSecondaryTimeEntry"
     ],
     "com.alexandr5476.lifetracing.plan.PlanScreenPresentationTest": [

@@ -671,9 +671,27 @@ private fun PlannedRow(
         )
         planStatus(plan).forEach { Text(it, style = MaterialTheme.typography.labelLarge) }
         if (plan.plan.status == PlanEntryStatus.PLANNED && !plan.engaged && plan.plan.target !is PlanTarget.Month) {
+            val executionDescription =
+                stringResource(
+                    R.string.plan_execution_action,
+                    plan.snapshot.title,
+                    stringResource(
+                        if ((plan.snapshot as? com.alexandr5476.lifetracing.domain.DailyPlanSnapshot.Activity)
+                                ?.value
+                                ?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING
+                        ) {
+                            R.string.plan_complete_action
+                        } else {
+                            R.string.plan_start_action
+                        },
+                    ),
+                )
             LifeTracingPrimaryButton(
                 onClick = { onExecute(plan.plan.actionIdentity()) },
-                modifier = Modifier.testTag("daily-plan-action-${plan.plan.id.value}"),
+                modifier =
+                    Modifier
+                        .semantics { contentDescription = executionDescription }
+                        .testTag("daily-plan-action-${plan.plan.id.value}"),
             ) {
                 Text(
                     stringResource(

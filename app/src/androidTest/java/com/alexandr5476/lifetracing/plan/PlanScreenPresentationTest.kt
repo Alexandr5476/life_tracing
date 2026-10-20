@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.plan
 
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
@@ -11,7 +12,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
@@ -180,7 +181,15 @@ class PlanScreenPresentationTest {
             }
         }
 
-        compose.onNodeWithText(context.getString(R.string.plan_complete_action)).assertIsEnabled().performClick()
+        compose
+            .onNodeWithContentDescription(
+                context.getString(
+                    R.string.plan_execution_action,
+                    row.title,
+                    context.getString(R.string.plan_complete_action),
+                ),
+            ).assertIsEnabled()
+            .performSemanticsAction(SemanticsActions.OnClick)
 
         assertEquals(row.plan.actionIdentity(), clicked)
     }

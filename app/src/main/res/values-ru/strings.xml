@@ -687,4 +687,26 @@
     <string name="expanded_sequence_waiting_next">Ожидание запуска следующего шага; текущего шага нет</string>
     <string name="expanded_sequence_running_countdown">Идёт отсчёт перехода; текущего шага нет</string>
     <string name="expanded_sequence_paused_countdown">Отсчёт перехода на паузе; текущего шага нет</string>
+    <string name="plan_execution_action">%1$s: %2$s</string>
+    <string name="plan_execution_sequence">Последовательность</string>
+    <string name="plan_execution_no_live">Активность · Завершение без отслеживания</string>
+    <string name="plan_execution_timed">Активность · Отслеживание времени</string>
+    <string name="plan_execution_day">День: %1$s, любое время</string>
+    <string name="plan_execution_week">Неделя с %1$s</string>
+    <string name="plan_execution_exact">Запланированный момент: %1$s</string>
+    <string name="plan_execution_creation_zone">Часовой пояс при создании: %1$s; местное время %2$s, UTC%3$s</string>
+    <string name="plan_execution_legacy_zone">Часовой пояс при создании неизвестен</string>
+    <string name="plan_execution_main_value">%1$s, основное значение</string>
+    <string name="plan_execution_field_missing">%1$s: Не указывать</string>
+    <string name="plan_execution_category_value">%1$s: %2$s</string>
+    <string name="plan_execution_offset_prompt">%1$s: выберите вхождение и смещение UTC</string>
+    <string name="plan_execution_offset">%1$s: %2$s</string>
+    <string name="plan_execution_ambiguous_start">Время начала встречается дважды. Выберите смещение UTC.</string>
+    <string name="plan_execution_ambiguous_end">Время завершения встречается дважды. Выберите смещение UTC.</string>
+    <string name="plan_execution_overlap_interval">Интервал с %1$s по %2$s пересекается с завершённой историей. Всё равно сохранить?</string>
+    <string name="plan_execution_cancel_overlap">Отменить подтверждение пересечения</string>
+    <string name="plan_execution_preflight">Подготовка к запуску. Ещё можно отменить.</string>
+    <string name="plan_execution_remaining">Осталось до запуска: %1$s</string>
+    <string name="plan_execution_status">Состояние плана: %1$s</string>
+    <string name="plan_execution_selected_category">Выбрано: %1$s</string>
 </resources>

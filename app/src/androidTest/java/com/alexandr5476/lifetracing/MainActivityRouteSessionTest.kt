@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
@@ -1046,7 +1047,20 @@ class MainActivityRouteSessionTest {
         composeTestRule.onNodeWithTag("plan-value-${missing.id.value}").performTextReplacement("7.5")
         composeTestRule.onNodeWithTag("plan-missing-${main.id.value}").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("plan-value-${category.id.value}").performScrollTo().performClick()
-        composeTestRule.onNodeWithText(easy.labelAtCreation).performClick()
+        val easyLabel =
+            composeTestRule.activity.getString(
+                R.string.plan_execution_category_value,
+                category.nameAtCreation,
+                easy.labelAtCreation,
+            )
+        composeTestRule
+            .onNode(hasText(easyLabel) and hasClickAction())
+            .assertIsNotSelected()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(
+            easy.id,
+            (requireNotNull(retained.quickDraft).values[category.id] as CategoryExecutionValue).optionId,
+        )
         composeTestRule
             .onNodeWithTag("plan-value-${text.id.value}")
             .performScrollTo()

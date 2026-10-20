@@ -153,11 +153,17 @@ private fun PlanRow(
             Text(row.lifecycleLabel())
             Text(row.sourceLabel())
             if (row.plan.status == PlanEntryStatus.PLANNED && !row.engaged) {
+                val executionLabel = row.executionLabel()
+                val executionDescription = stringResource(R.string.plan_execution_action, row.title, executionLabel)
                 LifeTracingPrimaryButton(
                     enabled = !isMutating,
                     onClick = { onExecute(row.plan.actionIdentity()) },
-                    modifier = Modifier.semantics { testTag = "plan-plan-action-${row.plan.id.value}" },
-                ) { Text(row.executionLabel()) }
+                    modifier =
+                        Modifier.semantics {
+                            testTag = "plan-plan-action-${row.plan.id.value}"
+                            contentDescription = executionDescription
+                        },
+                ) { Text(executionLabel) }
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                     LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
                         onAction(PlanAction.Reschedule(row))

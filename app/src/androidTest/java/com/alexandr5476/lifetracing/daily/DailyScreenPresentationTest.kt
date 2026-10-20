@@ -332,13 +332,15 @@ class DailyScreenPresentationTest {
         )
 
         composeTestRule
-            .onNodeWithTag("daily-plan-action-${day.plan.id.value}")
-            .performScrollTo()
-            .performClick()
+            .onNodeWithContentDescription(
+                string(R.string.plan_execution_action, day.snapshot.title, string(R.string.plan_complete_action)),
+            ).performScrollTo()
+            .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule
-            .onNodeWithTag("daily-plan-action-${week.plan.id.value}")
-            .performScrollTo()
-            .performClick()
+            .onNodeWithContentDescription(
+                string(R.string.plan_execution_action, week.snapshot.title, string(R.string.plan_start_action)),
+            ).performScrollTo()
+            .performSemanticsAction(SemanticsActions.OnClick)
 
         assertEquals(listOf(day.plan.actionIdentity(), week.plan.actionIdentity()), clicked)
     }
