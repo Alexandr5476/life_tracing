@@ -631,4 +631,22 @@
     <string name="plan_persistence_failed">Could not save the Plan. Reload before trying again.</string>
     <string name="calendar_time_with_offset">%1$s · UTC%2$s</string>
     <string name="history_timestamp_context">%1$s (UTC%2$s, %3$s)</string>
+    <string name="daily_date_today">Selected date: %1$s. Today.</string>
+    <string name="daily_date_past">Selected date: %1$s. Before today.</string>
+    <string name="daily_date_future">Selected date: %1$s. After today.</string>
+    <string name="daily_sequence_running_current">Sequence running, current step active</string>
+    <string name="daily_sequence_paused_current">Sequence paused on current step</string>
+    <string name="daily_sequence_running_transition">Sequence running, next-step countdown active</string>
+    <string name="daily_sequence_paused_transition">Sequence paused, next-step countdown paused</string>
+    <string name="daily_current_step">Current step: %1$s</string>
+    <string name="daily_countdown_remaining">Next-step countdown remaining: %1$s</string>
+    <string name="daily_history_no_duration">No live tracking; duration not recorded</string>
+    <string name="daily_history_duration">Active duration: %1$s</string>
+    <string name="daily_duration_seconds">%1$d hours, %2$d minutes, %3$d seconds</string>
+    <string name="daily_duration_minutes">%1$d hours, %2$d minutes</string>
+    <string name="daily_stopwatch_elapsed">Stopwatch elapsed: %1$s</string>
+    <string name="daily_timer_value">Timer: %1$s</string>
+    <string name="daily_no_live_value">No live tracking. Main value: %1$s</string>
+    <string name="daily_no_main_value">Not configured</string>
+    <string name="daily_current_occurrence">Current step %1$d: %2$s</string>
 </resources>

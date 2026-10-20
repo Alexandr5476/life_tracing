@@ -17,11 +17,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -33,11 +35,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
@@ -117,34 +130,72 @@ internal fun DailyScreen(
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
-    Surface(color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(MaterialTheme.spacing.xLarge),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
-        ) {
-            DateHeader(
-                state.selectedDate,
-                state.dateRelation,
-                onAction,
-                onStartActivity,
-                onLibrary,
-                onPlan,
-                onHistory,
-                onStatistics,
-                onSettings,
-            )
-            CommandFailure(state.commandFailure)
-            when (val load = state.load) {
-                DailyLoadState.Loading -> LoadingContent()
-                is DailyLoadState.Failure -> FailureContent(onAction)
-                is DailyLoadState.Empty ->
-                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence, onExecutePlan)
-                is DailyLoadState.Content ->
-                    DailyContent(state, load.daily, onAction, displayElapsedRealtimeMs, onExpandSequence, onExecutePlan)
+    // App appearance scales layout density; keep native target space at least 48 Android dp.
+    val systemDensity = LocalContext.current.resources.displayMetrics.density
+    val minimumTarget = with(LocalDensity.current) { (48 * systemDensity).toDp() }.coerceAtLeast(48.dp)
+    val parentConfiguration = LocalViewConfiguration.current
+    val targetConfiguration =
+        remember(parentConfiguration, minimumTarget) {
+            object : ViewConfiguration by parentConfiguration {
+                override val minimumTouchTargetSize =
+                    DpSize(
+                        parentConfiguration.minimumTouchTargetSize.width.coerceAtLeast(minimumTarget),
+                        parentConfiguration.minimumTouchTargetSize.height.coerceAtLeast(minimumTarget),
+                    )
+            }
+        }
+    CompositionLocalProvider(
+        LocalMinimumInteractiveComponentSize provides
+            maxOf(
+                targetConfiguration.minimumTouchTargetSize.width,
+                targetConfiguration.minimumTouchTargetSize.height,
+            ),
+        LocalViewConfiguration provides targetConfiguration,
+    ) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .semantics { isTraversalGroup = true }
+                        .verticalScroll(scrollState)
+                        .padding(MaterialTheme.spacing.xLarge),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
+            ) {
+                DateHeader(
+                    state.selectedDate,
+                    state.dateRelation,
+                    onAction,
+                    onStartActivity,
+                    onLibrary,
+                    onPlan,
+                    onHistory,
+                    onStatistics,
+                    onSettings,
+                )
+                CommandFailure(state.commandFailure)
+                when (val load = state.load) {
+                    DailyLoadState.Loading -> LoadingContent()
+                    is DailyLoadState.Failure -> FailureContent(onAction)
+                    is DailyLoadState.Empty ->
+                        DailyContent(
+                            state,
+                            load.daily,
+                            onAction,
+                            displayElapsedRealtimeMs,
+                            onExpandSequence,
+                            onExecutePlan,
+                        )
+                    is DailyLoadState.Content ->
+                        DailyContent(
+                            state,
+                            load.daily,
+                            onAction,
+                            displayElapsedRealtimeMs,
+                            onExpandSequence,
+                            onExecutePlan,
+                        )
+                }
             }
         }
     }
@@ -165,56 +216,83 @@ private fun DateHeader(
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().semantics { isTraversalGroup = true },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
         TextButton(
             onClick = { onAction(DailyAction.PreviousDay) },
-            modifier = Modifier.semantics { contentDescription = previous },
-        ) { Text("\u2039") }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = stringResource(R.string.daily_title), style = MaterialTheme.typography.labelLarge)
+            modifier =
+                Modifier.semantics {
+                    contentDescription = previous
+                    traversalIndex = 1f
+                },
+        ) { Text("\u2039", modifier = Modifier.clearAndSetSemantics {}) }
+        Column(
+            modifier =
+                Modifier.weight(1f).semantics {
+                    isTraversalGroup = true
+                    traversalIndex = 0f
+                },
+        ) {
+            Text(
+                text = stringResource(R.string.daily_title),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.semantics { heading() },
+            )
+            val dateContext =
+                stringResource(
+                    when (relation) {
+                        DailyDateRelation.TODAY -> R.string.daily_date_today
+                        DailyDateRelation.PAST -> R.string.daily_date_past
+                        DailyDateRelation.FUTURE -> R.string.daily_date_future
+                    },
+                    localizedDate(selectedDate),
+                )
             Text(
                 text = localizedDate(selectedDate),
                 style = MaterialTheme.typography.headlineSmall,
-                maxLines = 2,
+                modifier = Modifier.semantics { contentDescription = dateContext },
             )
-            if (relation != DailyDateRelation.TODAY) {
-                TextButton(onClick = { onAction(DailyAction.Today) }) {
-                    Text(stringResource(R.string.daily_return_today))
-                }
-            }
-            if (relation == DailyDateRelation.TODAY) {
-                LifeTracingPrimaryButton(onClick = onStartActivity) {
-                    Text(stringResource(R.string.daily_start_activity))
-                }
-            }
-            FlowRow(
-                modifier = Modifier.testTag("daily-shell-actions"),
-                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-            ) {
-                LifeTracingSecondaryButton(onClick = onLibrary) {
-                    Text(stringResource(R.string.daily_library))
-                }
-                LifeTracingSecondaryButton(onClick = onPlan) {
-                    Text(stringResource(R.string.daily_plan))
-                }
-                LifeTracingSecondaryButton(onClick = onHistory) {
-                    Text(stringResource(R.string.daily_history))
-                }
-                LifeTracingSecondaryButton(onClick = onStatistics) {
-                    Text(stringResource(R.string.daily_statistics))
-                }
-                LifeTracingSecondaryButton(onClick = onSettings, modifier = Modifier.testTag("daily-settings")) {
-                    Text(stringResource(R.string.settings_title))
-                }
-            }
         }
         TextButton(
             onClick = { onAction(DailyAction.NextDay) },
-            modifier = Modifier.semantics { contentDescription = next },
-        ) { Text("\u203A") }
+            modifier =
+                Modifier.semantics {
+                    contentDescription = next
+                    traversalIndex = 2f
+                },
+        ) { Text("\u203A", modifier = Modifier.clearAndSetSemantics {}) }
+    }
+    if (relation != DailyDateRelation.TODAY) {
+        TextButton(onClick = { onAction(DailyAction.Today) }) {
+            Text(stringResource(R.string.daily_return_today))
+        }
+    }
+    if (relation == DailyDateRelation.TODAY) {
+        LifeTracingPrimaryButton(onClick = onStartActivity) {
+            Text(stringResource(R.string.daily_start_activity))
+        }
+    }
+    FlowRow(
+        modifier = Modifier.testTag("daily-shell-actions"),
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
+        LifeTracingSecondaryButton(onClick = onLibrary) {
+            Text(stringResource(R.string.daily_library))
+        }
+        LifeTracingSecondaryButton(onClick = onPlan) {
+            Text(stringResource(R.string.daily_plan))
+        }
+        LifeTracingSecondaryButton(onClick = onHistory) {
+            Text(stringResource(R.string.daily_history))
+        }
+        LifeTracingSecondaryButton(onClick = onStatistics) {
+            Text(stringResource(R.string.daily_statistics))
+        }
+        LifeTracingSecondaryButton(onClick = onSettings, modifier = Modifier.testTag("daily-settings")) {
+            Text(stringResource(R.string.settings_title))
+        }
     }
 }
 
@@ -235,6 +313,7 @@ private fun FailureContent(onAction: (DailyAction) -> Unit) {
     DailyCard(container = MaterialTheme.colorScheme.errorContainer) {
         Text(
             stringResource(R.string.daily_read_failure),
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.onErrorContainer,
             style = MaterialTheme.typography.titleMedium,
         )
@@ -260,6 +339,7 @@ private fun CommandFailure(failure: DailyCommandFailure?) {
     DailyCard(container = MaterialTheme.colorScheme.tertiaryContainer) {
         Text(
             message,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.onTertiaryContainer,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -336,6 +416,7 @@ private fun ActiveActivityCard(
         }
         Text(
             stringResource(if (paused) R.string.daily_paused else R.string.daily_running),
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.onPrimaryContainer,
             style = MaterialTheme.typography.labelLarge,
         )
@@ -344,7 +425,7 @@ private fun ActiveActivityCard(
             state.runtimeDisplayBaseline,
             displayElapsedRealtimeMs,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             LifeTracingSecondaryButton(
                 onClick = { onAction(if (paused) DailyAction.ResumeActivity else DailyAction.PauseActivity) },
                 enabled = !state.commandInFlight,
@@ -371,7 +452,12 @@ private fun LiveActivityValue(
                 stopwatchText(baseline.activeElapsed(elapsedNow), snapshot.settings.showSeconds)
             else -> timerText(baseline, elapsedNow)
         }
-    Text(text = value, style = MaterialTheme.typography.headlineSmall)
+    val description = activityTimingDescription(snapshot, baseline, elapsedNow, currentStep = false)
+    Text(
+        text = value,
+        style = MaterialTheme.typography.headlineSmall,
+        modifier = Modifier.semantics { contentDescription = description },
+    )
 }
 
 @Composable
@@ -394,6 +480,26 @@ private fun ActiveSequenceCard(
             Text(it, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
         }
         Text(
+            stringResource(
+                when (active.state) {
+                    DailyActiveSequenceState.RUNNING_CURRENT -> R.string.daily_sequence_running_current
+                    DailyActiveSequenceState.PAUSED_CURRENT -> R.string.daily_sequence_paused_current
+                    DailyActiveSequenceState.WAITING_NEXT -> R.string.daily_waiting
+                    DailyActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN -> R.string.daily_sequence_running_transition
+                    DailyActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN -> R.string.daily_sequence_paused_transition
+                },
+            ),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
+        val totalDescription =
+            stringResource(
+                R.string.daily_sequence_total,
+                state.runtimeDisplayBaseline?.activeElapsed(elapsedNow)?.let { spokenDuration(it) }
+                    ?: stringResource(R.string.daily_timing_unavailable),
+            )
+        Text(
+            modifier = Modifier.semantics { contentDescription = totalDescription },
             text =
                 state.runtimeDisplayBaseline
                     ?.activeElapsed(elapsedNow)
@@ -408,7 +514,6 @@ private fun ActiveSequenceCard(
             DailyActiveSequenceState.PAUSED_CURRENT,
             -> CurrentSequenceContent(active, state.runtimeDisplayBaseline, elapsedNow)
             DailyActiveSequenceState.WAITING_NEXT -> {
-                Text(stringResource(R.string.daily_waiting), style = MaterialTheme.typography.labelLarge)
                 NextStep(active)
             }
             DailyActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN,
@@ -436,7 +541,17 @@ private fun CurrentSequenceContent(
         NextStep(active)
         return
     }
-    Text(current.activity.name, style = MaterialTheme.typography.titleMedium)
+    val currentDescription =
+        stringResource(
+            R.string.daily_current_occurrence,
+            current.occurrence.runtimePosition.toLong() + 1,
+            current.activity.name,
+        )
+    Text(
+        current.activity.name,
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.semantics { contentDescription = currentDescription },
+    )
     current.activity.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
     val value =
         when {
@@ -451,7 +566,20 @@ private fun CurrentSequenceContent(
             active.runtime.currentChild == null -> stringResource(R.string.daily_timing_unavailable)
             else -> timerText(baseline, elapsedNow)
         }
-    Text(value, style = MaterialTheme.typography.headlineSmall)
+    val description =
+        activityTimingDescription(
+            current.activity,
+            baseline.takeIf {
+                current.activity.timeTrackingMode != TimeTrackingMode.TIMER || active.runtime.currentChild != null
+            },
+            elapsedNow,
+            currentStep = true,
+        )
+    Text(
+        value,
+        style = MaterialTheme.typography.headlineSmall,
+        modifier = Modifier.semantics { contentDescription = description },
+    )
     NextStep(active)
 }
 
@@ -462,9 +590,16 @@ private fun TransitionSequenceContent(
     elapsedNow: Long,
 ) {
     Text(stringResource(R.string.daily_transition_countdown), style = MaterialTheme.typography.labelLarge)
+    val description =
+        stringResource(
+            R.string.daily_countdown_remaining,
+            baseline?.transitionCountdownRemaining(elapsedNow)?.let { spokenDuration(it) }
+                ?: stringResource(R.string.daily_timing_unavailable),
+        )
     Text(
         baseline?.transitionCountdownRemaining(elapsedNow)?.let(::durationText)
             ?: stringResource(R.string.daily_timing_unavailable),
+        modifier = Modifier.semantics { contentDescription = description },
         style = MaterialTheme.typography.headlineSmall,
     )
     NextStep(active)
@@ -489,7 +624,7 @@ private fun SequenceControls(
     commandInFlight: Boolean,
     onAction: (DailyAction) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
         when (active.state) {
             DailyActiveSequenceState.RUNNING_CURRENT -> {
                 LifeTracingSecondaryButton(
@@ -644,7 +779,11 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
             is CompletedActivityHistoryRoot -> {
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                root.activeDuration?.let { Text(durationText(it), style = MaterialTheme.typography.labelLarge) }
+                root.activeDuration?.let { HistoricalDuration(it) }
+                    ?: Text(
+                        stringResource(R.string.daily_history_no_duration),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 val startedAt = root.startedAt
                 if (startedAt != null) {
                     Text(
@@ -666,7 +805,7 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
             is CompletedSequenceHistoryRoot -> {
                 Text(root.title, style = MaterialTheme.typography.titleMedium)
                 root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                Text(durationText(root.activeDuration), style = MaterialTheme.typography.labelLarge)
+                HistoricalDuration(root.activeDuration)
                 Text(
                     historicalTimestampRange(root.startedAt, root.completedAt, root.originalZoneId),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -688,7 +827,12 @@ private fun CompletedRow(root: CompletedHistoryRoot) {
 }
 
 @Composable
-private fun SectionTitle(id: Int) = Text(text = stringResource(id), style = MaterialTheme.typography.titleMedium)
+private fun SectionTitle(id: Int) =
+    Text(
+        text = stringResource(id),
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.semantics { heading() },
+    )
 
 @Composable
 private fun EmptySection(id: Int) =
@@ -705,7 +849,7 @@ private fun DailyCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().semantics { isTraversalGroup = true },
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = container),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -715,6 +859,79 @@ private fun DailyCard(
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
             content = content,
         )
+    }
+}
+
+@Composable
+private fun HistoricalDuration(duration: Duration) {
+    val description = stringResource(R.string.daily_history_duration, spokenDuration(duration))
+    Text(
+        durationText(duration),
+        style = MaterialTheme.typography.labelLarge,
+        modifier = Modifier.semantics { contentDescription = description },
+    )
+}
+
+@Composable
+private fun spokenDuration(
+    duration: Duration,
+    showSeconds: Boolean = true,
+): String {
+    val seconds = duration.seconds.coerceAtLeast(0)
+    return if (showSeconds) {
+        stringResource(R.string.daily_duration_seconds, seconds / 3600, seconds / 60 % 60, seconds % 60)
+    } else {
+        stringResource(R.string.daily_duration_minutes, seconds / 3600, seconds / 60 % 60)
+    }
+}
+
+@Composable
+private fun activityTimingDescription(
+    snapshot: com.alexandr5476.lifetracing.domain.ActivityConfigSnapshot,
+    baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?,
+    elapsedNow: Long,
+    currentStep: Boolean,
+): String {
+    val unavailable = stringResource(R.string.daily_timing_unavailable)
+    val value =
+        when (snapshot.timeTrackingMode) {
+            TimeTrackingMode.NO_LIVE_TRACKING ->
+                stringResource(
+                    R.string.daily_no_live_value,
+                    snapshot.mainValueText() ?: stringResource(R.string.daily_no_main_value),
+                )
+            TimeTrackingMode.STOPWATCH -> {
+                val elapsed =
+                    if (currentStep) {
+                        baseline?.currentStepStopwatchElapsed(elapsedNow)
+                    } else {
+                        baseline?.activeElapsed(elapsedNow)
+                    }
+                stringResource(
+                    R.string.daily_stopwatch_elapsed,
+                    elapsed?.let { spokenDuration(it, snapshot.settings.showSeconds) } ?: unavailable,
+                )
+            }
+            TimeTrackingMode.TIMER -> stringResource(R.string.daily_timer_value, spokenTimerValue(baseline, elapsedNow))
+        }
+
+    return if (currentStep) stringResource(R.string.daily_current_step, value) else value
+}
+
+@Composable
+private fun spokenTimerValue(
+    baseline: com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline?,
+    elapsedNow: Long,
+): String {
+    if (baseline == null) return stringResource(R.string.daily_timing_unavailable)
+    val remaining = baseline.timerRemaining(elapsedNow)
+    val overtime = baseline.timerOvertime(elapsedNow)
+    return when {
+        remaining != null && !remaining.isZero ->
+            stringResource(R.string.daily_remaining, spokenDuration(remaining))
+        overtime != null && !overtime.isZero -> stringResource(R.string.daily_overtime, spokenDuration(overtime))
+        remaining == null && overtime == null -> stringResource(R.string.daily_timing_unavailable)
+        else -> stringResource(R.string.daily_timer_complete)
     }
 }
 

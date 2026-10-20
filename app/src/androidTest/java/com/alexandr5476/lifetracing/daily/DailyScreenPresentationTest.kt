@@ -13,15 +13,28 @@ import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasAnyChild
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -29,6 +42,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -85,6 +99,8 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
+import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -142,8 +158,8 @@ class DailyScreenPresentationTest {
         val harness = screen(presentation(selected, DailyDateRelation.PAST, DailyLoadState.Loading), actions)
         composeTestRule.onNodeWithText(localizedDate(selected)).assertIsDisplayed()
         composeTestRule.onNodeWithText(string(R.string.daily_loading)).assertIsDisplayed()
-        composeTestRule.onNodeWithText("\u2039").assertIsDisplayed()
-        composeTestRule.onNodeWithText("\u203A").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_next_day)).assertIsDisplayed()
 
         harness.state.value =
             presentation(
@@ -300,7 +316,7 @@ class DailyScreenPresentationTest {
             )
         val week = sequencePlan("Sequence week", LocalDate.parse("2026-08-17"))
         val engaged = plan("Engaged", engaged = true)
-        val fulfilled = plan("Fulfilled", status = PlanEntryStatus.FULFILLED)
+        val fulfilled = plan("Frozen fulfilled Plan", status = PlanEntryStatus.FULFILLED)
         val clicked = mutableListOf<PlanActionIdentity>()
         screen(
             state(
@@ -699,6 +715,518 @@ class DailyScreenPresentationTest {
             composeTestRule.onNodeWithText(it, substring = true).assertDoesNotExist()
         }
         composeTestRule.onNodeWithText(string(R.string.daily_expand_sequence)).assertIsDisplayed()
+    }
+
+    @Test
+    fun accessibilityHeadingsDatesAndFeedbackRecoverWithoutStaleActions() {
+        val actions = mutableListOf<DailyAction>()
+        val running = activity("Accessible frozen Activity", TimeTrackingMode.STOPWATCH)
+        val harness = screen(daily(DailyActive.Activity(running), baseline(running, 2)), actions, 2_000)
+        listOf(R.string.daily_title, R.string.daily_active, R.string.daily_planned, R.string.daily_completed).forEach {
+            composeTestRule
+                .onNode(hasText(string(it)) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+                .assertExists()
+        }
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_date_today, localizedDate(harness.state.value.selectedDate)),
+            ).assertExists()
+        assertSectionAbove(R.string.daily_active, R.string.daily_planned)
+        assertSectionAbove(R.string.daily_planned, R.string.daily_completed)
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.TraversalIndex, 1f),
+        )
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_next_day)).assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.TraversalIndex, 2f),
+        )
+        assertSingleLabeledAction(string(R.string.daily_pause))
+        for (unmerged in listOf(false, true)) {
+            composeTestRule
+                .onAllNodes(
+                    hasClickAction() and hasContentDescription(string(R.string.daily_previous_day)),
+                    unmerged,
+                ).assertCountEquals(1)
+        }
+        harness.state.value = harness.state.value.copy(load = DailyLoadState.Loading)
+        composeTestRule.onNodeWithText(string(R.string.daily_loading)).assertExists()
+        runtimeAction(R.string.daily_pause).assertDoesNotExist()
+        runtimeAction(R.string.daily_finish).assertDoesNotExist()
+        harness.state.value = harness.state.value.copy(load = DailyLoadState.Failure("read failure"))
+        composeTestRule.onNodeWithText(string(R.string.daily_read_failure)).assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite),
+        )
+        runtimeAction(R.string.daily_retry).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(DailyAction.Retry), actions)
+        harness.state.value = harness.state.value.copy(load = DailyLoadState.Empty(emptyDaily))
+        composeTestRule.onNodeWithText(string(R.string.daily_loading)).assertDoesNotExist()
+        runtimeAction(R.string.daily_retry).assertDoesNotExist()
+        composeTestRule.onNodeWithText(string(R.string.daily_no_plans)).assertExists()
+        composeTestRule.onNodeWithText(string(R.string.daily_no_completed)).assertExists()
+        harness.state.value = daily(DailyActive.Activity(running), baseline(running, 2))
+        runtimeAction(R.string.daily_pause).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(DailyAction.Retry, DailyAction.PauseActivity), actions)
+        for ((failure, resource) in listOf(
+            DailyCommandFailure.Rejected("stale") to R.string.daily_command_rejected,
+            DailyCommandFailure.Coordination("committed") to R.string.daily_command_coordinating,
+        )) {
+            harness.state.value = harness.state.value.copy(commandFailure = failure)
+            composeTestRule.onNodeWithText(string(resource)).assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite),
+            )
+        }
+        composeTestRule
+            .onNodeWithContentDescription(string(R.string.daily_previous_day))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule
+            .onNodeWithContentDescription(string(R.string.daily_next_day))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(
+            listOf(DailyAction.Retry, DailyAction.PauseActivity, DailyAction.PreviousDay, DailyAction.NextDay),
+            actions,
+        )
+        for ((relation, resource) in listOf(
+            DailyDateRelation.PAST to R.string.daily_date_past,
+            DailyDateRelation.FUTURE to R.string.daily_date_future,
+        )) {
+            harness.state.value = harness.state.value.copy(dateRelation = relation, commandFailure = null)
+            composeTestRule
+                .onNodeWithContentDescription(
+                    string(resource, localizedDate(harness.state.value.selectedDate)),
+                ).assertExists()
+        }
+    }
+
+    @Test
+    fun accessibilityActivityTimingAndActionsFollowCanonicalState() {
+        val actions = mutableListOf<DailyAction>()
+        val running = activity("Frozen stopwatch", TimeTrackingMode.STOPWATCH, showSeconds = false)
+        val harness = screen(daily(DailyActive.Activity(running), baseline(running, 65)), actions, 65_000)
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_stopwatch_elapsed, string(R.string.daily_duration_minutes, 0, 1)),
+            ).assertExists()
+        composeTestRule.onNodeWithText(string(R.string.daily_running)).assertExists()
+        runtimeAction(R.string.daily_resume).assertDoesNotExist()
+        runtimeAction(R.string.daily_pause).performSemanticsAction(SemanticsActions.OnClick)
+        val paused = activity("Frozen stopwatch", TimeTrackingMode.STOPWATCH, pausedAtSeconds = 65, showSeconds = false)
+        harness.state.value = daily(DailyActive.Activity(paused), baseline(paused, 70))
+        composeTestRule.runOnIdle { harness.tick.longValue = 700_000 }
+        composeTestRule.onNodeWithText(string(R.string.daily_paused)).assertExists()
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_stopwatch_elapsed, string(R.string.daily_duration_minutes, 0, 1)),
+            ).assertExists()
+        runtimeAction(R.string.daily_pause).assertDoesNotExist()
+        runtimeAction(R.string.daily_resume).performSemanticsAction(SemanticsActions.OnClick)
+        runtimeAction(R.string.daily_finish).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(DailyAction.PauseActivity, DailyAction.ResumeActivity, DailyAction.FinishActivity), actions)
+        harness.state.value = harness.state.value.copy(commandInFlight = true)
+        runtimeAction(R.string.daily_resume).assertIsNotEnabled()
+        runtimeAction(R.string.daily_finish).assertIsNotEnabled()
+        harness.state.value = harness.state.value.copy(runtimeDisplayBaseline = null)
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_stopwatch_elapsed, string(R.string.daily_timing_unavailable)),
+            ).assertExists()
+        harness.state.value = state(DailyDateRelation.TODAY, emptyDaily)
+        runtimeAction(R.string.daily_resume).assertDoesNotExist()
+        runtimeAction(R.string.daily_finish).assertDoesNotExist()
+        composeTestRule.onNodeWithText(string(R.string.daily_active)).assertDoesNotExist()
+    }
+
+    @Test
+    fun accessibilityTimerBoundariesRemainPassiveAndUnannounced() {
+        val actions = mutableListOf<DailyAction>()
+        val timer = activity("Frozen Timer", TimeTrackingMode.TIMER, TimerZeroBehavior.OVERTIME)
+        val harness = screen(daily(DailyActive.Activity(timer), baseline(timer, 2)), actions, 2_000)
+        for ((tick, expected) in listOf(
+            2_000L to string(R.string.daily_remaining, spokenSeconds(3)),
+            5_000L to string(R.string.daily_timer_complete),
+            7_000L to string(R.string.daily_overtime, spokenSeconds(2)),
+        )) {
+            composeTestRule.runOnIdle { harness.tick.longValue = tick }
+            val node = composeTestRule.onNodeWithContentDescription(string(R.string.daily_timer_value, expected))
+            node.assertExists()
+            assertNoAnnouncingAncestor(node.fetchSemanticsNode())
+            assertEquals(emptyList<DailyAction>(), actions)
+            assertEquals(
+                timer,
+                (harness.state.value.load as DailyLoadState.Content).daily.active.let {
+                    (it as DailyActive.Activity).runtime
+                },
+            )
+        }
+        harness.state.value = daily(DailyActive.Activity(timer), null)
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_timer_value, string(R.string.daily_timing_unavailable)),
+            ).assertExists()
+        val paused = activity("Frozen Timer", TimeTrackingMode.TIMER, TimerZeroBehavior.OVERTIME, pausedAtSeconds = 2)
+        harness.state.value = daily(DailyActive.Activity(paused), baseline(paused, 8))
+        composeTestRule.runOnIdle { harness.tick.longValue = 100_000 }
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_timer_value, string(R.string.daily_remaining, spokenSeconds(3))),
+            ).assertExists()
+    }
+
+    @Test
+    fun accessibilitySequenceStatesExposeOnlyCanonicalActions() {
+        val actions = mutableListOf<DailyAction>()
+        val expanded = mutableListOf<SequenceExecutionId>()
+        val variants =
+            listOf(
+                Triple(
+                    stopwatchAfterPriorStep(false).active(),
+                    R.string.daily_sequence_running_current,
+                    listOf(R.string.daily_pause, R.string.daily_complete_step),
+                ),
+                Triple(
+                    stopwatchAfterPriorStep(true).active(),
+                    R.string.daily_sequence_paused_current,
+                    listOf(R.string.daily_resume),
+                ),
+                Triple(waitingSequence().active(), R.string.daily_waiting, listOf(R.string.daily_start_next)),
+                Triple(
+                    countdownSequence(false).active(),
+                    R.string.daily_sequence_running_transition,
+                    listOf(R.string.daily_pause),
+                ),
+                Triple(
+                    countdownSequence(true).active(),
+                    R.string.daily_sequence_paused_transition,
+                    listOf(R.string.daily_resume),
+                ),
+            )
+        val harness = screen(daily(variants.first().first, null), actions, 20_000, expanded)
+        val allControls =
+            listOf(R.string.daily_pause, R.string.daily_resume, R.string.daily_complete_step, R.string.daily_start_next)
+        for ((active, stateLabel, legal) in variants) {
+            harness.state.value = daily(active, baseline(active.runtime, 20))
+            composeTestRule.onNodeWithText(active.runtime.snapshot.name).assertExists()
+            composeTestRule.onNodeWithText(string(stateLabel)).assertExists()
+            active.current?.let {
+                composeTestRule
+                    .onNodeWithContentDescription(
+                        string(R.string.daily_current_occurrence, it.occurrence.runtimePosition + 1, it.activity.name),
+                    ).assertExists()
+            }
+            for (control in allControls) {
+                if (control in legal) {
+                    runtimeAction(control).performSemanticsAction(SemanticsActions.OnClick)
+                } else {
+                    runtimeAction(control).assertDoesNotExist()
+                }
+            }
+            val expected =
+                when (active.state) {
+                    DailyActiveSequenceState.RUNNING_CURRENT ->
+                        listOf(
+                            DailyAction.PauseSequence,
+                            DailyAction.CompleteCurrentSequenceStep(active.current!!.occurrence.id),
+                        )
+                    DailyActiveSequenceState.PAUSED_CURRENT, DailyActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN ->
+                        listOf(DailyAction.ResumeSequence)
+                    DailyActiveSequenceState.WAITING_NEXT -> listOf(DailyAction.StartNextSequenceStep)
+                    DailyActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN -> listOf(DailyAction.PauseSequence)
+                }
+            assertEquals(expected, actions.toList())
+            actions.clear()
+            runtimeAction(R.string.daily_expand_sequence).performSemanticsAction(SemanticsActions.OnClick)
+            assertEquals(active.runtime.execution.id, expanded.last())
+            harness.state.value = harness.state.value.copy(commandInFlight = true)
+            legal.forEach { runtimeAction(it).assertIsNotEnabled() }
+            runtimeAction(R.string.daily_expand_sequence).assertIsNotEnabled()
+            if (active.state == DailyActiveSequenceState.WAITING_NEXT) {
+                composeTestRule
+                    .onAllNodes(
+                        hasContentDescription(string(R.string.daily_current_step, ""), substring = true),
+                    ).assertCountEquals(0)
+            }
+        }
+    }
+
+    @Test
+    fun accessibilitySequenceMissingAndNoLiveDataStayHonest() {
+        val noLive = singleStepSequence(snapshot("No-live step", TimeTrackingMode.NO_LIVE_TRACKING)).active()
+        val harness = screen(daily(noLive, baseline(noLive.runtime, 3)), tick = 3_000)
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(
+                    R.string.daily_current_step,
+                    string(R.string.daily_no_live_value, string(R.string.daily_no_main_value)),
+                ),
+            ).assertExists()
+        val field =
+            ActivitySnapshotField(
+                ActivitySnapshotFieldId("accessible-pages"),
+                null,
+                0,
+                "Pages",
+                type = CustomFieldType.NUMBER,
+                unit = "pages",
+                displayPrecision = 0,
+                defaultNumberScaled = 0,
+                isMainValue = true,
+            )
+        val valued =
+            singleStepSequence(
+                snapshot("Valued step", TimeTrackingMode.NO_LIVE_TRACKING).copy(fields = listOf(field)),
+            ).active()
+        harness.state.value = daily(valued, baseline(valued.runtime, 3))
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(
+                    R.string.daily_current_step,
+                    string(R.string.daily_no_live_value, "0 pages"),
+                ),
+            ).assertExists()
+        val running = stopwatchAfterPriorStep(false).active()
+        harness.state.value = daily(running.copy(current = null), null)
+        runtimeAction(R.string.daily_complete_step).assertDoesNotExist()
+        composeTestRule.onAllNodesWithText(string(R.string.daily_timing_unavailable)).assertCountEquals(2)
+        val timer = singleStepSequence(snapshot("Missing child", TimeTrackingMode.TIMER)).active()
+        harness.state.value =
+            daily(timer.copy(runtime = timer.runtime.copy(currentChild = null)), baseline(timer.runtime, 2))
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(
+                    R.string.daily_current_step,
+                    string(R.string.daily_timer_value, string(R.string.daily_timing_unavailable)),
+                ),
+            ).assertExists()
+        val countdown = countdownSequence(true).active()
+        harness.state.value = daily(countdown, null)
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(
+                    R.string.daily_countdown_remaining,
+                    string(R.string.daily_timing_unavailable),
+                ),
+            ).assertExists()
+    }
+
+    @Test
+    fun accessibilityPlansAndHistoryPreserveContextAndIdentity() {
+        val execute = mutableListOf<PlanActionIdentity>()
+        val exact =
+            plan(
+                "Frozen exact",
+                target = PlanTarget.ExactDay(at, ZoneOffset.ofHours(-5)),
+                exactTime = LocalTime.of(5, 0),
+            ).copy(effectiveLocalDate = LocalDate.parse("2026-08-20"), exactUtcOffset = ZoneOffset.ofHours(-5))
+        val engaged = plan("Engaged", engaged = true)
+        val fulfilled = plan("Frozen fulfilled Plan", status = PlanEntryStatus.FULFILLED)
+        val cancelled = plan("Frozen cancelled Plan", status = PlanEntryStatus.CANCELLED)
+        val plans =
+            listOf(
+                exact,
+                engaged,
+                fulfilled,
+                cancelled,
+                plan("Changed", sourceState = PlanSourceState.CHANGED, overdue = true),
+                plan("Archived", sourceState = PlanSourceState.ARCHIVED),
+                plan("Unavailable", sourceState = PlanSourceState.UNAVAILABLE),
+            )
+        val history =
+            listOf(
+                completedActivity("No-live history", null, TimeTrackingMode.NO_LIVE_TRACKING),
+                completedActivity("Timed history", Duration.ofSeconds(65)),
+                completedSequence("Ended history", SequenceExecutionStatus.ENDED_EARLY),
+            )
+        screen(state(DailyDateRelation.TODAY, DailyRead(plans, emptyList(), history, null)), planExecutions = execute)
+        for (p in plans) {
+            val action =
+                composeTestRule.onNode(
+                    hasClickAction() and hasAnyAncestor(hasAnyChild(hasText(p.snapshot.title))),
+                )
+            // Each card retains independent native controls and readable lifecycle text.
+            if (p.engaged || p.plan.status != PlanEntryStatus.PLANNED) {
+                action.assertDoesNotExist()
+            } else {
+                action.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(p.plan.actionIdentity(), execute.last())
+            }
+        }
+        listOf(
+            R.string.daily_plan_engaged,
+            R.string.daily_plan_fulfilled,
+            R.string.daily_plan_cancelled,
+            R.string.daily_plan_overdue,
+            R.string.daily_source_changed,
+            R.string.daily_source_archived,
+            R.string.daily_source_unavailable,
+            R.string.daily_ended_early,
+            R.string.daily_history_no_duration,
+        ).forEach {
+            composeTestRule.onNodeWithText(string(it)).assertExists()
+        }
+        composeTestRule
+            .onNodeWithText(
+                string(
+                    R.string.daily_exact_time,
+                    string(R.string.calendar_time_with_offset, localizedTime(LocalTime.of(5, 0)), "-05:00"),
+                ),
+            ).assertExists()
+        composeTestRule
+            .onNodeWithContentDescription(
+                string(R.string.daily_history_duration, spokenSeconds(65)),
+            ).assertExists()
+        composeTestRule.onNodeWithText(historyRange(history[1] as CompletedActivityHistoryRoot)).assertExists()
+    }
+
+    @Test
+    fun accessibilityEnglishAndRussianReflowAtCombinedScales() {
+        val locale = mutableStateOf(Locale.US)
+        val systemFont = mutableFloatStateOf(2f)
+        val appearance = mutableStateOf(AppearancePreferences(interfaceScalePercent = 120, textScalePercent = 130))
+        val running = activity("Scaled Activity", TimeTrackingMode.STOPWATCH)
+        val state = mutableStateOf(daily(DailyActive.Activity(running), baseline(running, 2)))
+        val actions = mutableListOf<DailyAction>()
+        composeTestRule.setContent {
+            val configuration =
+                android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                    setLocale(locale.value)
+                    fontScale = systemFont.floatValue
+                }
+            val context = composeTestRule.activity.createConfigurationContext(configuration)
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+                LocalDensity provides
+                    androidx.compose.ui.unit
+                        .Density(density.density, configuration.fontScale),
+            ) {
+                LifeTracingAppearance(appearance.value) {
+                    DailyScreen(state.value, actions::add, displayElapsedRealtimeMs = 2_000)
+                }
+            }
+        }
+        val sequence = stopwatchAfterPriorStep(false).active()
+        val pausedSequence = stopwatchAfterPriorStep(true).active()
+        val paused = activity("Scaled Activity", TimeTrackingMode.STOPWATCH, pausedAtSeconds = 2)
+        for (language in listOf(Locale.US, Locale.forLanguageTag("ru"))) {
+            composeTestRule.runOnIdle {
+                locale.value = language
+                state.value = daily(DailyActive.Activity(running), baseline(running, 2))
+            }
+            composeTestRule
+                .onNodeWithContentDescription(localizedString(language, R.string.daily_previous_day))
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeTestRule
+                .onNodeWithContentDescription(localizedString(language, R.string.daily_next_day))
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeTestRule
+                .onNodeWithContentDescription(
+                    localizedString(
+                        language,
+                        R.string.daily_date_today,
+                        localizedDate(state.value.selectedDate, language),
+                    ),
+                ).assertExists()
+            composeTestRule
+                .onNodeWithContentDescription(
+                    localizedString(
+                        language,
+                        R.string.daily_stopwatch_elapsed,
+                        localizedString(language, R.string.daily_duration_seconds, 0, 0, 2),
+                    ),
+                ).assertExists()
+            activateScaledControls(language, listOf(R.string.daily_pause, R.string.daily_finish))
+            state.value = daily(DailyActive.Activity(paused), baseline(paused, 2))
+            composeTestRule
+                .onNode(hasText(localizedString(language, R.string.daily_pause)) and hasClickAction())
+                .assertDoesNotExist()
+            activateScaledControls(language, listOf(R.string.daily_resume, R.string.daily_finish))
+            state.value = daily(sequence, baseline(sequence.runtime, 12))
+            activateScaledControls(language, listOf(R.string.daily_pause, R.string.daily_complete_step))
+            composeTestRule
+                .onNode(
+                    hasText(localizedString(language, R.string.daily_expand_sequence)) and hasClickAction(),
+                ).performScrollTo()
+                .assertIsDisplayed()
+            state.value = daily(pausedSequence, baseline(pausedSequence.runtime, 20))
+            activateScaledControls(language, listOf(R.string.daily_resume))
+        }
+        val perLocale =
+            listOf(
+                DailyAction.PauseActivity,
+                DailyAction.FinishActivity,
+                DailyAction.ResumeActivity,
+                DailyAction.FinishActivity,
+                DailyAction.PauseSequence,
+                DailyAction.CompleteCurrentSequenceStep(sequence.current!!.occurrence.id),
+                DailyAction.ResumeSequence,
+            )
+        composeTestRule.runOnIdle {
+            locale.value = Locale.US
+            systemFont.floatValue = 1f
+            appearance.value = AppearancePreferences(interfaceScalePercent = 90, textScalePercent = 90)
+            state.value = daily(DailyActive.Activity(running), baseline(running, 2))
+        }
+        activateScaledControls(Locale.US, listOf(R.string.daily_pause, R.string.daily_finish))
+        assertEquals(perLocale + perLocale + listOf(DailyAction.PauseActivity, DailyAction.FinishActivity), actions)
+    }
+
+    private fun activateScaledControls(
+        locale: Locale,
+        controls: List<Int>,
+    ) {
+        for (control in controls) {
+            val label = localizedString(locale, control)
+            val node = composeTestRule.onNode(hasText(label) and hasClickAction())
+            node.performScrollTo().assertIsDisplayed()
+            val touch = node.fetchSemanticsNode().touchBoundsInRoot
+            val minimumPx = 48 * composeTestRule.activity.resources.displayMetrics.density
+            assertTrue("Touch height must be at least 48 Android dp", touch.height >= minimumPx - 1)
+            assertTrue("Touch width must be at least 48 Android dp", touch.width >= minimumPx - 1)
+            node.performSemanticsAction(SemanticsActions.OnClick)
+            assertSingleLabeledAction(label)
+        }
+        if (controls.size == 2) {
+            val first =
+                composeTestRule
+                    .onNode(hasText(localizedString(locale, controls[0])) and hasClickAction())
+                    .getUnclippedBoundsInRoot()
+            val second =
+                composeTestRule
+                    .onNode(hasText(localizedString(locale, controls[1])) and hasClickAction())
+                    .getUnclippedBoundsInRoot()
+            assertTrue("Runtime targets must not overlap", first.bottom <= second.top || first.right <= second.left)
+        }
+    }
+
+    private fun assertSingleLabeledAction(label: String) {
+        // Material merges the Text label into its button only in the merged tree.
+        val action = hasClickAction() and (hasText(label) or hasAnyDescendant(hasText(label)))
+        for (unmerged in listOf(false, true)) {
+            composeTestRule.onAllNodes(action, useUnmergedTree = unmerged).assertCountEquals(1)
+        }
+        composeTestRule.onAllNodes(hasText(label), useUnmergedTree = true).assertCountEquals(1)
+    }
+
+    private fun runtimeAction(resource: Int) = composeTestRule.onNode(hasText(string(resource)) and hasClickAction())
+
+    private fun spokenSeconds(seconds: Int) =
+        string(
+            R.string.daily_duration_seconds,
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60,
+        )
+
+    private fun assertNoAnnouncingAncestor(node: androidx.compose.ui.semantics.SemanticsNode) {
+        var current: androidx.compose.ui.semantics.SemanticsNode? = node
+        while (current != null) {
+            assertTrue(
+                "Timer or ancestor must not announce ticks",
+                !current.config.contains(SemanticsProperties.LiveRegion),
+            )
+            current = current.parent
+        }
     }
 
     private fun screen(

@@ -21,7 +21,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 626 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 331 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -289,3 +289,14 @@ date attribution and unchanged history, and inspect EXPLAIN for executed stateme
 All earlier signed-rank, nine-byte-pass, fair-probe, eligibility and coherence regressions
 remain mandatory. The host mixed-trial probe supplies reproducible native VM evidence;
 Controller owns fail-first/corrected Room execution and the unfiltered five-API CI gate.
+
+## S1 Daily accessibility boundary
+
+The pinned inventory adds seven Daily presentation cases and one physical-database
+Daily route/controller lifecycle case (331 mandatory app cases). All prior cases
+remain mandatory. The independent production-startup invocation and all five API
+gates (26, 31, 33, 35, 36) remain required, with unfiltered app/data execution.
+See [Daily accessibility evidence and walkthrough](daily_accessibility.md) for
+coverage, local verification boundaries, and the pending manual TalkBack procedure.
+Controller owns authoritative app-unit, gmd-app, lint and exact-head CI evidence.
+APK compilation and semantics assertions do not certify TalkBack operation.

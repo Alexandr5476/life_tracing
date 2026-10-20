@@ -631,4 +631,22 @@
     <string name="plan_persistence_failed">Не удалось сохранить план. Обновите данные перед новой попыткой.</string>
     <string name="calendar_time_with_offset">%1$s · UTC%2$s</string>
     <string name="history_timestamp_context">%1$s (UTC%2$s, %3$s)</string>
+    <string name="daily_date_today">Выбранная дата: %1$s. Сегодня.</string>
+    <string name="daily_date_past">Выбранная дата: %1$s. Раньше сегодняшнего дня.</string>
+    <string name="daily_date_future">Выбранная дата: %1$s. Позже сегодняшнего дня.</string>
+    <string name="daily_sequence_running_current">Последовательность выполняется, текущий шаг активен</string>
+    <string name="daily_sequence_paused_current">Последовательность приостановлена на текущем шаге</string>
+    <string name="daily_sequence_running_transition">Последовательность выполняется, идёт отсчёт до следующего шага</string>
+    <string name="daily_sequence_paused_transition">Последовательность приостановлена, отсчёт до следующего шага приостановлен</string>
+    <string name="daily_current_step">Текущий шаг: %1$s</string>
+    <string name="daily_countdown_remaining">До следующего шага осталось: %1$s</string>
+    <string name="daily_history_no_duration">Без измерения времени; длительность не записана</string>
+    <string name="daily_history_duration">Активная длительность: %1$s</string>
+    <string name="daily_duration_seconds">Часы: %1$d, минуты: %2$d, секунды: %3$d</string>
+    <string name="daily_duration_minutes">Часы: %1$d, минуты: %2$d</string>
+    <string name="daily_stopwatch_elapsed">Прошло по секундомеру: %1$s</string>
+    <string name="daily_timer_value">Таймер: %1$s</string>
+    <string name="daily_no_live_value">Без измерения времени. Основное значение: %1$s</string>
+    <string name="daily_no_main_value">Не задано</string>
+    <string name="daily_current_occurrence">Текущий шаг %1$d: %2$s</string>
 </resources>

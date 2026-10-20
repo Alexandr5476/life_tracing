@@ -798,6 +798,9 @@
     "com.alexandr5476.lifetracing.SettingsProductionRouteTest": [
       "settings_controls_recreation_and_back_preserve_daily_and_live_runtime"
     ],
+    "com.alexandr5476.lifetracing.daily.DailyAccessibilityPersistenceTest": [
+      "semanticPauseResumeFinishPreserveCanonicalExecutionAfterPhysicalReopen"
+    ],
     "com.alexandr5476.lifetracing.daily.DailyHistoricalRangePersistenceTest": [
       "equalClocksOnConsecutiveOriginalDatesRemainDistinctAfterReload",
       "repeatedOriginalClockShowsBothActualOffsetsAfterReload",
@@ -805,6 +808,13 @@
       "shortOriginalZoneOvernightRangeShowsBothDatesAfterReload"
     ],
     "com.alexandr5476.lifetracing.daily.DailyScreenPresentationTest": [
+      "accessibilityActivityTimingAndActionsFollowCanonicalState",
+      "accessibilityEnglishAndRussianReflowAtCombinedScales",
+      "accessibilityHeadingsDatesAndFeedbackRecoverWithoutStaleActions",
+      "accessibilityPlansAndHistoryPreserveContextAndIdentity",
+      "accessibilitySequenceMissingAndNoLiveDataStayHonest",
+      "accessibilitySequenceStatesExposeOnlyCanonicalActions",
+      "accessibilityTimerBoundariesRemainPassiveAndUnannounced",
       "activity_stopwatch_progresses_pauses_canonically_and_disables_in_flight_actions",
       "activity_timer_uses_remaining_then_overtime_and_missing_baseline_is_unavailable",
       "completedOverlapClocksStayOriginalAndLocalizedAfterDeviceZoneChange",
