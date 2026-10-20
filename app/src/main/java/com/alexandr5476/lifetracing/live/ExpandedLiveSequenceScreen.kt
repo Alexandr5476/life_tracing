@@ -2,12 +2,15 @@
 
 package com.alexandr5476.lifetracing.live
 
+import android.content.Context
+import android.content.res.Configuration
 import android.os.SystemClock
 import android.text.format.DateUtils
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,6 +18,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,11 +39,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveSequenceState
@@ -55,6 +75,8 @@ import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -83,24 +105,66 @@ internal fun ExpandedLiveSequenceScreen(
     onBack: () -> Unit,
     displayElapsedRealtimeMs: Long? = null,
 ) {
-    val sequence = state.sequence
+    LifeTracingAccessibleTargets {
+        ExpandedSequenceContent(state, controller, onBack, displayElapsedRealtimeMs)
+    }
+}
+
+// Native windows install their own platform locals. Keep the route's effective
+// locale and appearance while retaining each window's native View and focus owner.
+private class SequenceWindowPresentation(
+    private val context: Context,
+    private val configuration: Configuration,
+    private val density: Density,
+) {
+    @Composable
+    fun Content(content: @Composable () -> Unit) {
+        CompositionLocalProvider(
+            LocalContext provides context,
+            LocalConfiguration provides configuration,
+            LocalDensity provides density,
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun sequenceWindowPresentation() =
+    SequenceWindowPresentation(LocalContext.current, LocalConfiguration.current, LocalDensity.current)
+
+@Composable
+private fun ExpandedSequenceContent(
+    state: ExpandedLiveSequenceState,
+    controller: ExpandedLiveSequenceController,
+    onBack: () -> Unit,
+    displayElapsedRealtimeMs: Long?,
+) {
+    // Remove command surfaces synchronously; onStale exits the route asynchronously.
+    val sequence = state.sequence.takeUnless { state.stale }
     val elapsedNow = displayTick(state.displayBaseline, displayElapsedRealtimeMs)
-    var addOpen by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.background) {
+    var addOpen by remember(sequence?.runtime?.execution?.id, sequence?.state, state.stale) { mutableStateOf(false) }
+    val backFocus = remember { FocusRequester() }
+    val pane = stringResource(R.string.expanded_sequence_pane)
+    LaunchedEffect(sequence?.runtime?.execution?.id, state.stale) { backFocus.requestFocus() }
+    Surface(modifier = Modifier.semantics { paneTitle = pane }, color = MaterialTheme.colorScheme.background) {
         if (sequence == null) {
             Column(
                 Modifier.fillMaxSize().padding(MaterialTheme.spacing.xLarge),
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
             ) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.expanded_sequence_back)) }
+                TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+                    Text(stringResource(R.string.expanded_sequence_back))
+                }
                 Text(
-                    if (state.readFailure != null) {
+                    if (state.stale) {
+                        stringResource(R.string.expanded_sequence_stale)
+                    } else if (state.readFailure != null) {
                         stringResource(R.string.expanded_sequence_read_failure)
                     } else {
                         stringResource(R.string.expanded_sequence_loading)
                     },
                 )
-                if (state.readFailure != null) {
+                if (state.readFailure != null && !state.stale) {
                     LifeTracingPrimaryButton(onClick = controller::refresh) {
                         Text(stringResource(R.string.expanded_sequence_retry))
                     }
@@ -114,13 +178,14 @@ internal fun ExpandedLiveSequenceScreen(
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
         ) {
             item {
-                SequenceHeader(sequence, state.displayBaseline, elapsedNow, onBack)
+                SequenceHeader(sequence, state.displayBaseline, elapsedNow, onBack, backFocus)
             }
+            item { RouteFeedback(state, controller) }
             state.commandFailure?.let { failure ->
                 item { CommandFailure(failure) }
             }
             item {
-                PrimaryControls(sequence, state.commandInFlight, controller)
+                PrimaryControls(sequence, state.currentValueDraft, state.commandInFlight, controller)
             }
             item {
                 GlobalActions(
@@ -150,8 +215,8 @@ internal fun ExpandedLiveSequenceScreen(
             }
         }
     }
-    ConfirmationDialog(state.confirmation, controller)
-    if (addOpen && sequence != null) {
+    if (sequence != null) ConfirmationDialog(state, sequence, controller)
+    if (addOpen && sequence != null && validRuntimePlacements(sequence.state).isNotEmpty()) {
         RuntimeAddDialog(
             state,
             validRuntimePlacements(sequence.state),
@@ -168,7 +233,8 @@ private fun GlobalActions(
     onRuntimeAdd: () -> Unit,
     onEndEarly: () -> Unit,
 ) {
-    var open by remember(actions) { mutableStateOf(false) }
+    val window = sequenceWindowPresentation()
+    var open by remember(actions, inFlight) { mutableStateOf(false) }
     val description = stringResource(R.string.expanded_sequence_global_actions)
     Box(Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.xLarge)) {
         TextButton(
@@ -179,23 +245,25 @@ private fun GlobalActions(
                     .testTag("expanded-sequence-global-actions")
                     .semantics { contentDescription = description },
         ) { Text(stringResource(R.string.expanded_sequence_more)) }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (actions.runtimeAdd) {
+        DropdownMenu(expanded = open && !inFlight, onDismissRequest = { open = false }) {
+            window.Content {
+                if (actions.runtimeAdd) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.expanded_sequence_runtime_add)) },
+                        onClick = {
+                            open = false
+                            onRuntimeAdd()
+                        },
+                    )
+                }
                 DropdownMenuItem(
-                    text = { Text(stringResource(R.string.expanded_sequence_runtime_add)) },
+                    text = { Text(stringResource(R.string.expanded_sequence_end_early)) },
                     onClick = {
                         open = false
-                        onRuntimeAdd()
+                        onEndEarly()
                     },
                 )
             }
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.expanded_sequence_end_early)) },
-                onClick = {
-                    open = false
-                    onEndEarly()
-                },
-            )
         }
     }
 }
@@ -206,39 +274,41 @@ private fun SequenceHeader(
     baseline: RuntimeDisplayBaseline?,
     elapsedNow: Long,
     onBack: () -> Unit,
+    backFocus: FocusRequester,
 ) {
+    val runtimeState = sequenceState(sequence.state)
+    val completed =
+        remember(sequence.occurrences) {
+            sequence.occurrences.count { it.occurrence.status == RuntimeOccurrenceStatus.COMPLETED }
+        }
     Column(
         Modifier.fillMaxWidth().padding(MaterialTheme.spacing.xLarge),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
-        TextButton(onClick = onBack) { Text(stringResource(R.string.expanded_sequence_back)) }
-        Text(sequence.runtime.snapshot.name, style = MaterialTheme.typography.headlineSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large)) {
-            Text(
-                stringResource(
-                    R.string.expanded_sequence_active_time,
-                    baseline?.activeElapsed(elapsedNow)?.durationText()
-                        ?: stringResource(R.string.expanded_sequence_timing_unavailable),
-                ),
-            )
-            Text(
-                stringResource(
-                    R.string.expanded_sequence_pause_time,
-                    baseline?.pauseElapsed(elapsedNow)?.durationText()
-                        ?: stringResource(R.string.expanded_sequence_timing_unavailable),
-                ),
-            )
+        TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+            Text(stringResource(R.string.expanded_sequence_back))
+        }
+        Text(
+            sequence.runtime.snapshot.name,
+            modifier =
+                Modifier.semantics {
+                    heading()
+                    stateDescription = runtimeState
+                },
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(runtimeState, Modifier.testTag("expanded-sequence-state"))
+        Text(stringResource(R.string.expanded_sequence_progress, completed, sequence.occurrences.size))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large)) {
+            TimingText(R.string.expanded_sequence_active_time, baseline?.activeElapsed(elapsedNow))
+            TimingText(R.string.expanded_sequence_pause_time, baseline?.pauseElapsed(elapsedNow))
         }
         if (sequence.state == ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN ||
             sequence.state == ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN
         ) {
-            Text(
-                stringResource(
-                    R.string.expanded_sequence_transition_remaining,
-                    baseline?.transitionCountdownRemaining(elapsedNow)?.durationText()
-                        ?: stringResource(R.string.expanded_sequence_timing_unavailable),
-                ),
-                style = MaterialTheme.typography.titleMedium,
+            TimingText(
+                R.string.expanded_sequence_transition_remaining,
+                baseline?.transitionCountdownRemaining(elapsedNow),
             )
         }
     }
@@ -247,17 +317,21 @@ private fun SequenceHeader(
 @Composable
 private fun PrimaryControls(
     sequence: ExpandedLiveSequence,
+    draft: CurrentValueDraft?,
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
 ) {
     val actions = expandedActions(sequence.state)
-    Row(
+    FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.xLarge),
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
         when {
-            actions.completeCurrent ->
-                LifeTracingPrimaryButton(onClick = controller::completeCurrent, enabled = !inFlight) {
+            actions.completeCurrent && sequence.runtime.execution.currentOccurrenceId != null ->
+                LifeTracingPrimaryButton(
+                    onClick = controller::completeCurrent,
+                    enabled = !inFlight && draft?.invalidNumberFields.isNullOrEmpty(),
+                ) {
                     Text(stringResource(R.string.expanded_sequence_complete))
                 }
             actions.startNext ->
@@ -287,6 +361,7 @@ private fun OccurrenceRow(
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
 ) {
+    val identity = occurrenceIdentity(row)
     val current = row.occurrence.status == RuntimeOccurrenceStatus.CURRENT
     val container =
         when (row.occurrence.status) {
@@ -313,6 +388,11 @@ private fun OccurrenceRow(
                 Column(Modifier.weight(1f)) {
                     Text(
                         row.activity.name,
+                        modifier =
+                            Modifier.semantics {
+                                heading()
+                                contentDescription = identity
+                            },
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -321,17 +401,20 @@ private fun OccurrenceRow(
                 }
                 OccurrenceMenu(sequence, row, inFlight, controller)
             }
+            Text(stringResource(R.string.expanded_sequence_position, row.occurrence.runtimePosition + 1))
             Text(occurrenceState(row.occurrence.status), style = MaterialTheme.typography.labelLarge)
             row.occurrence.repeatIteration?.let {
                 Text(stringResource(R.string.expanded_sequence_repeat_iteration, it))
             }
             if (row.occurrence.isRuntimeAdded) Text(stringResource(R.string.expanded_sequence_runtime_added))
+            val spokenTiming = activityTimingText(row, baseline, elapsedNow, spoken = true)
             Text(
                 activityTimingText(row, baseline, elapsedNow),
+                modifier = Modifier.semantics { contentDescription = spokenTiming },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (row.occurrence.status != RuntimeOccurrenceStatus.DELETED_EXECUTION) {
-                ValueSummary(row, draft.takeIf { current })
+                ValueSummary(row, draft?.takeIf { current && it.occurrenceId == row.occurrence.id })
             }
             if (current &&
                 expandedActions(sequence.state).editCurrentValues &&
@@ -350,54 +433,57 @@ private fun OccurrenceMenu(
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
 ) {
+    val window = sequenceWindowPresentation()
     val actions = expandedActions(sequence.state)
     val go = actions.goNow && row.occurrence.status == RuntimeOccurrenceStatus.NOT_STARTED
     val next = actions.makeNext && row.occurrence.status == RuntimeOccurrenceStatus.NOT_STARTED
     val again = actions.doAgain && row.occurrence.status == RuntimeOccurrenceStatus.COMPLETED
     if (!go && !next && !again) return
-    var open by remember(row.occurrence.id) { mutableStateOf(false) }
-    val actionsDescription = stringResource(R.string.expanded_sequence_row_actions, row.activity.name)
+    var open by remember(row.occurrence.id, sequence.state, row.occurrence.status, inFlight) { mutableStateOf(false) }
+    val actionsDescription = stringResource(R.string.expanded_sequence_row_actions, occurrenceIdentity(row))
     Box {
         TextButton(
             enabled = !inFlight,
             onClick = { open = true },
             modifier = Modifier.semantics { contentDescription = actionsDescription },
         ) { Text(stringResource(R.string.expanded_sequence_more)) }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (go) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.expanded_sequence_go_now)) },
-                    onClick = {
-                        open = false
-                        controller.requestGoNow(row.occurrence.id)
-                    },
-                )
-            }
-            if (next) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.expanded_sequence_make_next)) },
-                    onClick = {
-                        open = false
-                        controller.makeNext(row.occurrence.id)
-                    },
-                )
-            }
-            if (again) {
-                validRuntimePlacements(sequence.state).forEach { placement ->
+        DropdownMenu(expanded = open && !inFlight, onDismissRequest = { open = false }) {
+            window.Content {
+                if (go) {
                     DropdownMenuItem(
-                        text = {
-                            Text(
-                                stringResource(
-                                    R.string.expanded_sequence_do_again_placement,
-                                    placementLabel(placement),
-                                ),
-                            )
-                        },
+                        text = { Text(stringResource(R.string.expanded_sequence_go_now)) },
                         onClick = {
                             open = false
-                            controller.doAgain(row.occurrence.id, placement)
+                            controller.requestGoNow(row.occurrence.id)
                         },
                     )
+                }
+                if (next) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.expanded_sequence_make_next)) },
+                        onClick = {
+                            open = false
+                            controller.makeNext(row.occurrence.id)
+                        },
+                    )
+                }
+                if (again) {
+                    validRuntimePlacements(sequence.state).forEach { placement ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    stringResource(
+                                        R.string.expanded_sequence_do_again_placement,
+                                        placementLabel(placement),
+                                    ),
+                                )
+                            },
+                            onClick = {
+                                open = false
+                                controller.doAgain(row.occurrence.id, placement)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -432,10 +518,14 @@ private fun CurrentValueEditor(
                 )
             CustomFieldType.CATEGORY -> CategoryEditor(field, draft.values[field.id], inFlight, controller)
         }
+        val missingLabel = stringResource(R.string.expanded_sequence_missing_field, field.label())
         TextButton(
             onClick = { controller.markMissing(field.id) },
             enabled = !inFlight,
-            modifier = Modifier.testTag("expanded-sequence-current-missing-${field.id.value}"),
+            modifier =
+                Modifier.testTag("expanded-sequence-current-missing-${field.id.value}").semantics {
+                    contentDescription = missingLabel
+                },
         ) {
             Text(stringResource(R.string.expanded_sequence_set_missing))
         }
@@ -455,13 +545,22 @@ private fun CategoryEditor(
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
 ) {
-    var open by remember(field.id) { mutableStateOf(false) }
+    val window = sequenceWindowPresentation()
+    var open by remember(field.id, inFlight) { mutableStateOf(false) }
     val selected = (value as? CategoryExecutionValue)?.optionId
+    val valueLabel =
+        field.categoryOptions.singleOrNull { it.id == selected }?.label()
+            ?: stringResource(R.string.expanded_sequence_missing)
+    val fieldLabel = stringResource(R.string.expanded_sequence_field_value, field.label(), valueLabel)
     Box {
         LifeTracingSecondaryButton(
             onClick = { open = true },
             enabled = !inFlight,
-            modifier = Modifier.testTag("expanded-sequence-current-value-${field.id.value}"),
+            modifier =
+                Modifier.testTag("expanded-sequence-current-value-${field.id.value}").semantics {
+                    contentDescription = fieldLabel
+                    stateDescription = valueLabel
+                },
         ) {
             Text(
                 field.categoryOptions.singleOrNull { it.id == selected }?.label()
@@ -469,14 +568,17 @@ private fun CategoryEditor(
             )
         }
         DropdownMenu(expanded = open && !inFlight, onDismissRequest = { open = false }) {
-            field.categoryOptions.sortedBy { it.position }.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option.label()) },
-                    onClick = {
-                        open = false
-                        controller.editCategory(field.id, option.id)
-                    },
-                )
+            window.Content {
+                field.categoryOptions.sortedBy { it.position }.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label()) },
+                        modifier = Modifier.semantics { this.selected = option.id == selected },
+                        onClick = {
+                            open = false
+                            controller.editCategory(field.id, option.id)
+                        },
+                    )
+                }
             }
         }
     }
@@ -488,6 +590,17 @@ private fun ValueSummary(
     draft: CurrentValueDraft?,
 ) {
     val values = draft?.values ?: row.displayValues()
+    val projectionLabel =
+        stringResource(
+            when {
+                draft != null -> R.string.expanded_sequence_draft_values
+                row.occurrence.status == RuntimeOccurrenceStatus.COMPLETED -> R.string.expanded_sequence_actual_values
+                row.occurrence.status == RuntimeOccurrenceStatus.CURRENT && row.childExecution != null ->
+                    R.string.expanded_sequence_actual_values
+                else -> R.string.expanded_sequence_configured_values
+            },
+        )
+    if (row.activity.fields.isNotEmpty()) Text(projectionLabel)
     row.activity.fields.sortedBy(ActivitySnapshotField::position).forEach { field ->
         Text(
             stringResource(R.string.expanded_sequence_field_value, field.label(), field.valueText(values[field.id])),
@@ -499,7 +612,8 @@ private fun ValueSummary(
 private fun ExpandedLiveSequenceOccurrence.displayValues(): Map<ActivitySnapshotFieldId, ActivityExecutionFieldValue?> {
     val actual = childExecution?.values?.associateBy(ActivityExecutionFieldValue::snapshotFieldId)
     if (occurrence.status == RuntimeOccurrenceStatus.COMPLETED ||
-        occurrence.status == RuntimeOccurrenceStatus.CURRENT
+        occurrence.status == RuntimeOccurrenceStatus.CURRENT &&
+        childExecution != null
     ) {
         return actual.orEmpty()
     }
@@ -533,27 +647,42 @@ private fun activityTimingText(
     row: ExpandedLiveSequenceOccurrence,
     baseline: RuntimeDisplayBaseline?,
     elapsedNow: Long,
+    spoken: Boolean = false,
 ): String {
     val completedDuration = row.childExecution?.activeDuration
     return when {
         row.occurrence.status == RuntimeOccurrenceStatus.CURRENT &&
             row.activity.timeTrackingMode == TimeTrackingMode.STOPWATCH ->
-            baseline?.currentStepStopwatchElapsed(elapsedNow)?.durationText()
-                ?: stringResource(R.string.expanded_sequence_timing_unavailable)
+            stringResource(
+                R.string.expanded_sequence_stopwatch_elapsed,
+                baseline?.currentStepStopwatchElapsed(elapsedNow)?.accessibleDuration(spoken)
+                    ?: stringResource(R.string.expanded_sequence_timing_unavailable),
+            )
         row.occurrence.status == RuntimeOccurrenceStatus.CURRENT &&
             row.activity.timeTrackingMode == TimeTrackingMode.TIMER -> {
             val overtime = baseline?.timerOvertime(elapsedNow)
             if (overtime != null && !overtime.isZero) {
-                stringResource(R.string.expanded_sequence_overtime, overtime.durationText())
+                stringResource(R.string.expanded_sequence_overtime, overtime.accessibleDuration(spoken))
             } else {
-                baseline?.timerRemaining(elapsedNow)?.durationText()
-                    ?: stringResource(R.string.expanded_sequence_timing_unavailable)
+                stringResource(
+                    R.string.expanded_sequence_timer_remaining,
+                    baseline?.timerRemaining(elapsedNow)?.accessibleDuration(spoken)
+                        ?: stringResource(R.string.expanded_sequence_timing_unavailable),
+                )
             }
         }
-        completedDuration != null -> completedDuration.durationText()
+        completedDuration != null ->
+            stringResource(
+                R.string.expanded_sequence_actual_duration,
+                modeLabel(row.activity.timeTrackingMode),
+                completedDuration.accessibleDuration(spoken),
+            )
         row.activity.timeTrackingMode == TimeTrackingMode.TIMER ->
-            row.activity.timerTarget?.durationText()
-                ?: stringResource(R.string.expanded_sequence_timing_unavailable)
+            stringResource(
+                R.string.expanded_sequence_timer_target,
+                row.activity.timerTarget?.accessibleDuration(spoken)
+                    ?: stringResource(R.string.expanded_sequence_timing_unavailable),
+            )
         row.activity.timeTrackingMode == TimeTrackingMode.STOPWATCH ->
             stringResource(
                 R.string.expanded_sequence_stopwatch,
@@ -563,34 +692,80 @@ private fun activityTimingText(
 }
 
 @Composable
+private fun SequenceDialogHeading(title: String) {
+    Text(
+        title,
+        modifier = Modifier.semantics { heading() },
+        style = MaterialTheme.typography.headlineSmall,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+}
+
+@Composable
 private fun ConfirmationDialog(
-    confirmation: ExpandedSequenceConfirmation?,
+    state: ExpandedLiveSequenceState,
+    sequence: ExpandedLiveSequence,
     controller: ExpandedLiveSequenceController,
 ) {
-    if (confirmation == null) return
+    val window = sequenceWindowPresentation()
+    val confirmation = state.confirmation ?: return
+    val target =
+        if (confirmation is ExpandedSequenceConfirmation.GoNow) {
+            sequence.occurrences.singleOrNull { it.occurrence.id == confirmation.occurrenceId }
+        } else {
+            null
+        }
+    val available =
+        when (confirmation) {
+            is ExpandedSequenceConfirmation.GoNow ->
+                expandedActions(sequence.state).goNow &&
+                    target?.occurrence?.status == RuntimeOccurrenceStatus.NOT_STARTED
+            ExpandedSequenceConfirmation.EndEarly -> expandedActions(sequence.state).endEarly
+        }
+    if (!available) {
+        LaunchedEffect(confirmation) { controller.dismissConfirmation() }
+        return
+    }
+    val title =
+        stringResource(
+            if (confirmation is ExpandedSequenceConfirmation.GoNow) {
+                R.string.expanded_sequence_confirm_jump_title
+            } else {
+                R.string.expanded_sequence_confirm_end_title
+            },
+        )
     AlertDialog(
         onDismissRequest = controller::dismissConfirmation,
-        title = {
-            Text(
-                stringResource(
-                    if (confirmation is ExpandedSequenceConfirmation.GoNow) {
-                        R.string.expanded_sequence_confirm_jump_title
-                    } else {
-                        R.string.expanded_sequence_confirm_end_title
-                    },
-                ),
-            )
+        text = {
+            window.Content {
+                // Keep the heading in the weighted, scrollable body so long localized
+                // titles cannot consume the space reserved for both dialog actions.
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+                ) {
+                    SequenceDialogHeading(title)
+                    Column {
+                        Text(target?.let { occurrenceIdentity(it) } ?: sequence.runtime.snapshot.name)
+                        Text(stringResource(R.string.expanded_sequence_confirm_detail))
+                    }
+                }
+            }
         },
-        text = { Text(stringResource(R.string.expanded_sequence_confirm_detail)) },
         confirmButton = {
-            TextButton(
-                onClick = controller::confirmPending,
-            ) { Text(stringResource(R.string.expanded_sequence_confirm)) }
+            window.Content {
+                TextButton(
+                    enabled = !state.commandInFlight,
+                    onClick = controller::confirmPending,
+                ) { Text(stringResource(R.string.expanded_sequence_confirm)) }
+            }
         },
         dismissButton = {
-            TextButton(
-                onClick = controller::dismissConfirmation,
-            ) { Text(stringResource(R.string.expanded_sequence_cancel)) }
+            window.Content {
+                TextButton(onClick = controller::dismissConfirmation) {
+                    Text(stringResource(R.string.expanded_sequence_cancel))
+                }
+            }
         },
     )
 }
@@ -602,95 +777,102 @@ private fun RuntimeAddDialog(
     controller: ExpandedLiveSequenceController,
     onDismiss: () -> Unit,
 ) {
-    var placement by remember(placements) { mutableStateOf(placements.first()) }
+    val window = sequenceWindowPresentation()
+    val initialPlacement = placements.firstOrNull() ?: return
+    var placement by remember { mutableStateOf(initialPlacement) }
+    val canAdd = !state.commandInFlight && placement in placements
     var oneOffName by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf(TimeTrackingMode.NO_LIVE_TRACKING) }
     var timerSeconds by remember { mutableStateOf("60") }
+    val title = stringResource(R.string.expanded_sequence_runtime_add)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.expanded_sequence_runtime_add)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                    placements.forEach { candidate ->
-                        TextButton(onClick = { placement = candidate }) {
-                            Text((if (candidate == placement) "✓ " else "") + placementLabel(candidate))
+            window.Content {
+                Column(
+                    modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                ) {
+                    SequenceDialogHeading(title)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                        placements.forEach { candidate ->
+                            LifeTracingChoiceButton(
+                                selected = candidate == placement,
+                                onClick = { placement = candidate },
+                                enabled = !state.commandInFlight,
+                                modifier =
+                                    Modifier.semantics {
+                                        selected = candidate == placement
+                                        role = Role.RadioButton
+                                    },
+                            ) { Text(placementLabel(candidate)) }
                         }
                     }
-                }
-                Text(stringResource(R.string.expanded_sequence_reusable_activity))
-                if (state.catalogFailure != null) Text(stringResource(R.string.expanded_sequence_catalog_failure))
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp)) {
-                    items(state.catalog.orEmpty(), key = { it.id.value }) { item ->
-                        TextButton(
-                            onClick = {
-                                controller.runtimeAddTemplate(item.id, placement)
-                                onDismiss()
-                            },
-                        ) { Text(item.name) }
-                    }
-                    if (state.catalogCanLoadMore) {
-                        item {
-                            TextButton(
-                                onClick = controller::loadMoreRuntimeAddCatalog,
-                                enabled = !state.catalogLoading,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    stringResource(
-                                        if (state.catalogLoading) {
-                                            R.string.sequence_editor_saving
-                                        } else {
-                                            R.string.sequence_editor_load_more
-                                        },
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-                Text(stringResource(R.string.expanded_sequence_one_off))
-                LifeTracingOutlinedTextField(
-                    value = oneOffName,
-                    onValueChange = { oneOffName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(stringResource(R.string.expanded_sequence_name)) },
-                )
-                Row {
-                    TimeTrackingMode.entries.forEach { candidate ->
-                        TextButton(onClick = { mode = candidate }) {
-                            Text((if (mode == candidate) "✓ " else "") + modeLabel(candidate))
-                        }
-                    }
-                }
-                if (mode == TimeTrackingMode.TIMER) {
+                    RuntimeAddCatalog(state, canAdd, placement, controller, onDismiss)
+                    Text(stringResource(R.string.expanded_sequence_one_off))
                     LifeTracingOutlinedTextField(
-                        value = timerSeconds,
-                        onValueChange = { timerSeconds = it },
-                        label = { Text(stringResource(R.string.expanded_sequence_timer_seconds)) },
+                        value = oneOffName,
+                        onValueChange = { oneOffName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.expanded_sequence_name)) },
+                        enabled = !state.commandInFlight,
                     )
+                    FlowRow {
+                        TimeTrackingMode.entries.forEach { candidate ->
+                            LifeTracingChoiceButton(
+                                selected = mode == candidate,
+                                onClick = { mode = candidate },
+                                enabled = !state.commandInFlight,
+                                modifier =
+                                    Modifier.semantics {
+                                        selected = mode == candidate
+                                        role = Role.RadioButton
+                                    },
+                            ) { Text(modeLabel(candidate)) }
+                        }
+                    }
+                    if (mode == TimeTrackingMode.TIMER) {
+                        LifeTracingOutlinedTextField(
+                            value = timerSeconds,
+                            onValueChange = { timerSeconds = it },
+                            label = { Text(stringResource(R.string.expanded_sequence_timer_seconds)) },
+                            enabled = !state.commandInFlight,
+                            isError = validTimerSeconds(timerSeconds) == null,
+                            supportingText = { Text(stringResource(R.string.expanded_sequence_timer_validation)) },
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
-            val seconds = timerSeconds.toLongOrNull()
-            TextButton(
-                enabled = oneOffName.isNotBlank() && (mode != TimeTrackingMode.TIMER || seconds != null && seconds > 0),
-                onClick = {
-                    controller.runtimeAddOneOff(
-                        ActivitySnapshotDraft(
-                            oneOffName.trim(),
-                            null,
-                            mode,
-                            if (mode == TimeTrackingMode.TIMER) Duration.ofSeconds(requireNotNull(seconds)) else null,
-                        ),
-                        placement,
-                    )
-                    onDismiss()
-                },
-            ) { Text(stringResource(R.string.expanded_sequence_add)) }
+            window.Content {
+                val seconds = validTimerSeconds(timerSeconds)
+                TextButton(
+                    enabled = canAdd && oneOffName.isNotBlank() && (mode != TimeTrackingMode.TIMER || seconds != null),
+                    onClick = {
+                        controller.runtimeAddOneOff(
+                            ActivitySnapshotDraft(
+                                oneOffName.trim(),
+                                null,
+                                mode,
+                                if (mode == TimeTrackingMode.TIMER) {
+                                    Duration.ofSeconds(requireNotNull(seconds))
+                                } else {
+                                    null
+                                },
+                            ),
+                            placement,
+                        )
+                        onDismiss()
+                    },
+                ) { Text(stringResource(R.string.expanded_sequence_add)) }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.expanded_sequence_cancel)) } },
+        dismissButton = {
+            window.Content {
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.expanded_sequence_cancel)) }
+            }
+        },
     )
 }
 
@@ -746,7 +928,11 @@ private fun CommandFailure(failure: ExpandedSequenceFailure) {
                 },
             ),
         color = MaterialTheme.colorScheme.error,
-        modifier = Modifier.padding(horizontal = MaterialTheme.spacing.xLarge),
+        modifier =
+            Modifier
+                .padding(
+                    horizontal = MaterialTheme.spacing.xLarge,
+                ).semantics { liveRegion = LiveRegionMode.Polite },
     )
 }
 
@@ -765,4 +951,133 @@ private fun displayTick(
         }
     }
     return elapsed
+}
+
+@Composable
+private fun FeedbackText(text: String) {
+    Text(text, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+}
+
+@Composable
+private fun occurrenceIdentity(row: ExpandedLiveSequenceOccurrence): String =
+    stringResource(
+        R.string.expanded_sequence_occurrence_identity,
+        row.activity.name,
+        row.occurrence.runtimePosition + 1,
+    )
+
+@Composable
+private fun sequenceState(state: ActiveSequenceState): String =
+    stringResource(
+        when (state) {
+            ActiveSequenceState.RUNNING_CURRENT -> R.string.expanded_sequence_running_current
+            ActiveSequenceState.PAUSED_CURRENT -> R.string.expanded_sequence_paused_current
+            ActiveSequenceState.WAITING_NEXT -> R.string.expanded_sequence_waiting_next
+            ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN -> R.string.expanded_sequence_running_countdown
+            ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN -> R.string.expanded_sequence_paused_countdown
+        },
+    )
+
+@Composable
+private fun RouteFeedback(
+    state: ExpandedLiveSequenceState,
+    controller: ExpandedLiveSequenceController,
+) {
+    val message =
+        when {
+            state.readFailure != null -> R.string.expanded_sequence_read_failure
+            state.commandInFlight -> R.string.expanded_sequence_command_in_flight
+            state.loading -> R.string.expanded_sequence_refreshing
+            else -> return
+        }
+    Column(Modifier.padding(horizontal = MaterialTheme.spacing.xLarge)) {
+        FeedbackText(stringResource(message))
+        if (state.readFailure != null) {
+            TextButton(onClick = controller::refresh, enabled = !state.loading) {
+                Text(stringResource(R.string.expanded_sequence_retry))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RuntimeAddCatalog(
+    state: ExpandedLiveSequenceState,
+    canAdd: Boolean,
+    placement: RuntimeInsertionPlacement,
+    controller: ExpandedLiveSequenceController,
+    onDismiss: () -> Unit,
+) {
+    Text(stringResource(R.string.expanded_sequence_reusable_activity))
+    if (state.catalogLoading) FeedbackText(stringResource(R.string.expanded_sequence_catalog_loading))
+    if (state.catalogFailure != null) {
+        FeedbackText(stringResource(R.string.expanded_sequence_catalog_failure))
+        TextButton(
+            onClick = {
+                if (state.catalog == null) {
+                    controller.loadRuntimeAddCatalog()
+                } else {
+                    controller.loadMoreRuntimeAddCatalog()
+                }
+            },
+            enabled = !state.catalogLoading && !state.commandInFlight,
+        ) { Text(stringResource(R.string.expanded_sequence_retry)) }
+    }
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp).testTag("expanded-sequence-add-catalog")) {
+        items(state.catalog.orEmpty(), key = { it.id.value }) { item ->
+            TextButton(
+                enabled = canAdd,
+                onClick = {
+                    controller.runtimeAddTemplate(item.id, placement)
+                    onDismiss()
+                },
+            ) { Text(item.name) }
+        }
+        if (state.catalogCanLoadMore) {
+            item {
+                TextButton(
+                    onClick = controller::loadMoreRuntimeAddCatalog,
+                    enabled = !state.catalogLoading && !state.commandInFlight,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        stringResource(
+                            if (state.catalogLoading) {
+                                R.string.sequence_editor_saving
+                            } else {
+                                R.string.sequence_editor_load_more
+                            },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun validTimerSeconds(text: String): Long? = text.toLongOrNull()?.takeIf { it in 1..(Long.MAX_VALUE / 1_000) }
+
+@Composable
+private fun TimingText(
+    label: Int,
+    duration: Duration?,
+) {
+    val unavailable = stringResource(R.string.expanded_sequence_timing_unavailable)
+    val description = stringResource(label, duration?.accessibleDuration(spoken = true) ?: unavailable)
+    Text(
+        stringResource(label, duration?.durationText() ?: unavailable),
+        modifier = Modifier.semantics { contentDescription = description },
+    )
+}
+
+@Composable
+private fun Duration.accessibleDuration(spoken: Boolean): String {
+    if (!spoken) return durationText()
+    val totalSeconds = seconds.coerceAtLeast(0)
+    return stringResource(
+        R.string.daily_duration_seconds,
+        totalSeconds / 3_600,
+        totalSeconds / 60 % 60,
+        totalSeconds % 60,
+    )
 }

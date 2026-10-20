@@ -10,8 +10,14 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
+import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.SequenceExecution
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotFactory
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import java.time.ZoneId
 import java.util.UUID
@@ -40,6 +46,25 @@ class RuntimeRecoveryStore(
     val library: LibraryRepository = LibraryRepository.create(database)
     val history: HistoryReadRepository = HistoryReadRepository(database)
     val authoring: TemplateAuthoringRepository = TemplateAuthoringRepository(database, TemplateAuthoringIds.random())
+
+    val plans: PlanRepository =
+        PlanRepository(
+            database,
+            { PlanEntryId(UUID.randomUUID().toString()) },
+            ActivitySnapshotFactory(
+                { ActivitySnapshotId(UUID.randomUUID().toString()) },
+                { ActivitySnapshotFieldId(UUID.randomUUID().toString()) },
+                { ActivitySnapshotCategoryOptionId(UUID.randomUUID().toString()) },
+            ),
+            SequenceSnapshotFactory(
+                { SequenceSnapshotId(UUID.randomUUID().toString()) },
+                { SequenceSnapshotFieldId(UUID.randomUUID().toString()) },
+                { SequenceSnapshotCategoryOptionId(UUID.randomUUID().toString()) },
+                { SequenceSnapshotNodeId(UUID.randomUUID().toString()) },
+            ),
+            CurrentZoneIdProvider(ZoneId::systemDefault),
+        )
+    val planReads: PlanReadRepository = PlanReadRepository(database, CurrentZoneIdProvider(ZoneId::systemDefault))
 
     fun activity(id: ActivityExecutionId): ActivityExecution =
         requireNotNull(database.activityExecutionDao().getAggregate(id.value)).toDomain()

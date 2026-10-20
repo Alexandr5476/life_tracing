@@ -413,7 +413,7 @@
     <string name="expanded_sequence_active_time">Активное время %1$s</string>
     <string name="expanded_sequence_pause_time">Пауза / ожидание %1$s</string>
     <string name="expanded_sequence_transition_remaining">Следующий шаг через %1$s</string>
-    <string name="expanded_sequence_timing_unavailable">—</string>
+    <string name="expanded_sequence_timing_unavailable">Время недоступно</string>
     <string name="expanded_sequence_complete">Завершить</string>
     <string name="expanded_sequence_start_next">Начать следующий</string>
     <string name="expanded_sequence_resume">Продолжить</string>
@@ -662,4 +662,26 @@
     <string name="launcher_countdown_remaining">До начала осталось: %1$s</string>
     <string name="launcher_cancel_overlap">Отменить подтверждение пересечения</string>
     <string name="launcher_target_ready">Выбрано: %1$s, %2$s</string>
+    <string name="expanded_sequence_pane">Текущая последовательность</string>
+    <string name="expanded_sequence_stale">Эта последовательность больше не активна. Возврат к дневнику.</string>
+    <string name="expanded_sequence_refreshing">Обновление текущей последовательности…</string>
+    <string name="expanded_sequence_command_in_flight">Сохранение команды…</string>
+    <string name="expanded_sequence_progress">Завершено шагов: %1$d из %2$d</string>
+    <string name="expanded_sequence_position">Шаг %1$d</string>
+    <string name="expanded_sequence_occurrence_identity">%1$s, шаг %2$d</string>
+    <string name="expanded_sequence_missing_field">Отметить %1$s как отсутствующее значение</string>
+    <string name="expanded_sequence_draft_values">Текущие несохранённые значения</string>
+    <string name="expanded_sequence_actual_values">Записанные значения</string>
+    <string name="expanded_sequence_configured_values">Настроенные значения по умолчанию</string>
+    <string name="expanded_sequence_stopwatch_elapsed">Секундомер: прошло %1$s</string>
+    <string name="expanded_sequence_timer_remaining">Таймер: осталось %1$s</string>
+    <string name="expanded_sequence_actual_duration">%1$s, записанная длительность %2$s</string>
+    <string name="expanded_sequence_timer_target">Цель таймера %1$s</string>
+    <string name="expanded_sequence_catalog_loading">Загрузка активностей…</string>
+    <string name="expanded_sequence_timer_validation">Введите положительное целое число секунд.</string>
+    <string name="expanded_sequence_running_current">Выполняется текущий шаг</string>
+    <string name="expanded_sequence_paused_current">Текущий шаг на паузе</string>
+    <string name="expanded_sequence_waiting_next">Ожидание запуска следующего шага; текущего шага нет</string>
+    <string name="expanded_sequence_running_countdown">Идёт отсчёт перехода; текущего шага нет</string>
+    <string name="expanded_sequence_paused_countdown">Отсчёт перехода на паузе; текущего шага нет</string>
 </resources>

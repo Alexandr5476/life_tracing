@@ -413,7 +413,7 @@
     <string name="expanded_sequence_active_time">Active %1$s</string>
     <string name="expanded_sequence_pause_time">Pause / idle %1$s</string>
     <string name="expanded_sequence_transition_remaining">Next step in %1$s</string>
-    <string name="expanded_sequence_timing_unavailable">—</string>
+    <string name="expanded_sequence_timing_unavailable">Timing unavailable</string>
     <string name="expanded_sequence_complete">Complete</string>
     <string name="expanded_sequence_start_next">Start next</string>
     <string name="expanded_sequence_resume">Resume</string>
@@ -662,4 +662,26 @@
     <string name="launcher_countdown_remaining">Time remaining before start: %1$s</string>
     <string name="launcher_cancel_overlap">Cancel overlap confirmation</string>
     <string name="launcher_target_ready">Selected %1$s: %2$s</string>
+    <string name="expanded_sequence_pane">Live sequence</string>
+    <string name="expanded_sequence_stale">This sequence is no longer active. Returning to Daily.</string>
+    <string name="expanded_sequence_refreshing">Refreshing live sequence…</string>
+    <string name="expanded_sequence_command_in_flight">Saving command…</string>
+    <string name="expanded_sequence_progress">%1$d completed steps out of %2$d</string>
+    <string name="expanded_sequence_position">Step %1$d</string>
+    <string name="expanded_sequence_occurrence_identity">%1$s, step %2$d</string>
+    <string name="expanded_sequence_missing_field">Set %1$s to Missing</string>
+    <string name="expanded_sequence_draft_values">Current draft values</string>
+    <string name="expanded_sequence_actual_values">Recorded values</string>
+    <string name="expanded_sequence_configured_values">Configured defaults</string>
+    <string name="expanded_sequence_stopwatch_elapsed">Stopwatch elapsed %1$s</string>
+    <string name="expanded_sequence_timer_remaining">Timer remaining %1$s</string>
+    <string name="expanded_sequence_actual_duration">%1$s, recorded duration %2$s</string>
+    <string name="expanded_sequence_timer_target">Timer target %1$s</string>
+    <string name="expanded_sequence_catalog_loading">Loading activities…</string>
+    <string name="expanded_sequence_timer_validation">Enter a positive whole number of seconds.</string>
+    <string name="expanded_sequence_running_current">Running current step</string>
+    <string name="expanded_sequence_paused_current">Current step paused</string>
+    <string name="expanded_sequence_waiting_next">Waiting to start next; no current step</string>
+    <string name="expanded_sequence_running_countdown">Transition countdown running; no current step</string>
+    <string name="expanded_sequence_paused_countdown">Transition countdown paused; no current step</string>
 </resources>

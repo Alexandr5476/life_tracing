@@ -1,0 +1,527 @@
+@file:Suppress("LongMethod", "MagicNumber", "MaxLineLength")
+
+package com.alexandr5476.lifetracing.live
+
+import android.content.Context
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.test.core.app.ApplicationProvider
+import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
+import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
+import com.alexandr5476.lifetracing.domain.ActiveSequenceState
+import com.alexandr5476.lifetracing.domain.ActiveSessionState
+import com.alexandr5476.lifetracing.domain.ActivityStepDraft
+import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
+import com.alexandr5476.lifetracing.domain.PlanEntryStatus
+import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
+import com.alexandr5476.lifetracing.domain.StepActivityDraft
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.executeExpandedSequenceCommand
+import com.alexandr5476.lifetracing.ui.onLazyNode
+import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+
+class ExpandedLiveSequenceAccessibilityPersistenceTest {
+    @get:Rule
+    val compose = createComposeRule()
+
+    @Test
+    fun semanticPauseResumeCompleteAndStartNextRetainPlanAndPhysicalRuntimeFacts() {
+        Fixture().use { fixture ->
+            val before = fixture.active()
+            fixture.mount()
+            fixture.invoke(R.string.expanded_sequence_pause)
+            fixture.awaitWrites(1)
+            assertEquals(ActiveSessionState.PAUSED, fixture.active().session.state)
+            fixture.invoke(R.string.expanded_sequence_resume)
+            fixture.awaitWrites(2)
+            fixture.invoke(R.string.expanded_sequence_complete)
+            fixture.awaitWrites(3)
+            assertEquals(
+                ActiveSequenceState.WAITING_NEXT,
+                fixture.controller.state.value.sequence!!
+                    .state,
+            )
+            assertNull(fixture.active().execution.currentOccurrenceId)
+            fixture.invoke(R.string.expanded_sequence_start_next)
+            fixture.awaitWrites(4)
+            val after = fixture.active()
+            assertEquals(before.execution.id, after.execution.id)
+            assertEquals(before.execution.occurrences[1].id, after.execution.currentOccurrenceId)
+            assertEquals(RuntimeOccurrenceStatus.COMPLETED, after.execution.occurrences[0].status)
+            assertEquals(before.snapshot, after.snapshot)
+            assertEquals(before.activitySnapshots, after.activitySnapshots)
+            assertEquals(
+                before.execution.occurrences.map { it.sourceSequenceSnapshotNodeId },
+                after.execution.occurrences.map { it.sourceSequenceSnapshotNodeId },
+            )
+            assertEquals(
+                PlanEntryStatus.PLANNED,
+                fixture.store.plans
+                    .getPlan(fixture.plan.id)!!
+                    .status,
+            )
+            assertTrue(
+                fixture.store.planReads
+                    .getFocusedAction(fixture.plan.id)
+                    .engaged,
+            )
+            assertEquals(fixture.plan.id, after.execution.planEntryId)
+            val children = fixture.store.children(after.execution.id)
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(after, fixture.active())
+            assertEquals(children, fixture.store.children(after.execution.id))
+            assertEquals(facts, fixture.store.durableFacts())
+            assertEquals(fixture.plan.id, fixture.active().execution.planEntryId)
+            assertEquals(
+                PlanEntryStatus.PLANNED,
+                fixture.store.plans
+                    .getPlan(fixture.plan.id)!!
+                    .status,
+            )
+        }
+    }
+
+    @Test
+    fun semanticMakeNextUsesClickedRepeatedOccurrenceAndPreservesProvenanceAfterReopen() {
+        Fixture().use { fixture ->
+            val before = fixture.active()
+            val selected = before.execution.occurrences[2]
+            fixture.mount()
+            val description =
+                fixture.string(
+                    R.string.expanded_sequence_row_actions,
+                    fixture.string(R.string.expanded_sequence_occurrence_identity, "Repeated activity", 3),
+                )
+            compose
+                .onLazyNode(
+                    hasContentDescription(description),
+                ).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            assertEquals(0, fixture.writes.get())
+            fixture.invoke(R.string.expanded_sequence_make_next)
+            fixture.awaitWrites(1)
+            val after = fixture.active()
+            assertEquals(
+                listOf(before.execution.occurrences[0].id, selected.id, before.execution.occurrences[1].id),
+                after.execution.occurrences.map { it.id },
+            )
+            assertEquals(before.snapshot, after.snapshot)
+            assertEquals(before.activitySnapshots, after.activitySnapshots)
+            assertEquals(selected.copy(runtimePosition = 1), after.execution.occurrences[1])
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(after, fixture.active())
+            assertEquals(facts, fixture.store.durableFacts())
+        }
+    }
+
+    @Test
+    fun semanticTemplateRuntimeAddStartNowKeepsFrozenSnapshotSourceAndChildAfterReopen() {
+        Fixture().use { fixture ->
+            val reusable =
+                fixture.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Runtime reusable", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = fixture.now,
+                )
+            val before = fixture.active()
+            fixture.mount()
+            fixture.invoke(R.string.expanded_sequence_complete)
+            fixture.awaitWrites(1)
+            compose
+                .onNodeWithTag(
+                    "expanded-sequence-global-actions",
+                ).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            fixture.invoke(R.string.expanded_sequence_runtime_add)
+            compose.waitUntil(10_000) { fixture.controller.state.value.catalog != null }
+            fixture.invoke(R.string.expanded_sequence_start_now)
+            compose.onNodeWithText("Runtime reusable").performSemanticsAction(SemanticsActions.OnClick) { it() }
+            fixture.awaitWrites(2)
+            val after = fixture.active()
+            val added = after.execution.occurrences.single { it.isRuntimeAdded }
+            assertEquals(added.id, after.execution.currentOccurrenceId)
+            assertEquals(1, added.runtimePosition)
+            assertNull(added.sourceSequenceSnapshotNodeId)
+            assertNull(added.repeatSourceSnapshotNodeId)
+            assertNull(added.repeatIteration)
+            assertNotEquals(before.execution.occurrences[0].id, added.id)
+            val snapshot = after.activitySnapshots.getValue(added.activitySnapshotId)
+            assertEquals(reusable.id, snapshot.sourceTemplateId)
+            assertEquals("Runtime reusable", snapshot.name)
+            val child = after.currentChild!!
+            assertEquals(added.id, child.sequenceOccurrenceId)
+            assertEquals(snapshot.id, child.snapshotId)
+            assertEquals(before.snapshot, after.snapshot)
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(after, fixture.active())
+            assertEquals(facts, fixture.store.durableFacts())
+            val projection =
+                fixture.store.live.getExpandedSequence(
+                    after.execution.id,
+                ) as ExpandedLiveSequenceRead.Active
+            assertEquals(
+                snapshot,
+                projection.value.occurrences
+                    .single { it.occurrence.id == added.id }
+                    .activity,
+            )
+            assertEquals(
+                child,
+                projection.value.occurrences
+                    .single { it.occurrence.id == added.id }
+                    .childExecution,
+            )
+        }
+    }
+
+    @Test
+    fun semanticEarlyEndCancelThenConfirmFulfillsOnlyExplicitPlanAfterReopen() {
+        Fixture().use { fixture ->
+            val before = fixture.active()
+            fixture.mount()
+
+            fun openEnd() {
+                compose
+                    .onNodeWithTag("expanded-sequence-global-actions")
+                    .performSemanticsAction(SemanticsActions.OnClick) { it() }
+                fixture.invoke(R.string.expanded_sequence_end_early)
+            }
+            openEnd()
+            assertEquals(0, fixture.writes.get())
+            fixture.invoke(R.string.expanded_sequence_cancel)
+            assertEquals(0, fixture.writes.get())
+            openEnd()
+            fixture.invoke(R.string.expanded_sequence_confirm)
+            fixture.awaitWrites(1)
+            compose.waitUntil(10_000) { fixture.staleExits.get() > 0 }
+            val terminal = fixture.store.sequence(before.execution.id)
+            assertEquals(SequenceExecutionStatus.ENDED_EARLY, terminal.status)
+            assertEquals(fixture.plan.id, terminal.planEntryId)
+            assertNull(fixture.store.live.getActiveSession())
+            val plan = fixture.store.plans.getPlan(fixture.plan.id)!!
+            assertEquals(PlanEntryStatus.FULFILLED, plan.status)
+            assertEquals(terminal.id, plan.fulfilledSequenceExecutionId)
+            assertEquals(terminal.endedAt, plan.fulfilledAt)
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(terminal, fixture.store.sequence(terminal.id))
+            assertEquals(plan, fixture.store.plans.getPlan(plan.id))
+            assertEquals(facts, fixture.store.durableFacts())
+            assertEquals(1, fixture.writes.get())
+        }
+    }
+
+    @Test
+    fun timerBeforeAtAndAfterDeadlineIsLabeledWithoutReconciliationAndPauseFreezesIt() {
+        Fixture(mode = TimeTrackingMode.TIMER).use { fixture ->
+            val sequence =
+                (
+                    fixture.store.live.getExpandedSequence(
+                        fixture.started.execution.id,
+                    ) as ExpandedLiveSequenceRead.Active
+                ).value
+            val baseline =
+                com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline.capture(
+                    sequence.runtime,
+                    com.alexandr5476.lifetracing.domain
+                        .WallMonotonicAnchor(fixture.now, 0),
+                    0,
+                )
+            val state =
+                mutableStateOf(
+                    ExpandedLiveSequenceState(sequence = sequence, loading = false, displayBaseline = baseline),
+                )
+            val tick = androidx.compose.runtime.mutableLongStateOf(59_000)
+            val facts = fixture.store.durableFacts()
+            compose.setContent {
+                LifeTracingTheme { ExpandedLiveSequenceScreen(state.value, fixture.controller, {}, tick.longValue) }
+            }
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_timer_remaining, "00:01")))
+            compose
+                .onNodeWithContentDescription(
+                    fixture.string(
+                        R.string.expanded_sequence_timer_remaining,
+                        fixture.string(R.string.daily_duration_seconds, 0L, 0L, 1L),
+                    ),
+                ).assertExists()
+            compose.runOnIdle { tick.longValue = 60_000 }
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_timer_remaining, "00:00")))
+            compose.runOnIdle { tick.longValue = 61_000 }
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_overtime, "00:01")))
+            assertEquals(facts, fixture.store.durableFacts())
+            fixture.store.live.pauseActiveSequence(fixture.started.execution.id, fixture.now.plusSeconds(1))
+            val paused =
+                (
+                    fixture.store.live.getExpandedSequence(
+                        fixture.started.execution.id,
+                    ) as ExpandedLiveSequenceRead.Active
+                ).value
+            val frozen =
+                com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline.capture(
+                    paused.runtime,
+                    com.alexandr5476.lifetracing.domain
+                        .WallMonotonicAnchor(fixture.now.plusSeconds(1), 0),
+                    0,
+                )
+            compose.runOnIdle { state.value = state.value.copy(sequence = paused, displayBaseline = frozen) }
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_timer_remaining, "00:59")))
+            compose.runOnIdle { tick.longValue = 120_000 }
+            compose.onLazyNode(hasText(fixture.string(R.string.expanded_sequence_timer_remaining, "00:59")))
+        }
+    }
+
+    @Test
+    fun runningAndPausedCountdownUseBaselineWithoutFabricatingCurrentOrCompletingAtZero() {
+        Fixture(
+            settings =
+                SequenceTemplateSettings(
+                    autoAdvance = true,
+                    beforeEachStepCountdown = java.time.Duration.ofSeconds(5),
+                ),
+        ).use { fixture ->
+            fixture.store.live.completeCurrentSequenceStep(
+                fixture.active().execution.currentOccurrenceId!!,
+                fixture.now.plusSeconds(1),
+            )
+            val sequence =
+                (
+                    fixture.store.live.getExpandedSequence(
+                        fixture.started.execution.id,
+                    ) as ExpandedLiveSequenceRead.Active
+                ).value
+            assertEquals(ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN, sequence.state)
+            val baseline =
+                com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline.capture(
+                    sequence.runtime,
+                    com.alexandr5476.lifetracing.domain
+                        .WallMonotonicAnchor(fixture.now.plusSeconds(1), 0),
+                    0,
+                )
+            val state =
+                mutableStateOf(
+                    ExpandedLiveSequenceState(sequence = sequence, loading = false, displayBaseline = baseline),
+                )
+            val tick = androidx.compose.runtime.mutableLongStateOf(0)
+            val facts = fixture.store.durableFacts()
+            compose.setContent {
+                LifeTracingTheme { ExpandedLiveSequenceScreen(state.value, fixture.controller, {}, tick.longValue) }
+            }
+            compose
+                .onNodeWithText(
+                    fixture.string(R.string.expanded_sequence_transition_remaining, "00:05"),
+                ).assertExists()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_complete)).assertDoesNotExist()
+            compose.runOnIdle { tick.longValue = 5_000 }
+            compose
+                .onNodeWithText(
+                    fixture.string(R.string.expanded_sequence_transition_remaining, "00:00"),
+                ).assertExists()
+            assertEquals(facts, fixture.store.durableFacts())
+            fixture.store.live.pauseActiveSequence(fixture.started.execution.id, fixture.now.plusSeconds(2))
+            val paused =
+                (
+                    fixture.store.live.getExpandedSequence(
+                        fixture.started.execution.id,
+                    ) as ExpandedLiveSequenceRead.Active
+                ).value
+            val frozen =
+                com.alexandr5476.lifetracing.domain.RuntimeDisplayBaseline.capture(
+                    paused.runtime,
+                    com.alexandr5476.lifetracing.domain
+                        .WallMonotonicAnchor(fixture.now.plusSeconds(2), 0),
+                    0,
+                )
+            compose.runOnIdle { state.value = state.value.copy(sequence = paused, displayBaseline = frozen) }
+            compose
+                .onNodeWithText(
+                    fixture.string(R.string.expanded_sequence_transition_remaining, "00:04"),
+                ).assertExists()
+            compose.runOnIdle { tick.longValue = 120_000 }
+            compose
+                .onNodeWithText(
+                    fixture.string(R.string.expanded_sequence_transition_remaining, "00:04"),
+                ).assertExists()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_complete)).assertDoesNotExist()
+        }
+    }
+
+    private inner class Fixture(
+        mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
+        settings: SequenceTemplateSettings = SequenceTemplateSettings(autoAdvance = false),
+    ) : AutoCloseable {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "expanded-accessibility-${UUID.randomUUID()}.db"
+        val now = Instant.parse("2026-10-20T12:00:00Z")
+        var store = RuntimeRecoveryStore(context, name)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val generation = MutableStateFlow(0L)
+        val clock = AtomicReference(now)
+        val writes = AtomicInteger()
+        val staleExits = AtomicInteger()
+        val visible = mutableStateOf(true)
+        val activity =
+            store.authoring.createActivityTemplate(
+                ActivityTemplateDraft(
+                    "Repeated activity",
+                    null,
+                    mode,
+                    if (mode == TimeTrackingMode.TIMER) java.time.Duration.ofSeconds(60) else null,
+                    settings =
+                        com.alexandr5476.lifetracing.domain.ActivityTemplateSettings(
+                            timerZeroBehavior = com.alexandr5476.lifetracing.domain.TimerZeroBehavior.OVERTIME,
+                        ),
+                ),
+                createdAt = now,
+            )
+        val template =
+            store.authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Accessible plan sequence",
+                    null,
+                    settings = settings,
+                    nodes =
+                        (0..2).map { position ->
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step-$position"),
+                                    position,
+                                    StepActivityDraft.FromTemplate(activity.id),
+                                ),
+                            )
+                        },
+                ),
+                createdAt = now,
+            )
+        val plan =
+            store.plans.createSequencePlanFromTemplate(
+                template.id,
+                PlanSchedule.FloatingDay(now.atZone(ZoneOffset.UTC).toLocalDate()),
+                now,
+            )
+        val started = store.live.startSequenceFromPlan(plan.actionIdentity(), now, now, ZoneOffset.UTC)
+        val controller =
+            ExpandedLiveSequenceController(
+                scope,
+                started.execution.id,
+                store.live::getExpandedSequence,
+                { command ->
+                    executeExpandedSequenceCommand(command, store.live)
+                    writes.incrementAndGet()
+                },
+                { generation.value++ },
+                generation,
+                { null },
+                { after -> store.library.getReusableActivityCatalog(50, after) },
+                { clock.get() },
+            )
+
+        fun active(): ActiveSequenceRuntime = store.live.getActiveRuntime() as ActiveSequenceRuntime
+
+        fun mount() {
+            compose.setContent {
+                LifeTracingTheme {
+                    if (visible.value) {
+                        ExpandedLiveSequenceRoute(
+                            controller,
+                            onBack = { visible.value = false },
+                            onStale = {
+                                staleExits.incrementAndGet()
+                                visible.value = false
+                            },
+                        )
+                    }
+                }
+            }
+            compose.waitUntil(10_000) { !controller.state.value.loading }
+        }
+
+        fun string(
+            id: Int,
+            vararg args: Any,
+        ): String = context.getString(id, *args)
+
+        fun invoke(id: Int) {
+            clock.updateAndGet { it.plusSeconds(1) }
+            val matcher = hasText(string(id))
+            val node =
+                if (compose.onAllNodes(matcher).fetchSemanticsNodes().isEmpty()) {
+                    compose.onLazyNode(matcher)
+                } else {
+                    compose.onNode(matcher)
+                }
+            node.performSemanticsAction(SemanticsActions.OnClick) { it() }
+        }
+
+        fun awaitWrites(expected: Int) {
+            compose.waitUntil(10_000) {
+                writes.get() == expected && !controller.state.value.commandInFlight
+            }
+            // Structural commands need not advance updatedAt. Wait for publication of
+            // the complete canonical projection after the explicitly observed commit.
+            val canonical = store.live.getExpandedSequence(started.execution.id)
+            compose.waitUntil(10_000) {
+                val state = controller.state.value
+                !state.loading &&
+                    state.commandFailure == null &&
+                    when (canonical) {
+                        is ExpandedLiveSequenceRead.Active -> state.sequence == canonical.value
+                        ExpandedLiveSequenceRead.StaleOrInactive -> state.stale
+                    }
+            }
+            compose.waitForIdle()
+        }
+
+        fun reopen() {
+            compose.runOnIdle {
+                visible.value = false
+                controller.close()
+            }
+            scope.cancel()
+            compose.waitForIdle()
+            store.close()
+            store = RuntimeRecoveryStore(context, name)
+        }
+
+        override fun close() {
+            compose.runOnIdle {
+                visible.value = false
+                controller.close()
+            }
+            scope.cancel()
+            store.close()
+            context.deleteDatabase(name)
+        }
+    }
+}
