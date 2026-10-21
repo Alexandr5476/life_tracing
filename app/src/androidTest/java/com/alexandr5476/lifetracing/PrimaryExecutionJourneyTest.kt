@@ -56,6 +56,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.domain.cursor
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
+import com.alexandr5476.lifetracing.launcher.LauncherLoad
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityController
@@ -65,6 +66,7 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -866,6 +868,8 @@ class PrimaryExecutionJourneyTest {
         f.awaitDailyRuntime()
         f.dailyLanding()
         for (id in listOf(R.string.daily_pause, R.string.daily_resume, R.string.daily_finish)) {
+            // The preceding command can still be refreshing and replacing Daily's controls.
+            f.awaitDailyRuntime()
             val node = f.action(f.text(id))
             f.await { compose.onAllNodes(hasText(f.text(id)) and hasClickAction()).fetchSemanticsNodes().size == 1 }
             node.performScrollTo()
@@ -1059,8 +1063,19 @@ class PrimaryExecutionJourneyTest {
         fun selectPinned(name: String) {
             invoke(R.string.daily_start_activity)
             action(text(R.string.launcher_browse_back)).assertIsFocused()
-            await { compose.onAllNodes(hasText(name) and hasClickAction()).fetchSemanticsNodes().size == 1 }
-            action(name).performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+            await {
+                host()
+                    .startActivityRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.home is LauncherLoad.Content
+            }
+            // Large text can leave Pinned outside the lazy list's composed viewport.
+            compose
+                .onLazyNode(hasText(name) and hasClickAction())
+                .assertIsDisplayed()
+                .performSemanticsAction(SemanticsActions.OnClick)
         }
 
         fun awaitDailyRuntime() {

@@ -284,6 +284,32 @@ The same testcase identity remains mandatory exactly once; counts remain 431 app
 `gmd-full` rerun, independent startup or exact-head five-API CI. Manual TalkBack and
 Switch Access certification remains unperformed.
 
+## API 26/31/33 large-font journey fixture repair (2026-10-21)
+
+CI run `39556658806` at `fc4e766893d310900f1edd32de952a7de06c6fb7`
+reported the Russian large-font journey timing out in `Fixture.selectPinned` on
+APIs 26, 31 and 33. The authorized baseline repair probe reproduced that exact
+failure on all three APIs. The fixture waited for a Pinned row's semantics before
+scrolling, although the launcher's LazyColumn need not compose an offscreen row.
+The helper now waits for the canonical launcher home read, then uses the existing
+`onLazyNode` helper to discover and reveal the target. Its single-node lookup and
+explicit displayed assertion precede the same native OnClick action. Production
+commands and layout are unchanged; the wait timeout is unchanged.
+
+The first repaired probe passed APIs 31 and 33 and exposed a downstream API 26
+fixture race: the touch-target loop measured Finish while Resume was still
+refreshing Daily, selecting a disabled node that was then replaced. Each iteration
+now waits for the existing canonical runtime readiness condition, including
+`!commandInFlight` and Compose idle, before finding, scrolling to and measuring
+the action. Pause, Resume, Finish, minimum touch bounds, focus, History navigation
+and physical database-reopen assertions are retained in both appearance journeys.
+
+Sibling inspection found that the launcher presentation tests already use
+`onLazyNode`; Daily and History use ordinary scrolling Columns, whose offscreen
+children remain composed. No inventory identity, production behavior or durable
+semantics changes. Probe results cover the focused failing journey only; Controller
+still owns full compatibility verification and independent GitHub CI.
+
 ## Reproducible assistive-service walkthrough
 
 Record app SHA, API/device, locale, system font/display settings, app scales, service
