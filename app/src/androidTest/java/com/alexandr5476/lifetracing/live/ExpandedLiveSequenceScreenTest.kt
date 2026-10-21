@@ -14,12 +14,15 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -1470,6 +1473,196 @@ class ExpandedLiveSequenceScreenTest {
         composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
         composeRule.runOnIdle { assertEquals(null, controller.state.value.confirmation) }
         assertTrue(commands.isEmpty())
+    }
+
+    @Test
+    fun runningReloadDismissesOccurrenceMenuAndBlocksStaleActions() =
+        assertReloadAfterSuccess(ActiveSequenceState.RUNNING_CURRENT, "occurrence")
+
+    @Test
+    fun pausedReloadDismissesEndConfirmationAndBlocksStaleActions() =
+        assertReloadAfterSuccess(ActiveSequenceState.PAUSED_CURRENT, "end")
+
+    @Test
+    fun waitingReloadDismissesRuntimeAddAndBlocksStaleActions() =
+        assertReloadAfterSuccess(ActiveSequenceState.WAITING_NEXT, "add")
+
+    @Test
+    fun countdownReloadDismissesJumpConfirmationAndBlocksStaleActions() =
+        assertReloadAfterSuccess(ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN, "jump")
+
+    @Test
+    fun pausedCountdownReloadDismissesGlobalMenuAndBlocksStaleActions() =
+        assertReloadAfterSuccess(ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN, "global")
+
+    private fun assertReloadAfterSuccess(
+        runtimeState: ActiveSequenceState,
+        popup: String,
+    ) {
+        val original = expanded(5).copy(state = runtimeState)
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        var pending: kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>? = null
+        var backs = 0
+        val controller =
+            ExpandedLiveSequenceController(
+                CoroutineScope(Dispatchers.Unconfined),
+                original.runtime.execution.id,
+                { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                { commands += it },
+                {},
+                MutableStateFlow(0L),
+                { null },
+                { emptyList() },
+                { Instant.EPOCH },
+            )
+        composeRule.setContent { LifeTracingTheme { ExpandedLiveSequenceRoute(controller, { backs++ }, {}) } }
+        keyboardInput.enter()
+        val primaryId =
+            when (runtimeState) {
+                ActiveSequenceState.RUNNING_CURRENT,
+                ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN,
+                -> R.string.expanded_sequence_pause
+                ActiveSequenceState.PAUSED_CURRENT,
+                ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN,
+                -> R.string.expanded_sequence_resume
+                ActiveSequenceState.WAITING_NEXT -> R.string.expanded_sequence_start_next
+            }
+        val oldClick =
+            composeRule
+                .onNodeWithText(string(primaryId))
+                .fetchSemanticsNode()
+                .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                .action!!
+        if (popup == "occurrence" || popup == "jump") {
+            composeRule
+                .onLazyNode(
+                    hasContentDescription(
+                        string(
+                            R.string.expanded_sequence_row_actions,
+                            string(R.string.expanded_sequence_occurrence_identity, "Activity 2", 3),
+                        ),
+                    ),
+                ).performClick()
+            if (popup == "jump") {
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_go_now)).performClick()
+                composeRule
+                    .onNodeWithText(string(R.string.expanded_sequence_confirm))
+                    .assertIsEnabled()
+            } else {
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_make_next)).assertIsEnabled()
+            }
+        } else {
+            composeRule
+                .onNodeWithContentDescription(string(R.string.expanded_sequence_global_actions))
+                .performClick()
+            when (popup) {
+                "end" -> composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).performClick()
+                "add" -> {
+                    composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
+                    composeRule
+                        .onNodeWithText(string(R.string.expanded_sequence_name))
+                        .performTextReplacement("Old draft")
+                }
+            }
+        }
+        val popupAction =
+            when (popup) {
+                "occurrence" -> R.string.expanded_sequence_make_next
+                "add" -> R.string.expanded_sequence_add
+                "global" -> R.string.expanded_sequence_end_early
+                else -> R.string.expanded_sequence_confirm
+            }
+        val confirmClick =
+            composeRule
+                .onNodeWithText(string(popupAction))
+                .fetchSemanticsNode()
+                .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                .action!!
+        composeRule.runOnIdle {
+            pending = kotlinx.coroutines.CompletableDeferred()
+            controller.refresh()
+        }
+
+        fun assertOnlyNavigationAndFeedback(failed: Boolean) {
+            for (unmerged in listOf(false, true)) {
+                assertEquals(
+                    if (failed) 2 else 1,
+                    composeRule
+                        .onAllNodes(
+                            hasClickAction() and isEnabled(),
+                            useUnmergedTree = unmerged,
+                        ).fetchSemanticsNodes()
+                        .size,
+                )
+                listOf(
+                    R.string.expanded_sequence_pause,
+                    R.string.expanded_sequence_resume,
+                    R.string.expanded_sequence_complete,
+                    R.string.expanded_sequence_start_next,
+                    R.string.expanded_sequence_make_next,
+                    R.string.expanded_sequence_go_now,
+                    R.string.expanded_sequence_confirm,
+                    R.string.expanded_sequence_add,
+                ).forEach { id ->
+                    composeRule.onNodeWithText(string(id), useUnmergedTree = unmerged).assertDoesNotExist()
+                }
+            }
+        }
+        assertOnlyNavigationAndFeedback(false)
+        composeRule.runOnIdle {
+            oldClick()
+            confirmClick()
+            controller.confirmPending()
+            pending!!.completeExceptionally(IllegalStateException("refresh failed"))
+        }
+        composeRule
+            .onNodeWithText(string(R.string.expanded_sequence_read_failure))
+            .assertIsDisplayed()
+            .assert(
+                androidx.compose.ui.test.SemanticsMatcher.expectValue(
+                    androidx.compose.ui.semantics.SemanticsProperties.LiveRegion,
+                    androidx.compose.ui.semantics.LiveRegionMode.Polite,
+                ),
+            )
+        assertOnlyNavigationAndFeedback(true)
+        composeRule.runOnIdle {
+            oldClick()
+            confirmClick()
+            controller.confirmPending()
+            assertTrue(commands.isEmpty())
+            assertEquals(null, controller.state.value.confirmation)
+        }
+        val back = composeRule.onNodeWithText(string(R.string.expanded_sequence_back))
+        back.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        back.assertIsFocused()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        composeRule.runOnIdle { assertEquals(1, backs) }
+        val recovered = original.copy(state = ActiveSequenceState.PAUSED_CURRENT)
+        composeRule.runOnIdle { pending = kotlinx.coroutines.CompletableDeferred() }
+        val retry = composeRule.onNodeWithText(string(R.string.expanded_sequence_retry))
+        retry.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        retry.assertIsFocused()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        assertOnlyNavigationAndFeedback(false)
+        composeRule.runOnIdle { pending!!.complete(ExpandedLiveSequenceRead.Active(recovered)) }
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_resume)).assertIsEnabled()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_pause)).assertDoesNotExist()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_complete)).assertDoesNotExist()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_start_next)).assertDoesNotExist()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
+        composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+        composeRule.runOnIdle {
+            controller.confirmPending()
+            assertTrue(commands.isEmpty())
+        }
+        val resume = composeRule.onNodeWithText(string(R.string.expanded_sequence_resume))
+        resume.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        resume.assertIsFocused()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        composeRule.runOnIdle {
+            assertEquals(listOf(ExpandedSequenceCommand.Resume::class), commands.map { it::class })
+            controller.close()
+        }
     }
 
     private fun expanded(

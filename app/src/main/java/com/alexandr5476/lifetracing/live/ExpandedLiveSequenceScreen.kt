@@ -144,9 +144,9 @@ private fun ExpandedSequenceContent(
     displayElapsedRealtimeMs: Long?,
     isRouteVisible: Boolean,
 ) {
-    // Remove command surfaces synchronously; onStale exits the route asynchronously.
-    val sequence = state.sequence.takeUnless { state.stale }
-    val elapsedNow = displayTick(state.displayBaseline, displayElapsedRealtimeMs)
+    // A retained projection cannot expose commands while its canonical replacement is unconfirmed.
+    val sequence = state.confirmedSequence
+    val elapsedNow = displayTick(state.displayBaseline.takeIf { sequence != null }, displayElapsedRealtimeMs)
     var addOpen by remember(sequence?.runtime?.execution?.id, sequence?.state, state.stale) { mutableStateOf(false) }
     val backFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
@@ -166,7 +166,7 @@ private fun ExpandedSequenceContent(
                 TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
                     Text(stringResource(R.string.expanded_sequence_back))
                 }
-                Text(
+                FeedbackText(
                     if (state.stale) {
                         stringResource(R.string.expanded_sequence_stale)
                     } else if (state.readFailure != null) {

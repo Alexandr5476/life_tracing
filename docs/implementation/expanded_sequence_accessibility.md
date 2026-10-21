@@ -238,6 +238,69 @@ and inventory comparison confirmed all 34 screen/eight persistence method names
 and preservation of every prior mandatory identity. These results do not establish
 that the newly compiled instrumentation assertions passed on a device.
 
+## PR38 W1: canonical reload after a successful read
+
+Expanded Sequence now derives command authority from a confirmed projection: a Sequence
+must be present, with no loading, read failure or stale-route flag. The screen removes
+runtime command surfaces, value editors, menus, Runtime Add and confirmations while the
+latest canonical read is pending or failed. Back remains available and a failed read
+exposes Retry with existing localized polite feedback. Timer display has no announcement
+loop and is not collected for an unconfirmed projection.
+
+The controller uses the same guard for every command and current-value edit. Refresh
+invalidates pending confirmations synchronously; publication, refresh invalidation and
+command/confirmation capture share the existing capture lock. Superseded reads cannot
+restore authority. Recovery never replays a confirmation or restores an open popup/draft.
+Commands already admitted before refresh retain their existing mutation-gate ordering.
+There are no new readers, polling loops, domain commands, schema or durable facts.
+
+Two JVM regressions cover the five-state admission matrix and superseded read publication.
+The five new Compose cases cover open occurrence/global menus, Go now/End early
+confirmations and Runtime Add, including callbacks retained from their previous semantics.
+They inspect enabled actions in merged/unmerged trees, polite failure feedback and native
+Android keyboard Enter activation of Back, Retry and recovered Resume. Five real controller
+and repository cases establish each canonical state in an isolated Plan-linked physical
+database, reject callbacks during held/failed refresh, recover after an explicit external
+runtime change, execute only the freshly authorized command, and compare full durable
+facts, occurrence/snapshot identities and canonical Plan/runtime reads after close/reopen.
+All ten instrumentation cases are added to the mandatory inventory without removals.
+
+Fail-first JVM execution on the reviewed production code failed as expected: a callback
+admitted a command during RUNNING_CURRENT refresh (`commandInFlight` became true).
+Local W1 preparation on 2026-10-21 executed 408 app JVM tests, including all 15 expanded
+Sequence controller tests, with zero failures, errors or skips. Android lint reported
+zero errors and 32 warnings. The combined preparation invocation needed subsequent
+test-formatting corrections; after those corrections this command passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest '-Pkotlin.incremental=false' --console=plain --continue
+```
+
+The earlier full app JVM/lint task invocation was:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest '-Pkotlin.incremental=false' --console=plain --continue
+```
+
+Incremental compilation initially reported unresolved references to unchanged top-level
+functions; disabling incremental compilation allowed compilation and JVM execution to
+complete. The final formatting-only JVM edit does not change the tested behavior.
+The mocked instrumentation-runner suite passed all 17 tests. Inventory/source comparison
+confirmed 39 expanded screen and 13 persistence method identities, 441 total app cases,
+627 data cases, and no removed mandatory identities. `git diff --check` passed.
+No local preparation result establishes the Controller's exact-head or five-API gates.
+
+The Compose/database regressions were added for Controller device execution; this work
+does not claim fail-first or corrected instrumentation execution.
+
+For manual reproduction, extend walkthrough step 8: first load each of the five live
+states, open the corresponding occurrence/global menu, Jump/End early confirmation or
+Runtime Add draft, then hold and fail a canonical reload using a controlled read gate.
+With TalkBack, Switch Access and a hardware keyboard, verify only Back and then Retry
+are actionable; old popup/confirmation actions must not execute. Retry after an explicit
+runtime state change and verify only the newly permitted actions return, with no replay.
+Manual TalkBack/Switch Access validation remains unperformed.
+
 ## Reproducible device walkthrough (manual, pending)
 
 Use a fresh fixture with a repeated Activity, Stopwatch, Timer allowing overtime,

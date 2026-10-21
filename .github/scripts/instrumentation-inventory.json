@@ -983,6 +983,11 @@
       "russianOrganizationControlsRemainActionableAtCompactWidth"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceAccessibilityPersistenceTest": [
+      "runningRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "pausedRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "waitingRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "countdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "pausedCountdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
       "canonicalCurrentValuesRemainEditableThroughSaveCompleteAndPhysicalReopen",
       "canonicalSavedCurrentValuesKeepSnapshotAndMissingAfterPhysicalReopen",
       "runningAndPausedCountdownUseBaselineWithoutFabricatingCurrentOrCompletingAtZero",
@@ -993,6 +998,11 @@
       "timerBeforeAtAndAfterDeadlineIsLabeledWithoutReconciliationAndPauseFreezesIt"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceScreenTest": [
+      "runningReloadDismissesOccurrenceMenuAndBlocksStaleActions",
+      "pausedReloadDismissesEndConfirmationAndBlocksStaleActions",
+      "waitingReloadDismissesRuntimeAddAndBlocksStaleActions",
+      "countdownReloadDismissesJumpConfirmationAndBlocksStaleActions",
+      "pausedCountdownReloadDismissesGlobalMenuAndBlocksStaleActions",
       "alreadyOpenGlobalMenuCannotExecuteDuringCommand",
       "alreadyOpenOccurrenceMenuIsDismissedWhenStateAuthorizationChanges",
       "childlessNoLiveWithMainValueUsesDraftAndNeverExposesStandaloneSave",

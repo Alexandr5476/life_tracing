@@ -5,8 +5,10 @@ package com.alexandr5476.lifetracing.live
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -25,6 +27,7 @@ import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.ExpandedLiveSequenceRead
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
@@ -490,10 +493,173 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
         }
     }
 
+    @Test
+    fun runningRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen() =
+        assertRefreshFailureAfterReopen(ActiveSequenceState.RUNNING_CURRENT)
+
+    @Test
+    fun pausedRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen() =
+        assertRefreshFailureAfterReopen(ActiveSequenceState.PAUSED_CURRENT)
+
+    @Test
+    fun waitingRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen() =
+        assertRefreshFailureAfterReopen(ActiveSequenceState.WAITING_NEXT)
+
+    @Test
+    fun countdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen() =
+        assertRefreshFailureAfterReopen(ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN)
+
+    @Test
+    fun pausedCountdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen() =
+        assertRefreshFailureAfterReopen(ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN)
+
+    private fun assertRefreshFailureAfterReopen(initialState: ActiveSequenceState) {
+        val countdown =
+            initialState == ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN ||
+                initialState == ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN
+        Fixture(
+            settings =
+                SequenceTemplateSettings(
+                    autoAdvance = countdown,
+                    beforeEachStepCountdown =
+                        if (countdown) java.time.Duration.ofSeconds(30) else java.time.Duration.ZERO,
+                ),
+            initialState = initialState,
+        ).use { fixture ->
+            fixture.mount()
+            assertEquals(
+                initialState,
+                fixture.controller.state.value.sequence!!
+                    .state,
+            )
+            val before = fixture.active()
+            val facts = fixture.store.durableFacts()
+            val target =
+                before.execution.occurrences
+                    .last()
+                    .id
+            fixture.controller.requestEndEarly()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_confirm)).assertExists()
+            val confirmationClick =
+                compose
+                    .onNodeWithText(fixture.string(R.string.expanded_sequence_confirm))
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val pending = kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>()
+            fixture.readGate.set(pending)
+            compose.runOnIdle { fixture.controller.refresh() }
+
+            fun attemptStaleCallbacks() {
+                compose.runOnIdle {
+                    confirmationClick()
+                    fixture.controller.confirmPending()
+                    fixture.controller.pause()
+                    fixture.controller.resume()
+                    fixture.controller.completeCurrent()
+                    fixture.controller.startNext()
+                    fixture.controller.requestGoNow(target)
+                    fixture.controller.makeNext(target)
+                    fixture.controller.doAgain(
+                        before.execution.occurrences
+                            .first()
+                            .id,
+                        RuntimeInsertionPlacement.TO_END,
+                    )
+                    fixture.controller.runtimeAddTemplate(fixture.activity.id, RuntimeInsertionPlacement.TO_END)
+                    fixture.controller.requestEndEarly()
+                    assertEquals(0, fixture.writes.get())
+                    assertTrue(fixture.commands.isEmpty())
+                    assertTrue(!fixture.controller.state.value.commandInFlight)
+                    assertNull(fixture.controller.state.value.confirmation)
+                }
+            }
+            attemptStaleCallbacks()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
+            compose.runOnIdle { pending.completeExceptionally(IllegalStateException("refresh failed")) }
+            compose.waitUntil(10_000) { fixture.controller.state.value.readFailure != null }
+            attemptStaleCallbacks()
+            for (unmerged in listOf(false, true)) {
+                assertEquals(
+                    2,
+                    compose
+                        .onAllNodes(
+                            hasClickAction() and isEnabled(),
+                            useUnmergedTree = unmerged,
+                        ).fetchSemanticsNodes()
+                        .size,
+                )
+            }
+            assertEquals(before, fixture.active())
+            assertEquals(facts, fixture.store.durableFacts())
+
+            // A real external runtime command changes which action the retry may expose.
+            val changeAt = fixture.now.plusSeconds(4)
+            when (initialState) {
+                ActiveSequenceState.RUNNING_CURRENT,
+                ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN,
+                -> fixture.store.live.pauseActiveSequence(before.execution.id, changeAt)
+                ActiveSequenceState.PAUSED_CURRENT,
+                ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN,
+                -> fixture.store.live.resumeActiveSequence(before.execution.id, changeAt)
+                ActiveSequenceState.WAITING_NEXT ->
+                    fixture.store.live.startNextSequenceStep(before.execution.id, changeAt)
+            }
+            val canonical =
+                fixture.store.live.getExpandedSequence(before.execution.id) as ExpandedLiveSequenceRead.Active
+            fixture.readGate.set(null)
+            fixture.invoke(R.string.expanded_sequence_retry)
+            compose.waitUntil(10_000) {
+                !fixture.controller.state.value.loading && fixture.controller.state.value.sequence == canonical.value
+            }
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
+            fixture.controller.confirmPending()
+            assertTrue(fixture.commands.isEmpty())
+            val paused =
+                canonical.value.state == ActiveSequenceState.PAUSED_CURRENT ||
+                    canonical.value.state == ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN
+            val authorized = if (paused) R.string.expanded_sequence_resume else R.string.expanded_sequence_pause
+            val forbidden = if (paused) R.string.expanded_sequence_pause else R.string.expanded_sequence_resume
+            compose.onNodeWithText(fixture.string(forbidden)).assertDoesNotExist()
+            fixture.clock.set(changeAt)
+            fixture.invoke(authorized)
+            fixture.awaitWrites(1)
+            assertEquals(
+                if (paused) ExpandedSequenceCommand.Resume::class else ExpandedSequenceCommand.Pause::class,
+                fixture.commands.single()::class,
+            )
+            val after = fixture.active()
+            assertEquals(before.execution.id, after.execution.id)
+            assertEquals(before.execution.occurrences.map { it.id }, after.execution.occurrences.map { it.id })
+            assertEquals(before.snapshot, after.snapshot)
+            assertEquals(before.activitySnapshots, after.activitySnapshots)
+            assertEquals(fixture.plan.id, after.execution.planEntryId)
+            val finalFacts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(after, fixture.active())
+            assertEquals(finalFacts, fixture.store.durableFacts())
+            val reopened = fixture.store.live.getExpandedSequence(after.execution.id) as ExpandedLiveSequenceRead.Active
+            assertEquals(after, reopened.value.runtime)
+            assertEquals(
+                PlanEntryStatus.PLANNED,
+                fixture.store.plans
+                    .getPlan(fixture.plan.id)!!
+                    .status,
+            )
+            assertTrue(
+                fixture.store.planReads
+                    .getFocusedAction(fixture.plan.id)
+                    .engaged,
+            )
+            assertEquals(1, fixture.writes.get())
+        }
+    }
+
     private inner class Fixture(
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         withValues: Boolean = false,
         settings: SequenceTemplateSettings = SequenceTemplateSettings(autoAdvance = false),
+        initialState: ActiveSequenceState = ActiveSequenceState.RUNNING_CURRENT,
     ) : AutoCloseable {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "expanded-accessibility-${UUID.randomUUID()}.db"
@@ -577,12 +743,32 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                 PlanSchedule.FloatingDay(now.atZone(ZoneOffset.UTC).toLocalDate()),
                 now,
             )
-        val started = store.live.startSequenceFromPlan(plan.actionIdentity(), now, now, ZoneOffset.UTC)
+        val started =
+            store.live.startSequenceFromPlan(plan.actionIdentity(), now, now, ZoneOffset.UTC).also { runtime ->
+                when (initialState) {
+                    ActiveSequenceState.RUNNING_CURRENT -> Unit
+                    ActiveSequenceState.PAUSED_CURRENT ->
+                        store.live.pauseActiveSequence(runtime.execution.id, now.plusSeconds(1))
+                    ActiveSequenceState.WAITING_NEXT,
+                    ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN,
+                    ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN,
+                    -> {
+                        store.live.completeCurrentSequenceStep(
+                            runtime.execution.currentOccurrenceId!!,
+                            now.plusSeconds(1),
+                        )
+                        if (initialState == ActiveSequenceState.PAUSED_TRANSITION_COUNTDOWN) {
+                            store.live.pauseActiveSequence(runtime.execution.id, now.plusSeconds(2))
+                        }
+                    }
+                }
+            }
+        val readGate = AtomicReference<kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>?>(null)
         val controller =
             ExpandedLiveSequenceController(
                 scope,
                 started.execution.id,
-                store.live::getExpandedSequence,
+                { id -> readGate.get()?.await() ?: store.live.getExpandedSequence(id) },
                 { command ->
                     commands += command
                     executeExpandedSequenceCommand(command, store.live)

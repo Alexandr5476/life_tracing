@@ -24,9 +24,25 @@ The matrix uses separate CI runners per API, with fail-fast disabled. Within a r
 
 Checkout and runner verification use the PR head SHA (or github.sha for other events). The runner rejects a checkout mismatch before Gradle. evidence.json distinguishes tested SHA from GitHub event SHA, which may identify a merge ref.
 
+## PR38 W1 canonical reload correction
+
+The mandatory inventory adds five expanded Sequence screen cases and five controller-backed
+physical-database cases, covering RUNNING_CURRENT, PAUSED_CURRENT, WAITING_NEXT,
+RUNNING_TRANSITION_COUNTDOWN and PAUSED_TRANSITION_COUNTDOWN. It now requires **441 app,
+627 data and 2 independent startup cases per API**; every previous identity remains required.
+The new cases hold and fail a refresh after successful loading, exercise retained callbacks
+and open menus/dialogs, recover against a changed canonical state, and verify durable facts
+after physical close/reopen. Screen cases check merged/unmerged actions and native keyboard
+Enter activation of Back, Retry and the newly authorized command.
+
+See the W1 record in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).
+The Controller must execute the unfiltered API 26/31/33/35/36 gates and exact-head GitHub CI.
+AndroidTest compilation and the mocked runner tests do not establish device execution.
+Manual TalkBack/Switch Access validation remains unperformed.
+
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 424 isolated app, and 2 independent startup cases per API. S3C1 adds two expanded Sequence presentation cases and two physical value-save/completion reopen cases; the existing Runtime Add reopen case now selects between duplicate catalog names. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 441 isolated app, and 2 independent startup cases per API. S3C1 adds two expanded Sequence presentation cases and two physical value-save/completion reopen cases; the existing Runtime Add reopen case now selects between duplicate catalog names. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 S4 adds 17 mandatory app identities: eight focused Plan presentation/semantics/localization/scale cases and nine controller-backed physical-database persistence cases. No existing mandatory identity is removed. Local verification on 2026-10-20 passed 405 app JVM cases (zero failures/errors/skips), app ktlint, Detekt, lintDebug and AndroidTest APK compilation/assembly; the exact command and manual walkthrough are recorded in the S4 document. Local JVM/static checks and AndroidTest compilation/packaging are implementation evidence only; the unfiltered five-API suites, independent startup and exact-head GitHub CI remain Controller-owned gates.
 
@@ -46,7 +62,7 @@ This scoped PASS does not replace the required unfiltered suites or exact-head C
 
 S5C1 adds seven mandatory app identities: four Daily focus/disambiguation cases,
 one Plan disambiguation case, and two duplicate-Plan production-route/reopen journeys.
-The current inventory requires **431 app, 627 data, and 2 independent startup cases
+The S5C1 inventory required **431 app, 627 data, and 2 independent startup cases
 per API**. Every previous mandatory identity remains required. Duplicate labels and
 native focus changes are presentation only; see the S5C1 record in
 [primary_execution_accessibility.md](primary_execution_accessibility.md).

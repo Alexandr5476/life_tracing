@@ -59,6 +59,129 @@ import java.util.concurrent.TimeUnit
 
 class ExpandedLiveSequenceControllerTest {
     @Test
+    fun reloadAfterSuccessBlocksEveryCommandUntilFreshPublicationInAllFiveStates() =
+        runBlocking {
+            for (runtimeState in ActiveSequenceState.entries) {
+                val original = expanded(confirmJump = true, withValue = true).copy(state = runtimeState)
+                var pending: CompletableDeferred<ExpandedLiveSequenceRead>? = null
+                val commands = mutableListOf<ExpandedSequenceCommand>()
+                val controller =
+                    ExpandedLiveSequenceController(
+                        this,
+                        original.runtime.execution.id,
+                        { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                        { commands += it },
+                        {},
+                        MutableStateFlow(0L),
+                        { null },
+                        { emptyList() },
+                        { Instant.EPOCH.plusSeconds(1) },
+                    )
+                controller.awaitLoaded()
+                val target =
+                    original.occurrences
+                        .last()
+                        .occurrence.id
+                controller.requestEndEarly()
+                assertEquals(ExpandedSequenceConfirmation.EndEarly, controller.state.value.confirmation)
+                pending = CompletableDeferred()
+                controller.refresh()
+
+                fun attemptOldCallbacks() {
+                    controller.confirmPending()
+                    controller.pause()
+                    controller.resume()
+                    controller.startNext()
+                    controller.completeCurrent()
+                    controller.makeNext(target)
+                    controller.requestGoNow(target)
+                    controller.doAgain(target, RuntimeInsertionPlacement.TO_END)
+                    controller.runtimeAddTemplate(ActivityTemplateId("old"), RuntimeInsertionPlacement.TO_END)
+                    controller.runtimeAddOneOff(
+                        com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                            "Old draft",
+                            null,
+                            TimeTrackingMode.STOPWATCH,
+                            null,
+                        ),
+                        RuntimeInsertionPlacement.TO_END,
+                    )
+                    controller.saveCurrentValues()
+                    controller.requestEndEarly()
+                    controller.editNumber(
+                        original.occurrences
+                            .first()
+                            .activity.fields
+                            .single()
+                            .id,
+                        "99",
+                    )
+                }
+
+                attemptOldCallbacks()
+                assertFalse(controller.state.value.commandInFlight, runtimeState.name)
+                assertNull(controller.state.value.confirmation, runtimeState.name)
+                pending.completeExceptionally(IllegalStateException("refresh failed"))
+                withTimeout(1_000) { controller.state.first { it.readFailure != null } }
+                attemptOldCallbacks()
+                assertFalse(controller.state.value.commandInFlight, runtimeState.name)
+                assertTrue(commands.isEmpty(), runtimeState.name)
+                assertNull(controller.state.value.confirmation, runtimeState.name)
+
+                pending = CompletableDeferred()
+                controller.refresh()
+                val recovered = original.copy(state = ActiveSequenceState.PAUSED_CURRENT)
+                pending.complete(ExpandedLiveSequenceRead.Active(recovered))
+                controller.awaitLoaded()
+                controller.confirmPending()
+                controller.pause()
+                assertTrue(commands.isEmpty())
+                controller.resume()
+                withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+                assertEquals(listOf(ExpandedSequenceCommand.Resume::class), commands.map { it::class })
+                controller.close()
+            }
+        }
+
+    @Test
+    fun supersededSuccessfulReadCannotRestoreCommandsAfterLatestReadFailure() {
+        val original = expanded()
+        val oldRead = CompletableDeferred<ExpandedLiveSequenceRead>()
+        val latestRead = CompletableDeferred<ExpandedLiveSequenceRead>()
+        var reads = 0
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        val controller =
+            ExpandedLiveSequenceController(
+                CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+                original.runtime.execution.id,
+                {
+                    when (++reads) {
+                        2 -> oldRead.await()
+                        3 -> latestRead.await()
+                        else -> ExpandedLiveSequenceRead.Active(original)
+                    }
+                },
+                { commands += it },
+                {},
+                MutableStateFlow(0L),
+                { null },
+                { emptyList() },
+                { Instant.EPOCH.plusSeconds(1) },
+            )
+        controller.refresh()
+        controller.refresh()
+        latestRead.completeExceptionally(IllegalStateException("latest failed"))
+        oldRead.complete(ExpandedLiveSequenceRead.Active(original))
+        assertEquals("latest failed", controller.state.value.readFailure)
+        controller.pause()
+        assertTrue(commands.isEmpty())
+        controller.refresh()
+        controller.pause()
+        assertEquals(listOf(ExpandedSequenceCommand.Pause::class), commands.map { it::class })
+        controller.close()
+    }
+
+    @Test
     fun fiveStateActionMatrixIsExact() {
         assertEquals(
             ExpandedSequenceActions(
