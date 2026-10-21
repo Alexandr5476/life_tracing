@@ -63,6 +63,8 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.plan.PlanExecutionActionTarget
+import com.alexandr5476.lifetracing.plan.planExecutionActionDescriptions
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -129,23 +131,13 @@ internal fun DailyScreen(
     isRouteVisible: Boolean = true,
 ) {
     val scrollState = rememberScrollState()
-    val landingFocus = remember { FocusRequester() }
     val canonical =
         when (val load = state.load) {
             is DailyLoadState.Content -> load.daily
             is DailyLoadState.Empty -> load.daily
             else -> null
         }
-    var hadActive by remember(state.selectedDate) { mutableStateOf(false) }
-    // Route entry and removal of an active surface are meaningful keyboard boundaries.
-    // Neither a display tick nor a refresh of the same runtime requests focus.
-    LaunchedEffect(isRouteVisible) { if (isRouteVisible) landingFocus.requestFocus() }
-    LaunchedEffect(canonical != null, canonical?.active != null) {
-        if (canonical != null) {
-            if (isRouteVisible && hadActive && canonical.active == null) landingFocus.requestFocus()
-            hadActive = canonical.active != null
-        }
-    }
+    val focusRecovery = rememberDailyFocusRecovery(state.selectedDate, isRouteVisible, canonical)
     LifeTracingAccessibleTargets {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(
@@ -157,22 +149,27 @@ internal fun DailyScreen(
                         .padding(MaterialTheme.spacing.xLarge),
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
             ) {
-                DateHeader(
-                    state.selectedDate,
-                    state.dateRelation,
-                    onAction,
-                    onStartActivity,
-                    onLibrary,
-                    onPlan,
-                    onHistory,
-                    onStatistics,
-                    onSettings,
-                    landingFocus,
-                )
+                Column(
+                    focusRecovery.surviving,
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
+                ) {
+                    DateHeader(
+                        state.selectedDate,
+                        state.dateRelation,
+                        onAction,
+                        onStartActivity,
+                        onLibrary,
+                        onPlan,
+                        onHistory,
+                        onStatistics,
+                        onSettings,
+                        focusRecovery.landing,
+                    )
+                }
                 CommandFailure(state.commandFailure)
                 when (val load = state.load) {
                     DailyLoadState.Loading -> LoadingContent()
-                    is DailyLoadState.Failure -> FailureContent(onAction)
+                    is DailyLoadState.Failure -> Column(focusRecovery.surviving) { FailureContent(onAction) }
                     is DailyLoadState.Empty ->
                         DailyContent(
                             state,
@@ -181,6 +178,8 @@ internal fun DailyScreen(
                             displayElapsedRealtimeMs,
                             onExpandSequence,
                             onExecutePlan,
+                            focusRecovery.runtime,
+                            focusRecovery.surviving,
                         )
                     is DailyLoadState.Content ->
                         DailyContent(
@@ -190,6 +189,8 @@ internal fun DailyScreen(
                             displayElapsedRealtimeMs,
                             onExpandSequence,
                             onExecutePlan,
+                            focusRecovery.runtime,
+                            focusRecovery.surviving,
                         )
                 }
             }
@@ -351,14 +352,24 @@ private fun DailyContent(
     displayElapsedRealtimeMs: Long?,
     onExpandSequence: (SequenceExecutionId) -> Unit,
     onExecutePlan: (PlanActionIdentity) -> Unit,
+    activeFocusModifier: Modifier,
+    survivingFocusModifier: Modifier,
 ) {
     val plans = daily.dayPlans + daily.weekPlans
     val active: @Composable () -> Unit = {
         if (state.dateRelation == DailyDateRelation.TODAY) {
-            daily.active?.let { ActiveSection(it, state, onAction, displayElapsedRealtimeMs, onExpandSequence) }
+            daily.active?.let {
+                Column(activeFocusModifier, verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large)) {
+                    ActiveSection(it, state, onAction, displayElapsedRealtimeMs, onExpandSequence)
+                }
+            }
         }
     }
-    val planned: @Composable () -> Unit = { PlannedSection(plans, state.dateRelation, onExecutePlan) }
+    val planned: @Composable () -> Unit = {
+        Column(survivingFocusModifier, verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large)) {
+            PlannedSection(plans, state.dateRelation, onExecutePlan)
+        }
+    }
     val completed: @Composable () -> Unit = { CompletedSection(daily.completedHistory) }
     when (state.dateRelation) {
         DailyDateRelation.PAST -> {
@@ -668,7 +679,28 @@ private fun PlannedSection(
     if (plans.isEmpty()) {
         EmptySection(R.string.daily_no_plans)
     } else {
-        plans.forEach { PlannedRow(it, relation, onExecute) }
+        val executable =
+            plans.filter {
+                it.plan.status == PlanEntryStatus.PLANNED && !it.engaged && it.plan.target !is PlanTarget.Month
+            }
+        val descriptions =
+            planExecutionActionDescriptions(
+                executable.map {
+                    PlanExecutionActionTarget(
+                        it.snapshot.title,
+                        it.plan.kind,
+                        it.plan.target,
+                        (it.snapshot as? com.alexandr5476.lifetracing.domain.DailyPlanSnapshot.Activity)
+                            ?.value
+                            ?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING,
+                        it.effectiveLocalDate,
+                        it.exactLocalTime,
+                        it.exactUtcOffset,
+                    )
+                },
+            )
+        val descriptionById = executable.mapIndexed { index, plan -> plan.plan.id to descriptions[index] }.toMap()
+        plans.forEach { PlannedRow(it, relation, onExecute, descriptionById[it.plan.id]) }
     }
 }
 
@@ -677,6 +709,7 @@ private fun PlannedRow(
     plan: DailyPlan,
     relation: DailyDateRelation,
     onExecute: (PlanActionIdentity) -> Unit,
+    executionDescription: String?,
 ) {
     DailyCard(
         container =
@@ -695,21 +728,7 @@ private fun PlannedRow(
         )
         planStatus(plan).forEach { Text(it, style = MaterialTheme.typography.labelLarge) }
         if (plan.plan.status == PlanEntryStatus.PLANNED && !plan.engaged && plan.plan.target !is PlanTarget.Month) {
-            val executionDescription =
-                stringResource(
-                    R.string.plan_execution_action,
-                    plan.snapshot.title,
-                    stringResource(
-                        if ((plan.snapshot as? com.alexandr5476.lifetracing.domain.DailyPlanSnapshot.Activity)
-                                ?.value
-                                ?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING
-                        ) {
-                            R.string.plan_complete_action
-                        } else {
-                            R.string.plan_start_action
-                        },
-                    ),
-                )
+            requireNotNull(executionDescription)
             LifeTracingPrimaryButton(
                 onClick = { onExecute(plan.plan.actionIdentity()) },
                 modifier =

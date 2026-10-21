@@ -688,6 +688,10 @@
     <string name="expanded_sequence_running_countdown">Идёт отсчёт перехода; текущего шага нет</string>
     <string name="expanded_sequence_paused_countdown">Отсчёт перехода на паузе; текущего шага нет</string>
     <string name="plan_execution_action">%1$s: %2$s</string>
+    <string name="plan_execution_action_context">%1$s, %2$s, %3$s</string>
+    <string name="plan_execution_activity_kind">Активность</string>
+    <string name="plan_execution_exact_local">День: %1$s, в %2$s</string>
+    <string name="plan_execution_action_ordinal">%1$s, план %2$d из %3$d</string>
     <string name="plan_execution_sequence">Последовательность</string>
     <string name="plan_execution_no_live">Активность · Завершение без отслеживания</string>
     <string name="plan_execution_timed">Активность · Отслеживание времени</string>

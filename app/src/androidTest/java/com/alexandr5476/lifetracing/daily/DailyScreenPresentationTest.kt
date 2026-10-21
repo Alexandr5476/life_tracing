@@ -338,11 +338,13 @@ class DailyScreenPresentationTest {
         composeTestRule
             .onNodeWithContentDescription(
                 string(R.string.plan_execution_action, day.snapshot.title, string(R.string.plan_complete_action)),
+                substring = true,
             ).performScrollTo()
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule
             .onNodeWithContentDescription(
                 string(R.string.plan_execution_action, week.snapshot.title, string(R.string.plan_start_action)),
+                substring = true,
             ).performScrollTo()
             .performSemanticsAction(SemanticsActions.OnClick)
 
@@ -1205,6 +1207,13 @@ class DailyScreenPresentationTest {
         history.assertIsFocused()
         harness.state.value = content
         history.assertIsFocused()
+        // A canonical automatic terminal transition must preserve surviving focus.
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        history.assertIsFocused()
+        assertTrue(actions.isEmpty())
+        harness.state.value = content
+        history.assertIsFocused()
         finish.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
         harness.state.value =
             content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
@@ -1221,6 +1230,250 @@ class DailyScreenPresentationTest {
         harness.visible.value = true
         composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsFocused()
         assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun explicitFinishRecoversRuntimeFocusAcrossCanonicalLoadingWithoutReplayingTheCommand() {
+        val actions = mutableListOf<DailyAction>()
+        val content = daily(DailyActive.Activity(activity("Explicit finish", TimeTrackingMode.STOPWATCH)), null)
+        val harness = screen(content, actions)
+        keyboard.enter()
+        runtimeAction(R.string.daily_finish).performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        runtimeAction(R.string.daily_finish).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(DailyAction.FinishActivity), actions)
+        harness.state.value = content.copy(load = DailyLoadState.Loading)
+        composeTestRule.waitForIdle()
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsFocused()
+        assertEquals(listOf(DailyAction.FinishActivity), actions)
+        // Surviving focus acquired while the canonical read is pending cancels recovery.
+        harness.state.value = content
+        runtimeAction(R.string.daily_finish).performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        runtimeAction(R.string.daily_finish).performSemanticsAction(SemanticsActions.OnClick)
+        harness.state.value = content.copy(load = DailyLoadState.Loading)
+        val history = runtimeAction(R.string.daily_history)
+        history.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        history.assertIsFocused()
+        assertEquals(listOf(DailyAction.FinishActivity, DailyAction.FinishActivity), actions)
+    }
+
+    @Test
+    fun dateChangesDiscardRuntimeFocusOwnershipBeforeTerminalPublication() {
+        val content = daily(DailyActive.Activity(activity("Changed date", TimeTrackingMode.STOPWATCH)), null)
+        val actions = mutableListOf<DailyAction>()
+        val harness = screen(content, actions)
+        keyboard.enter()
+        runtimeAction(R.string.daily_finish)
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.RequestFocus)
+            .assertIsFocused()
+        val changed =
+            content.copy(
+                selectedDate = content.selectedDate.plusDays(1),
+                dateRelation = DailyDateRelation.FUTURE,
+                load = DailyLoadState.Loading,
+            )
+        harness.state.value = changed
+        composeTestRule.waitForIdle()
+        // Removing Finish can trigger native fallback during Loading. Establish the
+        // user's surviving focus before publishing terminal data; that focus must stay.
+        val history = runtimeAction(R.string.daily_history)
+        history.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+        harness.state.value =
+            changed.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        history.assertIsFocused()
+        harness.state.value =
+            content.copy(load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)))
+        history.assertIsFocused()
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun terminalSequenceRemovalPreservesNavigationFocusAndRecoversRuntimeFocus() {
+        val actions = mutableListOf<DailyAction>()
+        val scenarios =
+            listOf(
+                daily(waitingSequence().active(), null) to R.string.daily_start_next,
+                daily(singleStepSequence(snapshot("Terminal timer", TimeTrackingMode.TIMER)).active(), null) to
+                    R.string.daily_pause,
+            )
+        val harness = screen(scenarios.first().first, actions)
+        keyboard.enter()
+        for ((content, control) in scenarios) {
+            val terminal =
+                content.copy(
+                    load = DailyLoadState.Empty(DailyRead(emptyList(), emptyList(), emptyList(), null)),
+                )
+            harness.state.value = content
+            val history = runtimeAction(R.string.daily_history)
+            history.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+            harness.state.value = terminal
+            history.assertIsFocused()
+            harness.state.value = content
+            runtimeAction(control).performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+            harness.state.value = terminal
+            composeTestRule.onNodeWithContentDescription(string(R.string.daily_previous_day)).assertIsFocused()
+            runtimeAction(control).assertDoesNotExist()
+            assertTrue(actions.isEmpty())
+        }
+    }
+
+    @Test
+    fun duplicatePlanActionsRemainDistinctLocalizedAndDispatchOnlyTheirOriginalIdentity() {
+        val frozen = plan("Shared frozen")
+        val week = LocalDate.parse("2026-08-17")
+        val entries =
+            listOf(
+                frozen,
+                frozen.copy(sourceState = PlanSourceState.CHANGED),
+                frozen.copy(sourceState = PlanSourceState.ARCHIVED),
+                frozen.copy(sourceState = PlanSourceState.UNAVAILABLE),
+                plan("Shared frozen", PlanTarget.ExactDay(at, null), exactTime = LocalTime.NOON),
+                plan("Shared frozen", PlanTarget.Week(week)),
+                sequencePlan("Shared frozen", week).let { it.copy(plan = it.plan.copy(target = frozen.plan.target)) },
+                plan("Shared frozen", mode = TimeTrackingMode.NO_LIVE_TRACKING),
+                plan("Shared frozen", mode = TimeTrackingMode.NO_LIVE_TRACKING),
+            ).mapIndexed { index, row -> row.copy(plan = row.plan.copy(id = PlanEntryId("distinct-$index"))) }
+        val ineligible =
+            listOf(
+                plan("Engaged duplicate", engaged = true),
+                plan("Fulfilled duplicate", status = PlanEntryStatus.FULFILLED),
+                plan("Cancelled duplicate", status = PlanEntryStatus.CANCELLED),
+            )
+        val executions = mutableListOf<PlanActionIdentity>()
+        val locale = mutableStateOf(Locale.US)
+        val rows = mutableStateOf(entries + ineligible)
+        val selectedDate = mutableStateOf(LocalDate.parse("2026-08-20"))
+        composeTestRule.setContent {
+            val configuration =
+                android.content.res
+                    .Configuration(
+                        LocalConfiguration.current,
+                    ).apply { setLocale(locale.value) }
+            val context = composeTestRule.activity.createConfigurationContext(configuration)
+            CompositionLocalProvider(LocalContext provides context, LocalConfiguration provides configuration) {
+                LifeTracingTheme {
+                    DailyScreen(
+                        state(
+                            DailyDateRelation.TODAY,
+                            DailyRead(rows.value, emptyList(), emptyList(), null),
+                            selectedDate.value,
+                        ),
+                        {},
+                        onExecutePlan = executions::add,
+                    )
+                }
+            }
+        }
+        keyboard.enter()
+        for (language in listOf(Locale.US, Locale.forLanguageTag("ru"))) {
+            composeTestRule.runOnIdle { locale.value = language }
+            val names =
+                entries.map { row ->
+                    composeTestRule
+                        .onNodeWithTag("daily-plan-action-${row.plan.id.value}")
+                        .fetchSemanticsNode()
+                        .config[SemanticsProperties.ContentDescription]
+                        .single()
+                }
+            assertEquals(names.size, names.toSet().size)
+            val floating =
+                localizedString(
+                    language,
+                    R.string.plan_execution_day,
+                    localizedDate((frozen.plan.target as PlanTarget.FloatingDay).date, language),
+                )
+            val base =
+                localizedString(
+                    language,
+                    R.string.plan_execution_action_context,
+                    localizedString(
+                        language,
+                        R.string.plan_execution_action,
+                        "Shared frozen",
+                        localizedString(language, R.string.plan_start_action),
+                    ),
+                    localizedString(language, R.string.plan_execution_activity_kind),
+                    floating,
+                )
+            for (index in 0..3) {
+                assertEquals(
+                    localizedString(
+                        language,
+                        R.string.plan_execution_action_ordinal,
+                        base,
+                        index + 1,
+                        4,
+                    ),
+                    names[index],
+                )
+            }
+            assertTrue(
+                names[5].contains(
+                    localizedString(language, R.string.plan_execution_week, localizedDate(week, language)),
+                ),
+            )
+            assertTrue(!names[4].contains("UTC"))
+            names.forEachIndexed { index, name ->
+                assertTrue(name.contains("Shared frozen"))
+                val node = composeTestRule.onNodeWithContentDescription(name)
+                for (unmerged in listOf(false, true)) {
+                    composeTestRule
+                        .onAllNodes(
+                            hasContentDescription(name) and hasClickAction(),
+                            useUnmergedTree = unmerged,
+                        ).assertCountEquals(1)
+                }
+                val kind =
+                    if (index == 6) {
+                        R.string.plan_execution_sequence
+                    } else {
+                        R.string.plan_execution_activity_kind
+                    }
+                val operation = if (index >= 7) R.string.plan_complete_action else R.string.plan_start_action
+                assertTrue(name.contains(localizedString(language, kind)))
+                assertTrue(name.contains(localizedString(language, operation)))
+                assertTrue(!name.contains(entries[index].plan.id.value))
+                node.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+                assertTrue(executions.isEmpty())
+                node.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(listOf(entries[index].plan.actionIdentity()), executions)
+                executions.clear()
+            }
+            ineligible.forEach {
+                composeTestRule
+                    .onNodeWithTag(
+                        "daily-plan-action-${it.plan.id.value}",
+                    ).assertDoesNotExist()
+            }
+        }
+        val oldName =
+            composeTestRule
+                .onNodeWithTag("daily-plan-action-distinct-0")
+                .fetchSemanticsNode()
+                .config[SemanticsProperties.ContentDescription]
+                .single()
+        composeTestRule.runOnIdle {
+            selectedDate.value = week.plusDays(7)
+            rows.value =
+                listOf(
+                    entries.first().copy(
+                        plan = entries.first().plan.copy(target = PlanTarget.FloatingDay(week.plusDays(7))),
+                    ),
+                )
+        }
+        composeTestRule.onNodeWithContentDescription(oldName).assertDoesNotExist()
+        val refreshed =
+            composeTestRule
+                .onNodeWithTag(
+                    "daily-plan-action-distinct-0",
+                ).fetchSemanticsNode()
+                .config[SemanticsProperties.ContentDescription]
+                .single()
+        assertTrue(refreshed.contains(localizedDate(week.plusDays(7), Locale.forLanguageTag("ru"))))
     }
 
     private fun activateScaledControls(

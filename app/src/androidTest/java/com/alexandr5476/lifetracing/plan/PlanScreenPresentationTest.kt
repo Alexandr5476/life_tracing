@@ -1,5 +1,10 @@
 package com.alexandr5476.lifetracing.plan
 
+import android.content.res.Configuration
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -7,11 +12,16 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -20,6 +30,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
+import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanActivityRowMetadata
 import com.alexandr5476.lifetracing.domain.PlanDayPresence
 import com.alexandr5476.lifetracing.domain.PlanEntry
@@ -34,8 +45,10 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,11 +56,19 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 @RunWith(AndroidJUnit4::class)
 class PlanScreenPresentationTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @get:Rule
+    val keyboard =
+        com.alexandr5476.lifetracing.ui
+            .KeyboardInputFixture(compose)
 
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val monday = LocalDate.parse("2026-09-14")
@@ -168,7 +189,7 @@ class PlanScreenPresentationTest {
     @Test
     fun enabledExecutionButtonReturnsTheExactRenderedRowIdentity() {
         val row = row("clicked", PlanTarget.FloatingDay(selected), noLive = true, overdue = true)
-        var clicked: com.alexandr5476.lifetracing.domain.PlanActionIdentity? = null
+        var clicked: PlanActionIdentity? = null
         val read = WeekPlanRead(monday, selected, listOf(row), emptyList(), emptyList())
         compose.setContent {
             LifeTracingTheme {
@@ -188,6 +209,7 @@ class PlanScreenPresentationTest {
                     row.title,
                     context.getString(R.string.plan_complete_action),
                 ),
+                substring = true,
             ).assertIsEnabled()
             .performSemanticsAction(SemanticsActions.OnClick)
 
@@ -259,6 +281,193 @@ class PlanScreenPresentationTest {
             ).assertCountEquals(2)[1]
             .assertIsDisplayed()
         compose.onAllNodesWithText(context.getString(R.string.plan_retry)).assertCountEquals(2)[1].assertIsDisplayed()
+    }
+
+    @Test
+    fun duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation() {
+        val entries =
+            listOf(
+                row("first", PlanTarget.FloatingDay(selected)),
+                row("same-schedule", PlanTarget.FloatingDay(selected), source = PlanSourceState.CHANGED),
+                row("archived", PlanTarget.FloatingDay(selected), source = PlanSourceState.ARCHIVED),
+                row("unavailable", PlanTarget.FloatingDay(selected), source = PlanSourceState.UNAVAILABLE),
+                row("exact", PlanTarget.ExactDay(Instant.parse("2026-09-15T12:30:00Z"), null)),
+                row("sequence", PlanTarget.FloatingDay(selected), sequence = true),
+                row("complete-one", PlanTarget.FloatingDay(selected), noLive = true),
+                row("complete-two", PlanTarget.FloatingDay(selected), noLive = true),
+            ).map {
+                it.copy(
+                    title = "Shared frozen",
+                    plan =
+                        it.plan.copy(
+                            sourceActivityTemplateId =
+                                ActivityTemplateId("same-source").takeIf { _ ->
+                                    it.plan.kind ==
+                                        PlanTrackableKind.ACTIVITY
+                                },
+                        ),
+                )
+            }
+        val week = row("week", PlanTarget.Week(monday)).copy(title = "Shared frozen")
+        val blocked =
+            listOf(
+                row("engaged", PlanTarget.FloatingDay(selected), engaged = true),
+                row("fulfilled", PlanTarget.FloatingDay(selected), fulfilled = true),
+                row("cancelled", PlanTarget.FloatingDay(selected)).let { row ->
+                    row.copy(plan = row.plan.copy(status = PlanEntryStatus.CANCELLED, cancelledAt = row.plan.createdAt))
+                },
+            )
+        val read =
+            mutableStateOf(
+                WeekPlanRead(monday, selected, entries + blocked, listOf(week), emptyList()),
+            )
+        val language = mutableStateOf("en")
+        val clicked = mutableListOf<PlanActionIdentity>()
+        compose.setContent {
+            val configuration =
+                Configuration(LocalConfiguration.current).apply {
+                    setLocale(Locale.forLanguageTag(language.value))
+                }
+            val localized = context.createConfigurationContext(configuration)
+            CompositionLocalProvider(
+                LocalContext provides localized,
+                LocalConfiguration provides configuration,
+            ) {
+                LifeTracingTheme {
+                    PlanScreen(
+                        PlanPresentationState(
+                            read.value.weekStart,
+                            read.value.selectedDate,
+                            PlanLoad.Content(read.value),
+                        ),
+                        {
+                        },
+                        {},
+                        clicked::add,
+                    )
+                }
+            }
+        }
+        keyboard.enter()
+        for (locale in listOf("en", "ru")) {
+            compose.runOnIdle { language.value = locale }
+            val eligible = entries + week
+            val names =
+                eligible.map {
+                    compose
+                        .onNode(
+                            hasTestTag("plan-plan-action-${it.plan.id.value}"),
+                        ).fetchSemanticsNode()
+                        .config[SemanticsProperties.ContentDescription]
+                        .single()
+                }
+            assertEquals(names.size, names.toSet().size)
+            val configuration =
+                Configuration(context.resources.configuration).apply {
+                    setLocale(Locale.forLanguageTag(locale))
+                }
+            val localized = context.createConfigurationContext(configuration)
+            val dateFormat =
+                DateTimeFormatter
+                    .ofLocalizedDate(
+                        FormatStyle.FULL,
+                    ).withLocale(Locale.forLanguageTag(locale))
+            val base =
+                localized.getString(
+                    R.string.plan_execution_action_context,
+                    localized.getString(
+                        R.string.plan_execution_action,
+                        "Shared frozen",
+                        localized.getString(R.string.plan_start_action),
+                    ),
+                    localized.getString(R.string.plan_execution_activity_kind),
+                    localized.getString(R.string.plan_execution_day, dateFormat.format(selected)),
+                )
+            for (index in 0..3) {
+                assertEquals(
+                    localized.getString(R.string.plan_execution_action_ordinal, base, index + 1, 4),
+                    names[index],
+                )
+            }
+            assertTrue(
+                names.last().contains(localized.getString(R.string.plan_execution_week, dateFormat.format(monday))),
+            )
+            assertTrue(!names[4].contains("UTC"))
+            names.forEachIndexed { index, name ->
+                assertTrue(name.contains("Shared frozen"))
+                for (unmerged in listOf(false, true)) {
+                    compose
+                        .onAllNodes(
+                            hasContentDescription(name) and
+                                hasClickAction(),
+                            useUnmergedTree = unmerged,
+                        ).assertCountEquals(1)
+                }
+                val kind =
+                    if (index == 5) {
+                        R.string.plan_execution_sequence
+                    } else {
+                        R.string.plan_execution_activity_kind
+                    }
+                val operation =
+                    if (index == 6 ||
+                        index == 7
+                    ) {
+                        R.string.plan_complete_action
+                    } else {
+                        R.string.plan_start_action
+                    }
+                assertTrue(name.contains(localized.getString(kind)))
+                assertTrue(name.contains(localized.getString(operation)))
+                val node = compose.onNodeWithContentDescription(name)
+                node.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+                assertEquals(emptyList<PlanActionIdentity>(), clicked)
+                node.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(listOf(eligible[index].plan.actionIdentity()), clicked)
+                clicked.clear()
+            }
+            blocked.forEach {
+                compose
+                    .onNode(
+                        hasTestTag("plan-plan-action-${it.plan.id.value}"),
+                    ).assertDoesNotExist()
+            }
+        }
+        val oldNames =
+            compose
+                .onAllNodes(
+                    hasContentDescription("Shared frozen", substring = true),
+                ).fetchSemanticsNodes()
+                .map {
+                    it.config[SemanticsProperties.ContentDescription].single()
+                }
+        compose.runOnIdle {
+            val next = selected.plusWeeks(1)
+            read.value =
+                WeekPlanRead(
+                    monday.plusWeeks(1),
+                    next,
+                    listOf(
+                        entries.first().copy(plan = entries.first().plan.copy(target = PlanTarget.FloatingDay(next))),
+                    ),
+                    emptyList(),
+                    emptyList(),
+                )
+        }
+        oldNames.forEach { compose.onNodeWithContentDescription(it).assertDoesNotExist() }
+        val refreshed =
+            compose
+                .onNode(
+                    hasTestTag("plan-plan-action-first"),
+                ).fetchSemanticsNode()
+                .config[SemanticsProperties.ContentDescription]
+                .single()
+        val dateFormat =
+            DateTimeFormatter
+                .ofLocalizedDate(
+                    FormatStyle.FULL,
+                ).withLocale(Locale.forLanguageTag("ru"))
+        assertTrue(refreshed.contains(dateFormat.format(selected.plusWeeks(1))))
     }
 
     private fun setScreen(

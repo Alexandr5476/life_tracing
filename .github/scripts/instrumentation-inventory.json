@@ -856,7 +856,11 @@
       "sequence_timer_and_no_live_current_use_their_frozen_values",
       "stopwatch_honors_frozen_show_seconds_while_timer_keeps_second_precision",
       "waiting_and_transition_states_never_fabricate_a_current_child_or_countdown",
-      "accessibilityKeyboardFocusRecoversOnTerminalRemovalWithoutFollowingTicksOrRefreshes"
+      "accessibilityKeyboardFocusRecoversOnTerminalRemovalWithoutFollowingTicksOrRefreshes",
+      "dateChangesDiscardRuntimeFocusOwnershipBeforeTerminalPublication",
+      "duplicatePlanActionsRemainDistinctLocalizedAndDispatchOnlyTheirOriginalIdentity",
+      "explicitFinishRecoversRuntimeFocusAcrossCanonicalLoadingWithoutReplayingTheCommand",
+      "terminalSequenceRemovalPreservesNavigationFocusAndRecoversRuntimeFocus"
     ],
     "com.alexandr5476.lifetracing.editor.ActivityTemplateEditorPersistenceTest": [
       "categoryOptionLabelRenamePreservesSparseActiveOptionPositionsAndRevision",
@@ -1076,7 +1080,8 @@
       "hiddenCanonicalRecoveryFailureHasVisibleLocalizedRetry",
       "lifecycleAndSourceStatesOnlyOfferMutableChangedUpdate",
       "repeatedHourLabelsUseCanonicalOccurrenceOffsets",
-      "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen"
+      "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen",
+      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation"
     ],
     "com.alexandr5476.lifetracing.runtime.AndroidCompatibilityDeviceTest": [
       "recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi={api}]"
@@ -1221,7 +1226,9 @@
       "planReadRetryAndBackDuringCommitDeliverSavedCoordinationFailureOnceToDaily",
       "launcherBackDuringCommitDeliversSavedCoordinationFailureOnceToDaily",
       "russianLargeFontProductionActivityJourneyKeepsActionsReachable",
-      "englishReducedScaleProductionActivityJourneyKeepsNativeTargets"
+      "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
+      "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
+      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
     ]
   },
   "startup": {

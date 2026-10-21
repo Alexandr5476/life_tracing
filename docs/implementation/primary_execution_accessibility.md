@@ -9,7 +9,8 @@ policy changes. No schema change or new destination.
 ## Corrections
 
 Daily provides a stable keyboard landing at Previous day on route entry and when a
-loaded active surface disappears on the same selected date. Start Activity and focused
+loaded active surface that owned keyboard focus disappears on the same selected date.
+A surviving control retains its existing focus (see the S5C1 correction below). Start Activity and focused
 Plan Execution land at their existing Back control unless a retained editor owns focus.
 Plan and completed History land at their existing Back controls. Native nested-editor,
 menu and dialog behavior remains in use. Existing S2 editor/preflight return and S3
@@ -119,7 +120,7 @@ lambda signature mismatch; these were corrected before the successful final run.
 
 Controller must run `full` and `gmd-full`, independently verify installed production
 startup, and run the mandatory exact-head GitHub matrix on 26/31/33/35/36. Inventory:
-627 data, 424 app, 2 startup per API. S1?S4 identities are preserved. Parent completion
+627 data, 431 app (including S5C1), 2 startup per API. S1?S4 identities are preserved. Parent completion
 requires the separate Decomposer closure audit after S5.
 
 ## API 35 canonical failure repair (2026-10-20)
@@ -164,6 +165,124 @@ in this repair, so the original implementation JVM results above were not rerun.
 This is scoped API 35 repair evidence, not an unfiltered `gmd-full` PASS. Controller
 still must rerun the full suite and the independent startup/five-API exact-head gate.
 Manual TalkBack and Switch Access validation remains unperformed.
+
+## S5C1 duplicate Plan targets and conditional focus recovery (2026-10-21)
+
+Daily and Plan execution buttons now include the frozen title, Start/Complete operation,
+Activity/Sequence kind, and grounded scheduling context. FloatingDay includes its date;
+Week includes its Monday; ExactDay uses the canonical projected date/time and only its
+supplied occurrence offset. Missing local projection falls back to the stored Instant,
+without inventing a zone. Identical complete descriptions receive localized duplicate-
+group ordinals (Plan 1 of 2 / Plan 2 of 2) in current presented order. Labels recalculate
+with section contents and locale. EN/RU resources carry all new prose. Management
+buttons, frozen snapshots, targets, source eligibility, status and authorization stay
+unchanged. Every execution action is still one native button with one activation.
+
+The shared helper processes each presented section in O(N) time and O(N) temporary
+space. Daily uses its combined day/week Planned section; Plan uses its selected-day
+and week sections separately. Grouping uses final localized descriptions so display
+collisions also receive ordinals. Neither ordinal nor list position selects commands:
+each unchanged callback captures the original PlanEntry.actionIdentity(). Only the two
+execution surfaces consume the helper. No new reads, queries, history scans, persisted
+fields, timers, collectors or writes are introduced.
+
+Daily observes native focus on the local active subtree and surviving control groups.
+Removal recovers Previous day only when that runtime owned focus. A pending marker
+can span the Controller's transient Loading read, but a surviving control taking focus
+cancels recovery. Canonical terminal publication consumes the marker; date/visibility
+changes discard it. Route entry still lands on Previous day. Display ticks, unchanged
+runtime reads and recomposition never request landing focus. Visibility remains guarded
+by the existing MainActivity top-route identity. Focus callbacks dispatch no commands;
+focus bookkeeping is O(1), ephemeral and independent of assistive-service virtual focus.
+
+Seven new inventory identities plus the retained Timer regression cover:
+
+- Daily/Plan duplicate frozen Activity titles, same-source/different-schedule Plans,
+  identical schedule duplicates, Activity/Sequence kind, Start/Complete, and changed,
+  archived and unavailable sources in EN/RU. Tests traverse without executing, inspect
+  merged/unmerged native actions, activate every eligible button and check exact tokens.
+- Date/week replacement refreshes the labels and engaged/fulfilled/cancelled Plans stay ineligible.
+- Both production navigation origins present two same-source/same-day Plans and a
+  same-source Week Plan. They select the intended duplicate by its distinct spoken
+  control, retain the exact route-session token, launch its frozen snapshot, complete,
+  physically reopen, and verify only its Plan linkage changed.
+- Finish dispatches once across Loading/terminal publication; Timer FINISH-like and
+  Sequence waiting/final-Timer removal preserve History focus or recover a runtime-owned focus.
+  Ticks, refreshes, date changes, hidden content and reentry retain their assertions.
+
+Initial S5C1 verification covered local implementation checks only. The first
+Controller `gmd-full` execution and scoped repair are recorded below; the unfiltered
+suite must be rerun after repair. Controller still owns `full`, independent startup
+and the unfiltered exact-head five-API GitHub matrix. Current mandatory inventory: **431 app,
+627 data, 2 startup per API**, with all prior identities retained. No device PASS
+is inferred from the following local implementation checks.
+
+Final local verification passed with native exit code zero:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The final JVM XML reports **406 tests, zero failures/errors/skips**. All changed
+AndroidTest sources compiled and the test APK assembled. App ktlint, Detekt and
+lintDebug passed. The final rebuild could not connect to the Kotlin daemon, then
+completed successfully through Gradle's fallback compiler (7m 6s). The host runner
+suite passed **17 tests using mocked device/Gradle invocations**; no emulator or
+device task ran. Independent inventory/source validation confirms exactly seven new
+nonignored AndroidTest identities, every original identity retained, and totals of
+431 app / 627 data / 2 startup. Both new EN/RU resource sets parse with intact localized
+text. Initial local checks caught resource payload encoding and formatting issues;
+these were corrected before the passing checks. Source/APK checks remain distinct
+from Controller-owned execution of the new and retained device regressions.
+
+Manual TalkBack virtual-focus and Switch Access scan/selection certification remains
+unperformed. Repeat the walkthrough below with duplicate same-title/same-schedule
+Plans, both kinds and operations in EN/RU, and with History focused during automatic
+Timer/Sequence completion. Native keyboard assertions do not establish virtual-focus
+placement, service utterance ordering or physical switch behavior.
+
+## API 35 date-change focus fixture repair (2026-10-21)
+
+Controller's first S5C1 `gmd-full` at head
+`5d24fa18e737fcae8d91b6732369f6a38b141e2c` completed 431 app cases with one failure,
+zero errors and zero skips. The original data XML contains 632 cases: 627 passed,
+five existing ignored fixtures skipped, zero failures/errors. The only failure was
+`DailyScreenPresentationTest.dateChangesDiscardRuntimeFocusOwnershipBeforeTerminalPublication`.
+
+The first authorized diagnostic probe established native focus on Finish, then
+observed Previous day already focused during Loading, before terminal publication.
+The date-change test had incorrectly forbidden a valid native fallback when the
+focused runtime subtree was removed. Its negative focus assertion did not distinguish
+native fallback from an explicit terminal recovery request. Daily requests no terminal
+recovery while its canonical read is Loading.
+
+The fixture now explicitly establishes History focus during that Loading gap and
+asserts that both terminal publication and return to the original date preserve it.
+It retains the initial runtime-focus assertion and verifies that the complete sequence
+dispatches no command. No production focus, runtime, route or persistence code changed.
+The neighboring Timer, explicit-Finish and Sequence focus cases passed in the recorded
+unfiltered execution; no other fixture uses the invalid negative-focus assumption.
+
+The second authorized probe passed the exact failing identity on API 35: one test,
+zero failures/errors/skips, 65.6 seconds. Both original XML reports were inspected:
+
+`.runtime/repair-probes/wf-2d37dc47821f590fa8e9b475df962789/0cfea2c6e4174e208016046a11a97337/tree-1/attempt-1/reports/app/TEST-pixel2Api35-_app-.xml`
+
+`.runtime/repair-probes/wf-2d37dc47821f590fa8e9b475df962789/0cfea2c6e4174e208016046a11a97337/tree-2/attempt-1/reports/app/TEST-pixel2Api35-_app-.xml`
+
+Local repair checks also passed with native exit code zero:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest --continue --console=plain
+git diff --check
+```
+
+The same testcase identity remains mandatory exactly once; counts remain 431 app,
+627 data and 2 startup per API. This scoped PASS does not replace an unfiltered
+`gmd-full` rerun, independent startup or exact-head five-API CI. Manual TalkBack and
+Switch Access certification remains unperformed.
 
 ## Reproducible assistive-service walkthrough
 

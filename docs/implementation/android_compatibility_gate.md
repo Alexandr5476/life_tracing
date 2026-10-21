@@ -31,7 +31,7 @@ Checkout and runner verification use the PR head SHA (or github.sha for other ev
 S4 adds 17 mandatory app identities: eight focused Plan presentation/semantics/localization/scale cases and nine controller-backed physical-database persistence cases. No existing mandatory identity is removed. Local verification on 2026-10-20 passed 405 app JVM cases (zero failures/errors/skips), app ktlint, Detekt, lintDebug and AndroidTest APK compilation/assembly; the exact command and manual walkthrough are recorded in the S4 document. Local JVM/static checks and AndroidTest compilation/packaging are implementation evidence only; the unfiltered five-API suites, independent startup and exact-head GitHub CI remain Controller-owned gates.
 
 S5 adds 14 mandatory app identities: 13 production-navigation/physical-reopen journeys
-and one Daily keyboard transition regression. The inventory now requires **424 app,
+and one Daily keyboard transition regression. The S5 inventory required **424 app,
 627 data and 2 independent startup cases per API**. All S1?S4 identities remain pinned.
 Controller check aliases remain `full` and `gmd-full`; they are labels, not Gradle tasks.
 Controller owns authoritative checks, independent production startup, and exact-head
@@ -43,6 +43,27 @@ journey cases. The shared fixture repair preserves every identity and assertion;
 the authorized scoped probe subsequently passed all nine. See the linked S5 record
 for timestamp-token, route-owner, Back synchronization and fixed-scale Number details.
 This scoped PASS does not replace the required unfiltered suites or exact-head CI.
+
+S5C1 adds seven mandatory app identities: four Daily focus/disambiguation cases,
+one Plan disambiguation case, and two duplicate-Plan production-route/reopen journeys.
+The current inventory requires **431 app, 627 data, and 2 independent startup cases
+per API**. Every previous mandatory identity remains required. Duplicate labels and
+native focus changes are presentation only; see the S5C1 record in
+[primary_execution_accessibility.md](primary_execution_accessibility.md).
+Controller must execute `full` and `gmd-full`, independent production startup, and the
+unfiltered exact-head GitHub matrix at APIs 26/31/33/35/36. These S5C1 gates are pending;
+source/APK compilation cannot certify device execution.
+
+The first S5C1 API 35 `gmd-full` at head
+`5d24fa18e737fcae8d91b6732369f6a38b141e2c` completed all 431 app cases with one
+date-change focus fixture failure. Data XML reports 627 passes and five existing
+ignored skips, zero failures/errors. A diagnostic probe confirmed native fallback
+focus during Loading; the corrected fixture establishes surviving History focus
+before terminal publication and verifies its preservation. The authorized second
+probe passed the exact failing case (one test, zero failures/errors/skips). See the
+linked S5C1 record for original XML paths and local checks. All inventory identities
+and counts are retained. The full unfiltered rerun and independent final gates remain
+Controller-owned; the scoped probe is not a release-gate PASS.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 

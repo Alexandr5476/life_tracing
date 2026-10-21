@@ -688,6 +688,10 @@
     <string name="expanded_sequence_running_countdown">Transition countdown running; no current step</string>
     <string name="expanded_sequence_paused_countdown">Transition countdown paused; no current step</string>
     <string name="plan_execution_action">%1$s: %2$s</string>
+    <string name="plan_execution_action_context">%1$s, %2$s, %3$s</string>
+    <string name="plan_execution_activity_kind">Activity</string>
+    <string name="plan_execution_exact_local">Day: %1$s, at %2$s</string>
+    <string name="plan_execution_action_ordinal">%1$s, Plan %2$d of %3$d</string>
     <string name="plan_execution_sequence">Sequence</string>
     <string name="plan_execution_no_live">Activity · No-live completion</string>
     <string name="plan_execution_timed">Activity · Live tracking</string>

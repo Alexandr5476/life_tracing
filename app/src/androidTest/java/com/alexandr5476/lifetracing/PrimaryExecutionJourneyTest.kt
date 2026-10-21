@@ -8,7 +8,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -750,6 +749,109 @@ class PrimaryExecutionJourneyTest {
     @Test
     fun englishReducedScaleProductionActivityJourneyKeepsNativeTargets() = scaledActivityJourney("en", 1f, 90, 90)
 
+    @Test
+    fun duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen() =
+        duplicatePlanSelection(PlanExecutionOrigin.DAILY)
+
+    @Test
+    fun duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen() =
+        duplicatePlanSelection(PlanExecutionOrigin.PLAN)
+
+    private fun duplicatePlanSelection(origin: PlanExecutionOrigin) =
+        journey { f ->
+            val source = f.activityTemplate()
+            val first = f.store.plans.createActivityPlanFromTemplate(source.id, f.schedule(), f.seedTime)
+            val chosen = f.store.plans.createActivityPlanFromTemplate(source.id, f.schedule(), f.seedTime)
+            val weekPlan =
+                f.store.plans.createActivityPlanFromTemplate(
+                    source.id,
+                    PlanSchedule.Week(f.schedule().date.with(java.time.DayOfWeek.MONDAY)),
+                    f.seedTime,
+                )
+            val expected =
+                f.store.planReads
+                    .getFocusedAction(chosen.id)
+                    .identity
+            f.launch()
+            if (origin == PlanExecutionOrigin.PLAN) f.invoke(R.string.daily_plan)
+            val prefix = f.text(R.string.plan_execution_action, source.name, f.text(R.string.plan_start_action))
+            val matcher = hasContentDescription(prefix, substring = true) and hasClickAction()
+            f.await { compose.onAllNodes(matcher).fetchSemanticsNodes().size == 3 }
+            val descriptions =
+                compose.onAllNodes(matcher).fetchSemanticsNodes().map {
+                    it.config[androidx.compose.ui.semantics.SemanticsProperties.ContentDescription].single()
+                }
+            assertEquals(3, descriptions.toSet().size)
+            // Resolve the fixture's expected identity by its test-only tag, then select
+            // through the distinct spoken target. Production never resolves by a label.
+            val tag = if (origin == PlanExecutionOrigin.DAILY) "daily" else "plan"
+            val name =
+                compose
+                    .onNode(
+                        androidx.compose.ui.test
+                            .hasTestTag("$tag-plan-action-${chosen.id.value}"),
+                    ).fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsProperties.ContentDescription]
+                    .single()
+            val before = f.store.durableFacts()
+            compose
+                .onNodeWithContentDescription(
+                    name,
+                ).performScrollTo()
+                .performSemanticsAction(SemanticsActions.RequestFocus)
+            assertEquals(before, f.store.durableFacts())
+            compose.onNodeWithContentDescription(name).performSemanticsAction(SemanticsActions.OnClick)
+            f.await {
+                f
+                    .host()
+                    .planExecutionRouteSessions.activeSession
+                    ?.expectedIdentity == expected
+            }
+            assertEquals(
+                expected,
+                f
+                    .host()
+                    .planExecutionRouteSessions.activeSession!!
+                    .expectedIdentity,
+            )
+            assertTrue(first.id != expected.planEntryId)
+            f.await {
+                f
+                    .host()
+                    .planExecutionRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.prepared is com.alexandr5476.lifetracing.plan.PlanExecutionLoad.Content
+            }
+            f.invoke(R.string.plan_start_action)
+            f.awaitDailyRuntime()
+            val active = f.store.live.getActiveRuntime() as ActiveActivityRuntime
+            assertEquals(chosen.id, active.execution.planEntryId)
+            assertEquals(chosen.activitySnapshotId, active.snapshot.id)
+            assertEquals(first, f.store.plans.getPlan(first.id))
+            assertEquals(weekPlan, f.store.plans.getPlan(weekPlan.id))
+            assertTrue(
+                !f.store.planReads
+                    .getFocusedAction(first.id)
+                    .engaged,
+            )
+            f.invoke(R.string.daily_finish)
+            f.awaitDailyTerminal()
+            f.reopen {
+                assertEquals(first, plans.getPlan(first.id))
+                assertEquals(weekPlan, plans.getPlan(weekPlan.id))
+                assertTrue(!planReads.getFocusedAction(first.id).engaged)
+                assertTrue(!planReads.getFocusedAction(weekPlan.id).engaged)
+                val saved = plans.getPlan(chosen.id)!!
+                assertEquals(PlanEntryStatus.FULFILLED, saved.status)
+                assertEquals(active.execution.id, saved.fulfilledActivityExecutionId)
+                assertEquals(chosen.id, activity(active.execution.id).planEntryId)
+                assertEquals(chosen.activitySnapshotId, activity(active.execution.id).snapshotId)
+                assertEquals(1L to 0L, executionCounts())
+            }
+        }
+
     private fun scaledActivityJourney(
         language: String,
         font: Float,
@@ -1028,6 +1130,7 @@ class PrimaryExecutionJourneyTest {
                 name,
                 text(if (noLive) R.string.plan_complete_action else R.string.plan_start_action),
             ),
+            substring = true,
         )
 
         fun openPlan(
@@ -1047,10 +1150,7 @@ class PrimaryExecutionJourneyTest {
             await {
                 compose
                     .onAllNodes(
-                        SemanticsMatcher.expectValue(
-                            androidx.compose.ui.semantics.SemanticsProperties.ContentDescription,
-                            listOf(description),
-                        ),
+                        hasContentDescription(description, substring = true),
                     ).fetchSemanticsNodes()
                     .isNotEmpty()
             }
