@@ -59,6 +59,335 @@ import java.util.concurrent.TimeUnit
 
 class ExpandedLiveSequenceControllerTest {
     @Test
+    fun runtimeAddAcknowledgesOnlyMatchingIdleAdmissionBeforeExecution() =
+        runBlocking {
+            val original = expanded()
+            var result: ExpandedLiveSequenceRead = ExpandedLiveSequenceRead.Active(original)
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val executionGate = CompletableDeferred<Unit>()
+            var admissions = 0
+            val oneOff =
+                com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                    "Retained draft",
+                    null,
+                    TimeTrackingMode.TIMER,
+                    Duration.ofSeconds(137),
+                )
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    original.runtime.execution.id,
+                    { result },
+                    {
+                        commands += it
+                        executionGate.await()
+                    },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH },
+                )
+            controller.awaitLoaded()
+            val changedCurrent =
+                original.copy(
+                    runtime =
+                        original.runtime.copy(
+                            execution =
+                                original.runtime.execution.copy(
+                                    currentOccurrenceId =
+                                        original.occurrences
+                                            .last()
+                                            .occurrence.id,
+                                ),
+                        ),
+                )
+            for (changed in listOf(changedCurrent, original.copy(state = ActiveSequenceState.WAITING_NEXT))) {
+                result = ExpandedLiveSequenceRead.Active(changed)
+                controller.refresh()
+                controller.awaitLoaded()
+                controller.runtimeAddTemplate(
+                    ActivityTemplateId("template"),
+                    RuntimeInsertionPlacement.TO_END,
+                    expectedSequence = original,
+                    onAdmitted = { admissions++ },
+                )
+                controller.runtimeAddOneOff(
+                    oneOff,
+                    RuntimeInsertionPlacement.AFTER_CURRENT,
+                    expectedSequence = original,
+                    onAdmitted = { admissions++ },
+                )
+                assertEquals(0, admissions)
+                assertTrue(commands.isEmpty())
+            }
+            result = ExpandedLiveSequenceRead.Active(original)
+            controller.refresh()
+            controller.awaitLoaded()
+            controller.runtimeAddTemplate(
+                ActivityTemplateId("template"),
+                RuntimeInsertionPlacement.START_NOW,
+                expectedSequence = original,
+                onAdmitted = { admissions++ },
+            )
+            val foreignContext =
+                original.copy(
+                    runtime =
+                        original.runtime.copy(
+                            execution = original.runtime.execution.copy(id = SequenceExecutionId("foreign")),
+                        ),
+                )
+            controller.runtimeAddOneOff(
+                oneOff,
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                expectedSequence = foreignContext,
+                onAdmitted = { admissions++ },
+            )
+            assertEquals(0, admissions)
+            assertTrue(commands.isEmpty())
+            controller.runtimeAddOneOff(
+                oneOff,
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+                expectedSequence = original,
+                onAdmitted = { admissions++ },
+            )
+            // Acknowledgement is synchronous with admission, before the queued write.
+            assertEquals(1, admissions)
+            assertTrue(commands.isEmpty())
+            controller.runtimeAddTemplate(
+                ActivityTemplateId("template"),
+                RuntimeInsertionPlacement.TO_END,
+                expectedSequence = original,
+                onAdmitted = { admissions++ },
+            )
+            assertEquals(1, admissions)
+            assertNull(controller.state.value.commandFailure)
+            executionGate.complete(Unit)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+            assertEquals(1, commands.size)
+            assertEquals(
+                ActivityEntrySource.OneOff(oneOff),
+                (commands.single() as ExpandedSequenceCommand.RuntimeAdd).source,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun runtimeAddDuringRefreshKeepsAdmissionClosedWithoutTransientRejection() =
+        runBlocking {
+            val original = expanded()
+            var pending: CompletableDeferred<ExpandedLiveSequenceRead>? = null
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    original.runtime.execution.id,
+                    { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                    { commands += it },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH },
+                )
+            controller.awaitLoaded()
+            pending = CompletableDeferred()
+            controller.refresh()
+            controller.runtimeAddTemplate(ActivityTemplateId("template"), RuntimeInsertionPlacement.TO_END)
+            controller.runtimeAddOneOff(
+                com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                    "Retained draft",
+                    null,
+                    TimeTrackingMode.TIMER,
+                    Duration.ofSeconds(137),
+                ),
+                RuntimeInsertionPlacement.AFTER_CURRENT,
+            )
+            assertTrue(commands.isEmpty())
+            assertFalse(controller.state.value.commandInFlight)
+            assertNull(controller.state.value.commandFailure)
+            pending.complete(ExpandedLiveSequenceRead.Active(original))
+            controller.awaitLoaded()
+            assertNull(controller.state.value.commandFailure)
+            controller.runtimeAddTemplate(ActivityTemplateId("template"), RuntimeInsertionPlacement.TO_END)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+            assertEquals(1, commands.size)
+            controller.close()
+        }
+
+    @Test
+    fun foregroundGenerationRetainsUncommittedValuesWithoutRestoringConfirmationOrWriting() =
+        runBlocking {
+            val original = expanded(withAllValueTypes = true)
+            val generation = MutableStateFlow(0L)
+            var pending: CompletableDeferred<ExpandedLiveSequenceRead>? = null
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    original.runtime.execution.id,
+                    { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                    { commands += it },
+                    {},
+                    generation,
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH },
+                )
+            controller.awaitLoaded()
+            val fields =
+                original.occurrences
+                    .first()
+                    .activity.fields
+            controller.editNumber(fields[0].id, "73")
+            controller.editText(fields[1].id, "Uncommitted text")
+            val draft = controller.state.value.currentValueDraft
+            controller.requestEndEarly()
+            val read = CompletableDeferred<ExpandedLiveSequenceRead>()
+            pending = read
+            generation.value++
+            withTimeout(1_000) { controller.state.first { it.loading } }
+            assertNull(controller.state.value.confirmedSequence)
+            assertNull(controller.state.value.confirmation)
+            controller.editNumber(fields[0].id, "999")
+            controller.editText(fields[1].id, "Stale edit")
+            controller.saveCurrentValues()
+            assertEquals(draft, controller.state.value.currentValueDraft)
+            assertTrue(commands.isEmpty())
+            read.complete(ExpandedLiveSequenceRead.Active(original))
+            controller.awaitLoaded()
+            assertEquals(original, controller.state.value.confirmedSequence)
+            assertEquals(draft, controller.state.value.currentValueDraft)
+            controller.confirmPending()
+            assertNull(controller.state.value.confirmation)
+            assertTrue(commands.isEmpty())
+            controller.close()
+        }
+
+    @Test
+    fun reloadAfterSuccessBlocksEveryCommandUntilFreshPublicationInAllFiveStates() =
+        runBlocking {
+            for (runtimeState in ActiveSequenceState.entries) {
+                val original = expanded(confirmJump = true, withValue = true).copy(state = runtimeState)
+                var pending: CompletableDeferred<ExpandedLiveSequenceRead>? = null
+                val commands = mutableListOf<ExpandedSequenceCommand>()
+                val controller =
+                    ExpandedLiveSequenceController(
+                        this,
+                        original.runtime.execution.id,
+                        { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                        { commands += it },
+                        {},
+                        MutableStateFlow(0L),
+                        { null },
+                        { emptyList() },
+                        { Instant.EPOCH.plusSeconds(1) },
+                    )
+                controller.awaitLoaded()
+                val target =
+                    original.occurrences
+                        .last()
+                        .occurrence.id
+                controller.requestEndEarly()
+                assertEquals(ExpandedSequenceConfirmation.EndEarly, controller.state.value.confirmation)
+                pending = CompletableDeferred()
+                controller.refresh()
+
+                fun attemptOldCallbacks() {
+                    controller.confirmPending()
+                    controller.pause()
+                    controller.resume()
+                    controller.startNext()
+                    controller.completeCurrent()
+                    controller.makeNext(target)
+                    controller.requestGoNow(target)
+                    controller.doAgain(target, RuntimeInsertionPlacement.TO_END)
+                    controller.runtimeAddTemplate(ActivityTemplateId("old"), RuntimeInsertionPlacement.TO_END)
+                    controller.runtimeAddOneOff(
+                        com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                            "Old draft",
+                            null,
+                            TimeTrackingMode.STOPWATCH,
+                            null,
+                        ),
+                        RuntimeInsertionPlacement.TO_END,
+                    )
+                    controller.saveCurrentValues()
+                    controller.requestEndEarly()
+                    controller.editNumber(
+                        original.occurrences
+                            .first()
+                            .activity.fields
+                            .single()
+                            .id,
+                        "99",
+                    )
+                }
+
+                attemptOldCallbacks()
+                assertFalse(controller.state.value.commandInFlight, runtimeState.name)
+                assertNull(controller.state.value.confirmation, runtimeState.name)
+                pending.completeExceptionally(IllegalStateException("refresh failed"))
+                withTimeout(1_000) { controller.state.first { it.readFailure != null } }
+                attemptOldCallbacks()
+                assertFalse(controller.state.value.commandInFlight, runtimeState.name)
+                assertTrue(commands.isEmpty(), runtimeState.name)
+                assertNull(controller.state.value.confirmation, runtimeState.name)
+
+                pending = CompletableDeferred()
+                controller.refresh()
+                val recovered = original.copy(state = ActiveSequenceState.PAUSED_CURRENT)
+                pending.complete(ExpandedLiveSequenceRead.Active(recovered))
+                controller.awaitLoaded()
+                controller.confirmPending()
+                controller.pause()
+                assertTrue(commands.isEmpty())
+                controller.resume()
+                withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+                assertEquals(listOf(ExpandedSequenceCommand.Resume::class), commands.map { it::class })
+                controller.close()
+            }
+        }
+
+    @Test
+    fun supersededSuccessfulReadCannotRestoreCommandsAfterLatestReadFailure() {
+        val original = expanded()
+        val oldRead = CompletableDeferred<ExpandedLiveSequenceRead>()
+        val latestRead = CompletableDeferred<ExpandedLiveSequenceRead>()
+        var reads = 0
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        val controller =
+            ExpandedLiveSequenceController(
+                CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+                original.runtime.execution.id,
+                {
+                    when (++reads) {
+                        2 -> oldRead.await()
+                        3 -> latestRead.await()
+                        else -> ExpandedLiveSequenceRead.Active(original)
+                    }
+                },
+                { commands += it },
+                {},
+                MutableStateFlow(0L),
+                { null },
+                { emptyList() },
+                { Instant.EPOCH.plusSeconds(1) },
+            )
+        controller.refresh()
+        controller.refresh()
+        latestRead.completeExceptionally(IllegalStateException("latest failed"))
+        oldRead.complete(ExpandedLiveSequenceRead.Active(original))
+        assertEquals("latest failed", controller.state.value.readFailure)
+        controller.pause()
+        assertTrue(commands.isEmpty())
+        controller.refresh()
+        controller.pause()
+        assertEquals(listOf(ExpandedSequenceCommand.Pause::class), commands.map { it::class })
+        controller.close()
+    }
+
+    @Test
     fun fiveStateActionMatrixIsExact() {
         assertEquals(
             ExpandedSequenceActions(
@@ -258,6 +587,78 @@ class ExpandedLiveSequenceControllerTest {
             assertEquals(1, maxActiveWriters)
             assertEquals(2, coordinationCalls)
             assertInstanceOf(ExpandedSequenceFailure.Coordination::class.java, controller.state.value.commandFailure)
+            controller.close()
+        }
+
+    @Test
+    fun timedDraftHydratesCanonicalZeroAndMissingAndRetainsExactFieldsAfterConfirmedSave() =
+        runBlocking {
+            val initial = expanded(mode = TimeTrackingMode.TIMER, withAllValueTypes = true)
+            val row = initial.occurrences.first()
+            val number = row.activity.fields.first()
+            val child = row.childExecution!!.copy(values = listOf(NumberExecutionValue(number.id, 0)))
+            var canonical =
+                ExpandedLiveSequenceProjector.project(
+                    initial.runtime.copy(currentChild = child),
+                    listOf(child),
+                )
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val committed = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    initial.runtime.execution.id,
+                    { ExpandedLiveSequenceRead.Active(canonical) },
+                    { command ->
+                        commands += command
+                        committed.await()
+                        val save = command as ExpandedSequenceCommand.SaveValues
+                        val saved = child.copy(values = save.values.mapNotNull { it.value })
+                        canonical =
+                            ExpandedLiveSequenceProjector.project(
+                                initial.runtime.copy(currentChild = saved),
+                                listOf(saved),
+                            )
+                    },
+                    {},
+                    MutableStateFlow(0L),
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            controller.awaitLoaded()
+            val hydrated = controller.state.value.currentValueDraft!!
+            assertEquals(NumberExecutionValue(number.id, 0), hydrated.values[number.id])
+            assertTrue(
+                row.activity.fields.drop(1).all {
+                    hydrated.values.containsKey(it.id) &&
+                        hydrated.values[it.id] == null
+                },
+            )
+            controller.editNumber(number.id, "2")
+            assertTrue(commands.isEmpty())
+            assertEquals(
+                NumberExecutionValue(number.id, 0),
+                canonical.occurrences
+                    .first()
+                    .childExecution!!
+                    .values
+                    .single(),
+            )
+            controller.saveCurrentValues()
+            withTimeout(1_000) { controller.state.first { it.commandInFlight } }
+            val retained = controller.state.value.currentValueDraft!!
+            committed.complete(Unit)
+            withTimeout(1_000) { controller.state.first { !it.commandInFlight } }
+            controller.refresh()
+            withTimeout(1_000) { controller.state.first { it.sequence == canonical } }
+            assertSame(retained, controller.state.value.currentValueDraft)
+            val save = commands.single() as ExpandedSequenceCommand.SaveValues
+            assertEquals(row.occurrence.id, save.occurrenceId)
+            assertEquals(row.activity.fields.map { it.id }, save.values.map { it.snapshotFieldId })
+            assertEquals(NumberExecutionValue(number.id, 2_000), save.values.first().value)
+            assertTrue(save.values.drop(1).all { it.value == null })
+            assertEquals(row.activity, canonical.occurrences.first().activity)
             controller.close()
         }
 

@@ -2,6 +2,11 @@
 
 Delivery-plan item 7 and the S5 Parent contract define this gate. Product v0.16, domain v0.10, database v0.6 and the implementation clarifications remain authoritative. These checks preserve schema v10, durable identities, runtime semantics and existing permission UX.
 
+S3 expanded Sequence accessibility evidence is described in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).
+S4 focused Plan Execution accessibility evidence and pending manual validation are described in [plan_execution_accessibility.md](plan_execution_accessibility.md).
+
+S5 cross-route evidence and the assistive-service walkthrough are described in [primary_execution_accessibility.md](primary_execution_accessibility.md).
+
 ## Automatic CI and required jobs
 
 [CI](../../.github/workflows/ci.yml) automatically runs complete data and app instrumentation at **all five APIs** on pull requests to main, pushes to main, workflow dispatch and reusable workflow calls. Every row is required:
@@ -19,9 +24,92 @@ The matrix uses separate CI runners per API, with fail-fast disabled. Within a r
 
 Checkout and runner verification use the PR head SHA (or github.sha for other events). The runner rejects a checkout mismatch before Gradle. evidence.json distinguishes tested SHA from GitHub event SHA, which may identify a merge ref.
 
+## PR38 W1 canonical reload correction
+
+The mandatory inventory adds five expanded Sequence screen cases and five controller-backed
+physical-database cases, covering RUNNING_CURRENT, PAUSED_CURRENT, WAITING_NEXT,
+RUNNING_TRANSITION_COUNTDOWN and PAUSED_TRANSITION_COUNTDOWN. It now requires **441 app,
+627 data and 2 independent startup cases per API**; every previous identity remains required.
+The new cases hold and fail a refresh after successful loading, exercise retained callbacks
+and open menus/dialogs, recover against a changed canonical state, and verify durable facts
+after physical close/reopen. Screen cases check merged/unmerged actions and native keyboard
+Enter activation of Back, Retry and the newly authorized command.
+
+See the W1 record in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).
+The Controller must execute the unfiltered API 26/31/33/35/36 gates and exact-head GitHub CI.
+AndroidTest compilation and the mocked runner tests do not establish device execution.
+Manual TalkBack/Switch Access validation remains unperformed.
+
+## PR38 W2 same-runtime foreground revalidation
+
+Adds seven expanded Sequence screen and three controller-backed physical-database cases.
+The inventory now requires **451 app, 627 data and 2 independent startup cases per API**.
+All W1 identities, the existing EN/RU scaling cases and all five API gates remain required.
+Held semantic-generation refreshes cover retained Runtime Add values/placement, native
+Number/Text and deep-occurrence keyboard focus/scroll, safe invalidation, explicit dismissal,
+disposed callbacks and strict confirmation invalidation. Physical reopen checks retain
+execution/occurrence/snapshot identity, Plan linkage and unrelated history; restoration
+itself performs no writes. See the W2 record in
+[expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).
+
+Device fail-first/corrected execution and exact-head CI remain Controller-owned. Local
+AndroidTest compilation is not execution evidence. Manual TalkBack/Switch Access validation
+remains unperformed.
+
+## PR38 W2 pre-disposal Runtime Add admission correction
+
+Adds mandatory physical-database one-off and Template-selection admission races;
+the existing semantic-generation foreground-refresh case remains required. The new
+cases invoke the captured enabled semantics callback in the same UI turn as refresh,
+before dialog disposal. Both retain the populated
+Timer draft and placement, reopen the database before admission to prove no write,
+then explicitly admit exactly one Add after identical canonical revalidation.
+The inventory now requires **453 app, 627 data and 2 startup cases per API**.
+Existing invalidation cases also exercise captured Add callbacks for changed current,
+invalid placement, failed/stale reads and explicit Cancel/Back. All W1/W2 cases remain
+mandatory. Device fail-first/corrected execution, unfiltered five-API suites and
+exact-head CI remain Controller-owned; compilation is not device execution evidence.
+
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 626 data, 323 isolated app, and 2 independent startup cases per API. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 453 isolated app, and 2 independent startup cases per API. S3C1 adds two expanded Sequence presentation cases and two physical value-save/completion reopen cases; the existing Runtime Add reopen case now selects between duplicate catalog names. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+
+S4 adds 17 mandatory app identities: eight focused Plan presentation/semantics/localization/scale cases and nine controller-backed physical-database persistence cases. No existing mandatory identity is removed. Local verification on 2026-10-20 passed 405 app JVM cases (zero failures/errors/skips), app ktlint, Detekt, lintDebug and AndroidTest APK compilation/assembly; the exact command and manual walkthrough are recorded in the S4 document. Local JVM/static checks and AndroidTest compilation/packaging are implementation evidence only; the unfiltered five-API suites, independent startup and exact-head GitHub CI remain Controller-owned gates.
+
+S5 adds 14 mandatory app identities: 13 production-navigation/physical-reopen journeys
+and one Daily keyboard transition regression. The S5 inventory required **424 app,
+627 data and 2 independent startup cases per API**. All S1?S4 identities remain pinned.
+Controller check aliases remain `full` and `gmd-full`; they are labels, not Gradle tasks.
+Controller owns authoritative checks, independent production startup, and exact-head
+GitHub execution at APIs 26, 31, 33, 35 and 36. S5 does not close the Parent: the
+Decomposer must perform the separate full actual-repository closure audit.
+
+The first S5 API 35 run reached all 424 app cases and failed nine new production
+journey cases. The shared fixture repair preserves every identity and assertion;
+the authorized scoped probe subsequently passed all nine. See the linked S5 record
+for timestamp-token, route-owner, Back synchronization and fixed-scale Number details.
+This scoped PASS does not replace the required unfiltered suites or exact-head CI.
+
+S5C1 adds seven mandatory app identities: four Daily focus/disambiguation cases,
+one Plan disambiguation case, and two duplicate-Plan production-route/reopen journeys.
+The S5C1 inventory required **431 app, 627 data, and 2 independent startup cases
+per API**. Every previous mandatory identity remains required. Duplicate labels and
+native focus changes are presentation only; see the S5C1 record in
+[primary_execution_accessibility.md](primary_execution_accessibility.md).
+Controller must execute `full` and `gmd-full`, independent production startup, and the
+unfiltered exact-head GitHub matrix at APIs 26/31/33/35/36. These S5C1 gates are pending;
+source/APK compilation cannot certify device execution.
+
+The first S5C1 API 35 `gmd-full` at head
+`5d24fa18e737fcae8d91b6732369f6a38b141e2c` completed all 431 app cases with one
+date-change focus fixture failure. Data XML reports 627 passes and five existing
+ignored skips, zero failures/errors. A diagnostic probe confirmed native fallback
+focus during Loading; the corrected fixture establishes surviving History focus
+before terminal publication and verifies its preservation. The authorized second
+probe passed the exact failing case (one test, zero failures/errors/skips). See the
+linked S5C1 record for original XML paths and local checks. All inventory identities
+and counts are retained. The full unfiltered rerun and independent final gates remain
+Controller-owned; the scoped probe is not a release-gate PASS.
 
 Every required case must appear exactly once and execute successfully in original JUnit XML. Missing suites/cases, skips, failures, errors, malformed identity/XML, duplicate required identity, inconsistent XML counts, unsuccessful Gradle exit, or wrong/missing observed API reject the module. An API marker by itself cannot pass. Nonmandatory ignored fixtures may remain skipped (the data suite currently emits five); skips are counted and retained. No unrelated skip is rejected globally. Any reported failure or error still fails the module.
 
@@ -289,3 +377,49 @@ date attribution and unchanged history, and inspect EXPLAIN for executed stateme
 All earlier signed-rank, nine-byte-pass, fair-probe, eligibility and coherence regressions
 remain mandatory. The host mixed-trial probe supplies reproducible native VM evidence;
 Controller owns fail-first/corrected Room execution and the unfiltered five-API CI gate.
+
+## S1 Daily accessibility boundary
+
+The pinned inventory adds seven Daily presentation cases and one physical-database
+Daily route/controller lifecycle case (331 mandatory app cases). All prior cases
+remain mandatory. The independent production-startup invocation and all five API
+gates (26, 31, 33, 35, 36) remain required, with unfiltered app/data execution.
+See [Daily accessibility evidence and walkthrough](daily_accessibility.md) for
+coverage, local verification boundaries, and the pending manual TalkBack procedure.
+Controller owns authoritative app-unit, gmd-app, lint and exact-head CI evidence.
+APK compilation and semantics assertions do not certify TalkBack operation.
+
+## S2 Start Activity accessibility boundary
+
+The pinned inventory adds nine launcher presentation cases and ten isolated physical-
+database route/controller cases, bringing the mandatory app count to **350 per API**.
+S2C1 adds two presentation regressions and four isolated nested-Browse cancellation
+cases, bringing the current mandatory app count to **356 per API**. The command-state
+matrix covers both Back mechanisms; physical reopen cases cover Checking/Preflight
+cancellation and a later independent successful launch. Passive remaining-time
+semantics cover exact-zero and overdue display without a live region or misleading
+indeterminate progress. Data remains 627 and the independent production-startup
+invocation remains two.
+All original testcase identities and the five unfiltered API gates remain mandatory.
+The existing production Sequence launch, organization, stale-target, transaction and
+route-session tests are retained.
+
+See [Start Activity accessibility evidence and walkthrough](start_activity_accessibility.md)
+for semantic activation, exact identity/snapshot reopening, quick zero/Missing/default,
+one-off, pinned immutability, DST/overlap, commit gating, localization/scaling, shared-
+component impact and manual validation boundaries. Daily reuses its existing target
+provider through a shared extraction; S1 semantics remain required. Controller owns
+authoritative app-unit, gmd-app, lint and exact-head GitHub verification on all five APIs.
+Local APK compilation does not establish device or manual TalkBack execution.
+
+The initial Controller API 35 run completed all 350 app cases with four failures.
+The scoped repair tightens button selectors and establishes keyboard-mode focus
+prerequisites without removing assertions or testcase identities. The authorized
+repair probe returned "No active repair-probe lease" before executing any testcase;
+Controller instrumentation confirmation is pending. See the linked evidence for
+the repair and local check results. A subsequent focused run confirmed the Timer
+selector repair but failed three cases in composition-time input-mode setup.
+The shared keyboard fixture now enters native keyboard mode after owner attachment
+and restores the previous mode on teardown. Its APK compilation and static checks
+passed; the new repair-probe invocation also had no active lease, so device
+confirmation remains pending.

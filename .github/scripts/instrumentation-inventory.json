@@ -769,6 +769,17 @@
       "sequencePlanStartUsesProductionRouteAndReturnsToUsableDailyRuntime",
       "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation"
     ],
+    "com.alexandr5476.lifetracing.PlanExecutionAccessibilityPersistenceTest": [
+      "dailyOriginSemanticTimedStartPreservesExactFrozenIdentityAfterReopen",
+      "explicitIndependentDstOffsetsAndCurrentOverlapConfirmationPersistExactHistoricalFacts",
+      "noLiveExplicitZeroUsesOnlyEditedOverrideAndFulfillsWithoutLiveSession",
+      "noLiveMissingUsesExactFieldAndRetainsMissingDurationAfterReopen",
+      "overlapIntroducedAfterControllerCheckIsRevalidatedByWriterBeforeAnyPlanMutation",
+      "planOriginSemanticSequenceStartPreservesExactFrozenIdentityAfterReopen",
+      "semanticPreflightCancelExitsBeforeAdmissionAndRejectsObsoleteBoundary",
+      "toolbarAndSystemBackWaitForAdmittedCommitThenDeliverSavedResultOnce",
+      "untouchedRoundedDefaultRemainsConfiguredRatherThanExplicitActual"
+    ],
     "com.alexandr5476.lifetracing.PlanExecutionPersistenceTest": [
       "activitySourceDivergenceDuringRealPreflightKeepsAndExecutesTheFrozenPlan",
       "finalLiveSlotOwnershipRejectsTimedActivityAndSequenceAfterRealPreflight",
@@ -798,6 +809,25 @@
     "com.alexandr5476.lifetracing.SettingsProductionRouteTest": [
       "settings_controls_recreation_and_back_preserve_daily_and_live_runtime"
     ],
+    "com.alexandr5476.lifetracing.StartActivityAccessibilityPersistenceTest": [
+      "semanticActivitySelectionPreservesCanonicalRuntimeAndSnapshotAfterPhysicalReopen",
+      "semanticSequenceSelectionUsesExactWriterAndSurvivesPhysicalReopen",
+      "semanticQuickZeroPreservesFieldAndStatisticsIdentityWithoutTouchingLiveSession",
+      "semanticQuickMissingIsNeverNumericZeroAfterPhysicalReopen",
+      "semanticUntouchedQuickDefaultPreservesUnroundedStoredValue",
+      "semanticOneOffNoLiveCompletionCreatesOnlyOneHistoricalSystemBucketRoot",
+      "semanticPinnedMoveUsesCompleteOrderAndLeavesAllTemplateAndSnapshotFactsUnchanged",
+      "semanticHistoricalOptionsValidateTimesAndPreserveExplicitOffsetsAndOverlapProposal",
+      "semanticPreflightCancellationAndBothBackActionsRespectPendingDurableCommit",
+      "semanticConflictRetryAndCommittedCoordinationFailureNeverDuplicateLaunch",
+      "nestedToolbarBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry",
+      "nestedSystemBackCancelsPreflightAndObsoleteCallbackCannotWriteAfterReentry",
+      "nestedToolbarBackCancelsCheckingBeforeSchedulerRegistration",
+      "nestedSystemBackCancelsCheckingBeforeSchedulerRegistration"
+    ],
+    "com.alexandr5476.lifetracing.daily.DailyAccessibilityPersistenceTest": [
+      "semanticPauseResumeFinishPreserveCanonicalExecutionAfterPhysicalReopen"
+    ],
     "com.alexandr5476.lifetracing.daily.DailyHistoricalRangePersistenceTest": [
       "equalClocksOnConsecutiveOriginalDatesRemainDistinctAfterReload",
       "repeatedOriginalClockShowsBothActualOffsetsAfterReload",
@@ -805,6 +835,13 @@
       "shortOriginalZoneOvernightRangeShowsBothDatesAfterReload"
     ],
     "com.alexandr5476.lifetracing.daily.DailyScreenPresentationTest": [
+      "accessibilityActivityTimingAndActionsFollowCanonicalState",
+      "accessibilityEnglishAndRussianReflowAtCombinedScales",
+      "accessibilityHeadingsDatesAndFeedbackRecoverWithoutStaleActions",
+      "accessibilityPlansAndHistoryPreserveContextAndIdentity",
+      "accessibilitySequenceMissingAndNoLiveDataStayHonest",
+      "accessibilitySequenceStatesExposeOnlyCanonicalActions",
+      "accessibilityTimerBoundariesRemainPassiveAndUnannounced",
       "activity_stopwatch_progresses_pauses_canonically_and_disables_in_flight_actions",
       "activity_timer_uses_remaining_then_overtime_and_missing_baseline_is_unavailable",
       "completedOverlapClocksStayOriginalAndLocalizedAfterDeviceZoneChange",
@@ -818,7 +855,12 @@
       "sequence_current_stopwatch_and_total_progress_independently_then_freeze_when_paused",
       "sequence_timer_and_no_live_current_use_their_frozen_values",
       "stopwatch_honors_frozen_show_seconds_while_timer_keeps_second_precision",
-      "waiting_and_transition_states_never_fabricate_a_current_child_or_countdown"
+      "waiting_and_transition_states_never_fabricate_a_current_child_or_countdown",
+      "accessibilityKeyboardFocusRecoversOnTerminalRemovalWithoutFollowingTicksOrRefreshes",
+      "dateChangesDiscardRuntimeFocusOwnershipBeforeTerminalPublication",
+      "duplicatePlanActionsRemainDistinctLocalizedAndDispatchOnlyTheirOriginalIdentity",
+      "explicitFinishRecoversRuntimeFocusAcrossCanonicalLoadingWithoutReplayingTheCommand",
+      "terminalSequenceRemovalPreservesNavigationFocusAndRecoversRuntimeFocus"
     ],
     "com.alexandr5476.lifetracing.editor.ActivityTemplateEditorPersistenceTest": [
       "categoryOptionLabelRenamePreservesSparseActiveOptionPositionsAndRevision",
@@ -913,7 +955,18 @@
       "pointerDragFollowsIdentityAcrossMultipleMovesAndCancellationRestoresOrder",
       "preflightConflictRejectedAndCommitStatesExposeOnlyTheirAcceptedActions",
       "roundedDefaultRemainsEnabledAndPinnedMoveUsesTheCompleteOrder",
-      "secondaryStartOptionsOpensWithoutChangingOneActionPrimarySelection"
+      "secondaryStartOptionsOpensWithoutChangingOneActionPrimarySelection",
+      "launcherHeadingsAndOneOffSelectedModeExposeNativeSemantics",
+      "typedDuplicateNamesKeepPrimaryAndOptionsActionsIndependentInBothTrees",
+      "pinnedBoundaryMovesAndDragMetadataDoNotOfferImpossibleCommands",
+      "quickEditableValueDistinguishesDefaultZeroMissingNegativeAndInvalidWithoutFocusCommit",
+      "historicalFieldsKeepNativeSetTextAndExactCategoryIdentityWithMissingSelection",
+      "bothAmbiguousTimestampsRequireExplicitOffsetSemanticActivation",
+      "commandFeedbackIsDistinctAndPreflightTicksHaveStableNoninteractiveSemantics",
+      "nativeBackAndToolbarBackShareFolderAndNestedEditorContext",
+      "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes",
+      "nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand",
+      "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
     ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
       "activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent",
@@ -929,12 +982,73 @@
       "russianFolderOrganizationControlsRemainActionableAtCompactWidth",
       "russianOrganizationControlsRemainActionableAtCompactWidth"
     ],
+    "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceAccessibilityPersistenceTest": [
+      "oneOffAddBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen",
+      "templateSelectionBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen",
+      "foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen",
+      "foregroundRefreshRetainsNumberFocusAndDeepScrollWithoutWritesAfterReopen",
+      "foregroundRefreshRetainsTextFocusAndDeepScrollWithoutWritesAfterReopen",
+      "runningRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "pausedRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "waitingRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "countdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "pausedCountdownRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
+      "canonicalCurrentValuesRemainEditableThroughSaveCompleteAndPhysicalReopen",
+      "canonicalSavedCurrentValuesKeepSnapshotAndMissingAfterPhysicalReopen",
+      "runningAndPausedCountdownUseBaselineWithoutFabricatingCurrentOrCompletingAtZero",
+      "semanticEarlyEndCancelThenConfirmFulfillsOnlyExplicitPlanAfterReopen",
+      "semanticMakeNextUsesClickedRepeatedOccurrenceAndPreservesProvenanceAfterReopen",
+      "semanticPauseResumeCompleteAndStartNextRetainPlanAndPhysicalRuntimeFacts",
+      "semanticTemplateRuntimeAddStartNowKeepsFrozenSnapshotSourceAndChildAfterReopen",
+      "timerBeforeAtAndAfterDeadlineIsLabeledWithoutReconciliationAndPauseFreezesIt"
+    ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceScreenTest": [
+      "cancelledAndBackDismissedDraftsStayDismissedAfterForegroundRefresh",
+      "disposedAddCallbackCannotSubmitOrDismissRevalidatedDraft",
+      "changedCurrentDropsDraftFocusAndRejectsDisposedTextInput",
+      "invalidPlacementDropsRuntimeAddInputInsteadOfRetargetingIt",
+      "failedRefreshAndStaleRouteDiscardDraftsAndExposeOnlyRecovery",
+      "sameRuntimeRefreshKeepsDeepOccurrenceFocusButNeverReopensItsMenu",
+      "successfulRevalidationNeverReopensOrReplaysPendingConfirmations",
+      "runningReloadDismissesOccurrenceMenuAndBlocksStaleActions",
+      "pausedReloadDismissesEndConfirmationAndBlocksStaleActions",
+      "waitingReloadDismissesRuntimeAddAndBlocksStaleActions",
+      "countdownReloadDismissesJumpConfirmationAndBlocksStaleActions",
+      "pausedCountdownReloadDismissesGlobalMenuAndBlocksStaleActions",
+      "alreadyOpenGlobalMenuCannotExecuteDuringCommand",
+      "alreadyOpenOccurrenceMenuIsDismissedWhenStateAuthorizationChanges",
+      "childlessNoLiveWithMainValueUsesDraftAndNeverExposesStandaloneSave",
+      "childlessNoLiveWithoutMainValueHasCompleteAndNoFabricatedDuration",
       "completeRuntimeOrderAndProvenanceUseFrozenActivityPresentation",
+      "confirmationCannotExecuteDuringCommandOrAfterTargetBecomesStale",
+      "currentNumberSetTextMissingAndZeroUseExactFieldAndBlockInvalidComplete",
       "currentValueControlsAreDisabledWhileACommandIsInFlight",
+      "disabledConfirmationPoliciesDispatchExistingCommandsDirectly",
+      "doAgainForwardsEachAuthorizedPlacementWithoutOpeningOldExecution",
+      "doAgainStartNowIsAvailableOnlyWithoutCurrentAndForwardsCompletedId",
+      "duplicateCatalogControlsKeepNativeActionsAndExactIdsAcrossPaging",
+      "englishAndRussianControlsReflowAtCombinedSystemAndAppScales",
+      "frozenMainValueSummaryKeepsContextTypeMissingAndZeroInBothLanguages",
       "globalOverflowPreservesEarlyEndConfirmationAndRuntimeAddDialog",
       "globalSecondaryOverflowIsStateAwareAndNeverPermanentlyRendersItsActions",
-      "tenThousandOccurrenceGraphOnlyComposesVisibleLazyRows"
+      "jumpConfirmationCancelAndConfirmRetainOriginalTarget",
+      "keyboardFocusTimerRecompositionAndBackDismissalNeverDispatchCommands",
+      "missingCurrentCannotExposeCompleteAndMissingBaselineIsExplicit",
+      "occurrenceMenusDistinguishRepeatedNamesAndForwardOriginalIds",
+      "pausedCountdownHasExplicitNoCurrentStateAndResume",
+      "pausedCurrentHasExplicitStateAndOnlyResume",
+      "rejectionStaleTargetAndCommittedCoordinationFeedbackRemainDistinct",
+      "routeLoadingReadFailureRetryAndStaleExitNeverReplayCommands",
+      "runningCountdownHasExplicitNoCurrentStateAndPause",
+      "runningCurrentHasExplicitStateAndCompleteAndPause",
+      "runtimeAddAllEditorsAndWritersAreDisabledDuringAdmittedCommand",
+      "runtimeAddClosesWhenPlacementsBecomeEmpty",
+      "runtimeAddSelectionsHaveNativeSelectedStateAndInvalidTimerCannotAdd",
+      "runtimeCatalogFailureRetryLoadingAndPagingKeepExactTemplateIdentity",
+      "staleProjectionHasNoExecutableSequenceControls",
+      "tenThousandOccurrenceGraphOnlyComposesVisibleLazyRows",
+      "textAndCategoryEditorsKeepExactFieldAndOptionIdsUntilExplicitComplete",
+      "waitingNextHasExplicitNoCurrentStateAndStartNext"
     ],
     "com.alexandr5476.lifetracing.plan.PlanControllerPersistenceTest": [
       "archivedOrUnavailableSourceAfterCatalogSelectionRejectsWithoutPlanOrSnapshot",
@@ -971,6 +1085,14 @@
     ],
     "com.alexandr5476.lifetracing.plan.PlanExecutionScreenTest": [
       "activityOffersSecondaryTimeEntry",
+      "countdownIsPassiveAtBeforeExactAndAfterZeroWithoutCommitClaim",
+      "englishRussianKeyboardAndNativeTargetsRemainReachableAtCombinedScaleExtremes",
+      "focusedHeadingAndFrozenSourceContextAreDiscoverable",
+      "frozenExactLegacyAndWeekContextsKeepSourceStateSeparateFromScheduling",
+      "loadingReadFailureRetryAndStaleReloadAreIndependentNativeActions",
+      "localizedTimedOffsetChoicesStayIndependentAtMaximumScaleAndZoneReviewRetainsText",
+      "materialCommandFeedbackRemainsDistinctAndCannotExposeSecondStart",
+      "quickFieldsExposeNativeEditingMainValueSelectedCategoryAndMissingWithoutFocusWrites",
       "sequenceDoesNotOfferSecondaryTimeEntry"
     ],
     "com.alexandr5476.lifetracing.plan.PlanScreenPresentationTest": [
@@ -980,7 +1102,8 @@
       "hiddenCanonicalRecoveryFailureHasVisibleLocalizedRetry",
       "lifecycleAndSourceStatesOnlyOfferMutableChangedUpdate",
       "repeatedHourLabelsUseCanonicalOccurrenceOffsets",
-      "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen"
+      "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen",
+      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation"
     ],
     "com.alexandr5476.lifetracing.runtime.AndroidCompatibilityDeviceTest": [
       "recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi={api}]"
@@ -1111,6 +1234,23 @@
       "noDurationSamplesAndSampledZeroRemainDistinctAndLifecycleMetadataIsVisible",
       "numberCategoryAndTextFieldsUseStableIdentityAndCanonicalSamples",
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
+    ],
+    "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
+      "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
+      "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",
+      "planOriginSequenceEndEarlyFulfillsTheSameFrozenPlanAndExecutionAfterReopen",
+      "dailyNoLivePlanZeroReturnsToDailyAndRetainsFrozenFieldAfterReopen",
+      "planNoLivePlanZeroReturnsToPlanAndRetainsFrozenFieldAfterReopen",
+      "idleLauncherToolbarAndSystemBackReturnKeyboardFocusWithoutWriting",
+      "launcherPreflightCancellationAndRetainedRecreationNeverReplaySelection",
+      "focusedTimeEntryBackAndStaleOriginReloadNeverWriteOrRestoreObsoleteActions",
+      "planReadRetryAndBackDuringCommitDeliverSavedCoordinationFailureOnceToDaily",
+      "launcherBackDuringCommitDeliversSavedCoordinationFailureOnceToDaily",
+      "russianLargeFontProductionActivityJourneyKeepsActionsReachable",
+      "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
+      "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
+      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
     ]
   },
   "startup": {

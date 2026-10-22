@@ -17,14 +17,17 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -40,11 +43,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
@@ -56,6 +70,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingLinearProgressIndicator
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -70,6 +85,7 @@ internal fun StartActivityRoute(
     session: StartActivityRouteSession,
     onBack: () -> Unit,
     onCommitted: () -> Unit,
+    isRouteVisible: Boolean = true,
 ) {
     val controller = session.controller
     val state by controller.state.collectAsState()
@@ -77,27 +93,16 @@ internal fun StartActivityRoute(
     val exitRoute = {
         exitPolicy.requestExit(controller::arbitrateRouteExit, onBack, onCommitted)
     }
-    BackHandler(enabled = true) {
-        if (state.oneOff != null &&
-            state.command !is LauncherCommandState.Committing &&
-            state.command !is LauncherCommandState.Committed &&
-            state.command !is LauncherCommandState.CommittedCoordinationFailure
-        ) {
-            controller.dispatch(StartActivityAction.CloseOneOff)
-        } else if (state.options != LauncherLoad.Idle &&
-            state.command !is LauncherCommandState.Committing &&
-            state.command !is LauncherCommandState.Committed &&
-            state.command !is LauncherCommandState.CommittedCoordinationFailure
-        ) {
-            controller.dispatch(StartActivityAction.CloseOptions)
-        } else {
-            exitRoute()
-        }
-    }
     LaunchedEffect(state.command) {
         exitPolicy.onCommand(state.command, onCommitted)
     }
-    StartActivityScreen(state, controller::dispatch, session.interaction, exitRoute)
+    StartActivityScreen(
+        state,
+        controller::dispatch,
+        session.interaction,
+        onRouteBack = exitRoute,
+        isRouteVisible = isRouteVisible,
+    )
 }
 
 @Suppress("CyclomaticComplexMethod") // Launcher sections remain in their product order.
@@ -106,6 +111,7 @@ internal fun StartActivityScreen(
     state: StartActivityState,
     onAction: (StartActivityAction) -> Unit,
     interaction: StartActivityRouteInteraction,
+    isRouteVisible: Boolean = true,
     onRouteBack: () -> Unit = {},
 ) {
     val selected = state.selected
@@ -125,109 +131,154 @@ internal fun StartActivityScreen(
         val target = (selected as? LauncherLoad.Content)?.value ?: return@LaunchedEffect
         interaction.resolveSelection(target)?.let(onAction)
     }
-    Surface(color = MaterialTheme.colorScheme.background) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
-            contentPadding =
-                androidx.compose.foundation.layout
-                    .PaddingValues(MaterialTheme.spacing.xLarge),
-        ) {
-            item {
-                LauncherHeader(onBack = {
-                    when {
-                        state.command is LauncherCommandState.Committing ||
-                            state.command is LauncherCommandState.Committed ||
-                            state.command is LauncherCommandState.CommittedCoordinationFailure -> onRouteBack()
-                        state.oneOff != null -> onAction(StartActivityAction.CloseOneOff)
-                        state.options != LauncherLoad.Idle -> onAction(StartActivityAction.CloseOptions)
-                        interaction.browsePath.isNotEmpty() ->
-                            onAction(StartActivityAction.Browse(interaction.browseBack()))
-                        else -> onRouteBack()
-                    }
-                })
-            }
-            item { CommandPresentation(state.command, (selected as? LauncherLoad.Content)?.value?.name, onAction) }
-            if (state.options != LauncherLoad.Idle) item { StartOptionsPanel(state.options, state.command, onAction) }
-            state.oneOff?.let { draft -> item { OneOffPanel(draft, state.command, onAction) } }
-            item { OrganizationFailure(state.organizationFailure) }
-            item { TargetLoading(selected, onAction) }
-            quickTarget?.let { target ->
+    val navigateBack = {
+        when {
+            state.command is LauncherCommandState.Committing ||
+                state.command is LauncherCommandState.Committed ||
+                state.command is LauncherCommandState.CommittedCoordinationFailure -> onRouteBack()
+            state.oneOff != null -> onAction(StartActivityAction.CloseOneOff)
+            state.options != LauncherLoad.Idle -> onAction(StartActivityAction.CloseOptions)
+            state.command != LauncherCommandState.Idle -> onRouteBack()
+            interaction.browsePath.isNotEmpty() ->
+                onAction(StartActivityAction.Browse(interaction.browseBack()))
+            else -> onRouteBack()
+        }
+    }
+    BackHandler(onBack = navigateBack)
+    val listState = rememberLazyListState()
+    val editorKind =
+        when {
+            quickTarget != null -> "quick"
+            state.oneOff != null -> "one-off"
+            state.options != LauncherLoad.Idle -> "options"
+            else -> null
+        }
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(interaction, isRouteVisible) {
+        if (isRouteVisible && editorKind == null) {
+            listState.scrollToItem(0)
+            backFocus.requestFocus()
+        }
+    }
+    var editorWasOpen by remember { mutableStateOf(false) }
+    var preflightWasOpen by remember { mutableStateOf(false) }
+    val preflightOpen = state.command is LauncherCommandState.Preflight
+    LaunchedEffect(editorKind, preflightOpen) {
+        val returning = (editorWasOpen && editorKind == null) || (preflightWasOpen && !preflightOpen)
+        if (editorKind != null || (returning && state.command == LauncherCommandState.Idle)) {
+            listState.scrollToItem(0)
+            if (isRouteVisible && editorKind == null) backFocus.requestFocus()
+        }
+        editorWasOpen = editorKind != null
+        preflightWasOpen = preflightOpen
+    }
+    LifeTracingAccessibleTargets {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().semantics { isTraversalGroup = true },
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
+                contentPadding =
+                    androidx.compose.foundation.layout
+                        .PaddingValues(MaterialTheme.spacing.xLarge),
+            ) {
                 item {
-                    QuickMainValueCard(
-                        target = target,
-                        editor = requireNotNull(quickEditor),
-                        onValueChange = interaction::editQuickValue,
-                        onCancel = interaction::cancelQuickEditor,
-                        onComplete = { interaction.completeQuickEditor(target)?.let(onAction) },
+                    LauncherHeader(onBack = navigateBack, backFocus = backFocus)
+                }
+                item {
+                    CommandPresentation(
+                        state.command,
+                        (selected as? LauncherLoad.Content)?.value?.name,
+                        onAction,
+                        showRetry = state.oneOff == null,
                     )
                 }
-            }
-            when (val home = state.home) {
-                LauncherLoad.Loading -> item { LauncherLoading() }
-                is LauncherLoad.Failure -> item { LauncherFailure(R.string.launcher_home_failure, onAction) }
-                is LauncherLoad.Content -> {
+                if (state.options !=
+                    LauncherLoad.Idle
+                ) {
+                    item { StartOptionsPanel(state.options, state.command, onAction) }
+                }
+                state.oneOff?.let { draft -> item { OneOffPanel(draft, state.command, onAction) } }
+                item { OrganizationFailure(state.organizationFailure) }
+                item { TargetLoading(selected, onAction) }
+                quickTarget?.let { target ->
                     item {
-                        TrackableSection(
-                            title = R.string.launcher_recent,
-                            empty = R.string.launcher_recent_empty,
-                            items = home.value.recent,
-                            enabled = state.canSelect(quickEditor != null),
-                            onSelect = select,
-                            onOptions = options,
-                        )
-                    }
-                    item {
-                        PinnedSection(
-                            canonical = home.value.pinned,
-                            organizationInFlight = state.organizationInFlight,
-                            organizationFailure = state.organizationFailure,
-                            enabled = state.canSelect(quickEditor != null),
-                            onSelect = select,
-                            onOptions = options,
-                            onReorder = { onAction(StartActivityAction.ReorderPinned(it)) },
+                        QuickMainValueCard(
+                            target = target,
+                            editor = requireNotNull(quickEditor),
+                            onValueChange = interaction::editQuickValue,
+                            onCancel = interaction::cancelQuickEditor,
+                            onComplete = { interaction.completeQuickEditor(target)?.let(onAction) },
+                            enabled = state.command == LauncherCommandState.Idle && !state.organizationInFlight,
                         )
                     }
                 }
-                LauncherLoad.Idle -> Unit
-            }
-            item {
-                SearchSection(
-                    query = state.searchQuery,
-                    state = state.search,
-                    enabled = state.canSelect(quickEditor != null),
-                    onSearch = { onAction(StartActivityAction.Search(it)) },
-                    onSelect = select,
-                    onOptions = options,
-                    onRetry = { onAction(StartActivityAction.Retry) },
-                )
-            }
-            item {
-                BrowseSection(
-                    state = state.browse,
-                    breadcrumbs = interaction.browsePath,
-                    enabled = state.canSelect(quickEditor != null),
-                    onBrowse = { folder ->
-                        if (folder == null) interaction.openRoot()
-                        onAction(StartActivityAction.Browse(folder))
-                    },
-                    onFolder = { folder ->
-                        interaction.openFolder(folder)
-                        onAction(StartActivityAction.Browse(folder.id))
-                    },
-                    onSelect = select,
-                    onOptions = options,
-                    onRetry = { onAction(StartActivityAction.Retry) },
-                )
-            }
-            if (state.oneOff == null) {
+                when (val home = state.home) {
+                    LauncherLoad.Loading -> item { LauncherLoading() }
+                    is LauncherLoad.Failure -> item { LauncherFailure(R.string.launcher_home_failure, onAction) }
+                    is LauncherLoad.Content -> {
+                        item {
+                            TrackableSection(
+                                title = R.string.launcher_recent,
+                                empty = R.string.launcher_recent_empty,
+                                items = home.value.recent,
+                                enabled = state.canSelect(quickEditor != null),
+                                onSelect = select,
+                                onOptions = options,
+                            )
+                        }
+                        item {
+                            PinnedSection(
+                                canonical = home.value.pinned,
+                                organizationInFlight = state.organizationInFlight,
+                                organizationFailure = state.organizationFailure,
+                                enabled = state.canSelect(quickEditor != null),
+                                onSelect = select,
+                                onOptions = options,
+                                onReorder = { onAction(StartActivityAction.ReorderPinned(it)) },
+                            )
+                        }
+                    }
+                    LauncherLoad.Idle -> Unit
+                }
                 item {
-                    LauncherCard {
-                        LifeTracingSecondaryButton(
-                            onClick = { onAction(StartActivityAction.OpenOneOff) },
-                            enabled = state.canSelect(quickEditor != null),
-                            modifier = Modifier.testTag("launcher-new-one-off"),
-                        ) { Text(stringResource(R.string.launcher_new_one_off)) }
+                    SearchSection(
+                        query = state.searchQuery,
+                        state = state.search,
+                        enabled = state.canSelect(quickEditor != null),
+                        onSearch = { onAction(StartActivityAction.Search(it)) },
+                        onSelect = select,
+                        onOptions = options,
+                        onRetry = { onAction(StartActivityAction.Retry) },
+                    )
+                }
+                item {
+                    BrowseSection(
+                        state = state.browse,
+                        breadcrumbs = interaction.browsePath,
+                        enabled = state.canSelect(quickEditor != null),
+                        onBrowse = { folder ->
+                            if (folder == null) interaction.openRoot()
+                            onAction(StartActivityAction.Browse(folder))
+                        },
+                        onFolder = { folder ->
+                            interaction.openFolder(folder)
+                            onAction(StartActivityAction.Browse(folder.id))
+                        },
+                        onSelect = select,
+                        onOptions = options,
+                        onRetry = { onAction(StartActivityAction.Retry) },
+                    )
+                }
+                if (state.oneOff == null) {
+                    item {
+                        LauncherCard {
+                            LifeTracingSecondaryButton(
+                                onClick = { onAction(StartActivityAction.OpenOneOff) },
+                                enabled = state.canSelect(quickEditor != null),
+                                modifier = Modifier.testTag("launcher-new-one-off"),
+                            ) { Text(stringResource(R.string.launcher_new_one_off)) }
+                        }
                     }
                 }
             }
@@ -255,13 +306,23 @@ private fun OneOffPanel(
             command is LauncherCommandState.Rejected
     val valid = runCatching { draft.configuration() }.isSuccess
     LauncherCard {
-        Text(stringResource(R.string.launcher_new_one_off), style = MaterialTheme.typography.titleLarge)
+        Text(
+            stringResource(R.string.launcher_new_one_off),
+            modifier =
+                Modifier.semantics {
+                    heading()
+                },
+            style = MaterialTheme.typography.titleLarge,
+        )
+        val initialFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { initialFocus.requestFocus() }
         LifeTracingOutlinedTextField(
             value = draft.name,
             onValueChange = { onAction(StartActivityAction.EditOneOffName(it)) },
-            modifier = Modifier.fillMaxWidth().testTag("launcher-one-off-name"),
+            modifier = Modifier.fillMaxWidth().focusRequester(initialFocus).testTag("launcher-one-off-name"),
             enabled = enabled,
             label = { Text(stringResource(R.string.launcher_one_off_name)) },
+            isError = draft.name.isBlank(),
         )
         LifeTracingOutlinedTextField(
             value = draft.shortComment,
@@ -278,6 +339,7 @@ private fun OneOffPanel(
             ).forEach { (mode, label) ->
                 LifeTracingSecondaryButton(
                     onClick = { onAction(StartActivityAction.EditOneOffMode(mode)) },
+                    modifier = Modifier.semantics { selected = draft.mode == mode },
                     enabled = enabled,
                 ) {
                     Text(stringResource(label) + if (draft.mode == mode) " \u2713" else "")
@@ -291,10 +353,11 @@ private fun OneOffPanel(
                 modifier = Modifier.fillMaxWidth().testTag("launcher-one-off-timer"),
                 enabled = enabled,
                 label = { Text(stringResource(R.string.launcher_one_off_timer_minutes)) },
+                isError = !valid && draft.name.isNotBlank(),
             )
         }
-        if (!valid) Text(stringResource(R.string.launcher_one_off_invalid), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        if (!valid) LauncherStatus(stringResource(R.string.launcher_one_off_invalid))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             LifeTracingSecondaryButton(
                 onClick = { onAction(StartActivityAction.CloseOneOff) },
                 enabled = enabled,
@@ -327,22 +390,39 @@ private fun OneOffPanel(
 }
 
 @Composable
-private fun LauncherHeader(onBack: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(stringResource(R.string.launcher_title), style = MaterialTheme.typography.headlineSmall)
-        TextButton(onClick = onBack) { Text(stringResource(R.string.launcher_browse_back)) }
+private fun LauncherHeader(
+    onBack: () -> Unit,
+    backFocus: FocusRequester,
+) {
+    FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            stringResource(R.string.launcher_title),
+            modifier =
+                Modifier.semantics {
+                    heading()
+                },
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+            Text(stringResource(R.string.launcher_browse_back))
+        }
     }
 }
 
 @Composable
-private fun LauncherLoading() = LauncherCard { Text(stringResource(R.string.launcher_loading)) }
+private fun LauncherStatus(message: String) {
+    Text(message, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+}
+
+@Composable
+private fun LauncherLoading() = LauncherCard { LauncherStatus(stringResource(R.string.launcher_loading)) }
 
 @Composable
 private fun LauncherFailure(
     message: Int,
     onAction: (StartActivityAction) -> Unit,
 ) = LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {
-    Text(stringResource(message), style = MaterialTheme.typography.titleMedium)
+    LauncherStatus(stringResource(message))
     LifeTracingPrimaryButton(onClick = { onAction(StartActivityAction.Retry) }) {
         Text(stringResource(R.string.launcher_retry))
     }
@@ -352,7 +432,7 @@ private fun LauncherFailure(
 private fun OrganizationFailure(failure: String?) {
     if (failure != null) {
         LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {
-            Text(stringResource(R.string.launcher_pinned_failure))
+            LauncherStatus(stringResource(R.string.launcher_pinned_failure))
         }
     }
 }
@@ -363,15 +443,27 @@ private fun TargetLoading(
     onAction: (StartActivityAction) -> Unit,
 ) {
     when (selected) {
-        LauncherLoad.Loading -> LauncherCard { Text(stringResource(R.string.launcher_target_loading)) }
+        LauncherLoad.Loading -> LauncherCard { LauncherStatus(stringResource(R.string.launcher_target_loading)) }
         is LauncherLoad.Failure ->
             LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {
-                Text(stringResource(R.string.launcher_target_failure))
+                LauncherStatus(stringResource(R.string.launcher_target_failure))
                 LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.Retry) }) {
                     Text(stringResource(R.string.launcher_retry))
                 }
             }
-        else -> Unit
+        is LauncherLoad.Content ->
+            LauncherCard {
+                val kind =
+                    stringResource(
+                        if (selected.value is LibraryLaunchTarget.Activity) {
+                            R.string.launcher_activity
+                        } else {
+                            R.string.launcher_sequence
+                        },
+                    )
+                Text(stringResource(R.string.launcher_target_ready, kind, selected.value.name))
+            }
+        LauncherLoad.Idle -> Unit
     }
 }
 
@@ -380,31 +472,46 @@ private fun CommandPresentation(
     command: LauncherCommandState,
     selectedTargetName: String?,
     onAction: (StartActivityAction) -> Unit,
+    showRetry: Boolean,
 ) {
     when (command) {
         LauncherCommandState.Idle -> Unit
-        is LauncherCommandState.Checking -> LauncherCard { Text(stringResource(R.string.launcher_checking)) }
-        is LauncherCommandState.Committing -> LauncherCard { Text(stringResource(R.string.launcher_committing)) }
+        is LauncherCommandState.Checking -> LauncherCard { LauncherStatus(stringResource(R.string.launcher_checking)) }
+        is LauncherCommandState.Committing ->
+            LauncherCard {
+                LauncherStatus(
+                    stringResource(R.string.launcher_committing),
+                )
+            }
         is LauncherCommandState.Preflight -> PreflightCard(command, selectedTargetName, onAction)
         is LauncherCommandState.Conflict ->
             LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {
-                Text(stringResource(R.string.launcher_conflict), style = MaterialTheme.typography.titleMedium)
+                LauncherStatus(stringResource(R.string.launcher_conflict))
                 Text(stringResource(R.string.launcher_conflict_detail))
-                LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.RetryLaunch) }) {
-                    Text(stringResource(R.string.launcher_retry))
+                if (showRetry) {
+                    LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.RetryLaunch) }) {
+                        Text(stringResource(R.string.launcher_retry))
+                    }
                 }
             }
         is LauncherCommandState.Rejected ->
             LauncherCard(container = MaterialTheme.colorScheme.errorContainer) {
-                Text(stringResource(R.string.launcher_rejected), style = MaterialTheme.typography.titleMedium)
-                LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.RetryLaunch) }) {
-                    Text(stringResource(R.string.launcher_retry))
+                LauncherStatus(stringResource(R.string.launcher_rejected))
+                if (showRetry) {
+                    LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.RetryLaunch) }) {
+                        Text(stringResource(R.string.launcher_retry))
+                    }
                 }
             }
-        is LauncherCommandState.Committed -> LauncherCard { Text(stringResource(R.string.launcher_committed)) }
+        is LauncherCommandState.Committed ->
+            LauncherCard {
+                LauncherStatus(
+                    stringResource(R.string.launcher_committed),
+                )
+            }
         is LauncherCommandState.CommittedCoordinationFailure ->
             LauncherCard {
-                Text(stringResource(R.string.launcher_committed_coordination))
+                LauncherStatus(stringResource(R.string.launcher_committed_coordination))
             }
     }
 }
@@ -424,16 +531,34 @@ private fun PreflightCard(
             elapsedNow = SystemClock.elapsedRealtime()
         }
     }
-    val remaining = preflightCountdownRemaining(preflight, wallAtStart.plusMillis(elapsedNow - elapsedAtStart))
-    val progress = 1f - remaining.toMillis().toFloat() / preflight.duration.toMillis().coerceAtLeast(1L)
     LauncherCard(container = MaterialTheme.colorScheme.primaryContainer) {
         targetName?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
-        Text(stringResource(R.string.launcher_countdown, formatLauncherCountdown(remaining)))
-        LifeTracingLinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) })
+        LauncherStatus(stringResource(R.string.launcher_preflight))
+        PreflightCountdown(preflight, wallAtStart.plusMillis(elapsedNow - elapsedAtStart))
         LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.CancelPreflight) }) {
             Text(stringResource(R.string.launcher_cancel))
         }
     }
+}
+
+/** Passive timing presentation; the existing display loop supplies its only clock. */
+@Composable
+internal fun PreflightCountdown(
+    preflight: LauncherCommandState.Preflight,
+    now: Instant,
+) {
+    val remaining = preflightCountdownRemaining(preflight, now)
+    val formatted = formatLauncherCountdown(remaining)
+    val remainingLabel = stringResource(R.string.launcher_countdown_remaining, formatted)
+    Text(
+        stringResource(R.string.launcher_countdown, formatted),
+        modifier = Modifier.semantics { contentDescription = remainingLabel },
+    )
+    val progress = 1f - remaining.toMillis().toFloat() / preflight.duration.toMillis().coerceAtLeast(1L)
+    LifeTracingLinearProgressIndicator(
+        progress = { progress.coerceIn(0f, 1f) },
+        modifier = Modifier.clearAndSetSemantics { hideFromAccessibility() },
+    )
 }
 
 internal fun preflightCountdownRemaining(
@@ -487,10 +612,10 @@ private fun SearchSection(
         )
         when (state) {
             LauncherLoad.Idle -> Unit
-            LauncherLoad.Loading -> Text(stringResource(R.string.launcher_search_loading))
+            LauncherLoad.Loading -> LauncherStatus(stringResource(R.string.launcher_search_loading))
             is LauncherLoad.Failure -> LauncherFailure(R.string.launcher_search_failure) { onRetry() }
             is LauncherLoad.Content -> {
-                if (state.value.isEmpty()) Text(stringResource(R.string.launcher_search_empty))
+                if (state.value.isEmpty()) LauncherStatus(stringResource(R.string.launcher_search_empty))
                 state.value.forEach { item ->
                     key(
                         item.key(),
@@ -531,12 +656,12 @@ private fun BrowseSection(
         }
         when (state) {
             LauncherLoad.Idle -> Unit
-            LauncherLoad.Loading -> Text(stringResource(R.string.launcher_browse_loading))
+            LauncherLoad.Loading -> LauncherStatus(stringResource(R.string.launcher_browse_loading))
             is LauncherLoad.Failure -> LauncherFailure(R.string.launcher_browse_failure) { onRetry() }
             is LauncherLoad.Content -> {
                 val contents = state.value
                 if (contents.folders.isEmpty() && contents.activities.isEmpty() && contents.sequences.isEmpty()) {
-                    Text(stringResource(R.string.launcher_browse_empty))
+                    LauncherStatus(stringResource(R.string.launcher_browse_empty))
                 }
                 contents.folders.forEach { folder ->
                     TextButton(onClick = { onFolder(folder) }, enabled = enabled) { Text(folder.name) }
@@ -650,36 +775,43 @@ private fun PinnedRow(
 ) {
     val moveUp = stringResource(R.string.launcher_move_up, item.name)
     val moveDown = stringResource(R.string.launcher_move_down, item.name)
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        TrackableRow(item, enabled, onSelect, onOptions, Modifier.weight(1f))
-        TextButton(
-            onClick = { onMove(-1) },
-            modifier = Modifier.semantics { contentDescription = moveUp },
-            enabled = enabled && canMoveUp,
-        ) { Text("\u2191") }
-        TextButton(
-            onClick = { onMove(1) },
-            modifier = Modifier.semantics { contentDescription = moveDown },
-            enabled = enabled && canMoveDown,
-        ) { Text("\u2193") }
-        val handle = stringResource(R.string.launcher_drag_handle)
-        Text(
-            "\u2195",
-            modifier =
-                Modifier.semantics { contentDescription = handle }.pointerInput(item.id, enabled) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { if (enabled) onDragStart() },
-                        onDrag = { change, amount ->
-                            if (enabled) {
-                                change.consume()
-                                onDrag(amount.y)
-                            }
+    Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        TrackableRow(item, enabled, onSelect, onOptions)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            TextButton(
+                onClick = { onMove(-1) },
+                modifier = Modifier.semantics { contentDescription = moveUp },
+                enabled = enabled && canMoveUp,
+            ) { Text("\u2191") }
+            TextButton(
+                onClick = { onMove(1) },
+                modifier = Modifier.semantics { contentDescription = moveDown },
+                enabled = enabled && canMoveDown,
+            ) { Text("\u2193") }
+            val handle = stringResource(R.string.launcher_drag_handle)
+            Text(
+                "\u2195",
+                modifier =
+                    Modifier
+                        .semantics {
+                            contentDescription = handle
+                            hideFromAccessibility()
+                        }.testTag("launcher-drag-${item.key()}")
+                        .pointerInput(item.id, enabled) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { if (enabled) onDragStart() },
+                                onDrag = { change, amount ->
+                                    if (enabled) {
+                                        change.consume()
+                                        onDrag(amount.y)
+                                    }
+                                },
+                                onDragEnd = { if (enabled) onDragEnd() },
+                                onDragCancel = onDragCancel,
+                            )
                         },
-                        onDragEnd = { if (enabled) onDragEnd() },
-                        onDragCancel = onDragCancel,
-                    )
-                },
-        )
+            )
+        }
     }
 }
 
@@ -692,17 +824,28 @@ private fun TrackableRow(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.small
+    val selectLabel = stringResource(R.string.launcher_select_template, item.name)
+    val optionsLabel = stringResource(R.string.launcher_options_for, item.name)
     Card(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .clip(shape)
-                .combinedClickable(enabled = enabled, onClick = onSelect),
+        modifier = modifier.fillMaxWidth().semantics { isTraversalGroup = true },
+        shape = shape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(modifier = Modifier.padding(MaterialTheme.spacing.medium)) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clip(shape)
+                    .combinedClickable(
+                        enabled = enabled,
+                        role = Role.Button,
+                        onClickLabel = selectLabel,
+                        onClick = onSelect,
+                    ).heightIn(min = LocalMinimumInteractiveComponentSize.current)
+                    .padding(MaterialTheme.spacing.medium),
+        ) {
             Text(item.name, style = MaterialTheme.typography.titleSmall)
             Text(
                 stringResource(
@@ -718,14 +861,17 @@ private fun TrackableRow(
                 style = MaterialTheme.typography.labelLarge,
             )
             item.shortComment?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            if (item.kind == LibraryTrackableKind.ACTIVITY) {
-                TextButton(
-                    onClick = onOptions,
-                    enabled = enabled,
-                    modifier = Modifier.testTag("launcher-options-${item.id.value}"),
-                ) {
-                    Text(stringResource(R.string.launcher_start_options))
-                }
+        }
+        if (item.kind == LibraryTrackableKind.ACTIVITY) {
+            TextButton(
+                onClick = onOptions,
+                enabled = enabled,
+                modifier =
+                    Modifier.semantics { contentDescription = optionsLabel }.testTag(
+                        "launcher-options-${item.id.value}",
+                    ),
+            ) {
+                Text(stringResource(R.string.launcher_start_options))
             }
         }
     }
@@ -738,23 +884,48 @@ private fun QuickMainValueCard(
     onValueChange: (String) -> Unit,
     onCancel: () -> Unit,
     onComplete: () -> Unit,
+    enabled: Boolean,
 ) {
     val mainValue = requireNotNull(target.mainValue)
     val parsed = parseLauncherNumber(editor.text, mainValue.displayPrecision)
     val valid = !editor.changed || editor.text.isBlank() || parsed != null
     LauncherCard(container = MaterialTheme.colorScheme.secondaryContainer) {
-        Text(target.name, style = MaterialTheme.typography.titleMedium)
+        Text(target.name, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+        val initialFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { initialFocus.requestFocus() }
+        val valueState =
+            stringResource(
+                when {
+                    !editor.changed -> R.string.launcher_value_default
+                    editor.text.isBlank() -> R.string.launcher_value_missing
+                    !valid -> R.string.launcher_invalid_number
+                    else -> R.string.launcher_value_edited
+                },
+            )
         LifeTracingOutlinedTextField(
             value = editor.text,
             onValueChange = onValueChange,
-            modifier = Modifier.widthIn(max = 360.dp),
+            modifier =
+                Modifier.widthIn(max = 360.dp).focusRequester(initialFocus).semantics {
+                    stateDescription =
+                        valueState
+                },
             label = { Text(mainValue.label()) },
+            enabled = enabled,
+            isError = !valid,
+            supportingText = { Text(valueState) },
         )
+        LifeTracingSecondaryButton(onClick = { onValueChange("") }, enabled = enabled) {
+            Text(stringResource(R.string.manual_history_set_missing))
+        }
         if (!valid) Text(stringResource(R.string.launcher_invalid_number), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            LifeTracingSecondaryButton(onClick = onCancel) { Text(stringResource(R.string.launcher_cancel)) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            LifeTracingSecondaryButton(
+                onClick = onCancel,
+                enabled = enabled,
+            ) { Text(stringResource(R.string.launcher_cancel)) }
             LifeTracingPrimaryButton(
-                enabled = valid,
+                enabled = enabled && valid,
                 onClick = onComplete,
             ) { Text(stringResource(R.string.launcher_complete)) }
         }
@@ -781,7 +952,8 @@ internal fun quickMainValueOverride(
 }
 
 @Composable
-private fun SectionTitle(id: Int) = Text(stringResource(id), style = MaterialTheme.typography.titleMedium)
+private fun SectionTitle(id: Int) =
+    Text(stringResource(id), modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
 
 @Composable
 private fun LauncherCard(
@@ -807,16 +979,23 @@ private fun StartOptionsPanel(
     onAction: (StartActivityAction) -> Unit,
 ) {
     LauncherCard {
-        Text(stringResource(R.string.launcher_start_options), style = MaterialTheme.typography.titleLarge)
+        Text(
+            stringResource(R.string.launcher_start_options),
+            modifier =
+                Modifier.semantics {
+                    heading()
+                },
+            style = MaterialTheme.typography.titleLarge,
+        )
         when (options) {
             LauncherLoad.Idle -> Unit
-            LauncherLoad.Loading -> Text(stringResource(R.string.launcher_target_loading))
+            LauncherLoad.Loading -> LauncherStatus(stringResource(R.string.launcher_target_loading))
             is LauncherLoad.Failure -> {
-                Text(
-                    stringResource(R.string.manual_history_template_unavailable),
-                    color = MaterialTheme.colorScheme.error,
-                )
-                LifeTracingSecondaryButton(onClick = { onAction(StartActivityAction.CloseOptions) }) {
+                LauncherStatus(stringResource(R.string.manual_history_template_unavailable))
+                LifeTracingSecondaryButton(
+                    onClick = { onAction(StartActivityAction.CloseOptions) },
+                    enabled = command == LauncherCommandState.Idle,
+                ) {
                     Text(stringResource(R.string.launcher_cancel))
                 }
             }
@@ -833,23 +1012,36 @@ private fun StartOptionsForm(
 ) {
     val enabled = command == LauncherCommandState.Idle
     Text(draft.template.name, style = MaterialTheme.typography.titleMedium)
+    val initialFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { initialFocus.requestFocus() }
     if (draft.template.timeTrackingMode != TimeTrackingMode.NO_LIVE_TRACKING) {
         LifeTracingOutlinedTextField(
             value = draft.startedText,
             onValueChange = { onAction(StartActivityAction.EditOptionStart(it)) },
-            modifier = Modifier.fillMaxWidth().testTag("launcher-options-start"),
+            modifier = Modifier.fillMaxWidth().focusRequester(initialFocus).testTag("launcher-options-start"),
             enabled = enabled,
             label = { Text(stringResource(R.string.manual_history_started)) },
             supportingText = { Text(stringResource(R.string.manual_history_datetime_hint)) },
         )
-        StartOptionsOffsets(draft.startedOffsets, draft.startedOffset, enabled) {
+        StartOptionsOffsets(R.string.manual_history_started, draft.startedOffsets, draft.startedOffset, enabled) {
             onAction(StartActivityAction.ChooseOptionStartOffset(it))
         }
     }
     LifeTracingOutlinedTextField(
         value = draft.completedText,
         onValueChange = { onAction(StartActivityAction.EditOptionEnd(it)) },
-        modifier = Modifier.fillMaxWidth().testTag("launcher-options-end"),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (draft.template.timeTrackingMode ==
+                        TimeTrackingMode.NO_LIVE_TRACKING
+                    ) {
+                        Modifier.focusRequester(initialFocus)
+                    } else {
+                        Modifier
+                    },
+                ).testTag("launcher-options-end"),
         enabled = enabled,
         label = {
             Text(
@@ -866,14 +1058,14 @@ private fun StartOptionsForm(
         },
         supportingText = { Text(stringResource(R.string.manual_history_datetime_hint)) },
     )
-    StartOptionsOffsets(draft.completedOffsets, draft.completedOffset, enabled) {
+    StartOptionsOffsets(R.string.manual_history_completed, draft.completedOffsets, draft.completedOffset, enabled) {
         onAction(StartActivityAction.ChooseOptionEndOffset(it))
     }
     draft.template.fields.filter { it.deletedAt == null }.forEach { field ->
         StartOptionsField(field, draft, enabled, onAction)
     }
     draft.issue?.let { issue ->
-        Text(stringResource(issue.resource()), color = MaterialTheme.colorScheme.error)
+        LauncherStatus(stringResource(issue.resource()))
     }
     if (draft.stale) {
         LifeTracingSecondaryButton(
@@ -884,13 +1076,13 @@ private fun StartOptionsForm(
         }
     }
     if (draft.overlap != null) {
-        Text(stringResource(R.string.manual_history_overlap), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        LauncherStatus(stringResource(R.string.manual_history_overlap))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             LifeTracingSecondaryButton(
                 onClick = { onAction(StartActivityAction.CancelOptionsOverlap) },
                 enabled = enabled,
             ) {
-                Text(stringResource(R.string.manual_history_cancel))
+                Text(stringResource(R.string.launcher_cancel_overlap))
             }
             LifeTracingPrimaryButton(
                 onClick = { onAction(StartActivityAction.ConfirmOptionsOverlap) },
@@ -913,13 +1105,29 @@ private fun StartOptionsForm(
 
 @Composable
 private fun StartOptionsOffsets(
+    timestampLabel: Int,
     offsets: List<java.time.ZoneOffset>,
     selected: java.time.ZoneOffset?,
     enabled: Boolean,
     choose: (java.time.ZoneOffset) -> Unit,
 ) {
     offsets.forEachIndexed { index, offset ->
-        LifeTracingSecondaryButton(onClick = { choose(offset) }, enabled = enabled) {
+        val context = stringResource(timestampLabel)
+        val occurrence =
+            stringResource(
+                if (index == 0) R.string.manual_history_first_occurrence else R.string.manual_history_second_occurrence,
+                offset.id,
+            )
+        val accessibleLabel = stringResource(R.string.launcher_offset_choice, context, occurrence)
+        LifeTracingSecondaryButton(
+            onClick = { choose(offset) },
+            enabled = enabled,
+            modifier =
+                Modifier.semantics {
+                    this.selected = selected == offset
+                    contentDescription = accessibleLabel
+                },
+        ) {
             val label =
                 if (index ==
                     0
@@ -941,28 +1149,55 @@ private fun StartOptionsField(
     onAction: (StartActivityAction) -> Unit,
 ) {
     val draft = state.values.getValue(field.id)
+    val invalidNumber =
+        field.type == CustomFieldType.NUMBER &&
+            !draft.missing &&
+            parseLauncherNumber(draft.numberText, field.displayPrecision) == null
+    val missingLabel =
+        stringResource(
+            if (draft.missing) R.string.manual_history_restore_value else R.string.manual_history_set_missing,
+        )
+    val missingAction = stringResource(R.string.launcher_field_action, field.name, missingLabel)
+    val valueState =
+        stringResource(if (draft.missing) R.string.launcher_value_missing else R.string.launcher_value_present)
     Text(field.name, style = MaterialTheme.typography.titleSmall)
     when (field.type) {
         CustomFieldType.NUMBER ->
             LifeTracingOutlinedTextField(
                 value = draft.numberText,
                 onValueChange = { onAction(StartActivityAction.EditOptionNumber(field.id, it)) },
-                modifier = Modifier.fillMaxWidth().testTag("launcher-options-field-${field.id.value}"),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .semantics { stateDescription = valueState }
+                        .testTag("launcher-options-field-${field.id.value}"),
                 enabled = enabled,
-                label = { Text(stringResource(R.string.manual_history_actual)) },
+                isError = invalidNumber,
+                label = { Text(stringResource(R.string.launcher_field_actual, field.name)) },
             )
         CustomFieldType.TEXT ->
             LifeTracingOutlinedTextField(
                 value = draft.text,
                 onValueChange = { onAction(StartActivityAction.EditOptionText(field.id, it)) },
-                modifier = Modifier.fillMaxWidth().testTag("launcher-options-field-${field.id.value}"),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .semantics { stateDescription = valueState }
+                        .testTag("launcher-options-field-${field.id.value}"),
                 enabled = enabled,
-                label = { Text(stringResource(R.string.manual_history_actual)) },
+                isError = invalidNumber,
+                label = { Text(stringResource(R.string.launcher_field_actual, field.name)) },
             )
         CustomFieldType.CATEGORY ->
             field.categoryOptions.filterNot { it.isArchived }.forEach { option ->
+                val optionLabel = stringResource(R.string.launcher_field_action, field.name, option.label)
                 TextButton(
                     onClick = { onAction(StartActivityAction.ChooseOptionCategory(field.id, option.id)) },
+                    modifier =
+                        Modifier.semantics {
+                            selected = !draft.missing && draft.selectedOptionId == option.id
+                            contentDescription = optionLabel
+                        },
                     enabled = enabled,
                 ) {
                     Text(option.label + if (!draft.missing && draft.selectedOptionId == option.id) " \u2713" else "")
@@ -971,6 +1206,11 @@ private fun StartOptionsField(
     }
     LifeTracingSecondaryButton(
         onClick = { onAction(StartActivityAction.SetOptionMissing(field.id, !draft.missing)) },
+        modifier =
+            Modifier.semantics {
+                contentDescription = missingAction
+                stateDescription = valueState
+            },
         enabled = enabled,
     ) {
         Text(

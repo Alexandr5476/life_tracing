@@ -94,7 +94,11 @@ internal data class ExpandedLiveSequenceState(
     val catalogLoading: Boolean = false,
     val catalogCanLoadMore: Boolean = false,
     val catalogFailure: String? = null,
-)
+) {
+    // Retained data is not command authority until the latest canonical read succeeds.
+    val confirmedSequence: ExpandedLiveSequence?
+        get() = sequence.takeUnless { loading || stale || readFailure != null }
+}
 
 internal sealed interface ExpandedSequenceCommand {
     val executionId: SequenceExecutionId
@@ -241,23 +245,31 @@ internal class ExpandedLiveSequenceController(
     }
 
     fun refresh() {
-        val generation = loadGeneration.incrementAndGet()
-        mutableState.update { it.copy(loading = true, readFailure = null) }
+        val generation =
+            synchronized(commandCaptureLock) {
+                loadGeneration.incrementAndGet().also {
+                    mutableState.update { state -> state.copy(loading = true, readFailure = null, confirmation = null) }
+                }
+            }
         scope.launch {
             try {
                 when (val result = read(executionId)) {
                     is ExpandedLiveSequenceRead.Active -> {
-                        if (loadGeneration.get() == generation) publish(result.value)
+                        synchronized(commandCaptureLock) {
+                            if (loadGeneration.get() == generation) publish(result.value)
+                        }
                     }
                     ExpandedLiveSequenceRead.StaleOrInactive -> {
-                        if (loadGeneration.get() == generation) {
-                            mutableState.update {
-                                it.copy(
-                                    loading = false,
-                                    stale = true,
-                                    displayBaseline = null,
-                                    currentValueDraft = null,
-                                )
+                        synchronized(commandCaptureLock) {
+                            if (loadGeneration.get() == generation) {
+                                mutableState.update {
+                                    it.copy(
+                                        loading = false,
+                                        stale = true,
+                                        displayBaseline = null,
+                                        currentValueDraft = null,
+                                    )
+                                }
                             }
                         }
                     }
@@ -265,8 +277,10 @@ internal class ExpandedLiveSequenceController(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (loadGeneration.get() == generation) {
-                    mutableState.update { it.copy(loading = false, readFailure = failure.message()) }
+                synchronized(commandCaptureLock) {
+                    if (loadGeneration.get() == generation) {
+                        mutableState.update { it.copy(loading = false, readFailure = failure.message()) }
+                    }
                 }
             }
         }
@@ -344,15 +358,16 @@ internal class ExpandedLiveSequenceController(
                 ).takeIf { expandedActions(sequence.state).completeCurrent }
         }
 
-    fun requestGoNow(occurrenceId: SequenceOccurrenceId) {
-        val sequence = active() ?: return reject()
-        if (!canGoNow(sequence, occurrenceId)) return reject()
-        if (sequence.runtime.snapshot.settings.confirmJump) {
-            mutableState.update { it.copy(confirmation = ExpandedSequenceConfirmation.GoNow(occurrenceId)) }
-        } else {
-            goNowConfirmed(occurrenceId)
+    fun requestGoNow(occurrenceId: SequenceOccurrenceId) =
+        synchronized(commandCaptureLock) {
+            val sequence = active() ?: return@synchronized reject()
+            if (!canGoNow(sequence, occurrenceId)) return@synchronized reject()
+            if (sequence.runtime.snapshot.settings.confirmJump) {
+                mutableState.update { it.copy(confirmation = ExpandedSequenceConfirmation.GoNow(occurrenceId)) }
+            } else {
+                goNowConfirmed(occurrenceId)
+            }
         }
-    }
 
     fun makeNext(occurrenceId: SequenceOccurrenceId) =
         submit { sequence ->
@@ -380,31 +395,37 @@ internal class ExpandedLiveSequenceController(
     fun runtimeAddTemplate(
         templateId: ActivityTemplateId,
         placement: RuntimeInsertionPlacement,
-    ) = runtimeAdd(ActivityEntrySource.Template(templateId), placement)
+        expectedSequence: ExpandedLiveSequence? = null,
+        onAdmitted: () -> Unit = {},
+    ) = runtimeAdd(ActivityEntrySource.Template(templateId), placement, expectedSequence, onAdmitted)
 
     fun runtimeAddOneOff(
         draft: ActivitySnapshotDraft,
         placement: RuntimeInsertionPlacement,
-    ) = runtimeAdd(ActivityEntrySource.OneOff(draft), placement)
+        expectedSequence: ExpandedLiveSequence? = null,
+        onAdmitted: () -> Unit = {},
+    ) = runtimeAdd(ActivityEntrySource.OneOff(draft), placement, expectedSequence, onAdmitted)
 
-    fun requestEndEarly() {
-        val sequence = active() ?: return reject()
-        if (!expandedActions(sequence.state).endEarly) return reject()
-        if (sequence.runtime.snapshot.settings.confirmEarlyEnd) {
-            mutableState.update { it.copy(confirmation = ExpandedSequenceConfirmation.EndEarly) }
-        } else {
-            endEarlyConfirmed()
+    fun requestEndEarly() =
+        synchronized(commandCaptureLock) {
+            val sequence = active() ?: return@synchronized reject()
+            if (!expandedActions(sequence.state).endEarly) return@synchronized reject()
+            if (sequence.runtime.snapshot.settings.confirmEarlyEnd) {
+                mutableState.update { it.copy(confirmation = ExpandedSequenceConfirmation.EndEarly) }
+            } else {
+                endEarlyConfirmed()
+            }
         }
-    }
 
-    fun confirmPending() {
-        when (val confirmation = mutableState.value.confirmation) {
-            is ExpandedSequenceConfirmation.GoNow -> goNowConfirmed(confirmation.occurrenceId)
-            ExpandedSequenceConfirmation.EndEarly -> endEarlyConfirmed()
-            null -> return
+    fun confirmPending() =
+        synchronized(commandCaptureLock) {
+            when (val confirmation = mutableState.value.confirmation) {
+                is ExpandedSequenceConfirmation.GoNow -> goNowConfirmed(confirmation.occurrenceId)
+                ExpandedSequenceConfirmation.EndEarly -> endEarlyConfirmed()
+                null -> return@synchronized
+            }
+            mutableState.update { it.copy(confirmation = null) }
         }
-        mutableState.update { it.copy(confirmation = null) }
-    }
 
     fun dismissConfirmation() {
         mutableState.update { it.copy(confirmation = null) }
@@ -494,15 +515,29 @@ internal class ExpandedLiveSequenceController(
     private fun runtimeAdd(
         source: ActivityEntrySource,
         placement: RuntimeInsertionPlacement,
-    ) = submit { sequence ->
-        ExpandedSequenceCommand
-            .RuntimeAdd(sequence.runtime.execution.id, source, placement, wallClock.now())
-            .takeIf {
-                expandedActions(
-                    sequence.state,
-                ).runtimeAdd &&
-                    placement in validRuntimePlacements(sequence.state)
-            }
+        expectedSequence: ExpandedLiveSequence?,
+        onAdmitted: () -> Unit,
+    ) = synchronized(commandCaptureLock) {
+        // Authority can disappear before Compose disposes an enabled callback.
+        // A suspended/repeated attempt neither consumes the draft nor creates feedback.
+        if (mutableState.value.loading || mutableState.value.commandInFlight) return@synchronized
+        submit(onAdmitted = onAdmitted) { sequence ->
+            val matchesContext =
+                expectedSequence == null ||
+                    (
+                        expectedSequence.runtime.execution.id == sequence.runtime.execution.id &&
+                            expectedSequence.runtime.execution.currentOccurrenceId ==
+                            sequence.runtime.execution.currentOccurrenceId &&
+                            expectedSequence.state == sequence.state
+                    )
+            ExpandedSequenceCommand
+                .RuntimeAdd(sequence.runtime.execution.id, source, placement, wallClock.now())
+                .takeIf {
+                    matchesContext &&
+                        expandedActions(sequence.state).runtimeAdd &&
+                        placement in validRuntimePlacements(sequence.state)
+                }
+        }
     }
 
     private fun editDraft(
@@ -539,7 +574,7 @@ internal class ExpandedLiveSequenceController(
         id: SequenceOccurrenceId,
     ): ExpandedLiveSequenceOccurrence? = sequence.occurrences.singleOrNull { it.occurrence.id == id }
 
-    private fun active(): ExpandedLiveSequence? = mutableState.value.sequence?.takeUnless { mutableState.value.stale }
+    private fun active(): ExpandedLiveSequence? = mutableState.value.confirmedSequence
 
     private fun reject() {
         mutableState.update {
@@ -549,6 +584,7 @@ internal class ExpandedLiveSequenceController(
 
     private fun submit(
         capturesCurrentValues: Boolean = false,
+        onAdmitted: () -> Unit = {},
         build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?,
     ) {
         val admission =
@@ -569,6 +605,8 @@ internal class ExpandedLiveSequenceController(
                 }
             }
         admission ?: return
+        // This reports FIFO command admission, never an attempted or completed write.
+        onAdmitted()
         scope.launch {
             var commandFailure: ExpandedSequenceFailure? = null
             try {

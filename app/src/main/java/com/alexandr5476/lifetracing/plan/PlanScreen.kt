@@ -17,9 +17,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -46,9 +50,10 @@ fun PlanRoute(
     controller: PlanController,
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
     val state by controller.state.collectAsState()
-    PlanScreen(state, controller::dispatch, onBack, onExecute)
+    PlanScreen(state, controller::dispatch, onBack, onExecute, isRouteVisible)
 }
 
 @Composable
@@ -57,14 +62,19 @@ fun PlanScreen(
     onAction: (PlanAction) -> Unit,
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
+    isRouteVisible: Boolean = true,
 ) {
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(isRouteVisible) { if (isRouteVisible) backFocus.requestFocus() }
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = onBack) { Text(stringResource(R.string.plan_back)) }
+            TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+                Text(stringResource(R.string.plan_back))
+            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(
@@ -126,10 +136,36 @@ private fun WeekContent(
         style = MaterialTheme.typography.titleMedium,
     )
     if (read.selectedDayPlans.isEmpty()) Text(stringResource(R.string.plan_empty_day))
-    read.selectedDayPlans.forEach { PlanRow(it, isMutating, onAction, onExecute) }
+    PlanRows(read.selectedDayPlans, isMutating, onAction, onExecute)
     Text(stringResource(R.string.plan_this_week), style = MaterialTheme.typography.titleMedium)
     if (read.weekPlans.isEmpty()) Text(stringResource(R.string.plan_empty_week))
-    read.weekPlans.forEach { PlanRow(it, isMutating, onAction, onExecute) }
+    PlanRows(read.weekPlans, isMutating, onAction, onExecute)
+}
+
+@Composable
+private fun PlanRows(
+    rows: List<PlanReadRow>,
+    isMutating: Boolean,
+    onAction: (PlanAction) -> Unit,
+    onExecute: (PlanActionIdentity) -> Unit,
+) {
+    val executable = rows.filter { it.plan.status == PlanEntryStatus.PLANNED && !it.engaged }
+    val descriptions =
+        planExecutionActionDescriptions(
+            executable.map {
+                PlanExecutionActionTarget(
+                    it.title,
+                    it.plan.kind,
+                    it.plan.target,
+                    it.activityMetadata?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING,
+                    it.effectiveLocalDate,
+                    it.exactLocalTime,
+                    it.exactUtcOffset,
+                )
+            },
+        )
+    val descriptionById = executable.mapIndexed { index, row -> row.plan.id to descriptions[index] }.toMap()
+    rows.forEach { PlanRow(it, isMutating, onAction, onExecute, descriptionById[it.plan.id]) }
 }
 
 @Composable
@@ -138,6 +174,7 @@ private fun PlanRow(
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
     onExecute: (PlanActionIdentity) -> Unit,
+    executionDescription: String?,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -153,11 +190,17 @@ private fun PlanRow(
             Text(row.lifecycleLabel())
             Text(row.sourceLabel())
             if (row.plan.status == PlanEntryStatus.PLANNED && !row.engaged) {
+                val executionLabel = row.executionLabel()
+                requireNotNull(executionDescription)
                 LifeTracingPrimaryButton(
                     enabled = !isMutating,
                     onClick = { onExecute(row.plan.actionIdentity()) },
-                    modifier = Modifier.semantics { testTag = "plan-plan-action-${row.plan.id.value}" },
-                ) { Text(row.executionLabel()) }
+                    modifier =
+                        Modifier.semantics {
+                            testTag = "plan-plan-action-${row.plan.id.value}"
+                            contentDescription = executionDescription
+                        },
+                ) { Text(executionLabel) }
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                     LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
                         onAction(PlanAction.Reschedule(row))

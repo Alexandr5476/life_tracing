@@ -44,6 +44,7 @@ import com.alexandr5476.lifetracing.history.ManualActivityEntryRouteSessionOwner
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
 import com.alexandr5476.lifetracing.history.SequenceHistoryDetailRoute
 import com.alexandr5476.lifetracing.history.SequenceHistoryMutationRouteSessionOwner
+import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.StartActivityRoute
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSessionOwner
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
@@ -51,6 +52,7 @@ import com.alexandr5476.lifetracing.library.LibraryRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRoute
 import com.alexandr5476.lifetracing.live.ExpandedLiveSequenceRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanControllerOwner
+import com.alexandr5476.lifetracing.plan.PlanExecutionCommandState
 import com.alexandr5476.lifetracing.plan.PlanExecutionCommit
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.plan.PlanExecutionRoute
@@ -274,6 +276,10 @@ internal fun LifeTracingApp(
                 closePlanExecution(session)
             }
             val completePlanExecution: (PlanExecutionRouteSession, PlanExecutionCommit) -> Unit = { session, result ->
+                (
+                    session.controller.state.value.command as?
+                        PlanExecutionCommandState.CommittedCoordinationFailure
+                )?.let { controller.onCommittedCoordinationFailure(it.message) }
                 when (session.origin) {
                     PlanExecutionOrigin.DAILY -> {
                         controller.dispatch(
@@ -393,6 +399,7 @@ internal fun LifeTracingApp(
                         entry<DailyRoot> {
                             DailyRoute(
                                 controller = controller,
+                                isRouteVisible = backStack.lastOrNull() == DailyRoot,
                                 onStartActivity = {
                                     launcherSessions.acquire {
                                         runtimeGraph.createStartActivityController(libraryOwner::refreshIfInitialized)
@@ -443,11 +450,16 @@ internal fun LifeTracingApp(
                             } else {
                                 StartActivityRoute(
                                     session = session,
+                                    isRouteVisible = backStack.lastOrNull() == StartActivityRoot,
                                     onBack = {
                                         launcherSessions.release(session)
                                         backStack.removeStartActivity()
                                     },
                                     onCommitted = {
+                                        (
+                                            session.controller.state.value.command as?
+                                                LauncherCommandState.CommittedCoordinationFailure
+                                        )?.let { controller.onCommittedCoordinationFailure(it.message) }
                                         launcherSessions.release(session)
                                         backStack.completeStartActivity {
                                             controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Today)
@@ -508,6 +520,7 @@ internal fun LifeTracingApp(
                             val planController = planOwner.get(runtimeGraph::createPlanController)
                             PlanRoute(
                                 planController,
+                                isRouteVisible = backStack.lastOrNull() == PlanRoot,
                                 onBack = backStack::removePlan,
                                 onExecute = { identity ->
                                     planExecutionSessions
@@ -521,6 +534,7 @@ internal fun LifeTracingApp(
                             val historyController = historyOwner.get(runtimeGraph::createHistoryController)
                             HistoryRoute(
                                 historyController,
+                                isRouteVisible = backStack.lastOrNull() == HistoryRoot,
                                 onBack = {
                                     historyOwner.onRouteExited()
                                     backStack.removeHistory()
@@ -664,6 +678,7 @@ internal fun LifeTracingApp(
                             } else {
                                 PlanExecutionRoute(
                                     session,
+                                    isRouteVisible = backStack.lastOrNull() == route,
                                     onBack = { closePlanExecution(session) },
                                     onReloadOrigin = { reloadPlanExecutionOrigin(session) },
                                     onCommitted = { completePlanExecution(session, it) },
@@ -767,7 +782,12 @@ internal fun LifeTracingApp(
                                     }
                                 }
                             val close = { closeExpanded(route.executionId) }
-                            ExpandedLiveSequenceRoute(session.controller, onBack = close, onStale = close)
+                            ExpandedLiveSequenceRoute(
+                                session.controller,
+                                onBack = close,
+                                onStale = close,
+                                isRouteVisible = backStack.lastOrNull() == route,
+                            )
                         }
                     },
                 transitionSpec = { lifeTracingNavigationTransition() },

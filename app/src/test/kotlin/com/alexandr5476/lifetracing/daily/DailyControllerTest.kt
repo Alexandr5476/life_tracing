@@ -677,6 +677,34 @@ class DailyControllerTest {
         assertFalse(names.any { it in setOf("GoNow", "MakeNext", "RuntimeAdd", "DoAgain", "EarlyEnd", "StartPlanned") })
     }
 
+    @Test
+    fun committedRouteCoordinationFailureSurvivesReentryWithoutExecutingOrCoordinatingAgain() =
+        runBlocking {
+            val harness = Harness()
+            val controller = harness.controller(this)
+            try {
+                controller.awaitLoaded()
+                controller.onHidden()
+                controller.onCommittedCoordinationFailure("saved route commit")
+                controller.onVisible()
+                controller.awaitLoaded()
+                val failure =
+                    assertInstanceOf(
+                        DailyCommandFailure.Coordination::class.java,
+                        controller.state.value.commandFailure,
+                    )
+                assertEquals("saved route commit", failure.message)
+                assertTrue(harness.commands.isEmpty())
+                assertEquals(0, harness.coordinationCalls)
+                controller.onHidden()
+                controller.onRouteEntered()
+                controller.awaitLoaded()
+                assertEquals(failure, controller.state.value.commandFailure)
+            } finally {
+                controller.close()
+            }
+        }
+
     private class Harness(
         initialInstant: Instant = harnessInstant,
         val zone: ZoneId = ZoneOffset.UTC,

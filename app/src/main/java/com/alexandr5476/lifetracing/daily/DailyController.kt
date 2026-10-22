@@ -267,6 +267,12 @@ class DailyController internal constructor(
             }
         }
 
+    /** Retains a delivered route result as feedback; never retries the committed command. */
+    internal fun onCommittedCoordinationFailure(message: String): Unit =
+        synchronized(commandCaptureLock) {
+            if (!closed) mutableState.update { it.copy(commandFailure = DailyCommandFailure.Coordination(message)) }
+        }
+
     fun onVisible(): Unit =
         synchronized(commandCaptureLock) {
             if (closed) return

@@ -7,10 +7,21 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -21,10 +32,13 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.pressKey
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityLaunchMainValue
 import com.alexandr5476.lifetracing.domain.ActivityTemplate
@@ -43,10 +57,12 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
@@ -55,9 +71,45 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
 class StartActivityScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule
+    val keyboardInput = KeyboardInputFixture(composeTestRule)
+
+    @Test
+    fun launcherHeadingsAndOneOffSelectedModeExposeNativeSemantics() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        composeTestRule.setContent {
+            LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) }
+        }
+        listOf(
+            R.string.launcher_title,
+            R.string.launcher_recent,
+            R.string.launcher_pinned,
+            R.string.launcher_search,
+            R.string.launcher_browse,
+        ).forEach { id ->
+            composeTestRule
+                .onLazyNode(hasText(text(id)))
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+        }
+        state = state.copy(oneOff = OneOffDraft(name = "One off", mode = TimeTrackingMode.TIMER))
+        composeTestRule
+            .onLazyNode(
+                hasText(text(R.string.launcher_one_off_timer), substring = true) and
+                    SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+            ).assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.EditOneOffMode(TimeTrackingMode.TIMER), actions.single())
+        composeTestRule
+            .onLazyNode(hasText(text(R.string.launcher_one_off_stopwatch)))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+    }
 
     @Test
     fun oneOffAffordanceAndTimerValidationUseSeparateLauncherForm() {
@@ -508,6 +560,8 @@ class StartActivityScreenPresentationTest {
         composeTestRule
             .onNodeWithText(text(com.alexandr5476.lifetracing.R.string.manual_history_review_current))
             .assertIsDisplayed()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.ReviewOptionsTemplate, actions.last())
         state =
             state.copy(
                 options =
@@ -625,6 +679,789 @@ class StartActivityScreenPresentationTest {
         composeTestRule.onNodeWithText(chosen.label).performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText(other.label).performScrollTo().assertIsDisplayed()
         composeTestRule.onAllNodesWithText("\u2713", substring = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun typedDuplicateNamesKeepPrimaryAndOptionsActionsIndependentInBothTrees() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        val activity = trackable("Same")
+        val sequence = trackable("Same", sequence = true)
+        var state by mutableStateOf(homeState(listOf(activity, sequence), emptyList()))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        keyboardInput.enter()
+        val activityAction = hasText("Same") and hasText(text(R.string.launcher_activity)) and hasClickAction()
+        val sequenceAction = hasText("Same") and hasText(text(R.string.launcher_sequence)) and hasClickAction()
+        composeTestRule.onNode(activityAction).performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+        composeTestRule.runOnIdle { assertEquals(emptyList<StartActivityAction>(), actions) }
+        composeTestRule.onNode(activityAction).performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNode(sequenceAction).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(StartActivityAction.Select(activity.id), StartActivityAction.Select(sequence.id)), actions)
+        val options = composeTestRule.activity.getString(R.string.launcher_options_for, "Same")
+        for (unmerged in listOf(false, true)) {
+            val primary = hasClickAction() and (hasText("Same") or hasAnyDescendant(hasText("Same")))
+            composeTestRule.onAllNodes(primary, useUnmergedTree = unmerged).assertCountEquals(2)
+            composeTestRule
+                .onAllNodes(hasContentDescription(options) and hasClickAction(), useUnmergedTree = unmerged)
+                .assertCountEquals(1)
+        }
+        composeTestRule.onNodeWithContentDescription(options).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.OpenOptions(ActivityTemplateId(activity.id.value)), actions.last())
+        for (blocked in listOf(
+            state.copy(organizationInFlight = true),
+            state.copy(selected = LauncherLoad.Loading),
+            state.copy(options = LauncherLoad.Loading),
+            state.copy(oneOff = OneOffDraft()),
+            state.copy(command = LauncherCommandState.Checking(1)),
+            state.copy(command = LauncherCommandState.Committing(1)),
+        )) {
+            state = blocked
+            composeTestRule
+                .onLazyNode(activityAction)
+                .assertIsNotEnabled()
+                .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.CustomActions))
+            composeTestRule.onLazyNode(hasContentDescription(options)).assertIsNotEnabled()
+        }
+        assertEquals(3, actions.size)
+    }
+
+    @Test
+    fun pinnedBoundaryMovesAndDragMetadataDoNotOfferImpossibleCommands() {
+        val first = trackable("First", sequence = true)
+        val middle = trackable("Middle")
+        val last = trackable("Last", sequence = true)
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        composeTestRule.onAllNodes(hasContentDescription("Move", substring = true)).assertCountEquals(0)
+        state = homeState(emptyList(), listOf(first))
+        composeTestRule.onLazyNode(hasContentDescription("Move First up")).assertIsNotEnabled()
+        composeTestRule.onLazyNode(hasContentDescription("Move First down")).assertIsNotEnabled()
+        state = homeState(emptyList(), listOf(first, middle, last))
+        composeTestRule.onLazyNode(hasContentDescription("Move First up")).assertIsNotEnabled()
+        composeTestRule.onLazyNode(hasContentDescription("Move Last down")).assertIsNotEnabled()
+        composeTestRule
+            .onLazyNode(hasContentDescription("Move Middle up"))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.ReorderPinned(listOf(middle.id, first.id, last.id)), actions.single())
+        state = state.copy(organizationInFlight = true)
+        composeTestRule.onLazyNode(hasContentDescription("Move Middle down")).assertIsNotEnabled()
+        state = state.copy(organizationInFlight = false, organizationFailure = "failure")
+        composeTestRule.onLazyNode(hasContentDescription("Move First up")).assertIsNotEnabled()
+        state = homeState(emptyList(), listOf(last, middle, first))
+        composeTestRule.onLazyNode(hasContentDescription("Move Last up")).assertIsNotEnabled()
+        composeTestRule
+            .onAllNodesWithContentDescription(text(R.string.launcher_drag_handle))[0]
+            .performScrollTo()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnLongClick))
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
+    }
+
+    @Test
+    fun quickEditableValueDistinguishesDefaultZeroMissingNegativeAndInvalidWithoutFocusCommit() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        val row = trackable("Quick")
+        val field = ActivityLaunchMainValue(ActivityTemplateFieldId("exact-field"), "Quantity", null, 2, 1234)
+        var state by mutableStateOf(homeState(listOf(row), emptyList()))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        keyboardInput.enter()
+        composeTestRule.onNodeWithText("Quick").performSemanticsAction(SemanticsActions.OnClick)
+        state = state.copy(selected = LauncherLoad.Content(activityTarget(row.id, field)))
+        val input = composeTestRule.onNode(hasText("Quantity") and hasSetTextAction())
+        input.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, text(R.string.launcher_value_default)),
+        )
+        input.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+        assertEquals(1, actions.size)
+        input.performSemanticsAction(
+            SemanticsActions.SetText,
+        ) {
+            it(
+                androidx.compose.ui.text
+                    .AnnotatedString("invalid"),
+            )
+        }
+        input.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        composeTestRule.onNodeWithText(text(R.string.launcher_complete)).assertIsNotEnabled()
+        for (value in listOf("0", "", "-1.25")) {
+            input.performSemanticsAction(
+                SemanticsActions.SetText,
+            ) {
+                it(
+                    androidx.compose.ui.text
+                        .AnnotatedString(value),
+                )
+            }
+            composeTestRule.onNodeWithText(text(R.string.launcher_complete)).assertIsEnabled()
+            val editor = requireNotNull(interaction.quickEditor)
+            assertEquals(row.id, editor.targetId)
+            assertEquals(field.fieldId, editor.fieldId)
+            assertEquals(value, editor.text)
+        }
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.launcher_complete),
+            ).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(
+            StartActivityAction.Launch(QuickMainValueOverride(field.fieldId, QuickMainValue.Number(-1250))),
+            actions.last(),
+        )
+        composeTestRule.runOnIdle {
+            interaction.select(row.id)
+        }
+        composeTestRule.waitUntil { interaction.quickEditor != null }
+        composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).performSemanticsAction(SemanticsActions.OnClick)
+        state = state.copy(searchQuery = "recomposition")
+        composeTestRule.onNodeWithText(text(R.string.launcher_browse_back)).assertIsFocused()
+        composeTestRule.runOnIdle {
+            assertEquals(1, actions.count { it is StartActivityAction.Launch })
+            assertEquals(null, interaction.quickEditor)
+            assertEquals(null, interaction.pendingSelectionId)
+        }
+    }
+
+    @Test
+    fun historicalFieldsKeepNativeSetTextAndExactCategoryIdentityWithMissingSelection() {
+        val now = Instant.parse("2026-08-20T10:00:00Z")
+        val chosen = CategoryOption(CategoryOptionId("chosen-id"), 1, "Chosen")
+        val other = CategoryOption(CategoryOptionId("other-id"), 0, "Other")
+        val fields =
+            listOf(
+                ActivityTemplateField(
+                    ActivityTemplateFieldId("number-id"),
+                    0,
+                    "Weight",
+                    CustomFieldType.NUMBER,
+                    displayPrecision = 2,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+                ActivityTemplateField(
+                    ActivityTemplateFieldId("text-id"),
+                    1,
+                    "Note",
+                    CustomFieldType.TEXT,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+                ActivityTemplateField(
+                    ActivityTemplateFieldId("category-id"),
+                    2,
+                    "Mood",
+                    CustomFieldType.CATEGORY,
+                    defaultCategoryOptionId = chosen.id,
+                    createdAt = now,
+                    updatedAt = now,
+                    categoryOptions = listOf(other, chosen),
+                ),
+            )
+        val draft = optionsTemplate(fields).initialStartOptions(now, ZoneOffset.UTC)
+        var state by mutableStateOf(StartActivityState(options = LauncherLoad.Content(draft)))
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        fields.take(2).forEach { field ->
+            val label = composeTestRule.activity.getString(R.string.launcher_field_actual, field.name)
+            composeTestRule
+                .onLazyNode(hasText(label) and hasSetTextAction())
+                .performSemanticsAction(SemanticsActions.SetText) {
+                    it(
+                        androidx.compose.ui.text
+                            .AnnotatedString("0"),
+                    )
+                }
+        }
+        assertEquals(
+            listOf(
+                StartActivityAction.EditOptionNumber(fields[0].id, "0"),
+                StartActivityAction.EditOptionText(fields[1].id, "0"),
+            ),
+            actions,
+        )
+        composeTestRule
+            .onLazyNode(hasText(chosen.label, substring = true) and hasClickAction())
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+        composeTestRule
+            .onLazyNode(hasText(other.label) and hasClickAction())
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.ChooseOptionCategory(fields[2].id, other.id), actions.last())
+        state =
+            state.copy(
+                options =
+                    LauncherLoad.Content(
+                        draft.copy(
+                            values =
+                                draft.values +
+                                    (fields[2].id to draft.values.getValue(fields[2].id).copy(missing = true)),
+                        ),
+                    ),
+            )
+        composeTestRule
+            .onLazyNode(hasText(chosen.label) and hasClickAction())
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+        val missing =
+            composeTestRule.activity.getString(
+                R.string.launcher_field_action,
+                "Mood",
+                text(R.string.manual_history_restore_value),
+            )
+        composeTestRule.onLazyNode(hasContentDescription(missing)).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.SetOptionMissing(fields[2].id, false), actions.last())
+        state =
+            state.copy(
+                options =
+                    LauncherLoad.Content(
+                        draft.copy(
+                            values =
+                                draft.values + (
+                                    fields[0].id to
+                                        draft.values
+                                            .getValue(
+                                                fields[0].id,
+                                            ).copy(numberText = "invalid", missing = false)
+                                ),
+                        ),
+                    ),
+            )
+        val numberLabel = composeTestRule.activity.getString(R.string.launcher_field_actual, fields[0].name)
+        composeTestRule
+            .onLazyNode(hasText(numberLabel) and hasSetTextAction())
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        state = state.copy(command = LauncherCommandState.Committing(1))
+        composeTestRule.onLazyNode(hasText(other.label) and hasClickAction()).assertIsNotEnabled()
+        composeTestRule
+            .onLazyNode(
+                hasText(text(R.string.manual_history_save)) and hasClickAction(),
+            ).assertIsNotEnabled()
+    }
+
+    @Test
+    fun bothAmbiguousTimestampsRequireExplicitOffsetSemanticActivation() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val offsets = zone.rules.getValidOffsets(LocalDateTime.parse("2026-10-25T02:30"))
+        val draft =
+            optionsTemplate().initialStartOptions(Instant.parse("2026-10-25T10:00:00Z"), zone).copy(
+                startedText = "2026-10-25 02:10",
+                completedText = "2026-10-25 02:30",
+                startedOffset = null,
+                completedOffset = null,
+                startedOffsets = offsets,
+                completedOffsets = offsets,
+                draftVersion = 42,
+            )
+        var state by mutableStateOf(StartActivityState(options = LauncherLoad.Content(draft)))
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        keyboardInput.enter()
+        for ((timestamp, start) in listOf(
+            R.string.manual_history_started to true,
+            R.string.manual_history_completed to false,
+        )) {
+            offsets.forEachIndexed { index, offset ->
+                val occurrence =
+                    composeTestRule.activity.getString(
+                        if (index ==
+                            0
+                        ) {
+                            R.string.manual_history_first_occurrence
+                        } else {
+                            R.string.manual_history_second_occurrence
+                        },
+                        offset.id,
+                    )
+                val label =
+                    composeTestRule.activity.getString(
+                        R.string.launcher_offset_choice,
+                        text(timestamp),
+                        occurrence,
+                    )
+                val node = composeTestRule.onLazyNode(hasContentDescription(label))
+                node
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+                    .performSemanticsAction(SemanticsActions.RequestFocus)
+                    .assertIsFocused()
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+                assertEquals(if (start) index else index + 2, actions.size)
+                node.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(
+                    if (start) {
+                        StartActivityAction.ChooseOptionStartOffset(
+                            offset,
+                        )
+                    } else {
+                        StartActivityAction.ChooseOptionEndOffset(offset)
+                    },
+                    actions.last(),
+                )
+            }
+        }
+        assertEquals(42L, (state.options as LauncherLoad.Content).value.draftVersion)
+        state =
+            state.copy(
+                options = LauncherLoad.Content(draft.copy(startedOffset = offsets[1], completedOffset = offsets[0])),
+            )
+        val startSecond =
+            composeTestRule.activity.getString(
+                R.string.launcher_offset_choice,
+                text(R.string.manual_history_started),
+                composeTestRule.activity.getString(R.string.manual_history_second_occurrence, offsets[1].id),
+            )
+        composeTestRule
+            .onLazyNode(hasContentDescription(startSecond))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+        state = state.copy(command = LauncherCommandState.Checking(1))
+        composeTestRule.onLazyNode(hasContentDescription(startSecond)).assertIsNotEnabled()
+    }
+
+    @Test
+    fun commandFeedbackIsDistinctAndPreflightTicksHaveStableNoninteractiveSemantics() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        composeTestRule.setContent { LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) } }
+        val result =
+            LauncherCommit.Activity(
+                com.alexandr5476.lifetracing.domain
+                    .ActivityExecutionId("persisted"),
+                true,
+            )
+        for ((command, label) in listOf(
+            LauncherCommandState.Checking(1) to R.string.launcher_checking,
+            LauncherCommandState.Committing(1) to R.string.launcher_committing,
+            LauncherCommandState.Conflict("busy") to R.string.launcher_conflict,
+            LauncherCommandState.Rejected("invalid") to R.string.launcher_rejected,
+            LauncherCommandState.Committed(result) to R.string.launcher_committed,
+            LauncherCommandState.CommittedCoordinationFailure(result, "coordination") to
+                R.string.launcher_committed_coordination,
+        )) {
+            state = state.copy(command = command)
+            composeTestRule
+                .onLazyNode(hasText(text(label)))
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.LiveRegion,
+                        androidx.compose.ui.semantics.LiveRegionMode.Polite,
+                    ),
+                )
+            composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).assertDoesNotExist()
+        }
+        val at = Instant.now()
+        state =
+            state.copy(
+                command =
+                    LauncherCommandState.Preflight(
+                        7,
+                        LibraryTemplateId.Activity(ActivityTemplateId("preflight")),
+                        Duration.ofSeconds(30),
+                        at,
+                        at.plusSeconds(30),
+                    ),
+            )
+        val remainingPrefix =
+            composeTestRule.activity
+                .getString(R.string.launcher_countdown_remaining, "COUNTDOWN")
+                .substringBefore("COUNTDOWN")
+        val timerMatcher =
+            SemanticsMatcher("passive remaining countdown") {
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.any { label ->
+                    label.startsWith(remainingPrefix)
+                } == true
+            }
+        composeTestRule.onLazyNode(timerMatcher)
+        composeTestRule.mainClock.advanceTimeBy(1_000)
+        val timer =
+            composeTestRule
+                .onNode(timerMatcher)
+                .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+        val config = timer.fetchSemanticsNode().config
+        val visual = config[SemanticsProperties.Text].single().text
+        val remaining = visual.substringAfterLast(' ')
+        assertEquals(
+            listOf(composeTestRule.activity.getString(R.string.launcher_countdown_remaining, remaining)),
+            config[SemanticsProperties.ContentDescription],
+        )
+        var node: androidx.compose.ui.semantics.SemanticsNode? = timer.fetchSemanticsNode()
+        while (node != null) {
+            assertFalse(node.config.contains(SemanticsProperties.LiveRegion))
+            node = node.parent
+        }
+        composeTestRule
+            .onAllNodes(
+                SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo),
+            ).assertCountEquals(0)
+        assertEquals(emptyList<StartActivityAction>(), actions)
+        state =
+            state.copy(
+                command =
+                    LauncherCommandState.Preflight(
+                        8,
+                        LibraryTemplateId.Activity(ActivityTemplateId("preflight")),
+                        Duration.ofSeconds(30),
+                        Instant.EPOCH,
+                        Instant.EPOCH.plusSeconds(30),
+                    ),
+            )
+        composeTestRule
+            .onNodeWithContentDescription(
+                composeTestRule.activity.getString(R.string.launcher_countdown_remaining, "0:00"),
+            ).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.launcher_preflight)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.launcher_committed)).assertDoesNotExist()
+        assertEquals(emptyList<StartActivityAction>(), actions)
+        composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(listOf(StartActivityAction.CancelPreflight), actions)
+        state = state.copy(command = LauncherCommandState.Committing(8))
+        composeTestRule.onNode(timerMatcher).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(R.string.launcher_cancel)).assertDoesNotExist()
+        state = state.copy(command = LauncherCommandState.Idle)
+        composeTestRule.onNode(timerMatcher).assertDoesNotExist()
+        assertEquals(listOf(StartActivityAction.CancelPreflight), actions)
+    }
+
+    @Test
+    fun nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        val folder = Folder(FolderId("nested"), "Nested", null, Instant.EPOCH, Instant.EPOCH)
+        val result =
+            LauncherCommit.Activity(
+                com.alexandr5476.lifetracing.domain
+                    .ActivityExecutionId("saved"),
+                false,
+            )
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        var policy = LauncherRouteExitPolicy()
+        var exits = 0
+        var deliveries = 0
+        var arbitrations = 0
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                StartActivityScreen(state, actions::add, interaction) {
+                    policy.requestExit(
+                        {
+                            arbitrations++
+                            when (state.command) {
+                                is LauncherCommandState.Committing -> LauncherRouteExitDecision.WAIT_FOR_COMMIT
+                                is LauncherCommandState.Committed,
+                                is LauncherCommandState.CommittedCoordinationFailure,
+                                -> LauncherRouteExitDecision.DELIVER_COMMIT
+                                else -> LauncherRouteExitDecision.BACK
+                            }
+                        },
+                        { exits++ },
+                        { deliveries++ },
+                    )
+                }
+            }
+        }
+        for (command in listOf(
+            LauncherCommandState.Idle,
+            LauncherCommandState.Checking(1),
+            LauncherCommandState.Preflight(
+                1,
+                LibraryTemplateId.Activity(ActivityTemplateId("target")),
+                Duration.ofSeconds(30),
+                Instant.now(),
+                Instant.now().plusSeconds(30),
+            ),
+            LauncherCommandState.Committing(1),
+            LauncherCommandState.Conflict("busy"),
+            LauncherCommandState.Rejected("invalid"),
+            LauncherCommandState.Committed(result),
+            LauncherCommandState.CommittedCoordinationFailure(result, "coordination"),
+        )) {
+            for (system in listOf(false, true)) {
+                composeTestRule.runOnIdle {
+                    interaction.openRoot()
+                    interaction.openFolder(folder)
+                    state = state.copy(command = command, browseFolderId = folder.id)
+                    actions.clear()
+                    policy = LauncherRouteExitPolicy()
+                    exits = 0
+                    deliveries = 0
+                    arbitrations = 0
+                }
+                repeat(2) {
+                    if (system) {
+                        composeTestRule.runOnIdle {
+                            composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+                        }
+                    } else {
+                        composeTestRule
+                            .onLazyNode(hasText(text(R.string.launcher_browse_back)) and hasClickAction())
+                            .performSemanticsAction(SemanticsActions.OnClick)
+                    }
+                    composeTestRule.waitForIdle()
+                }
+                if (command == LauncherCommandState.Idle) {
+                    assertEquals(listOf(StartActivityAction.Browse(null)), actions)
+                    assertTrue(interaction.browsePath.isEmpty())
+                    assertEquals(1, exits)
+                } else {
+                    assertTrue(actions.isEmpty())
+                    assertEquals(listOf(folder.id), interaction.browsePath.map { it.id })
+                    assertEquals(2, arbitrations)
+                    assertEquals(if (command.isCommittedResult()) 1 else 0, deliveries)
+                    val waitsOrDelivers = command is LauncherCommandState.Committing || command.isCommittedResult()
+                    assertEquals(if (waitsOrDelivers) 0 else 2, exits)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries() {
+        val at = Instant.parse("2026-10-20T12:00:00Z")
+        val preflight =
+            LauncherCommandState.Preflight(
+                9,
+                LibraryTemplateId.Activity(ActivityTemplateId("timer")),
+                Duration.ofSeconds(30),
+                at,
+                at.plusSeconds(30),
+            )
+        var now by mutableStateOf(at.plusSeconds(18))
+        composeTestRule.setContent {
+            LifeTracingTheme { PreflightCountdown(preflight, now) }
+        }
+        for (instant in listOf(at.plusSeconds(18), preflight.endsAt, preflight.endsAt.plusSeconds(5))) {
+            composeTestRule.runOnIdle { now = instant }
+            val remaining = if (instant < preflight.endsAt) "0:12" else "0:00"
+            assertEquals(remaining, formatLauncherCountdown(preflightCountdownRemaining(preflight, instant)))
+            val visual = composeTestRule.activity.getString(R.string.launcher_countdown, remaining)
+            val spoken = composeTestRule.activity.getString(R.string.launcher_countdown_remaining, remaining)
+            val timer =
+                composeTestRule
+                    .onNodeWithText(visual)
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf(spoken)))
+                    .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+            var node: androidx.compose.ui.semantics.SemanticsNode? = timer.fetchSemanticsNode()
+            while (node != null) {
+                assertFalse(node.config.contains(SemanticsProperties.LiveRegion))
+                node = node.parent
+            }
+            composeTestRule
+                .onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo))
+                .assertCountEquals(0)
+            composeTestRule.onNodeWithText(text(R.string.launcher_committed)).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun nativeBackAndToolbarBackShareFolderAndNestedEditorContext() {
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        var exits = 0
+        val folder = Folder(FolderId("nested"), "Nested", null, Instant.EPOCH, Instant.EPOCH)
+        interaction.openFolder(folder)
+        var state by mutableStateOf(homeState(emptyList(), emptyList()))
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                StartActivityScreen(
+                    state,
+                    actions::add,
+                    interaction,
+                ) { exits++ }
+            }
+        }
+        composeTestRule.runOnIdle { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        assertEquals(StartActivityAction.Browse(null), actions.single())
+        assertEquals(0, exits)
+        state = state.copy(oneOff = OneOffDraft())
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnIdle { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        assertEquals(StartActivityAction.CloseOneOff, actions.last())
+        state = state.copy(oneOff = null, options = LauncherLoad.Loading)
+        composeTestRule
+            .onLazyNode(hasText(text(R.string.launcher_browse_back)) and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(StartActivityAction.CloseOptions, actions.last())
+        assertEquals(0, exits)
+    }
+
+    @Test
+    fun englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes() {
+        val locale = mutableStateOf(java.util.Locale.US)
+        val font = mutableStateOf(2f)
+        val appearance =
+            mutableStateOf(
+                com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences(
+                    interfaceScalePercent = 120,
+                    textScalePercent = 130,
+                ),
+            )
+        val row = trackable("Scaled Activity")
+        var state by mutableStateOf(homeState(listOf(row), emptyList()))
+        val actions = mutableListOf<StartActivityAction>()
+        val interaction = StartActivityRouteInteraction()
+        composeTestRule.setContent {
+            val config =
+                android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                    setLocale(locale.value)
+                    fontScale = font.value
+                }
+            val context = composeTestRule.activity.createConfigurationContext(config)
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalContext provides context,
+                androidx.compose.ui.platform.LocalConfiguration provides config,
+                androidx.compose.ui.platform.LocalDensity provides
+                    androidx.compose.ui.unit
+                        .Density(density.density, config.fontScale),
+            ) {
+                com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance(appearance.value) {
+                    StartActivityScreen(state, actions::add, interaction)
+                }
+            }
+        }
+        keyboardInput.enter()
+        for (language in listOf(java.util.Locale.US, java.util.Locale.forLanguageTag("ru"))) {
+            for (small in listOf(false, true)) {
+                composeTestRule.runOnIdle {
+                    locale.value = language
+                    font.value = if (small) 1f else 2f
+                    appearance.value =
+                        com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences(
+                            interfaceScalePercent = if (small) 90 else 120,
+                            textScalePercent = if (small) 90 else 130,
+                        )
+                    state = homeState(listOf(row), emptyList())
+                }
+
+                fun label(
+                    id: Int,
+                    vararg args: Any,
+                ): String {
+                    val config = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
+                    config.setLocale(language)
+                    return composeTestRule.activity.createConfigurationContext(config).getString(id, *args)
+                }
+                val primary = composeTestRule.onLazyNode(hasText(row.name) and hasClickAction())
+                primary.assertIsDisplayed()
+                val primaryBounds = primary.fetchSemanticsNode().touchBoundsInRoot
+                val options =
+                    composeTestRule.onLazyNode(
+                        hasContentDescription(label(R.string.launcher_options_for, row.name)),
+                    )
+                options.assertIsDisplayed()
+                val optionsBounds = options.fetchSemanticsNode().touchBoundsInRoot
+                val minimum = 48 * composeTestRule.activity.resources.displayMetrics.density
+                assertTrue(primaryBounds.height >= minimum - 1)
+                assertTrue(optionsBounds.height >= minimum - 1)
+                assertSeparateTargets(primary, options)
+                options.performSemanticsAction(SemanticsActions.RequestFocus)
+                options.assertIsFocused()
+                options.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                assertEquals(StartActivityAction.OpenOptions(ActivityTemplateId(row.id.value)), actions.last())
+                state = state.copy(oneOff = OneOffDraft(name = "Scaled one-off"))
+                val mode = composeTestRule.onLazyNode(hasText(label(R.string.launcher_one_off_no_live)))
+                mode.assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(StartActivityAction.EditOneOffMode(TimeTrackingMode.NO_LIVE_TRACKING), actions.last())
+                state =
+                    state.copy(oneOff = OneOffDraft(name = "Scaled one-off", mode = TimeTrackingMode.NO_LIVE_TRACKING))
+                composeTestRule
+                    .onLazyNode(hasText(label(R.string.launcher_complete)) and hasClickAction())
+                    .assertIsDisplayed()
+                    .performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(StartActivityAction.ExecuteOneOff, actions.last())
+                state = homeState(listOf(row), emptyList())
+                composeTestRule
+                    .onLazyNode(hasText(row.name) and hasClickAction())
+                    .performSemanticsAction(SemanticsActions.OnClick)
+                val value = ActivityLaunchMainValue(ActivityTemplateFieldId("scaled-value"), "Quantity", null, 2, 1234)
+                state = state.copy(selected = LauncherLoad.Content(activityTarget(row.id, value)))
+                val complete =
+                    composeTestRule.onLazyNode(
+                        hasText(label(R.string.launcher_complete)) and hasClickAction(),
+                    )
+                val cancel = composeTestRule.onLazyNode(hasText(label(R.string.launcher_cancel)) and hasClickAction())
+                assertSeparateTargets(complete, cancel)
+                cancel.performSemanticsAction(SemanticsActions.OnClick)
+                composeTestRule.onNodeWithText(label(R.string.launcher_browse_back)).assertIsFocused()
+
+                val zone = ZoneId.of("Europe/Berlin")
+                val now = Instant.parse("2026-11-01T12:00:00Z")
+                val offsets = zone.rules.getValidOffsets(LocalDateTime.parse("2026-10-25T02:10"))
+                val draft =
+                    optionsTemplate().initialStartOptions(now, zone).copy(
+                        startedText = "2026-10-25 02:10",
+                        startedOffsets = offsets,
+                        startedOffset = null,
+                    )
+                state = homeState(emptyList(), emptyList()).copy(options = LauncherLoad.Content(draft))
+
+                fun offsetLabel(index: Int): String {
+                    val occurrence =
+                        if (index == 0) {
+                            R.string.manual_history_first_occurrence
+                        } else {
+                            R.string.manual_history_second_occurrence
+                        }
+                    return label(
+                        R.string.launcher_offset_choice,
+                        label(R.string.manual_history_started),
+                        label(occurrence, offsets[index].id),
+                    )
+                }
+                val firstOffset = composeTestRule.onLazyNode(hasContentDescription(offsetLabel(0)))
+                val secondOffset = composeTestRule.onLazyNode(hasContentDescription(offsetLabel(1)))
+                assertSeparateTargets(firstOffset, secondOffset)
+                secondOffset.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(StartActivityAction.ChooseOptionStartOffset(offsets[1]), actions.last())
+                val save = composeTestRule.onLazyNode(hasText(label(R.string.manual_history_save)) and hasClickAction())
+                val close = composeTestRule.onLazyNode(hasText(label(R.string.launcher_cancel)) and hasClickAction())
+                assertSeparateTargets(save, close)
+                val reviewed = draft.copy(startedOffset = offsets[1], completedText = "2026-10-25 03:00")
+                val proposal = (reviewed.validate(now, zone) as StartOptionsValidation.Valid).proposal
+                state = state.copy(options = LauncherLoad.Content(reviewed.copy(overlap = proposal)))
+                val proceed =
+                    composeTestRule.onLazyNode(
+                        hasText(label(R.string.manual_history_proceed)) and hasClickAction(),
+                    )
+                val cancelOverlap =
+                    composeTestRule.onLazyNode(
+                        hasText(label(R.string.launcher_cancel_overlap)) and hasClickAction(),
+                    )
+                assertSeparateTargets(proceed, cancelOverlap)
+                proceed.performSemanticsAction(SemanticsActions.OnClick)
+                assertEquals(StartActivityAction.ConfirmOptionsOverlap, actions.last())
+                state = homeState(emptyList(), listOf(row, trackable("Scaled Sequence", sequence = true)))
+                val up = composeTestRule.onLazyNode(hasContentDescription(label(R.string.launcher_move_up, row.name)))
+                val down =
+                    composeTestRule.onLazyNode(
+                        hasContentDescription(label(R.string.launcher_move_down, row.name)),
+                    )
+                up.assertIsNotEnabled()
+                assertSeparateTargets(up, down)
+                down.performSemanticsAction(SemanticsActions.OnClick)
+                val sequenceId = LibraryTemplateId.Sequence(SequenceTemplateId("Scaled Sequence"))
+                assertEquals(StartActivityAction.ReorderPinned(listOf(sequenceId, row.id)), actions.last())
+            }
+        }
+    }
+
+    private fun assertSeparateTargets(
+        first: androidx.compose.ui.test.SemanticsNodeInteraction,
+        second: androidx.compose.ui.test.SemanticsNodeInteraction,
+    ) {
+        val minimum = 48 * composeTestRule.activity.resources.displayMetrics.density
+        for (target in listOf(first, second)) {
+            target.performScrollTo().assertIsDisplayed()
+            val touch = target.fetchSemanticsNode().touchBoundsInRoot
+            assertTrue(touch.height >= minimum - 1)
+            assertTrue(touch.width >= minimum - 1)
+        }
+        val a = first.getUnclippedBoundsInRoot()
+        val b = second.getUnclippedBoundsInRoot()
+        assertTrue(
+            "Interactive targets must not overlap",
+            a.bottom <= b.top || b.bottom <= a.top || a.right <= b.left || b.right <= a.left,
+        )
     }
 
     private fun optionsTemplate(fields: List<ActivityTemplateField> = emptyList()) =
