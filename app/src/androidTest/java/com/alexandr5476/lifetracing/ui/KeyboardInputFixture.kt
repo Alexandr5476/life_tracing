@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.ui
 
 import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
 import androidx.test.platform.app.InstrumentationRegistry
@@ -13,8 +14,8 @@ class KeyboardInputFixture(
 ) : ExternalResource() {
     private var previousTouchMode: Boolean? = null
 
-    fun enter() {
-        val view = (compose.onRoot().fetchSemanticsNode().root as ViewRootForTest).view
+    fun enter(target: SemanticsNodeInteraction = compose.onRoot()) {
+        val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
         compose.runOnIdle {
             if (previousTouchMode == null) previousTouchMode = view.isInTouchMode
             assertTrue("The attached Compose view must accept keyboard focus", view.requestFocusFromTouch())

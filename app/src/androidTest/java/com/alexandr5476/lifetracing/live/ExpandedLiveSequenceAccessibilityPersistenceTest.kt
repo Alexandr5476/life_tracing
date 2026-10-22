@@ -51,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -846,7 +847,10 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
         val name = "expanded-accessibility-${UUID.randomUUID()}.db"
         val now = Instant.parse("2026-10-20T12:00:00Z")
         var store = RuntimeRecoveryStore(context, name)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        // Match production UI publication; Compose's test frame clock must not be
+        // resumed by a worker while the native dialog is measuring on Main.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val generation = MutableStateFlow(0L)
         val clock = AtomicReference(now)
         val writes = AtomicInteger()
@@ -968,16 +972,20 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             ExpandedLiveSequenceController(
                 scope,
                 started.execution.id,
-                { id -> readGate.get()?.await() ?: store.live.getExpandedSequence(id) },
+                { id ->
+                    readGate.get()?.await() ?: withContext(Dispatchers.IO) { store.live.getExpandedSequence(id) }
+                },
                 { command ->
-                    commands += command
-                    executeExpandedSequenceCommand(command, store.live)
-                    writes.incrementAndGet()
+                    withContext(Dispatchers.IO) {
+                        commands += command
+                        executeExpandedSequenceCommand(command, store.live)
+                        writes.incrementAndGet()
+                    }
                 },
                 { generation.value++ },
                 generation,
                 { null },
-                { after -> store.library.getReusableActivityCatalog(50, after) },
+                { after -> withContext(Dispatchers.IO) { store.library.getReusableActivityCatalog(50, after) } },
                 { clock.get() },
             )
 

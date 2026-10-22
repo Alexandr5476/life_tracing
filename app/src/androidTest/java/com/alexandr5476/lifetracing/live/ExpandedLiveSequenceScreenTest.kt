@@ -1693,11 +1693,13 @@ class ExpandedLiveSequenceScreenTest {
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Discard me")
                 if (back) {
                     val cancel = composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel))
+                    // Text entry can show the IME, which consumes Back before the dialog.
+                    // Enter keyboard mode on the dialog owner after hiding the IME;
+                    // opening it via touch can undo the route's earlier keyboard mode.
+                    Espresso.closeSoftKeyboard()
+                    keyboardInput.enter(cancel)
                     cancel.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
                     cancel.assertIsFocused()
-                    // Text entry can show the IME, which consumes Back before the dialog.
-                    // Establish the keyboard-hidden prerequisite before testing dialog dismissal.
-                    Espresso.closeSoftKeyboard()
                     sendNativeKey(cancel, android.view.KeyEvent.KEYCODE_BACK)
                     awaitAbsent(hasText(string(R.string.expanded_sequence_add)))
                 } else {
