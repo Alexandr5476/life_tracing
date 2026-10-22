@@ -59,6 +59,55 @@ import java.util.concurrent.TimeUnit
 
 class ExpandedLiveSequenceControllerTest {
     @Test
+    fun foregroundGenerationRetainsUncommittedValuesWithoutRestoringConfirmationOrWriting() =
+        runBlocking {
+            val original = expanded(withAllValueTypes = true)
+            val generation = MutableStateFlow(0L)
+            var pending: CompletableDeferred<ExpandedLiveSequenceRead>? = null
+            val commands = mutableListOf<ExpandedSequenceCommand>()
+            val controller =
+                ExpandedLiveSequenceController(
+                    this,
+                    original.runtime.execution.id,
+                    { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                    { commands += it },
+                    {},
+                    generation,
+                    { null },
+                    { emptyList() },
+                    { Instant.EPOCH },
+                )
+            controller.awaitLoaded()
+            val fields =
+                original.occurrences
+                    .first()
+                    .activity.fields
+            controller.editNumber(fields[0].id, "73")
+            controller.editText(fields[1].id, "Uncommitted text")
+            val draft = controller.state.value.currentValueDraft
+            controller.requestEndEarly()
+            val read = CompletableDeferred<ExpandedLiveSequenceRead>()
+            pending = read
+            generation.value++
+            withTimeout(1_000) { controller.state.first { it.loading } }
+            assertNull(controller.state.value.confirmedSequence)
+            assertNull(controller.state.value.confirmation)
+            controller.editNumber(fields[0].id, "999")
+            controller.editText(fields[1].id, "Stale edit")
+            controller.saveCurrentValues()
+            assertEquals(draft, controller.state.value.currentValueDraft)
+            assertTrue(commands.isEmpty())
+            read.complete(ExpandedLiveSequenceRead.Active(original))
+            controller.awaitLoaded()
+            assertEquals(original, controller.state.value.confirmedSequence)
+            assertEquals(draft, controller.state.value.currentValueDraft)
+            controller.confirmPending()
+            assertNull(controller.state.value.confirmation)
+            assertTrue(commands.isEmpty())
+            controller.close()
+        }
+
+    @Test
     fun reloadAfterSuccessBlocksEveryCommandUntilFreshPublicationInAllFiveStates() =
         runBlocking {
             for (runtimeState in ActiveSequenceState.entries) {

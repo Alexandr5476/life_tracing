@@ -7,6 +7,7 @@ import android.content.res.Configuration
 import android.os.SystemClock
 import android.text.format.DateUtils
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,16 +34,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -147,11 +151,15 @@ private fun ExpandedSequenceContent(
     // A retained projection cannot expose commands while its canonical replacement is unconfirmed.
     val sequence = state.confirmedSequence
     val elapsedNow = displayTick(state.displayBaseline.takeIf { sequence != null }, displayElapsedRealtimeMs)
-    var addOpen by remember(sequence?.runtime?.execution?.id, sequence?.state, state.stale) { mutableStateOf(false) }
+    // Retain ephemeral input, never command authority. Changed current/state, failed reads
+    // and stale routes permanently invalidate the context; loading alone does not.
+    val ui = rememberSequenceUiContext(state)
+    val runtime = state.sequence?.runtime
+    val suspended by rememberUpdatedState(sequence == null || !isRouteVisible)
     val backFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val pane = stringResource(R.string.expanded_sequence_pane)
-    LaunchedEffect(sequence?.runtime?.execution?.id, state.stale, isRouteVisible) {
+    LaunchedEffect(runtime?.execution?.id, state.stale, isRouteVisible) {
         if (isRouteVisible && !state.stale) {
             if (sequence != null) listState.scrollToItem(0)
             backFocus.requestFocus()
@@ -159,28 +167,7 @@ private fun ExpandedSequenceContent(
     }
     Surface(modifier = Modifier.semantics { paneTitle = pane }, color = MaterialTheme.colorScheme.background) {
         if (sequence == null) {
-            Column(
-                Modifier.fillMaxSize().padding(MaterialTheme.spacing.xLarge),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-            ) {
-                TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
-                    Text(stringResource(R.string.expanded_sequence_back))
-                }
-                FeedbackText(
-                    if (state.stale) {
-                        stringResource(R.string.expanded_sequence_stale)
-                    } else if (state.readFailure != null) {
-                        stringResource(R.string.expanded_sequence_read_failure)
-                    } else {
-                        stringResource(R.string.expanded_sequence_loading)
-                    },
-                )
-                if (state.readFailure != null && !state.stale) {
-                    LifeTracingPrimaryButton(onClick = controller::refresh) {
-                        Text(stringResource(R.string.expanded_sequence_retry))
-                    }
-                }
-            }
+            SequenceRecoveryContent(state, controller, onBack, backFocus)
             return@Surface
         }
         val actions = expandedActions(sequence.state)
@@ -205,7 +192,7 @@ private fun ExpandedSequenceContent(
                     state.commandInFlight,
                     onRuntimeAdd = {
                         controller.loadRuntimeAddCatalog()
-                        addOpen = true
+                        ui.runtimeAdd = RuntimeAddDraft(validRuntimePlacements(sequence.state).first())
                     },
                     onEndEarly = controller::requestEndEarly,
                 )
@@ -223,18 +210,129 @@ private fun ExpandedSequenceContent(
                     elapsedNow,
                     state.commandInFlight,
                     controller,
+                    ui.editorFocus,
+                    isSuspended = { suspended },
                 )
             }
         }
     }
     if (sequence != null) ConfirmationDialog(state, sequence, controller)
-    if (addOpen && sequence != null && validRuntimePlacements(sequence.state).isNotEmpty()) {
+    val addDraft = ui.runtimeAdd
+    if (addDraft != null && sequence != null && addDraft.placement in validRuntimePlacements(sequence.state)) {
         RuntimeAddDialog(
             state,
             validRuntimePlacements(sequence.state),
             controller,
-            onDismiss = { addOpen = false },
+            addDraft,
+            isSuspended = { suspended },
+            onDismiss = { ui.runtimeAdd = null },
         )
+    }
+}
+
+@Composable
+private fun SequenceRecoveryContent(
+    state: ExpandedLiveSequenceState,
+    controller: ExpandedLiveSequenceController,
+    onBack: () -> Unit,
+    backFocus: FocusRequester,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(MaterialTheme.spacing.xLarge),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+    ) {
+        TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
+            Text(stringResource(R.string.expanded_sequence_back))
+        }
+        FeedbackText(
+            if (state.stale) {
+                stringResource(R.string.expanded_sequence_stale)
+            } else if (state.readFailure != null) {
+                stringResource(R.string.expanded_sequence_read_failure)
+            } else {
+                stringResource(R.string.expanded_sequence_loading)
+            },
+        )
+        if (state.readFailure != null && !state.stale) {
+            LifeTracingPrimaryButton(onClick = controller::refresh) {
+                Text(stringResource(R.string.expanded_sequence_retry))
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberSequenceUiContext(state: ExpandedLiveSequenceState): ExpandedSequenceUiContext {
+    val execution = state.sequence?.runtime?.execution
+    return remember(
+        execution?.id,
+        execution?.currentOccurrenceId,
+        state.sequence?.state,
+        state.stale,
+        state.readFailure != null,
+    ) { ExpandedSequenceUiContext() }
+}
+
+private class ExpandedSequenceUiContext {
+    var runtimeAdd by mutableStateOf<RuntimeAddDraft?>(null)
+    val editorFocus = EphemeralEditorFocus()
+}
+
+private class RuntimeAddDraft(
+    initialPlacement: RuntimeInsertionPlacement,
+) {
+    var placement by mutableStateOf(initialPlacement)
+    var oneOffName by mutableStateOf("")
+    var mode by mutableStateOf(TimeTrackingMode.NO_LIVE_TRACKING)
+    var timerSeconds by mutableStateOf("60")
+    val scroll = ScrollState(0)
+    val focus = EphemeralEditorFocus()
+
+    fun isValid(): Boolean =
+        oneOffName.isNotBlank() && (mode != TimeTrackingMode.TIMER || validTimerSeconds(timerSeconds) != null)
+}
+
+// Disposed callbacks cannot mutate a surviving draft or submit against a newer projection.
+private class ComposedActions {
+    var active = true
+
+    fun runIfActive(action: () -> Unit) {
+        if (active) action()
+    }
+}
+
+@Composable
+private fun rememberComposedActions(): ComposedActions {
+    val callbacks = remember { ComposedActions() }
+    DisposableEffect(callbacks) { onDispose { callbacks.active = false } }
+    return callbacks
+}
+
+private class EphemeralEditorFocus {
+    var focused: String? = null
+}
+
+@Composable
+private fun Modifier.restoreEditorFocus(
+    focus: EphemeralEditorFocus,
+    target: String,
+    enabled: Boolean,
+    isSuspended: () -> Boolean,
+): Modifier {
+    val requester = remember { FocusRequester() }
+    var hadFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(requester) {
+        // Only a revalidated, authorized editor is composed here. Requesting focus
+        // never invokes an edit callback or a runtime command.
+        if (enabled && !isSuspended() && focus.focused == target) requester.requestFocus()
+    }
+    return this.focusRequester(requester).onFocusChanged {
+        if (it.isFocused) {
+            focus.focused = target
+        } else if (hadFocus && !isSuspended() && focus.focused == target) {
+            focus.focused = null
+        }
+        hadFocus = it.isFocused
     }
 }
 
@@ -248,6 +346,7 @@ private fun GlobalActions(
     val window = sequenceWindowPresentation()
     var open by remember(actions, inFlight) { mutableStateOf(false) }
     val description = stringResource(R.string.expanded_sequence_global_actions)
+    val callbacks = rememberComposedActions()
     Box(Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.xLarge)) {
         TextButton(
             enabled = !inFlight,
@@ -263,16 +362,20 @@ private fun GlobalActions(
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.expanded_sequence_runtime_add)) },
                         onClick = {
-                            open = false
-                            onRuntimeAdd()
+                            callbacks.runIfActive {
+                                open = false
+                                onRuntimeAdd()
+                            }
                         },
                     )
                 }
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.expanded_sequence_end_early)) },
                     onClick = {
-                        open = false
-                        onEndEarly()
+                        callbacks.runIfActive {
+                            open = false
+                            onEndEarly()
+                        }
                     },
                 )
             }
@@ -372,6 +475,8 @@ private fun OccurrenceRow(
     elapsedNow: Long,
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
+    editorFocus: EphemeralEditorFocus,
+    isSuspended: () -> Boolean,
 ) {
     val identity = occurrenceIdentity(row)
     val current = row.occurrence.status == RuntimeOccurrenceStatus.CURRENT
@@ -411,7 +516,7 @@ private fun OccurrenceRow(
                     )
                     row.activity.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 }
-                OccurrenceMenu(sequence, row, inFlight, controller)
+                OccurrenceMenu(sequence, row, inFlight, controller, editorFocus, isSuspended)
             }
             Text(stringResource(R.string.expanded_sequence_position, row.occurrence.runtimePosition + 1))
             Text(occurrenceState(row.occurrence.status), style = MaterialTheme.typography.labelLarge)
@@ -432,7 +537,7 @@ private fun OccurrenceRow(
                 expandedActions(sequence.state).editCurrentValues &&
                 draft?.occurrenceId == row.occurrence.id
             ) {
-                CurrentValueEditor(row, draft, inFlight, controller)
+                CurrentValueEditor(row, draft, inFlight, controller, editorFocus, isSuspended)
             }
         }
     }
@@ -444,6 +549,8 @@ private fun OccurrenceMenu(
     row: ExpandedLiveSequenceOccurrence,
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
+    editorFocus: EphemeralEditorFocus,
+    isSuspended: () -> Boolean,
 ) {
     val window = sequenceWindowPresentation()
     val actions = expandedActions(sequence.state)
@@ -451,13 +558,17 @@ private fun OccurrenceMenu(
     val next = actions.makeNext && row.occurrence.status == RuntimeOccurrenceStatus.NOT_STARTED
     val again = actions.doAgain && row.occurrence.status == RuntimeOccurrenceStatus.COMPLETED
     if (!go && !next && !again) return
+    val callbacks = rememberComposedActions()
     var open by remember(row.occurrence.id, sequence.state, row.occurrence.status, inFlight) { mutableStateOf(false) }
     val actionsDescription = stringResource(R.string.expanded_sequence_row_actions, occurrenceIdentity(row))
     Box {
         TextButton(
             enabled = !inFlight,
             onClick = { open = true },
-            modifier = Modifier.semantics { contentDescription = actionsDescription },
+            modifier =
+                Modifier
+                    .semantics { contentDescription = actionsDescription }
+                    .restoreEditorFocus(editorFocus, "occurrence-${row.occurrence.id.value}", !inFlight, isSuspended),
         ) { Text(stringResource(R.string.expanded_sequence_more)) }
         DropdownMenu(expanded = open && !inFlight, onDismissRequest = { open = false }) {
             window.Content {
@@ -465,8 +576,10 @@ private fun OccurrenceMenu(
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.expanded_sequence_go_now)) },
                         onClick = {
-                            open = false
-                            controller.requestGoNow(row.occurrence.id)
+                            callbacks.runIfActive {
+                                open = false
+                                controller.requestGoNow(row.occurrence.id)
+                            }
                         },
                     )
                 }
@@ -474,8 +587,10 @@ private fun OccurrenceMenu(
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.expanded_sequence_make_next)) },
                         onClick = {
-                            open = false
-                            controller.makeNext(row.occurrence.id)
+                            callbacks.runIfActive {
+                                open = false
+                                controller.makeNext(row.occurrence.id)
+                            }
                         },
                     )
                 }
@@ -491,8 +606,10 @@ private fun OccurrenceMenu(
                                 )
                             },
                             onClick = {
-                                open = false
-                                controller.doAgain(row.occurrence.id, placement)
+                                callbacks.runIfActive {
+                                    open = false
+                                    controller.doAgain(row.occurrence.id, placement)
+                                }
                             },
                         )
                     }
@@ -508,14 +625,21 @@ private fun CurrentValueEditor(
     draft: CurrentValueDraft,
     inFlight: Boolean,
     controller: ExpandedLiveSequenceController,
+    editorFocus: EphemeralEditorFocus,
+    isSuspended: () -> Boolean,
 ) {
+    val callbacks = rememberComposedActions()
     row.activity.fields.sortedBy(ActivitySnapshotField::position).forEach { field ->
         when (field.type) {
             CustomFieldType.NUMBER ->
                 LifeTracingOutlinedTextField(
                     value = draft.numberTexts[field.id].orEmpty(),
-                    onValueChange = { controller.editNumber(field.id, it) },
-                    modifier = Modifier.fillMaxWidth().testTag("expanded-sequence-current-value-${field.id.value}"),
+                    onValueChange = { if (callbacks.active) controller.editNumber(field.id, it) },
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .testTag("expanded-sequence-current-value-${field.id.value}")
+                            .restoreEditorFocus(editorFocus, field.id.value, !inFlight, isSuspended),
                     label = { Text(field.label()) },
                     isError = field.id in draft.invalidNumberFields,
                     enabled = !inFlight,
@@ -523,8 +647,12 @@ private fun CurrentValueEditor(
             CustomFieldType.TEXT ->
                 LifeTracingOutlinedTextField(
                     value = (draft.values[field.id] as? TextExecutionValue)?.value.orEmpty(),
-                    onValueChange = { controller.editText(field.id, it) },
-                    modifier = Modifier.fillMaxWidth().testTag("expanded-sequence-current-value-${field.id.value}"),
+                    onValueChange = { if (callbacks.active) controller.editText(field.id, it) },
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .testTag("expanded-sequence-current-value-${field.id.value}")
+                            .restoreEditorFocus(editorFocus, field.id.value, !inFlight, isSuspended),
                     label = { Text(field.label()) },
                     enabled = !inFlight,
                 )
@@ -807,22 +935,25 @@ private fun RuntimeAddDialog(
     state: ExpandedLiveSequenceState,
     placements: Set<RuntimeInsertionPlacement>,
     controller: ExpandedLiveSequenceController,
+    draft: RuntimeAddDraft,
+    isSuspended: () -> Boolean,
     onDismiss: () -> Unit,
 ) {
     val window = sequenceWindowPresentation()
-    val initialPlacement = placements.firstOrNull() ?: return
-    var placement by remember { mutableStateOf(initialPlacement) }
+    var placement by draft::placement
     val canAdd = !state.commandInFlight && placement in placements
-    var oneOffName by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(TimeTrackingMode.NO_LIVE_TRACKING) }
-    var timerSeconds by remember { mutableStateOf("60") }
+    var oneOffName by draft::oneOffName
+    var mode by draft::mode
+    var timerSeconds by draft::timerSeconds
+    val callbacks = rememberComposedActions()
+    val dismiss = { if (callbacks.active) onDismiss() }
     val title = stringResource(R.string.expanded_sequence_runtime_add)
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismiss,
         text = {
             window.Content {
                 Column(
-                    modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    modifier = Modifier.heightIn(max = 420.dp).verticalScroll(draft.scroll),
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
                 ) {
                     SequenceDialogHeading(title)
@@ -830,7 +961,7 @@ private fun RuntimeAddDialog(
                         placements.forEach { candidate ->
                             LifeTracingChoiceButton(
                                 selected = candidate == placement,
-                                onClick = { placement = candidate },
+                                onClick = { if (callbacks.active) placement = candidate },
                                 enabled = !state.commandInFlight,
                                 modifier =
                                     Modifier.semantics {
@@ -840,12 +971,15 @@ private fun RuntimeAddDialog(
                             ) { Text(placementLabel(candidate)) }
                         }
                     }
-                    RuntimeAddCatalog(state, canAdd, placement, controller, onDismiss)
+                    RuntimeAddCatalog(state, canAdd, placement, controller, callbacks, dismiss)
                     Text(stringResource(R.string.expanded_sequence_one_off))
                     LifeTracingOutlinedTextField(
                         value = oneOffName,
-                        onValueChange = { oneOffName = it },
-                        modifier = Modifier.fillMaxWidth(),
+                        onValueChange = { if (callbacks.active) oneOffName = it },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .restoreEditorFocus(draft.focus, "name", !state.commandInFlight, isSuspended),
                         label = { Text(stringResource(R.string.expanded_sequence_name)) },
                         enabled = !state.commandInFlight,
                     )
@@ -853,7 +987,7 @@ private fun RuntimeAddDialog(
                         TimeTrackingMode.entries.forEach { candidate ->
                             LifeTracingChoiceButton(
                                 selected = mode == candidate,
-                                onClick = { mode = candidate },
+                                onClick = { if (callbacks.active) mode = candidate },
                                 enabled = !state.commandInFlight,
                                 modifier =
                                     Modifier.semantics {
@@ -866,7 +1000,14 @@ private fun RuntimeAddDialog(
                     if (mode == TimeTrackingMode.TIMER) {
                         LifeTracingOutlinedTextField(
                             value = timerSeconds,
-                            onValueChange = { timerSeconds = it },
+                            onValueChange = { if (callbacks.active) timerSeconds = it },
+                            modifier =
+                                Modifier.restoreEditorFocus(
+                                    draft.focus,
+                                    "timer",
+                                    !state.commandInFlight,
+                                    isSuspended,
+                                ),
                             label = { Text(stringResource(R.string.expanded_sequence_timer_seconds)) },
                             enabled = !state.commandInFlight,
                             isError = validTimerSeconds(timerSeconds) == null,
@@ -880,8 +1021,9 @@ private fun RuntimeAddDialog(
             window.Content {
                 val seconds = validTimerSeconds(timerSeconds)
                 TextButton(
-                    enabled = canAdd && oneOffName.isNotBlank() && (mode != TimeTrackingMode.TIMER || seconds != null),
+                    enabled = canAdd && draft.isValid(),
                     onClick = {
+                        if (!callbacks.active) return@TextButton
                         controller.runtimeAddOneOff(
                             ActivitySnapshotDraft(
                                 oneOffName.trim(),
@@ -902,7 +1044,7 @@ private fun RuntimeAddDialog(
         },
         dismissButton = {
             window.Content {
-                TextButton(onClick = onDismiss) { Text(stringResource(R.string.expanded_sequence_cancel)) }
+                TextButton(onClick = dismiss) { Text(stringResource(R.string.expanded_sequence_cancel)) }
             }
         },
     )
@@ -1041,6 +1183,7 @@ private fun RuntimeAddCatalog(
     canAdd: Boolean,
     placement: RuntimeInsertionPlacement,
     controller: ExpandedLiveSequenceController,
+    callbacks: ComposedActions,
     onDismiss: () -> Unit,
 ) {
     Text(stringResource(R.string.expanded_sequence_reusable_activity))
@@ -1072,6 +1215,7 @@ private fun RuntimeAddCatalog(
                 modifier = Modifier.semantics { contentDescription = identity },
                 enabled = canAdd,
                 onClick = {
+                    if (!callbacks.active) return@TextButton
                     controller.runtimeAddTemplate(item.id, placement)
                     onDismiss()
                 },

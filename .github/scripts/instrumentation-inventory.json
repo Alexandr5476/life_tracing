@@ -983,6 +983,9 @@
       "russianOrganizationControlsRemainActionableAtCompactWidth"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceAccessibilityPersistenceTest": [
+      "foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen",
+      "foregroundRefreshRetainsNumberFocusAndDeepScrollWithoutWritesAfterReopen",
+      "foregroundRefreshRetainsTextFocusAndDeepScrollWithoutWritesAfterReopen",
       "runningRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
       "pausedRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
       "waitingRefreshFailureRejectsCallbacksAndPreservesFactsAfterReopen",
@@ -998,6 +1001,13 @@
       "timerBeforeAtAndAfterDeadlineIsLabeledWithoutReconciliationAndPauseFreezesIt"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceScreenTest": [
+      "cancelledAndBackDismissedDraftsStayDismissedAfterForegroundRefresh",
+      "disposedAddCallbackCannotSubmitOrDismissRevalidatedDraft",
+      "changedCurrentDropsDraftFocusAndRejectsDisposedTextInput",
+      "invalidPlacementDropsRuntimeAddInputInsteadOfRetargetingIt",
+      "failedRefreshAndStaleRouteDiscardDraftsAndExposeOnlyRecovery",
+      "sameRuntimeRefreshKeepsDeepOccurrenceFocusButNeverReopensItsMenu",
+      "successfulRevalidationNeverReopensOrReplaysPendingConfirmations",
       "runningReloadDismissesOccurrenceMenuAndBlocksStaleActions",
       "pausedReloadDismissesEndConfirmationAndBlocksStaleActions",
       "waitingReloadDismissesRuntimeAddAndBlocksStaleActions",

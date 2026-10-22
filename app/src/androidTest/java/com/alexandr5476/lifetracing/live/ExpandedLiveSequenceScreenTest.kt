@@ -5,7 +5,10 @@ package com.alexandr5476.lifetracing.live
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
@@ -32,6 +35,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
+import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -1056,7 +1060,8 @@ class ExpandedLiveSequenceScreenTest {
         )
         menu.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
         composeRule.onNode(isPopup()).assertIsDisplayed()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        sendNativeKey(composeRule.onNode(isPopup()), android.view.KeyEvent.KEYCODE_BACK)
+        awaitAbsent(isPopup())
         composeRule.onNode(isPopup()).assertDoesNotExist()
         assertTrue(commands.isEmpty())
     }
@@ -1463,13 +1468,21 @@ class ExpandedLiveSequenceScreenTest {
         menu.assertIsFocused()
         menu.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
         composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).assertIsDisplayed()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        sendNativeKey(
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)),
+            android.view.KeyEvent.KEYCODE_BACK,
+        )
+        awaitAbsent(hasText(string(R.string.expanded_sequence_end_early)))
         composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).assertDoesNotExist()
         assertTrue(commands.isEmpty())
         menu.performClick()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).performClick()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm_end_title)).assertIsDisplayed()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        sendNativeKey(
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)),
+            android.view.KeyEvent.KEYCODE_BACK,
+        )
+        awaitAbsent(hasText(string(R.string.expanded_sequence_confirm)))
         composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
         composeRule.runOnIdle { assertEquals(null, controller.state.value.confirmation) }
         assertTrue(commands.isEmpty())
@@ -1635,17 +1648,21 @@ class ExpandedLiveSequenceScreenTest {
         val back = composeRule.onNodeWithText(string(R.string.expanded_sequence_back))
         back.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
         back.assertIsFocused()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        sendNativeKey(back, android.view.KeyEvent.KEYCODE_ENTER)
+        composeRule.waitUntil(5_000) { composeRule.runOnIdle { backs == 1 } }
         composeRule.runOnIdle { assertEquals(1, backs) }
         val recovered = original.copy(state = ActiveSequenceState.PAUSED_CURRENT)
         composeRule.runOnIdle { pending = kotlinx.coroutines.CompletableDeferred() }
         val retry = composeRule.onNodeWithText(string(R.string.expanded_sequence_retry))
         retry.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
         retry.assertIsFocused()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        sendNativeKey(retry, android.view.KeyEvent.KEYCODE_ENTER)
+        composeRule.waitUntil(5_000) { controller.state.value.loading }
         assertOnlyNavigationAndFeedback(false)
         composeRule.runOnIdle { pending!!.complete(ExpandedLiveSequenceRead.Active(recovered)) }
-        composeRule.onNodeWithText(string(R.string.expanded_sequence_resume)).assertIsEnabled()
+        // Revalidation preserves the occurrence viewport; navigate to the recovered header action.
+        val resume = composeRule.onLazyNode(hasText(string(R.string.expanded_sequence_resume)))
+        resume.assertIsEnabled()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_pause)).assertDoesNotExist()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_complete)).assertDoesNotExist()
         composeRule.onNodeWithText(string(R.string.expanded_sequence_start_next)).assertDoesNotExist()
@@ -1655,14 +1672,364 @@ class ExpandedLiveSequenceScreenTest {
             controller.confirmPending()
             assertTrue(commands.isEmpty())
         }
-        val resume = composeRule.onNodeWithText(string(R.string.expanded_sequence_resume))
         resume.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
         resume.assertIsFocused()
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
+        sendNativeKey(resume, android.view.KeyEvent.KEYCODE_ENTER)
+        composeRule.waitUntil(5_000) {
+            composeRule.runOnIdle { commands.size == 1 && !controller.state.value.commandInFlight }
+        }
         composeRule.runOnIdle {
             assertEquals(listOf(ExpandedSequenceCommand.Resume::class), commands.map { it::class })
             controller.close()
         }
+    }
+
+    @Test
+    fun cancelledAndBackDismissedDraftsStayDismissedAfterForegroundRefresh() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            for (back in listOf(false, true)) {
+                fixture.openAdd()
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Discard me")
+                if (back) {
+                    val cancel = composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel))
+                    cancel.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+                    cancel.assertIsFocused()
+                    // Text entry can show the IME, which consumes Back before the dialog.
+                    // Establish the keyboard-hidden prerequisite before testing dialog dismissal.
+                    Espresso.closeSoftKeyboard()
+                    sendNativeKey(cancel, android.view.KeyEvent.KEYCODE_BACK)
+                    awaitAbsent(hasText(string(R.string.expanded_sequence_add)))
+                } else {
+                    composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel)).performClick()
+                }
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+                val read = fixture.beginRefresh()
+                fixture.finishRefresh(read)
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+                fixture.openAdd()
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertIsNotEnabled()
+                composeRule.onNodeWithText("Discard me").assertDoesNotExist()
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel)).performClick()
+            }
+            assertTrue(fixture.commands.isEmpty())
+        }
+    }
+
+    @Test
+    fun disposedAddCallbackCannotSubmitOrDismissRevalidatedDraft() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            composeRule.onNodeWithContentDescription(string(R.string.expanded_sequence_global_actions)).performClick()
+            val oldOpen =
+                composeRule
+                    .onNodeWithText(string(R.string.expanded_sequence_runtime_add))
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                    .action!!
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Keep me")
+            val oldAdd =
+                composeRule
+                    .onNodeWithText(string(R.string.expanded_sequence_add))
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                    .action!!
+            val pending = fixture.beginRefresh()
+            composeRule.runOnIdle { oldAdd() }
+            fixture.finishRefresh(pending)
+            composeRule.onNodeWithText("Keep me").assertExists()
+            composeRule.runOnIdle {
+                oldAdd()
+                oldOpen()
+            }
+            composeRule.onNodeWithText("Keep me").assertExists()
+            assertTrue(fixture.commands.isEmpty())
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).performClick()
+            assertEquals(1, fixture.commands.size)
+        }
+    }
+
+    @Test
+    fun changedCurrentDropsDraftFocusAndRejectsDisposedTextInput() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            val editor =
+                composeRule.onLazyNode(
+                    hasText("Value") and
+                        androidx.compose.ui.test
+                            .hasSetTextAction(),
+                )
+            editor.performTextReplacement("73")
+            editor.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+            editor.assertIsFocused()
+            val oldInput =
+                editor
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsActions.SetText]
+                    .action!!
+            fixture.openAdd()
+            composeRule
+                .onNodeWithText(
+                    string(R.string.expanded_sequence_name),
+                ).performTextReplacement("Old current draft")
+            val pending = fixture.beginRefresh()
+            val original = fixture.original
+            val next = original.occurrences[2].occurrence.id
+            val changed =
+                original.copy(
+                    runtime =
+                        original.runtime.copy(
+                            execution = original.runtime.execution.copy(currentOccurrenceId = next),
+                        ),
+                    occurrences =
+                        original.occurrences.map { row ->
+                            row.copy(
+                                occurrence =
+                                    row.occurrence.copy(
+                                        status =
+                                            when (row.occurrence.id) {
+                                                original.runtime.execution.currentOccurrenceId ->
+                                                    RuntimeOccurrenceStatus.COMPLETED
+                                                next -> RuntimeOccurrenceStatus.CURRENT
+                                                else -> row.occurrence.status
+                                            },
+                                    ),
+                            )
+                        },
+                )
+            fixture.finishRefresh(pending, ExpandedLiveSequenceRead.Active(changed))
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            composeRule.onNodeWithText("Old current draft").assertDoesNotExist()
+            val newDraft = fixture.controller.state.value.currentValueDraft
+            assertEquals(next, newDraft!!.occurrenceId)
+            assertTrue("Old input must not enter the new occurrence", newDraft.numberTexts.values.none { it == "73" })
+            composeRule.runOnIdle {
+                oldInput(
+                    androidx.compose.ui.text
+                        .AnnotatedString("999"),
+                )
+            }
+            assertEquals(newDraft, fixture.controller.state.value.currentValueDraft)
+            composeRule
+                .onAllNodes(
+                    androidx.compose.ui.test
+                        .isFocused() and
+                        androidx.compose.ui.test
+                            .hasSetTextAction(),
+                ).assertCountEquals(0)
+            assertTrue(fixture.commands.isEmpty())
+        }
+    }
+
+    @Test
+    fun invalidPlacementDropsRuntimeAddInputInsteadOfRetargetingIt() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            fixture.openAdd()
+            composeRule
+                .onNodeWithText(
+                    string(R.string.expanded_sequence_name),
+                ).performTextReplacement("After old current")
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_after_current)).performClick()
+            val pending = fixture.beginRefresh()
+            fixture.finishRefresh(
+                pending,
+                ExpandedLiveSequenceRead.Active(fixture.original.copy(state = ActiveSequenceState.WAITING_NEXT)),
+            )
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            fixture.openAdd()
+            composeRule.onNodeWithText("After old current").assertDoesNotExist()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_after_current)).assertDoesNotExist()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_to_end)).assertIsSelected()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertIsNotEnabled()
+            assertTrue(fixture.commands.isEmpty())
+        }
+    }
+
+    @Test
+    fun failedRefreshAndStaleRouteDiscardDraftsAndExposeOnlyRecovery() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            fixture.openAdd()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Do not restore")
+            val pending = fixture.beginRefresh()
+            composeRule.runOnIdle { pending.completeExceptionally(IllegalStateException("read failed")) }
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_read_failure)).assertExists()
+            composeRule.onAllNodes(hasClickAction() and isEnabled()).assertCountEquals(2)
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).assertDoesNotExist()
+            val retry = fixture.beginRefresh()
+            fixture.finishRefresh(retry)
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            fixture.openAdd()
+            composeRule.onNodeWithText("Do not restore").assertDoesNotExist()
+            val stale = fixture.beginRefresh()
+            fixture.finishRefresh(stale, ExpandedLiveSequenceRead.StaleOrInactive)
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_stale)).assertExists()
+            composeRule.onAllNodes(hasClickAction() and isEnabled()).assertCountEquals(1)
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).assertDoesNotExist()
+            composeRule
+                .onNodeWithContentDescription(
+                    string(R.string.expanded_sequence_global_actions),
+                ).assertDoesNotExist()
+            assertTrue(fixture.commands.isEmpty())
+        }
+    }
+
+    @Test
+    fun sameRuntimeRefreshKeepsDeepOccurrenceFocusButNeverReopensItsMenu() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            val description =
+                string(
+                    R.string.expanded_sequence_row_actions,
+                    string(R.string.expanded_sequence_occurrence_identity, "Activity 79", 80),
+                )
+            val rowAction = composeRule.onLazyNode(hasContentDescription(description))
+            rowAction.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+            rowAction.assertIsFocused()
+            composeRule.waitForIdle()
+            val top = rowAction.fetchSemanticsNode().boundsInRoot.top
+            val pending = fixture.beginRefresh()
+            fixture.finishRefresh(pending)
+            composeRule.onNodeWithContentDescription(description).assertIsDisplayed().assertIsFocused()
+            assertEquals(
+                top,
+                composeRule
+                    .onNodeWithContentDescription(description)
+                    .fetchSemanticsNode()
+                    .boundsInRoot.top,
+                1f,
+            )
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_go_now)).assertDoesNotExist()
+            composeRule.onNodeWithContentDescription(description).performClick()
+            val oldMove =
+                composeRule
+                    .onNodeWithText(string(R.string.expanded_sequence_make_next))
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                    .action!!
+            val menuRead = fixture.beginRefresh()
+            fixture.finishRefresh(menuRead)
+            composeRule.runOnIdle { oldMove() }
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_make_next)).assertDoesNotExist()
+            assertTrue(fixture.commands.isEmpty())
+        }
+    }
+
+    @Test
+    fun successfulRevalidationNeverReopensOrReplaysPendingConfirmations() {
+        RefreshFixture().use { fixture ->
+            fixture.mount()
+            for (jump in listOf(false, true)) {
+                if (jump) {
+                    composeRule
+                        .onLazyNode(
+                            hasContentDescription(
+                                string(
+                                    R.string.expanded_sequence_row_actions,
+                                    string(R.string.expanded_sequence_occurrence_identity, "Activity 2", 3),
+                                ),
+                            ),
+                        ).performClick()
+                    composeRule.onNodeWithText(string(R.string.expanded_sequence_go_now)).performClick()
+                } else {
+                    composeRule
+                        .onNodeWithContentDescription(
+                            string(R.string.expanded_sequence_global_actions),
+                        ).performClick()
+                    composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).performClick()
+                }
+                val oldConfirm =
+                    composeRule
+                        .onNodeWithText(string(R.string.expanded_sequence_confirm))
+                        .fetchSemanticsNode()
+                        .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                        .action!!
+                val pending = fixture.beginRefresh()
+                fixture.finishRefresh(pending)
+                composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
+                composeRule.runOnIdle { oldConfirm() }
+                assertEquals(null, fixture.controller.state.value.confirmation)
+                assertTrue(fixture.commands.isEmpty())
+            }
+        }
+    }
+
+    private inner class RefreshFixture : java.io.Closeable {
+        val original = expanded(80)
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        private val generation = MutableStateFlow(0L)
+        private var pending: kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>? = null
+        val controller =
+            ExpandedLiveSequenceController(
+                CoroutineScope(Dispatchers.Unconfined),
+                original.runtime.execution.id,
+                { pending?.await() ?: ExpandedLiveSequenceRead.Active(original) },
+                { commands += it },
+                {},
+                generation,
+                { null },
+                { emptyList() },
+                { Instant.EPOCH },
+            )
+
+        fun mount() {
+            composeRule.setContent { LifeTracingTheme { ExpandedLiveSequenceRoute(controller, {}, {}) } }
+            keyboardInput.enter()
+        }
+
+        fun openAdd() {
+            composeRule
+                .onLazyNode(
+                    hasContentDescription(string(R.string.expanded_sequence_global_actions)),
+                ).performClick()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
+        }
+
+        fun beginRefresh(): kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead> {
+            val read = kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>()
+            composeRule.runOnIdle {
+                pending = read
+                generation.value++
+            }
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_loading)).assertExists()
+            return read
+        }
+
+        fun finishRefresh(
+            read: kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>,
+            result: ExpandedLiveSequenceRead = ExpandedLiveSequenceRead.Active(original),
+        ) {
+            composeRule.runOnIdle {
+                pending = null
+                read.complete(result)
+            }
+            composeRule.waitForIdle()
+        }
+
+        override fun close() {
+            composeRule.runOnIdle { controller.close() }
+        }
+    }
+
+    private fun sendNativeKey(
+        target: SemanticsNodeInteraction,
+        keyCode: Int,
+    ) {
+        val view =
+            (target.fetchSemanticsNode().root as androidx.compose.ui.platform.ViewRootForTest).view
+        // Compose focus/idle does not imply that Android has transferred input focus
+        // after a native popup/dialog was attached or removed. Inject exactly once,
+        // only when the intended window owns native focus; callers await its outcome.
+        composeRule.waitUntil(5_000) {
+            composeRule.runOnIdle { view.isAttachedToWindow && view.hasWindowFocus() }
+        }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode)
+    }
+
+    private fun awaitAbsent(matcher: SemanticsMatcher) {
+        composeRule.waitUntil(5_000) { composeRule.onAllNodes(matcher).fetchSemanticsNodes().isEmpty() }
     }
 
     private fun expanded(

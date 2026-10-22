@@ -301,6 +301,123 @@ are actionable; old popup/confirmation actions must not execute. Retry after an 
 runtime state change and verify only the newly permitted actions return, with no replay.
 Manual TalkBack/Switch Access validation remains unperformed.
 
+## PR38 W2: ephemeral context through foreground revalidation
+
+`LifeTracingApplication.onActivityStarted` calls `AndroidRuntimeCoordinator.onForeground`,
+which invalidates semantic generation even when canonical runtime facts are unchanged.
+The screen now retains an in-memory Runtime Add draft, dialog scroll and native editor
+focus separately from `confirmedSequence`. The controller authority guard is unchanged:
+loading/failure/stale presentations expose no runtime commands or editors. No polling,
+reader, durable state, domain command or coordinator lifecycle behavior is added.
+
+Only successful revalidation with the same execution, current occurrence and runtime state
+can restore this context. Failed reads, stale routes, changed current/state and invalidated
+placement discard it. Cancel/Back clears the draft explicitly. Pending Jump/End early
+confirmations and menus are never restored. Disposed Add/input callbacks cannot submit or
+edit a revalidated form/current occurrence. Route-entry scrolling/focus uses retained
+execution identity, so transient loss of command authority does not reset the list/header.
+Native focus is restored only when the corresponding authorized editor or occurrence
+control is composed again; ordinary user focus changes clear the remembered target.
+
+The seven new screen cases and three physical-database cases are mandatory in the five-API
+inventory. The physical cases hold a semantic-generation read after successful loading,
+check a named Timer draft with 137 seconds and After current placement, and check Number
+and Text focus at occurrence 41 of 80 without scrolling again after revalidation. They
+assert zero restoration writes; explicit Add writes once to the original execution with
+one-off provenance, and physical close/reopen preserves canonical facts, frozen Plan
+linkage and unrelated history. Existing W1 held/failure/stale callback tests are retained.
+An additional JVM controller case checks draft retention, edit/write rejection while
+unconfirmed, and permanent pending-confirmation invalidation.
+
+The Compose regressions were written before the production correction. Device fail-first
+and corrected execution are reserved for the Controller; local compilation cannot certify
+those assertions. To reproduce fail-first, apply only the new tests/fixture changes to
+head `fcd22da1c7a27021a3e9d279f7e559f30a73fd6f`: the draft case loses its form and the deep
+focus cases reset to the header. Run corrected cases and then the full unfiltered gates
+at APIs 26/31/33/35/36 plus exact-head CI before acceptance.
+
+Manual check (pending): with TalkBack, Switch Access and a hardware keyboard, open Runtime
+Add, enter a nondefault Timer name/seconds/placement, focus seconds, background/foreground
+without changing runtime, and verify the same draft/focus returns after revalidation with
+no command until explicit Add. Repeat with a current Number/Text Field deep in a long
+Sequence. Cancel/Back must stay dismissed. While a read is held or failed, only Back/Retry
+may be actionable. Change current/placement authority or end the Sequence while away and
+verify old input/menus/confirmations do not return to an unauthorized target.
+Repeat in EN/RU with the scales in the walkthrough below. Record API, service versions and
+observations; manual assistive-service validation remains unperformed.
+
+### W2 local verification
+
+On 2026-10-22 (Europe/Moscow), the final single-worker invocation passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest --continue --no-parallel --max-workers=1 --console=plain
+```
+
+App JVM XML contains 409 tests with zero failures/errors/skips. AndroidTest sources and
+APK compiled/assembled successfully; lint reports zero errors and no focus-helper warning.
+The 17 mocked instrumentation-runner unit tests also passed. An explicit identity audit
+matches all 46 expanded screen and 16 physical-persistence methods against the mandatory
+inventory (451 app, 627 data, 2 startup). `git diff --check` passed.
+
+An earlier combined build timed out in two unchanged controller tests. The full limited-worker
+JVM rerun and the final single-worker pass both passed all 409 tests; no assertion or timeout
+was weakened. Device fail-first/corrected runs, the five-API suites, exact-head GitHub CI and
+manual TalkBack/Switch Access validation remain unperformed here and are not certified by
+these local checks.
+
+### Native key synchronization after the Controller API 35 run
+
+The Controller's full run reported three early Back-counter assertions, one early native
+Back-dismissal assertion, then an Activity-window attachment crash. Compose focus/idle is
+not a barrier for Android window-focus transfer or completion of an injected key event.
+The expanded-screen fixture now waits for the intended attached native window to own input
+focus, injects exactly one key, and waits for the observable counter/loading/dismissal
+outcome before retaining every original assertion. The same helper covers adjacent native
+Back checks for the scaled popup, confirmation dialog and explicitly dismissed Add draft.
+No production command, focus-restoration policy, assertion or testcase identity changes.
+
+The original crash log separately showed SurfaceFlinger reaching `MAX_LAYERS (4096)`,
+followed by server-side `Surface$OutOfResourcesException: NO_MEMORY`, then the client's
+`Adding window failed` / `bad array lengths` while the test Activity attached. The unchanged
+tree passed all five reported cases in the first authorized real-device repair probe.
+After native-key synchronization, the second probe again passed all five, with zero
+failures/errors/skips. Controller evidence is under
+`.runtime/repair-probes/wf-2d37dc47821f590fa8e9b475df962789/0f22635c2e164ae09c02a0a65527fde9/`
+(`tree-1/attempt-1` and `tree-2/attempt-1`). These scoped passes do not certify the
+unfiltered suite after the original run-level surface exhaustion.
+
+Local app ktlint, Detekt, AndroidTest APK assembly and all 16 expanded-controller JVM tests
+passed. All 46 expanded-screen identities remain required. The full five-API gate and
+manual TalkBack/Switch Access validation remain Controller/release obligations.
+
+## API35 recovery viewport and edited-draft Back prerequisites
+
+The subsequent unfiltered Controller run completed all 451 app cases and reported three
+expanded-screen failures. Two shared a recovery fixture that looked for Resume without
+scrolling back from an occurrence menu/Jump target. W2 deliberately retains that viewport;
+the fixture now uses the list's accessible scroll-to action to reach Resume before checking
+enabled state, native focus and exactly one Resume command. All five runtime-state variants
+share this correction; the retained-scroll behavior in production remains unchanged.
+
+The edited-draft Back failure's log records `HIDE_SOFT_INPUT_BY_BACK_KEY`: Android consumed
+the injected key to hide the IME. The fixture now focuses Cancel and closes the software
+keyboard before injecting the single dialog-dismissal Back key. It still asserts dismissal,
+no draft resurrection after foreground revalidation, empty values on reopening and zero
+commands. Adjacent popup/confirmation Back cases do not enter text or show an IME.
+
+The real authorized API35 repair probe passed all three reported cases (three tests,
+zero failures/errors/skips). Evidence:
+`.runtime/repair-probes/wf-2d37dc47821f590fa8e9b475df962789/0ee2ed2d9e30461790b801cc44000534/tree-1/attempt-1/`.
+After a formatting-only Espresso import correction, local verification passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:testDebugUnitTest --tests com.alexandr5476.lifetracing.live.ExpandedLiveSequenceControllerTest --no-parallel --max-workers=1 --console=plain
+```
+
+The controller JVM result contains all 16 tests (Gradle cache reuse). This scoped probe
+does not replace the unfiltered five-API or exact-head CI gates.
+
 ## Reproducible device walkthrough (manual, pending)
 
 Use a fresh fixture with a repeated Activity, Stopwatch, Timer allowing overtime,

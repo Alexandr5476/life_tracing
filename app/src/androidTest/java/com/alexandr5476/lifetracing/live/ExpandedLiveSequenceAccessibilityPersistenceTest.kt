@@ -5,14 +5,21 @@ package com.alexandr5476.lifetracing.live
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
@@ -59,6 +66,11 @@ import java.util.concurrent.atomic.AtomicReference
 class ExpandedLiveSequenceAccessibilityPersistenceTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @get:Rule
+    val keyboardInput =
+        com.alexandr5476.lifetracing.ui
+            .KeyboardInputFixture(compose)
 
     @Test
     fun semanticPauseResumeCompleteAndStartNextRetainPlanAndPhysicalRuntimeFacts() {
@@ -655,9 +667,178 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
         }
     }
 
+    @Test
+    fun foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen() {
+        Fixture().use { fixture ->
+            fixture.mount()
+            keyboardInput.enter()
+            val unrelated =
+                fixture.store.activityCommands.addManualTimed(
+                    com.alexandr5476.lifetracing.domain.ActivityEntrySource.OneOff(
+                        com.alexandr5476.lifetracing.domain.ActivitySnapshotDraft(
+                            "Unrelated history",
+                            null,
+                            TimeTrackingMode.STOPWATCH,
+                            null,
+                        ),
+                    ),
+                    fixture.now.minusSeconds(200),
+                    fixture.now.minusSeconds(100),
+                    fixture.now,
+                    ZoneOffset.UTC,
+                )
+            val before = fixture.active()
+            val originalFacts = fixture.store.durableFacts()
+            compose
+                .onNodeWithContentDescription(fixture.string(R.string.expanded_sequence_global_actions))
+                .performSemanticsAction(SemanticsActions.OnClick) { it() }
+            fixture.invoke(R.string.expanded_sequence_runtime_add)
+            compose
+                .onNodeWithText(fixture.string(R.string.expanded_sequence_name))
+                .performTextReplacement("Foreground draft")
+            fixture.invoke(R.string.expanded_sequence_timer)
+            fixture.invoke(R.string.expanded_sequence_after_current)
+            val seconds = compose.onNodeWithText(fixture.string(R.string.expanded_sequence_timer_seconds))
+            seconds.performScrollTo().performTextReplacement("137")
+            seconds.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            seconds.assertIsFocused()
+            val pending = fixture.holdForegroundRefresh()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_loading)).assertExists()
+            assertEquals(originalFacts, fixture.store.durableFacts())
+            fixture.releaseRefresh(pending)
+            compose.onNodeWithText("Foreground draft").assertExists()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_timer)).assertIsSelected()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_after_current)).assertIsSelected()
+            seconds.assertTextContains("137").assertIsFocused()
+            assertEquals(0, fixture.writes.get())
+            assertTrue(fixture.commands.isEmpty())
+            assertEquals(originalFacts, fixture.store.durableFacts())
+            fixture.invoke(R.string.expanded_sequence_add)
+            fixture.awaitWrites(1)
+            val after = fixture.active()
+            val added = after.execution.occurrences.single { it.isRuntimeAdded }
+            val snapshot = after.activitySnapshots.getValue(added.activitySnapshotId)
+            assertEquals("Foreground draft", snapshot.name)
+            assertEquals(TimeTrackingMode.TIMER, snapshot.timeTrackingMode)
+            assertEquals(java.time.Duration.ofSeconds(137), snapshot.timerTarget)
+            assertNull(added.sourceSequenceSnapshotNodeId)
+            assertNull(added.repeatSourceSnapshotNodeId)
+            assertNull(added.repeatIteration)
+            assertNull(snapshot.sourceTemplateId)
+            assertEquals(
+                before.execution.occurrences.map {
+                    it.id
+                },
+                after.execution.occurrences
+                    .filterNot { it.isRuntimeAdded }
+                    .map { it.id },
+            )
+            before.activitySnapshots.forEach { (id, frozen) ->
+                assertEquals(frozen, after.activitySnapshots.getValue(id))
+            }
+            assertEquals(before.execution.currentOccurrenceId, after.execution.currentOccurrenceId)
+            assertEquals(1, added.runtimePosition)
+            assertEquals(before.execution.id, after.execution.id)
+            assertEquals(before.snapshot, after.snapshot)
+            assertEquals(before.currentChild, after.currentChild)
+            assertEquals(fixture.plan.id, after.execution.planEntryId)
+            val command = fixture.commands.single() as ExpandedSequenceCommand.RuntimeAdd
+            assertEquals(before.execution.id, command.executionId)
+            assertEquals(RuntimeInsertionPlacement.AFTER_CURRENT, command.placement)
+            val facts = fixture.store.durableFacts()
+            fixture.reopen()
+            assertEquals(after, fixture.active())
+            assertEquals(facts, fixture.store.durableFacts())
+            assertEquals(unrelated, fixture.store.activity(unrelated.id))
+            assertEquals(
+                PlanEntryStatus.PLANNED,
+                fixture.store.plans
+                    .getPlan(fixture.plan.id)!!
+                    .status,
+            )
+        }
+    }
+
+    @Test
+    fun foregroundRefreshRetainsNumberFocusAndDeepScrollWithoutWritesAfterReopen() =
+        assertEditorForegroundRefresh(text = false)
+
+    @Test
+    fun foregroundRefreshRetainsTextFocusAndDeepScrollWithoutWritesAfterReopen() =
+        assertEditorForegroundRefresh(text = true)
+
+    private fun assertEditorForegroundRefresh(text: Boolean) {
+        Fixture(withValues = true, withText = text, stepCount = 80, currentPosition = 40).use { fixture ->
+            fixture.mount()
+            keyboardInput.enter()
+            val before = fixture.active()
+            val facts = fixture.store.durableFacts()
+            val label =
+                if (text) {
+                    "Notes"
+                } else {
+                    fixture.string(
+                        R.string.expanded_sequence_main_value_field,
+                        "Quantity kg",
+                    )
+                }
+            val matcher = hasText(label) and hasSetTextAction()
+            val editor = compose.onLazyNode(matcher)
+            editor.performTextReplacement(if (text) "Uncommitted notes" else "73")
+            editor.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            editor.assertIsFocused()
+            compose.waitForIdle()
+            val top = editor.fetchSemanticsNode().boundsInRoot.top
+            val scroll =
+                compose
+                    .onNode(hasScrollToIndexAction())
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange]
+                    .value()
+            val draft = fixture.controller.state.value.currentValueDraft
+            val pending = fixture.holdForegroundRefresh()
+            compose.onNode(matcher).assertDoesNotExist()
+            fixture.releaseRefresh(pending)
+            // Do not scroll to the editor here: that would conceal a reset to the header.
+            compose
+                .onNode(matcher)
+                .assertIsDisplayed()
+                .assertIsFocused()
+                .assertTextContains(if (text) "Uncommitted notes" else "73")
+            assertEquals(
+                top,
+                compose
+                    .onNode(matcher)
+                    .fetchSemanticsNode()
+                    .boundsInRoot.top,
+                1f,
+            )
+            assertEquals(
+                scroll,
+                compose
+                    .onNode(hasScrollToIndexAction())
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange]
+                    .value(),
+                1f,
+            )
+            assertEquals(draft, fixture.controller.state.value.currentValueDraft)
+            assertTrue(fixture.commands.isEmpty())
+            assertEquals(0, fixture.writes.get())
+            assertEquals(facts, fixture.store.durableFacts())
+            fixture.reopen()
+            assertEquals(before, fixture.active())
+            assertEquals(facts, fixture.store.durableFacts())
+        }
+    }
+
     private inner class Fixture(
         mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
         withValues: Boolean = false,
+        withText: Boolean = false,
+        stepCount: Int = 3,
+        currentPosition: Int = 0,
         settings: SequenceTemplateSettings = SequenceTemplateSettings(autoAdvance = false),
         initialState: ActiveSequenceState = ActiveSequenceState.RUNNING_CURRENT,
     ) : AutoCloseable {
@@ -707,7 +888,19 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                                     com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
                                     displayPrecision = 0,
                                 ),
-                            )
+                            ) +
+                                if (withText) {
+                                    listOf(
+                                        com.alexandr5476.lifetracing.domain.ActivityFieldDraft(
+                                            DraftIdentity.New("notes"),
+                                            3,
+                                            "Notes",
+                                            com.alexandr5476.lifetracing.domain.CustomFieldType.TEXT,
+                                        ),
+                                    )
+                                } else {
+                                    emptyList()
+                                }
                         } else {
                             emptyList()
                         },
@@ -725,7 +918,7 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                     null,
                     settings = settings,
                     nodes =
-                        (0..2).map { position ->
+                        (0 until stepCount).map { position ->
                             SequenceNodeDraft.Step(
                                 ActivityStepDraft(
                                     DraftIdentity.New("step-$position"),
@@ -745,6 +938,13 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             )
         val started =
             store.live.startSequenceFromPlan(plan.actionIdentity(), now, now, ZoneOffset.UTC).also { runtime ->
+                if (currentPosition != 0) {
+                    store.live.goNow(
+                        runtime.execution.id,
+                        runtime.execution.occurrences[currentPosition].id,
+                        now.plusSeconds(1),
+                    )
+                }
                 when (initialState) {
                     ActiveSequenceState.RUNNING_CURRENT -> Unit
                     ActiveSequenceState.PAUSED_CURRENT ->
@@ -780,6 +980,23 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
                 { after -> store.library.getReusableActivityCatalog(50, after) },
                 { clock.get() },
             )
+
+        fun holdForegroundRefresh(): kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead> {
+            val pending = kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>()
+            readGate.set(pending)
+            compose.runOnIdle { generation.value++ }
+            compose.waitUntil(10_000) { controller.state.value.loading }
+            compose.waitForIdle()
+            return pending
+        }
+
+        fun releaseRefresh(pending: kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>) {
+            val canonical = store.live.getExpandedSequence(started.execution.id)
+            readGate.set(null)
+            compose.runOnIdle { pending.complete(canonical) }
+            compose.waitUntil(10_000) { !controller.state.value.loading }
+            compose.waitForIdle()
+        }
 
         fun active(): ActiveSequenceRuntime = store.live.getActiveRuntime() as ActiveSequenceRuntime
 
