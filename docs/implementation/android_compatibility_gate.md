@@ -1,5 +1,16 @@
 # Android compatibility release gate
 
+## Library discovery accessibility (Slice S1)
+
+Adds eight Library presentation identities and four isolated production-route
+identities. The pinned inventory now requires **465 app, 627 data and 2 independent
+startup cases per API**. Every previous identity remains mandatory. See
+[library_accessibility.md](library_accessibility.md) for target boundaries, duplicate
+typed identities, keyboard recovery, localization/scaling, exact testcase names and
+local verification. Controller owns fail-first/corrected device evidence and the
+unfiltered API 26/31/33/35/36 gates plus exact-head GitHub CI. AndroidTest compilation
+and automated semantics are not manual TalkBack/Switch Access certification.
+
 Delivery-plan item 7 and the S5 Parent contract define this gate. Product v0.16, domain v0.10, database v0.6 and the implementation clarifications remain authoritative. These checks preserve schema v10, durable identities, runtime semantics and existing permission UX.
 
 S3 expanded Sequence accessibility evidence is described in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).

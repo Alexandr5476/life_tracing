@@ -713,4 +713,19 @@
     <string name="plan_execution_remaining">Осталось до запуска: %1$s</string>
     <string name="plan_execution_status">Состояние плана: %1$s</string>
     <string name="plan_execution_selected_category">Выбрано: %1$s</string>
+
+    <string name="library_location">Текущее расположение: %1$s</string>
+    <string name="library_nested_location">Внутри папки</string>
+    <string name="library_search_inactive">Поиск не активен</string>
+    <string name="library_search_active">Поиск по всем шаблонам библиотеки</string>
+    <string name="library_template_context">%1$s %2$s, %3$s, элемент %4$d</string>
+    <string name="library_open_template">Открыть редактор: %1$s</string>
+    <string name="library_quick_start_template">Быстрый запуск: %1$s</string>
+    <string name="library_organize_template">Организация: %1$s</string>
+    <string name="library_open_folder">Открыть папку %1$s, папка %2$d</string>
+    <string name="library_organize_folder">Организация папки %1$s, папка %2$d</string>
+    <string name="library_retry_for">Повторить: %1$s</string>
+    <string name="library_retry_success">Повторная загрузка библиотеки завершена.</string>
+    <string name="library_organization_ready">Действия организации доступны.</string>
+    <string name="library_template_details">%1$s. %2$s</string>
 </resources>

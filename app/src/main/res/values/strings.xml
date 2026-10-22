@@ -713,4 +713,19 @@
     <string name="plan_execution_remaining">Countdown remaining: %1$s</string>
     <string name="plan_execution_status">Plan status: %1$s</string>
     <string name="plan_execution_selected_category">Selected: %1$s</string>
+
+    <string name="library_location">Current location: %1$s</string>
+    <string name="library_nested_location">Inside a folder</string>
+    <string name="library_search_inactive">Search inactive</string>
+    <string name="library_search_active">Searching all Library templates</string>
+    <string name="library_template_context">%1$s %2$s, %3$s, item %4$d</string>
+    <string name="library_open_template">Open editor for %1$s</string>
+    <string name="library_quick_start_template">Quick Start %1$s</string>
+    <string name="library_organize_template">Organize %1$s</string>
+    <string name="library_open_folder">Open folder %1$s, folder %2$d</string>
+    <string name="library_organize_folder">Organize folder %1$s, folder %2$d</string>
+    <string name="library_retry_for">Retry: %1$s</string>
+    <string name="library_retry_success">Library retry completed.</string>
+    <string name="library_organization_ready">Organization controls available.</string>
+    <string name="library_template_details">%1$s. %2$s</string>
 </resources>

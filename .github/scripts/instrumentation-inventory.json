@@ -740,6 +740,12 @@
     "com.alexandr5476.lifetracing.MainActivityPlanVisibilityTest": [
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
     ],
+    "com.alexandr5476.lifetracing.LibraryAccessibilityRouteTest": [
+      "duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites",
+      "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
+      "nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission",
+      "backgroundCatalogRemovalAndEditorReturnCannotReplayNavigationOrFocusRemovedRow"
+    ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
       "correctedNoLiveActivityRefreshesHistoryDiscoveryIntoItsNewOriginalDate",
@@ -969,6 +975,14 @@
       "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
     ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
+      "headingsNativeSearchAndSelectedFiltersDispatchExactlyOnce",
+      "folderActionsBreadcrumbAndToolbarBackKeepSeparateAdmission",
+      "browseSearchAndOrganizationStatesExposeFailuresAndExplicitRetryOutcomes",
+      "duplicateNamesHaveIndependentContextualActionsAndTypedDispatchAcrossProjections",
+      "keyboardTraversalAndEnterKeepTheThreeTemplateActionsIndependent",
+      "survivingSearchFilterAndTemplateFocusRemainDuringUnrelatedRefreshes",
+      "removedResultsFoldersAndRetryRecoverToBackOnlyOnTheVisibleRoute",
+      "englishRussianActionsReflowAndReserveTargetsAtCombinedScaleExtremes",
       "activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent",
       "canonicalPinnedFoldersAndKindsRespectTheSelectedFilter",
       "englishDestructiveLifecycleIsExplicitAtCompactWidth",

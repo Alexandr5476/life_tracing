@@ -473,6 +473,7 @@ internal fun LifeTracingApp(
                             val activeLibraryController = libraryOwner.get(runtimeGraph::createLibraryController)
                             LibraryRoute(
                                 controller = activeLibraryController,
+                                isRouteVisible = backStack.lastOrNull() == LibraryRoot,
                                 onBack = backStack::removeLibrary,
                                 onCreateActivity = {
                                     editorSessions.acquire(ActivityTemplateEditorTarget.New) {
