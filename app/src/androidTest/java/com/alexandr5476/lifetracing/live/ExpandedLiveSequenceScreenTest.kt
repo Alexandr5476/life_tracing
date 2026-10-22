@@ -1691,6 +1691,7 @@ class ExpandedLiveSequenceScreenTest {
             for (back in listOf(false, true)) {
                 fixture.openAdd()
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Discard me")
+                val oldAdd = fixture.captureAdd()
                 if (back) {
                     val cancel = composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel))
                     // Text entry can show the IME, which consumes Back before the dialog.
@@ -1703,11 +1704,22 @@ class ExpandedLiveSequenceScreenTest {
                     sendNativeKey(cancel, android.view.KeyEvent.KEYCODE_BACK)
                     awaitAbsent(hasText(string(R.string.expanded_sequence_add)))
                 } else {
-                    composeRule.onNodeWithText(string(R.string.expanded_sequence_cancel)).performClick()
+                    val cancelClick =
+                        composeRule
+                            .onNodeWithText(string(R.string.expanded_sequence_cancel))
+                            .fetchSemanticsNode()
+                            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                            .action!!
+                    composeRule.runOnIdle {
+                        cancelClick()
+                        oldAdd() // Explicit dismissal revokes this callback before disposal too.
+                        assertTrue(fixture.commands.isEmpty())
+                    }
                 }
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
-                val read = fixture.beginRefresh()
+                val read = fixture.beginRefresh { oldAdd() }
                 fixture.finishRefresh(read)
+                composeRule.runOnIdle { oldAdd() }
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
                 fixture.openAdd()
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertIsNotEnabled()
@@ -1775,7 +1787,8 @@ class ExpandedLiveSequenceScreenTest {
                 .onNodeWithText(
                     string(R.string.expanded_sequence_name),
                 ).performTextReplacement("Old current draft")
-            val pending = fixture.beginRefresh()
+            val oldAdd = fixture.captureAdd()
+            val pending = fixture.beginRefresh { oldAdd() }
             val original = fixture.original
             val next = original.occurrences[2].occurrence.id
             val changed =
@@ -1801,6 +1814,7 @@ class ExpandedLiveSequenceScreenTest {
                         },
                 )
             fixture.finishRefresh(pending, ExpandedLiveSequenceRead.Active(changed))
+            composeRule.runOnIdle { oldAdd() }
             composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
             composeRule.onNodeWithText("Old current draft").assertDoesNotExist()
             val newDraft = fixture.controller.state.value.currentValueDraft
@@ -1834,12 +1848,14 @@ class ExpandedLiveSequenceScreenTest {
                     string(R.string.expanded_sequence_name),
                 ).performTextReplacement("After old current")
             composeRule.onNodeWithText(string(R.string.expanded_sequence_after_current)).performClick()
-            val pending = fixture.beginRefresh()
+            val oldAdd = fixture.captureAdd()
+            val pending = fixture.beginRefresh { oldAdd() }
             fixture.finishRefresh(
                 pending,
                 ExpandedLiveSequenceRead.Active(fixture.original.copy(state = ActiveSequenceState.WAITING_NEXT)),
             )
             composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            composeRule.runOnIdle { oldAdd() }
             fixture.openAdd()
             composeRule.onNodeWithText("After old current").assertDoesNotExist()
             composeRule.onNodeWithText(string(R.string.expanded_sequence_after_current)).assertDoesNotExist()
@@ -1855,7 +1871,8 @@ class ExpandedLiveSequenceScreenTest {
             fixture.mount()
             fixture.openAdd()
             composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Do not restore")
-            val pending = fixture.beginRefresh()
+            val oldAdd = fixture.captureAdd()
+            val pending = fixture.beginRefresh { oldAdd() }
             composeRule.runOnIdle { pending.completeExceptionally(IllegalStateException("read failed")) }
             composeRule.onNodeWithText(string(R.string.expanded_sequence_read_failure)).assertExists()
             composeRule.onAllNodes(hasClickAction() and isEnabled()).assertCountEquals(2)
@@ -1863,10 +1880,14 @@ class ExpandedLiveSequenceScreenTest {
             val retry = fixture.beginRefresh()
             fixture.finishRefresh(retry)
             composeRule.onNodeWithText(string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            composeRule.runOnIdle { oldAdd() }
             fixture.openAdd()
             composeRule.onNodeWithText("Do not restore").assertDoesNotExist()
-            val stale = fixture.beginRefresh()
+            composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).performTextReplacement("Stale draft")
+            val staleAdd = fixture.captureAdd()
+            val stale = fixture.beginRefresh { staleAdd() }
             fixture.finishRefresh(stale, ExpandedLiveSequenceRead.StaleOrInactive)
+            composeRule.runOnIdle { staleAdd() }
             composeRule.onNodeWithText(string(R.string.expanded_sequence_stale)).assertExists()
             composeRule.onAllNodes(hasClickAction() and isEnabled()).assertCountEquals(1)
             composeRule.onNodeWithText(string(R.string.expanded_sequence_name)).assertDoesNotExist()
@@ -1989,11 +2010,30 @@ class ExpandedLiveSequenceScreenTest {
             composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
         }
 
-        fun beginRefresh(): kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead> {
+        fun captureAdd(): () -> Boolean =
+            composeRule
+                .onNodeWithText(string(R.string.expanded_sequence_add))
+                .assertIsEnabled()
+                .fetchSemanticsNode()
+                .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
+                .action!!
+
+        fun beginRefresh(
+            beforeDisposal: (() -> Unit)? = null,
+        ): kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead> {
             val read = kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>()
             composeRule.runOnIdle {
                 pending = read
-                generation.value++
+                if (beforeDisposal == null) {
+                    generation.value++
+                } else {
+                    controller.refresh()
+                    assertEquals(null, controller.state.value.confirmedSequence)
+                    beforeDisposal()
+                    assertTrue(commands.isEmpty())
+                    assertTrue(!controller.state.value.commandInFlight)
+                    assertEquals(null, controller.state.value.confirmation)
+                }
             }
             composeRule.onNodeWithText(string(R.string.expanded_sequence_loading)).assertExists()
             return read

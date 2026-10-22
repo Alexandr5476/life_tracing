@@ -418,6 +418,45 @@ After a formatting-only Espresso import correction, local verification passed:
 The controller JVM result contains all 16 tests (Gradle cache reuse). This scoped probe
 does not replace the unfiltered five-API or exact-head CI gates.
 
+## PR38 W2 pre-disposal command admission
+
+Runtime Add closes its ephemeral dialog only when the existing controller admits
+the command under its command-capture lock and FIFO mutation gate, or on explicit
+Cancel/Back. Loading and in-flight attempts do not consume input or publish a
+transient rejection. Both one-off and reusable Template callbacks supply the shown
+execution/current-occurrence/runtime-state context; admission checks it against
+current confirmed authority as well as placement. Dismissal immediately revokes
+dialog callbacks, including the interval before Compose disposal; disposed callbacks
+remain inert.
+This changes no domain commands, persistence, read shape, polling or native editors.
+
+Two new mandatory physical reopen regressions capture enabled Add with a Timer draft,
+137 seconds and After current placement: one-off Add and reusable Template selection.
+The original semantic-generation foreground-refresh regression remains required.
+Each new case calls refresh and the old callback in one UI turn before composition
+disposal, checks no admission or
+write, physically reopens the database with unchanged complete durable facts, then
+revalidates the identical Sequence and explicitly commits one Add. Checks include
+frozen snapshots, occurrence provenance, Plan linkage, unrelated history, retained
+input/focus and inert old callbacks after recovery/commit. Existing changed-current,
+invalid-placement, failed/stale-read and Cancel/Back cases now exercise captured Add
+callbacks too. The new controller JVM regression was observed failing before the fix
+because the unconfirmed attempt published rejection feedback.
+
+Local verification on 2026-10-22 passed all 411 app JVM tests (18 controller tests),
+app ktlint, Detekt, lintDebug, AndroidTest APK compilation/packaging and all 17 mocked
+inventory-runner tests. The inventory contains 453 app, 627 data and two startup
+identities. Commands:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:testDebugUnitTest :app:assembleDebugAndroidTest :app:lintDebug --continue --no-parallel --max-workers=1 --console=plain
+python -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+```
+
+Device fail-first/corrected execution and all five unfiltered API suites plus
+exact-head CI remain Controller-owned. AndroidTest compilation does not establish
+these tests passed on a device. Manual TalkBack/Switch Access remains unperformed.
+
 ## Reproducible device walkthrough (manual, pending)
 
 Use a fresh fixture with a repeated Activity, Stopwatch, Timer allowing overtime,

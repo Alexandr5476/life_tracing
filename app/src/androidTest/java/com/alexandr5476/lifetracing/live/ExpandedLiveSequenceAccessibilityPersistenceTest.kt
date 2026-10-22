@@ -6,6 +6,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
@@ -669,7 +670,21 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
     }
 
     @Test
-    fun foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen() {
+    fun foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen() =
+        assertRuntimeAddAdmissionRace(templateSelection = false, preDisposalAttempt = false)
+
+    @Test
+    fun oneOffAddBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen() =
+        assertRuntimeAddAdmissionRace(templateSelection = false)
+
+    @Test
+    fun templateSelectionBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen() =
+        assertRuntimeAddAdmissionRace(templateSelection = true)
+
+    private fun assertRuntimeAddAdmissionRace(
+        templateSelection: Boolean,
+        preDisposalAttempt: Boolean = true,
+    ) {
         Fixture().use { fixture ->
             fixture.mount()
             keyboardInput.enter()
@@ -703,11 +718,59 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             seconds.performScrollTo().performTextReplacement("137")
             seconds.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
             seconds.assertIsFocused()
-            val pending = fixture.holdForegroundRefresh()
+            compose.waitUntil(10_000) { fixture.controller.state.value.catalog != null }
+            val catalogSelection =
+                compose.onNodeWithContentDescription(
+                    fixture.string(
+                        R.string.expanded_sequence_catalog_identity,
+                        fixture.activity.name,
+                        fixture.string(R.string.expanded_sequence_stopwatch),
+                        1,
+                    ),
+                )
+            val submit =
+                if (templateSelection) {
+                    compose.onNodeWithTag("expanded-sequence-add-catalog").performScrollTo()
+                    catalogSelection
+                } else {
+                    compose.onNodeWithText(fixture.string(R.string.expanded_sequence_add))
+                }
+            val oldClick =
+                submit
+                    .assertIsEnabled()
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val pending =
+                if (preDisposalAttempt) {
+                    kotlinx.coroutines.CompletableDeferred<ExpandedLiveSequenceRead>().also { read ->
+                        fixture.readGate.set(read)
+                        // Refresh revokes authority synchronously. Invoke before this UI
+                        // turn ends, before Compose can dispose the enabled callback.
+                        compose.runOnIdle {
+                            fixture.controller.refresh()
+                            assertNull(fixture.controller.state.value.confirmedSequence)
+                            oldClick()
+                            assertTrue(fixture.commands.isEmpty())
+                            assertEquals(0, fixture.writes.get())
+                            assertTrue(!fixture.controller.state.value.commandInFlight)
+                            assertNull(fixture.controller.state.value.confirmation)
+                        }
+                    }
+                } else {
+                    fixture.holdForegroundRefresh()
+                }
             compose.onNodeWithText(fixture.string(R.string.expanded_sequence_add)).assertDoesNotExist()
             compose.onNodeWithText(fixture.string(R.string.expanded_sequence_loading)).assertExists()
             assertEquals(originalFacts, fixture.store.durableFacts())
+            // Close/reopen the physical database while the read is held. UI/controller
+            // ownership stays intact; restoration must not require any durable write.
+            fixture.reopenDatabase()
+            assertEquals(before, fixture.active())
+            assertEquals(originalFacts, fixture.store.durableFacts())
+            assertEquals(unrelated, fixture.store.activity(unrelated.id))
             fixture.releaseRefresh(pending)
+            compose.runOnIdle { oldClick() } // Disposed callbacks stay inert after recovery.
             compose.onNodeWithText("Foreground draft").assertExists()
             compose.onNodeWithText(fixture.string(R.string.expanded_sequence_timer)).assertIsSelected()
             compose.onNodeWithText(fixture.string(R.string.expanded_sequence_after_current)).assertIsSelected()
@@ -715,18 +778,32 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             assertEquals(0, fixture.writes.get())
             assertTrue(fixture.commands.isEmpty())
             assertEquals(originalFacts, fixture.store.durableFacts())
-            fixture.invoke(R.string.expanded_sequence_add)
+            assertNull(fixture.controller.state.value.commandFailure)
+            assertNull(fixture.controller.state.value.confirmation)
+            if (templateSelection) {
+                compose.onNodeWithTag("expanded-sequence-add-catalog").performScrollTo()
+                catalogSelection.performSemanticsAction(SemanticsActions.OnClick) { it() }
+            } else {
+                fixture.invoke(R.string.expanded_sequence_add)
+            }
             fixture.awaitWrites(1)
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_add)).assertDoesNotExist()
+            compose.onNodeWithText(fixture.string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
+            compose.runOnIdle { oldClick() }
+            assertEquals(1, fixture.commands.size)
             val after = fixture.active()
             val added = after.execution.occurrences.single { it.isRuntimeAdded }
             val snapshot = after.activitySnapshots.getValue(added.activitySnapshotId)
-            assertEquals("Foreground draft", snapshot.name)
-            assertEquals(TimeTrackingMode.TIMER, snapshot.timeTrackingMode)
-            assertEquals(java.time.Duration.ofSeconds(137), snapshot.timerTarget)
+            assertEquals(if (templateSelection) fixture.activity.name else "Foreground draft", snapshot.name)
+            assertEquals(
+                if (templateSelection) TimeTrackingMode.STOPWATCH else TimeTrackingMode.TIMER,
+                snapshot.timeTrackingMode,
+            )
+            assertEquals(if (templateSelection) null else java.time.Duration.ofSeconds(137), snapshot.timerTarget)
             assertNull(added.sourceSequenceSnapshotNodeId)
             assertNull(added.repeatSourceSnapshotNodeId)
             assertNull(added.repeatIteration)
-            assertNull(snapshot.sourceTemplateId)
+            assertEquals(if (templateSelection) fixture.activity.id else null, snapshot.sourceTemplateId)
             assertEquals(
                 before.execution.occurrences.map {
                     it.id
@@ -1069,6 +1146,10 @@ class ExpandedLiveSequenceAccessibilityPersistenceTest {
             }
             scope.cancel()
             compose.waitForIdle()
+            reopenDatabase()
+        }
+
+        fun reopenDatabase() {
             store.close()
             store = RuntimeRecoveryStore(context, name)
         }

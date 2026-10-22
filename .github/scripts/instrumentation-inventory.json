@@ -983,6 +983,8 @@
       "russianOrganizationControlsRemainActionableAtCompactWidth"
     ],
     "com.alexandr5476.lifetracing.live.ExpandedLiveSequenceAccessibilityPersistenceTest": [
+      "oneOffAddBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen",
+      "templateSelectionBeforeRefreshDisposalRetainsDraftAndCommitsOnceAfterReopen",
       "foregroundRefreshRetainsRuntimeAddDraftAndAddsOnceAfterPhysicalReopen",
       "foregroundRefreshRetainsNumberFocusAndDeepScrollWithoutWritesAfterReopen",
       "foregroundRefreshRetainsTextFocusAndDeepScrollWithoutWritesAfterReopen",

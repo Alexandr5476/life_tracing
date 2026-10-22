@@ -56,9 +56,23 @@ Device fail-first/corrected execution and exact-head CI remain Controller-owned.
 AndroidTest compilation is not execution evidence. Manual TalkBack/Switch Access validation
 remains unperformed.
 
+## PR38 W2 pre-disposal Runtime Add admission correction
+
+Adds mandatory physical-database one-off and Template-selection admission races;
+the existing semantic-generation foreground-refresh case remains required. The new
+cases invoke the captured enabled semantics callback in the same UI turn as refresh,
+before dialog disposal. Both retain the populated
+Timer draft and placement, reopen the database before admission to prove no write,
+then explicitly admit exactly one Add after identical canonical revalidation.
+The inventory now requires **453 app, 627 data and 2 startup cases per API**.
+Existing invalidation cases also exercise captured Add callbacks for changed current,
+invalid placement, failed/stale reads and explicit Cancel/Back. All W1/W2 cases remain
+mandatory. Device fail-first/corrected execution, unfiltered five-API suites and
+exact-head CI remain Controller-owned; compilation is not device execution evidence.
+
 ## Mandatory original-JUnit inventory
 
-[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 451 isolated app, and 2 independent startup cases per API. S3C1 adds two expanded Sequence presentation cases and two physical value-save/completion reopen cases; the existing Runtime Add reopen case now selects between duplicate catalog names. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
+[instrumentation-inventory.json](../../.github/scripts/instrumentation-inventory.json) pins full classname and testcase names, including every parameterized variant. It requires 627 data, 453 isolated app, and 2 independent startup cases per API. S3C1 adds two expanded Sequence presentation cases and two physical value-save/completion reopen cases; the existing Runtime Add reopen case now selects between duplicate catalog names. Only the actualApi parameter is substituted for the selected device. The inventory is committed independently of discovery and reports; never regenerate it automatically from the current execution or lower it to accommodate missing evidence. Review inventory updates with additions or intentional renames of required tests.
 
 S4 adds 17 mandatory app identities: eight focused Plan presentation/semantics/localization/scale cases and nine controller-backed physical-database persistence cases. No existing mandatory identity is removed. Local verification on 2026-10-20 passed 405 app JVM cases (zero failures/errors/skips), app ktlint, Detekt, lintDebug and AndroidTest APK compilation/assembly; the exact command and manual walkthrough are recorded in the S4 document. Local JVM/static checks and AndroidTest compilation/packaging are implementation evidence only; the unfiltered five-API suites, independent startup and exact-head GitHub CI remain Controller-owned gates.
 

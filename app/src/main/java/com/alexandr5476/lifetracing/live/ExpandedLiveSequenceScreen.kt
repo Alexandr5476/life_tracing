@@ -946,7 +946,13 @@ private fun RuntimeAddDialog(
     var mode by draft::mode
     var timerSeconds by draft::timerSeconds
     val callbacks = rememberComposedActions()
-    val dismiss = { if (callbacks.active) onDismiss() }
+    val dismiss = {
+        callbacks.runIfActive {
+            // Cancel/Back and admitted Add revoke callbacks before composition disposal.
+            callbacks.active = false
+            onDismiss()
+        }
+    }
     val title = stringResource(R.string.expanded_sequence_runtime_add)
     AlertDialog(
         onDismissRequest = dismiss,
@@ -1036,8 +1042,9 @@ private fun RuntimeAddDialog(
                                 },
                             ),
                             placement,
+                            expectedSequence = state.confirmedSequence,
+                            onAdmitted = dismiss,
                         )
-                        onDismiss()
                     },
                 ) { Text(stringResource(R.string.expanded_sequence_add)) }
             }
@@ -1216,8 +1223,12 @@ private fun RuntimeAddCatalog(
                 enabled = canAdd,
                 onClick = {
                     if (!callbacks.active) return@TextButton
-                    controller.runtimeAddTemplate(item.id, placement)
-                    onDismiss()
+                    controller.runtimeAddTemplate(
+                        item.id,
+                        placement,
+                        expectedSequence = state.confirmedSequence,
+                        onAdmitted = onDismiss,
+                    )
                 },
             ) { Text(item.name) }
         }

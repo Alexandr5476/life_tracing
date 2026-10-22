@@ -395,12 +395,16 @@ internal class ExpandedLiveSequenceController(
     fun runtimeAddTemplate(
         templateId: ActivityTemplateId,
         placement: RuntimeInsertionPlacement,
-    ) = runtimeAdd(ActivityEntrySource.Template(templateId), placement)
+        expectedSequence: ExpandedLiveSequence? = null,
+        onAdmitted: () -> Unit = {},
+    ) = runtimeAdd(ActivityEntrySource.Template(templateId), placement, expectedSequence, onAdmitted)
 
     fun runtimeAddOneOff(
         draft: ActivitySnapshotDraft,
         placement: RuntimeInsertionPlacement,
-    ) = runtimeAdd(ActivityEntrySource.OneOff(draft), placement)
+        expectedSequence: ExpandedLiveSequence? = null,
+        onAdmitted: () -> Unit = {},
+    ) = runtimeAdd(ActivityEntrySource.OneOff(draft), placement, expectedSequence, onAdmitted)
 
     fun requestEndEarly() =
         synchronized(commandCaptureLock) {
@@ -511,15 +515,29 @@ internal class ExpandedLiveSequenceController(
     private fun runtimeAdd(
         source: ActivityEntrySource,
         placement: RuntimeInsertionPlacement,
-    ) = submit { sequence ->
-        ExpandedSequenceCommand
-            .RuntimeAdd(sequence.runtime.execution.id, source, placement, wallClock.now())
-            .takeIf {
-                expandedActions(
-                    sequence.state,
-                ).runtimeAdd &&
-                    placement in validRuntimePlacements(sequence.state)
-            }
+        expectedSequence: ExpandedLiveSequence?,
+        onAdmitted: () -> Unit,
+    ) = synchronized(commandCaptureLock) {
+        // Authority can disappear before Compose disposes an enabled callback.
+        // A suspended/repeated attempt neither consumes the draft nor creates feedback.
+        if (mutableState.value.loading || mutableState.value.commandInFlight) return@synchronized
+        submit(onAdmitted = onAdmitted) { sequence ->
+            val matchesContext =
+                expectedSequence == null ||
+                    (
+                        expectedSequence.runtime.execution.id == sequence.runtime.execution.id &&
+                            expectedSequence.runtime.execution.currentOccurrenceId ==
+                            sequence.runtime.execution.currentOccurrenceId &&
+                            expectedSequence.state == sequence.state
+                    )
+            ExpandedSequenceCommand
+                .RuntimeAdd(sequence.runtime.execution.id, source, placement, wallClock.now())
+                .takeIf {
+                    matchesContext &&
+                        expandedActions(sequence.state).runtimeAdd &&
+                        placement in validRuntimePlacements(sequence.state)
+                }
+        }
     }
 
     private fun editDraft(
@@ -566,6 +584,7 @@ internal class ExpandedLiveSequenceController(
 
     private fun submit(
         capturesCurrentValues: Boolean = false,
+        onAdmitted: () -> Unit = {},
         build: (ExpandedLiveSequence) -> ExpandedSequenceCommand?,
     ) {
         val admission =
@@ -586,6 +605,8 @@ internal class ExpandedLiveSequenceController(
                 }
             }
         admission ?: return
+        // This reports FIFO command admission, never an attempted or completed write.
+        onAdmitted()
         scope.launch {
             var commandFailure: ExpandedSequenceFailure? = null
             try {
