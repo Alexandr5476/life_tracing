@@ -741,6 +741,9 @@
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
     ],
     "com.alexandr5476.lifetracing.LibraryAccessibilityRouteTest": [
+      "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
+      "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
+      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
       "duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites",
       "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
       "nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission",
@@ -973,6 +976,17 @@
       "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes",
       "nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand",
       "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
+    ],
+    "com.alexandr5476.lifetracing.library.LibraryOrganizationPresentationTest": [
+      "retainedMutationCallbackChecksLiveRouteOwnershipBeforeRecomposition",
+      "filteredPinnedMovesSubmitTheCompleteTypedOrderAndRespectMutationAdmission",
+      "pinnedBoundariesExpansionAndCollapseRetainNativeFocusWithoutCommands",
+      "duplicateTemplateFolderAndTagControlsDispatchOnlyTypedTargetsAndExposeSelection",
+      "folderMoveExcludesSourceAndDescendantsAndKeepsDuplicateDestinationsDistinct",
+      "dialogsKeepDraftsValidateRestoreInvokerAndNeverMutateOnCancelOrDismiss",
+      "renameAndCreateTagDialogsIdentifyExactDuplicateOwners",
+      "disposedOrStaleCallbacksCannotSubmitAndFailureRecoveryDoesNotAnnounceFalseSuccess",
+      "englishRussianOrganizationTargetsAndDialogsReflowAtCombinedScaleExtremes"
     ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
       "headingsNativeSearchAndSelectedFiltersDispatchExactlyOnce",

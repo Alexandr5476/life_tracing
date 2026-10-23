@@ -29,6 +29,7 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -964,9 +965,15 @@ class LibraryScreenPresentationTest {
         assertEquals(LibraryAction.SetPinned(sequence.id, false), actions.last())
 
         clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_reorder_pinned)), widthPixels)
-        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_move_down)), widthPixels)
+        clickInside(
+            composeTestRule.onNode(hasText(context.getString(R.string.library_move_down)) and isEnabled()),
+            widthPixels,
+        )
         assertEquals(LibraryAction.ReorderPinned(listOf(sequence.id, activity.id)), actions.last())
-        clickInside(composeTestRule.onNodeWithText(context.getString(R.string.library_move_up)), widthPixels)
+        clickInside(
+            composeTestRule.onNode(hasText(context.getString(R.string.library_move_up)) and isEnabled()),
+            widthPixels,
+        )
         assertEquals(LibraryAction.ReorderPinned(listOf(sequence.id, activity.id)), actions.last())
 
         clickInside(composeTestRule.onAllNodesWithText(organize)[3], widthPixels)

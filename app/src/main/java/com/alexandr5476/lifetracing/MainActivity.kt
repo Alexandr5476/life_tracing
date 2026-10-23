@@ -474,6 +474,7 @@ internal fun LifeTracingApp(
                             LibraryRoute(
                                 controller = activeLibraryController,
                                 isRouteVisible = backStack.lastOrNull() == LibraryRoot,
+                                currentRouteVisible = { backStack.lastOrNull() == LibraryRoot },
                                 onBack = backStack::removeLibrary,
                                 onCreateActivity = {
                                     editorSessions.acquire(ActivityTemplateEditorTarget.New) {
@@ -672,8 +673,11 @@ internal fun LifeTracingApp(
                             if (session == null) {
                                 LaunchedEffect(Unit) { backStack.normalizeRestoredPlanExecution() }
                             } else if (!route.matches(session)) {
-                                val command by session.controller.state.collectAsState()
-                                LaunchedEffect(command) {
+                                LaunchedEffect(
+                                    session.controller.state
+                                        .collectAsState()
+                                        .value,
+                                ) {
                                     normalizeMismatchedPlanExecution(session)
                                 }
                             } else {

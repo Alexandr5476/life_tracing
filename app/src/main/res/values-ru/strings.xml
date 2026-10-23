@@ -728,4 +728,25 @@
     <string name="library_retry_success">Повторная загрузка библиотеки завершена.</string>
     <string name="library_organization_ready">Действия организации доступны.</string>
     <string name="library_template_details">%1$s. %2$s</string>
+
+    <string name="library_expanded">Развёрнуто</string>
+    <string name="library_collapsed">Свёрнуто</string>
+    <string name="library_folder_context">Папка %1$s, элемент %2$d</string>
+    <string name="library_tag_context">Тег %1$s, элемент %2$d</string>
+    <string name="library_pin_target">Закрепить: %1$s</string>
+    <string name="library_unpin_target">Открепить: %1$s</string>
+    <string name="library_pinned_move_up">Переместить вверх: %1$s</string>
+    <string name="library_pinned_move_down">Переместить вниз: %1$s</string>
+    <string name="library_move_target_root">Переместить %1$s в корень библиотеки</string>
+    <string name="library_move_target_folder">Переместить %1$s в %2$s</string>
+    <string name="library_create_folder_here">Создать папку в %1$s</string>
+    <string name="library_rename_folder_target">Переименовать: %1$s</string>
+    <string name="library_create_tag_target">Создать и назначить тег: %1$s</string>
+    <string name="library_assign_target_tag">Назначить %2$s: %1$s</string>
+    <string name="library_unassign_target_tag">Удалить %2$s у %1$s</string>
+    <string name="library_confirm_context">%1$s: %2$s</string>
+    <string name="library_cancel_context">Отмена: %1$s</string>
+    <string name="library_name_context">Название: %1$s</string>
+    <string name="library_organization_busy">Сохранение организации…</string>
+    <string name="library_organization_updated">Организация обновлена.</string>
 </resources>

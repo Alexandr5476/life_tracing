@@ -74,6 +74,7 @@ data class LibraryPresentationState(
     val folderDeletion: LibraryFolderDeletion? = null,
     val mutationFailure: String? = null,
     val isMutating: Boolean = false,
+    val mutationSuccessGeneration: Long = 0,
 )
 
 sealed interface LibraryAction {
@@ -513,7 +514,10 @@ class LibraryController internal constructor(
                     }
                     return@launch
                 }
-                if (!closed) refresh()
+                if (!closed) {
+                    refresh()
+                    mutableState.update { it.copy(mutationSuccessGeneration = it.mutationSuccessGeneration + 1) }
+                }
             } finally {
                 mutationInFlight.set(false)
                 if (!closed) mutableState.update { it.copy(isMutating = false) }

@@ -1,5 +1,10 @@
 # Library discovery accessibility (Slice S1)
 
+The accepted discovery behavior is extended by
+[Slice S2 non-destructive organization](library_organization_accessibility.md).
+That record supersedes S1's organization-dialog deferral and records the new
+controls, focus restoration, canonical reopen assertions and verification boundary.
+
 The product v0.16 §33, domain v0.10 §§17–19, implementation clarifications and
 design README remain authoritative. This change is scoped to Library presentation
 and its existing production navigation.

@@ -67,6 +67,7 @@ internal class LibraryFocusRecovery {
     var owner: Any? = null
     var removedOwner by mutableStateOf<Any?>(null)
     var hasFocus by mutableStateOf(false)
+    var restoreTarget by mutableStateOf<LibraryFocusHandle?>(null)
 
     val root: Modifier
         get() = Modifier.onFocusChanged { hasFocus = it.hasFocus }.focusGroup()
@@ -79,19 +80,80 @@ internal fun rememberLibraryFocusRecovery(isVisible: Boolean): LibraryFocusRecov
     LaunchedEffect(isVisible) {
         if (isVisible) {
             recovery.removedOwner = null
+            recovery.restoreTarget = null
             withFrameNanos { }
             recovery.landing.requestFocus()
         }
     }
     LaunchedEffect(isVisible, window.isWindowFocused, recovery.removedOwner) {
-        if (isVisible && window.isWindowFocused && recovery.removedOwner != null) {
+        val removedOnVisibleRoute = isVisible && window.isWindowFocused && recovery.removedOwner != null
+        if (removedOnVisibleRoute && recovery.restoreTarget == null) {
             // Disposal and native focus clearing settle before considering a landing.
             withFrameNanos { }
             if (!recovery.hasFocus) recovery.landing.requestFocus()
             recovery.removedOwner = null
         }
     }
+    val restore = recovery.restoreTarget
+    LaunchedEffect(isVisible, window.isWindowFocused, restore, restore?.attached, restore?.enabled) {
+        if (isVisible && window.isWindowFocused && restore != null) {
+            if (!restore.attached || restore.enabled) {
+                withFrameNanos { }
+                if (!restore.attached || !restore.requester.requestFocus()) recovery.landing.requestFocus()
+                recovery.restoreTarget = null
+                recovery.removedOwner = null
+            }
+        }
+    }
     return recovery
+}
+
+internal class LibraryFocusHandle {
+    val requester = FocusRequester()
+    var attached by mutableStateOf(true)
+    var enabled by mutableStateOf(true)
+}
+
+@Composable
+internal fun rememberLibraryFocusHandle(enabled: Boolean): LibraryFocusHandle {
+    val handle = remember { LibraryFocusHandle() }
+    handle.enabled = enabled
+    DisposableEffect(handle) { onDispose { handle.attached = false } }
+    return handle
+}
+
+@Composable
+internal fun rememberLibraryMutationFeedback(state: LibraryPresentationState): Boolean {
+    var generation by remember { mutableStateOf(state.mutationSuccessGeneration) }
+    var pending by remember { mutableStateOf(false) }
+    var succeeded by remember { mutableStateOf(false) }
+    val browseReady = state.browse is LibraryLoad.Content
+    val searchReady = state.query.isBlank() || state.search is LibraryLoad.Content
+    val organizationReady = state.organization is LibraryLoad.Content
+    LaunchedEffect(
+        state.mutationSuccessGeneration,
+        state.isMutating,
+        state.mutationFailure,
+        browseReady,
+        searchReady,
+        organizationReady,
+    ) {
+        if (state.isMutating) succeeded = false
+        if (state.mutationSuccessGeneration != generation) {
+            generation = state.mutationSuccessGeneration
+            pending = true
+        }
+        if (state.mutationFailure != null) {
+            pending = false
+            succeeded = false
+        }
+        val ready = browseReady && searchReady && organizationReady
+        if (pending && ready && !state.isMutating) {
+            pending = false
+            succeeded = true
+        }
+    }
+    return succeeded
 }
 
 /** Call inside the typed row key so a surviving target keeps its native focus node. */

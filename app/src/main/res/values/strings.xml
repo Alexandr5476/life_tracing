@@ -728,4 +728,25 @@
     <string name="library_retry_success">Library retry completed.</string>
     <string name="library_organization_ready">Organization controls available.</string>
     <string name="library_template_details">%1$s. %2$s</string>
+
+    <string name="library_expanded">Expanded</string>
+    <string name="library_collapsed">Collapsed</string>
+    <string name="library_folder_context">Folder %1$s, item %2$d</string>
+    <string name="library_tag_context">Tag %1$s, item %2$d</string>
+    <string name="library_pin_target">Pin %1$s</string>
+    <string name="library_unpin_target">Unpin %1$s</string>
+    <string name="library_pinned_move_up">Move up %1$s</string>
+    <string name="library_pinned_move_down">Move down %1$s</string>
+    <string name="library_move_target_root">Move %1$s to Library root</string>
+    <string name="library_move_target_folder">Move %1$s to %2$s</string>
+    <string name="library_create_folder_here">Create folder in %1$s</string>
+    <string name="library_rename_folder_target">Rename %1$s</string>
+    <string name="library_create_tag_target">Create and assign a tag to %1$s</string>
+    <string name="library_assign_target_tag">Assign %2$s to %1$s</string>
+    <string name="library_unassign_target_tag">Remove %2$s from %1$s</string>
+    <string name="library_confirm_context">%1$s: %2$s</string>
+    <string name="library_cancel_context">Cancel: %1$s</string>
+    <string name="library_name_context">Name: %1$s</string>
+    <string name="library_organization_busy">Saving organization changes…</string>
+    <string name="library_organization_updated">Organization updated.</string>
 </resources>

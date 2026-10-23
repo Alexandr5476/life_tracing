@@ -1,5 +1,17 @@
 # Android compatibility release gate
 
+## Non-destructive Library organization accessibility (Slice S2)
+
+Adds nine organization presentation identities and three isolated production-route
+physical-reopen identities. The mandatory inventory now contains **477 app,
+627 data and 2 independent startup cases per API**, with zero prior removals.
+See [S2 organization evidence](library_organization_accessibility.md) for exact
+test names, local checks, typed mutation admission, focus and canonical reopen
+assertions. All unfiltered API 26/31/33/35/36 gates, independent production startup
+and exact-head GitHub evidence remain Controller-owned requirements. Source/APK
+compilation and automated semantics assertions do not certify manual TalkBack or
+Switch Access operation.
+
 ## Library discovery accessibility (Slice S1)
 
 Adds eight Library presentation identities and four isolated production-route

@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +44,6 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
@@ -71,6 +71,7 @@ fun LibraryRoute(
     onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
     isRouteVisible: Boolean = true,
+    currentRouteVisible: () -> Boolean = { isRouteVisible },
 ) {
     val state by controller.state.collectAsState()
     LibraryScreen(
@@ -83,6 +84,8 @@ fun LibraryRoute(
         onOpenSequence = onOpenSequence,
         onQuickStart = onQuickStart,
         isRouteVisible = isRouteVisible,
+        currentState = { controller.state.value },
+        currentRouteVisible = currentRouteVisible,
     )
 }
 
@@ -96,16 +99,33 @@ internal fun LibraryScreen(
     onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
     isRouteVisible: Boolean = true,
+    currentState: (() -> LibraryPresentationState)? = null,
+    currentRouteVisible: (() -> Boolean)? = null,
     onRouteBack: () -> Unit,
 ) {
     val focus = rememberLibraryFocusRecovery(isRouteVisible)
     val feedback = rememberLibraryRetryFeedback(state)
+    val latestState = rememberUpdatedState(state)
+    val latestVisible = rememberUpdatedState(isRouteVisible)
+    val path = (state.browse as? LibraryLoad.Content)?.value?.path.orEmpty()
+    val location = (listOf(stringResource(R.string.library_root)) + path.map(Folder::name)).joinToString(" / ")
+    val scope =
+        LibraryOrganizationScope(
+            state,
+            currentState ?: { latestState.value },
+            currentRouteVisible ?: { latestVisible.value },
+            location,
+        )
     val dispatch: (LibraryAction) -> Unit = {
         if (it == LibraryAction.Retry) feedback.request(state)
         onAction(it)
     }
     LifeTracingAccessibleTargets {
-        CompositionLocalProvider(LocalLibraryFocus provides focus, LocalLibraryVisible provides isRouteVisible) {
+        CompositionLocalProvider(
+            LocalLibraryFocus provides focus,
+            LocalLibraryVisible provides isRouteVisible,
+            LocalLibraryOrganization provides scope,
+        ) {
             LibraryContent(
                 state,
                 dispatch,
@@ -134,6 +154,7 @@ private fun LibraryContent(
     onRouteBack: () -> Unit,
 ) {
     val focus = LocalLibraryFocus.current
+    val mutationSucceeded = rememberLibraryMutationFeedback(state)
     val searchDescription =
         stringResource(
             if (state.query.isBlank()) R.string.library_search_inactive else R.string.library_search_active,
@@ -191,15 +212,7 @@ private fun LibraryContent(
                     onQuickStart,
                 )
             }
-            when (state.organization) {
-                LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_organization_loading)) }
-                is LibraryLoad.Failure -> FailureCard(R.string.library_organization_failure, onAction)
-                is LibraryLoad.Content ->
-                    Text(
-                        stringResource(R.string.library_organization_ready),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-            }
+            OrganizationReadStatus(state.organization, onAction)
             if (retrySucceeded) {
                 val visible = LocalLibraryVisible.current
                 Text(
@@ -207,9 +220,38 @@ private fun LibraryContent(
                     modifier = Modifier.semantics { if (visible) liveRegion = LiveRegionMode.Polite },
                 )
             }
+            val visible = LocalLibraryVisible.current
+            if (state.isMutating || mutationSucceeded) {
+                Text(
+                    stringResource(
+                        if (state.isMutating) {
+                            R.string.library_organization_busy
+                        } else {
+                            R.string.library_organization_updated
+                        },
+                    ),
+                    modifier = Modifier.semantics { if (visible) liveRegion = LiveRegionMode.Polite },
+                )
+            }
             state.mutationFailure?.let { FailureCard(R.string.library_mutation_failure, onAction) }
         }
         state.folderDeletion?.let { FolderDeletionDialog(it, state.isMutating, onAction) }
+    }
+}
+
+@Composable
+private fun OrganizationReadStatus(
+    load: LibraryLoad<LibraryOrganization>,
+    onAction: (LibraryAction) -> Unit,
+) {
+    when (load) {
+        LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_organization_loading)) }
+        is LibraryLoad.Failure -> FailureCard(R.string.library_organization_failure, onAction)
+        is LibraryLoad.Content ->
+            Text(
+                stringResource(R.string.library_organization_ready),
+                style = MaterialTheme.typography.bodySmall,
+            )
     }
 }
 
@@ -400,6 +442,7 @@ private fun FolderSection(
             label = R.string.library_create_folder,
             confirm = R.string.library_create,
             isMutating = isMutating,
+            context = stringResource(R.string.library_create_folder_here, LocalLibraryOrganization.current.location),
         ) { onAction(LibraryAction.CreateFolder(it)) }
     }
     folders.forEachIndexed { index, folder ->
@@ -449,15 +492,26 @@ private fun PinnedSection(
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     var showOrdering by remember { mutableStateOf(false) }
+    val handle = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrdering) R.string.library_expanded else R.string.library_collapsed)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
         SectionTitle(R.string.library_pinned)
-        TextButton(onClick = { showOrdering = !showOrdering }) {
-            Text(stringResource(R.string.library_reorder_pinned))
-        }
+        TextButton(
+            onClick = {
+                showOrdering = !showOrdering
+                if (!showOrdering) recovery.restoreTarget = handle
+            },
+            modifier =
+                libraryFocusTarget().focusRequester(handle.requester).semantics {
+                    stateDescription = expanded
+                    selected = showOrdering
+                },
+        ) { Text(stringResource(R.string.library_reorder_pinned)) }
     }
     allPinned.filtered(filter).forEachIndexed { index, item ->
         key(item.id) {
@@ -476,35 +530,32 @@ private fun PinnedSection(
     }
     if (showOrdering) {
         allPinned.forEachIndexed { index, item ->
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                ) {
-                    if (index > 0) {
-                        TextButton(
-                            enabled = !isMutating,
-                            onClick = {
-                                onAction(
-                                    LibraryAction.ReorderPinned(
-                                        allPinned.move(index, index - 1).map(LibraryTrackable::id),
-                                    ),
-                                )
-                            },
-                        ) { Text(stringResource(R.string.library_move_up)) }
-                    }
-                    if (index < allPinned.lastIndex) {
-                        TextButton(
-                            enabled = !isMutating,
-                            onClick = {
-                                onAction(
-                                    LibraryAction.ReorderPinned(
-                                        allPinned.move(index, index + 1).map(LibraryTrackable::id),
-                                    ),
-                                )
-                            },
-                        ) { Text(stringResource(R.string.library_move_down)) }
+            key(item.id) {
+                val context = libraryTemplateContext(item, R.string.library_pinned, index + 1)
+                Column(Modifier.fillMaxWidth()) {
+                    Text(context)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                    ) {
+                        OrganizationButton(
+                            stringResource(R.string.library_move_up),
+                            stringResource(R.string.library_pinned_move_up, context),
+                            !isMutating && index > 0,
+                        ) {
+                            onAction(
+                                LibraryAction.ReorderPinned(allPinned.move(index, index - 1).map(LibraryTrackable::id)),
+                            )
+                        }
+                        OrganizationButton(
+                            stringResource(R.string.library_move_down),
+                            stringResource(R.string.library_pinned_move_down, context),
+                            !isMutating && index < allPinned.lastIndex,
+                        ) {
+                            onAction(
+                                LibraryAction.ReorderPinned(allPinned.move(index, index + 1).map(LibraryTrackable::id)),
+                            )
+                        }
                     }
                 }
             }
@@ -544,6 +595,9 @@ private fun TrackableRow(
     val quickLabel = stringResource(R.string.library_quick_start_template, context)
     val organizeLabel = stringResource(R.string.library_organize_template, context)
     var showOrganization by remember(item.id) { mutableStateOf(false) }
+    val organizationFocus = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrganization) R.string.library_expanded else R.string.library_collapsed)
     Card(
         modifier = Modifier.fillMaxWidth().semantics { isTraversalGroup = true },
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -582,15 +636,22 @@ private fun TrackableRow(
                 Text(stringResource(R.string.library_quick_start))
             }
             TextButton(
-                onClick = { showOrganization = !showOrganization },
-                modifier = libraryFocusTarget().semantics { contentDescription = organizeLabel },
+                onClick = {
+                    showOrganization = !showOrganization
+                    if (!showOrganization) recovery.restoreTarget = organizationFocus
+                },
+                modifier =
+                    libraryFocusTarget().focusRequester(organizationFocus.requester).semantics {
+                        contentDescription = organizeLabel
+                        stateDescription = expanded
+                    },
             ) {
                 Text(stringResource(R.string.library_organize))
             }
         }
         if (showOrganization) {
             Column(modifier = Modifier.padding(MaterialTheme.spacing.medium)) {
-                OrganizationActions(item, organization, isMutating, onAction)
+                OrganizationActions(item, context, organization, isMutating, onAction)
             }
         }
     }
@@ -600,6 +661,7 @@ private fun TrackableRow(
 @OptIn(ExperimentalLayoutApi::class)
 private fun OrganizationActions(
     item: LibraryTrackable,
+    context: String,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
@@ -609,39 +671,69 @@ private fun OrganizationActions(
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
-        TextButton(
-            enabled = !isMutating,
-            onClick = { onAction(LibraryAction.SetPinned(item.id, item.pinnedRank == null)) },
-        ) { Text(stringResource(if (item.pinnedRank == null) R.string.library_pin else R.string.library_unpin)) }
-        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveTemplate(item.id, null)) }) {
-            Text(stringResource(R.string.library_move_to_root))
+        val pinned = item.pinnedRank != null
+        OrganizationButton(
+            stringResource(if (pinned) R.string.library_unpin else R.string.library_pin),
+            stringResource(if (pinned) R.string.library_unpin_target else R.string.library_pin_target, context),
+            !isMutating,
+            selected = pinned,
+        ) { onAction(LibraryAction.SetPinned(item.id, !pinned)) }
+        OrganizationButton(
+            stringResource(R.string.library_move_to_root),
+            stringResource(R.string.library_move_target_root, context),
+            !isMutating,
+        ) {
+            onAction(LibraryAction.MoveTemplate(item.id, null))
         }
     }
-    catalog.folders.filter { it.id != item.folderId }.forEach { folder ->
-        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveTemplate(item.id, folder.id)) }) {
-            Text(stringResource(R.string.library_move_to_folder, folder.name))
+    catalog.folders.forEachIndexed { index, folder ->
+        key(folder.id) {
+            if (folder.id != item.folderId) {
+                OrganizationButton(
+                    stringResource(R.string.library_move_to_folder, folder.name),
+                    stringResource(
+                        R.string.library_move_target_folder,
+                        context,
+                        libraryFolderContext(folder, index + 1),
+                    ),
+                    !isMutating,
+                ) { onAction(LibraryAction.MoveTemplate(item.id, folder.id)) }
+            }
         }
     }
     FolderNameAction(
-        label = R.string.library_create_tag,
-        confirm = R.string.library_create,
+        R.string.library_create_tag,
+        R.string.library_create,
         isMutating = isMutating,
-    ) { onAction(LibraryAction.CreateAndAssignTag(item.id, it)) }
-    catalog.tags.forEach { tag ->
-        val assigned = tag.id in item.tagIds
-        TextButton(
-            enabled = !isMutating,
-            onClick = {
+        context = stringResource(R.string.library_create_tag_target, context),
+    ) {
+        onAction(LibraryAction.CreateAndAssignTag(item.id, it))
+    }
+    catalog.tags.forEachIndexed { index, tag ->
+        key(tag.id) {
+            val assigned = tag.id in item.tagIds
+            val tagContext = stringResource(R.string.library_tag_context, tag.name, index + 1)
+            OrganizationButton(
+                stringResource(if (assigned) R.string.library_remove_tag else R.string.library_add_tag, tag.name),
+                stringResource(
+                    if (assigned) R.string.library_unassign_target_tag else R.string.library_assign_target_tag,
+                    context,
+                    tagContext,
+                ),
+                !isMutating,
+                selected = assigned,
+            ) {
                 onAction(
                     if (assigned) {
-                        LibraryAction.UnassignTag(item.id, tag.id)
+                        LibraryAction.UnassignTag(
+                            item.id,
+                            tag.id,
+                        )
                     } else {
                         LibraryAction.AssignTag(item.id, tag.id)
                     },
                 )
-            },
-        ) {
-            Text(stringResource(if (assigned) R.string.library_remove_tag else R.string.library_add_tag, tag.name))
+            }
         }
     }
     TemplateArchiveAction(item, isMutating, onAction)
@@ -693,8 +785,12 @@ private fun FolderRow(
     onAction: (LibraryAction) -> Unit,
 ) {
     var showOrganization by remember(folder.id) { mutableStateOf(false) }
+    val context = libraryFolderContext(folder, position)
     val openLabel = stringResource(R.string.library_open_folder, folder.name, position)
     val organizeLabel = stringResource(R.string.library_organize_folder, folder.name, position)
+    val handle = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrganization) R.string.library_expanded else R.string.library_collapsed)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -705,11 +801,16 @@ private fun FolderRow(
             modifier = libraryFocusTarget().semantics { contentDescription = openLabel },
         ) { Text(folder.name) }
         TextButton(
-            onClick = { showOrganization = !showOrganization },
-            modifier = libraryFocusTarget().semantics { contentDescription = organizeLabel },
-        ) {
-            Text(stringResource(R.string.library_organize))
-        }
+            onClick = {
+                showOrganization = !showOrganization
+                if (!showOrganization) recovery.restoreTarget = handle
+            },
+            modifier =
+                libraryFocusTarget().focusRequester(handle.requester).semantics {
+                    contentDescription = organizeLabel
+                    stateDescription = expanded
+                },
+        ) { Text(stringResource(R.string.library_organize)) }
     }
     if (!showOrganization) return
     val folders = (organization as? LibraryLoad.Content)?.value?.folders ?: return
@@ -719,28 +820,40 @@ private fun FolderRow(
             folders.associate { it.id to it.parentFolderId },
         )
     FolderNameAction(
-        label = R.string.library_rename_folder,
-        confirm = R.string.library_rename,
+        R.string.library_rename_folder,
+        R.string.library_rename,
         initialValue = folder.name,
         isMutating = isMutating,
-    ) { onAction(LibraryAction.RenameFolder(folder.id, it)) }
-    TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveFolder(folder.id, null)) }) {
-        Text(stringResource(R.string.library_move_to_root))
+        context = stringResource(R.string.library_rename_folder_target, context),
+    ) {
+        onAction(LibraryAction.RenameFolder(folder.id, it))
     }
-    folders
-        .filterNot { it.id in forbidden }
-        .forEach { destination ->
-            TextButton(
-                enabled = !isMutating,
-                onClick = { onAction(LibraryAction.MoveFolder(folder.id, destination.id)) },
-            ) {
-                Text(stringResource(R.string.library_move_to_folder, destination.name))
+    OrganizationButton(
+        stringResource(R.string.library_move_to_root),
+        stringResource(R.string.library_move_target_root, context),
+        !isMutating,
+    ) {
+        onAction(LibraryAction.MoveFolder(folder.id, null))
+    }
+    folders.forEachIndexed { index, destination ->
+        key(destination.id) {
+            if (destination.id !in forbidden) {
+                OrganizationButton(
+                    stringResource(R.string.library_move_to_folder, destination.name),
+                    stringResource(
+                        R.string.library_move_target_folder,
+                        context,
+                        libraryFolderContext(
+                            destination,
+                            index + 1,
+                        ),
+                    ),
+                    !isMutating,
+                ) { onAction(LibraryAction.MoveFolder(folder.id, destination.id)) }
             }
         }
-    TextButton(
-        enabled = !isMutating,
-        onClick = { onAction(LibraryAction.RequestFolderDeletion(folder)) },
-    ) {
+    }
+    TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.RequestFolderDeletion(folder)) }) {
         Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error)
     }
 }
@@ -892,44 +1005,6 @@ private fun NonEmptyFolderDeletionDialog(
                 },
             )
     }
-}
-
-@Composable
-private fun FolderNameAction(
-    label: Int,
-    confirm: Int,
-    initialValue: String = "",
-    isMutating: Boolean,
-    onConfirm: (String) -> Unit,
-) {
-    var open by remember(label, initialValue) { mutableStateOf(false) }
-    if (open) {
-        var value by remember { mutableStateOf(initialValue) }
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(stringResource(label)) },
-            text = {
-                LifeTracingOutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    label = { Text(stringResource(R.string.library_name)) },
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = value.isNotBlank() && !isMutating,
-                    onClick = {
-                        onConfirm(value.trim())
-                        open = false
-                    },
-                ) { Text(stringResource(confirm)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { open = false }) { Text(stringResource(R.string.library_cancel)) }
-            },
-        )
-    }
-    TextButton(enabled = !isMutating, onClick = { open = true }) { Text(stringResource(label)) }
 }
 
 @Composable
