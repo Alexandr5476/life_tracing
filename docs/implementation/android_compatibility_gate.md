@@ -1,5 +1,25 @@
 # Android compatibility release gate
 
+## Template archive and Folder deletion accessibility (Slice S3)
+
+Adds nine lifecycle presentation identities and four isolated production-route
+physical-reopen identities. The mandatory inventory now requires **490 app,
+627 data and 2 independent startup cases per API**; all earlier identities remain.
+See [S3 lifecycle evidence](library_destructive_accessibility.md) for exact tests,
+dialog/focus admission, canonical archive/subtree/rejection assertions and local
+verification. Existing large-subtree safe-bind, hidden occupancy and rollback
+repository regressions remain mandatory. Controller owns all unfiltered API
+26/31/33/35/36 gates, independent startup and exact-head GitHub evidence. Compilation
+and automated semantics assertions do not certify manual TalkBack/Switch Access.
+
+Controller API 35 attempt 2 completed all 490 app cases with six failures; all
+eleven Library production-route cases, including the four S3 physical-reopen
+journeys, passed. The authorized repair probe subsequently passed all six failing
+identities after dialog-owner, native-window synchronization, locale and scaled
+target-layout corrections. See the S3 record for all four probes and their exact
+artifacts. The full repaired-tree five-API matrix and independent exact-head gates
+remain Controller-owned requirements; the mandatory inventory is unchanged.
+
 ## Non-destructive Library organization accessibility (Slice S2)
 
 Adds nine organization presentation identities and three isolated production-route

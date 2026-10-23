@@ -741,6 +741,10 @@
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
     ],
     "com.alexandr5476.lifetracing.LibraryAccessibilityRouteTest": [
+      "accessibleArchiveReopensExactTemplatesWithHistoryPlansAndStatisticsPreserved",
+      "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
+      "deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen",
+      "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
       "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
       "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
       "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
@@ -976,6 +980,17 @@
       "englishRussianLabelsAndIndependentActionsReflowAtCombinedScaleExtremes",
       "nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand",
       "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
+    ],
+    "com.alexandr5476.lifetracing.library.LibraryDestructivePresentationTest": [
+      "cancelAndSystemDismissAtEveryFolderStageNeverDispatchAMutation",
+      "destructiveOutcomeWaitsForCanonicalRefreshAndFailureCannotLeakIntoAnotherCommit",
+      "duplicateArchiveTargetsRequireConfirmationAndDispatchEachTypedIdOnlyOnce",
+      "archiveBusyRemovalFailureAndRouteExitCannotReplayAConfirmation",
+      "inspectionLoadingFailureRetryAndDismissExposeContextWithoutDeleteAdmission",
+      "emptyFolderConfirmationIsOneShotAndRemovedInvokerRecoversToBack",
+      "nonemptyMoveUsesExplicitRootAndDuplicateDestinationIdsAndRevokesPreviousStages",
+      "finalDestructiveConfirmationCancelsDismissesAndRejectsRefreshAndBackgroundCallbacks",
+      "englishRussianLifecycleDialogsKeepIndependentTargetsAtCombinedScaleExtremes"
     ],
     "com.alexandr5476.lifetracing.library.LibraryOrganizationPresentationTest": [
       "retainedMutationCallbackChecksLiveRouteOwnershipBeforeRecomposition",

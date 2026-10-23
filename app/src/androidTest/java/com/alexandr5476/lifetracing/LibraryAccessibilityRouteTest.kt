@@ -471,6 +471,256 @@ class LibraryAccessibilityRouteTest {
             }
         }
 
+    @Test
+    fun accessibleArchiveReopensExactTemplatesWithHistoryPlansAndStatisticsPreserved() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val activityId = (ids.first() as LibraryTemplateId.Activity).id
+            val sequenceId = (ids.last() as LibraryTemplateId.Sequence).id
+            val activity =
+                f.store.library.startActivityFromTemplate(
+                    activityId,
+                    f.seedTime,
+                    f.seedTime,
+                    java.time.ZoneOffset.UTC,
+                )
+            f.store.live.completeActiveActivity(f.seedTime.plusSeconds(2))
+            val sequence =
+                f.store.library.startSequenceFromTemplate(
+                    sequenceId,
+                    f.seedTime.plusSeconds(3),
+                    f.seedTime.plusSeconds(3),
+                    java.time.ZoneOffset.UTC,
+                )
+            f.store.live.endSequenceEarly(f.seedTime.plusSeconds(5))
+            val plan =
+                f.store.plans.createActivityPlanFromTemplate(
+                    activityId,
+                    com.alexandr5476.lifetracing.domain.PlanSchedule
+                        .FloatingDay(java.time.LocalDate.of(2026, 10, 24)),
+                    f.seedTime.plusSeconds(6),
+                )
+            ids.forEach(f.store.library::pin)
+            val config = ids.map(f::lifecycleTemplate)
+            val activityHistory = f.store.history.getActivityDetail(activity.id)
+            val sequenceHistory = f.store.history.getSequenceDetail(sequence.execution.id)
+            val series =
+                f.store.statistics
+                    .seriesCatalog()
+                    .map { it.id }
+                    .toSet()
+            val liveTime = Instant.now()
+            f.store.library.startActivityFromTemplate(activityId, liveTime, liveTime, java.time.ZoneOffset.UTC)
+            val activeSession = f.store.live.getActiveSession()
+            val activeRuntime = f.store.live.getActiveRuntime()
+            val counts = f.store.executionCounts()
+            val frozenWithRuntime = f.frozenFacts()
+            f.launch()
+            f.enterLibrary()
+            for (id in listOf(ids.first(), ids.last())) {
+                f.organize(id)
+                val context = f.templateContext(id)
+                val before = f.store.durableFacts()
+                f.description(f.text(R.string.library_archive_target, context))
+                compose.onNodeWithText(f.text(R.string.library_cancel)).performSemanticsAction(SemanticsActions.OnClick)
+                compose.waitForIdle()
+                assertEquals(before, f.store.durableFacts())
+                f.description(f.text(R.string.library_archive_target, context))
+                f.organizationMutation(f.text(R.string.library_archive_confirm, context))
+            }
+            f.reopenOrganization(expectedSession = activeSession) {
+                assertEquals(activeRuntime, live.getActiveRuntime())
+                assertEquals(setOf(ids[1]), library.getAll().map { it.id }.toSet())
+                assertEquals(setOf(ids.first(), ids.last()), library.getArchived().map { it.id }.toSet())
+                assertEquals(setOf(ids[1]), library.getPinned().map { it.id }.toSet())
+                assertEquals(listOf(ids[1]), library.search("Shared name").map { it.id })
+                assertEquals(activityHistory, history.getActivityDetail(activity.id))
+                assertEquals(sequenceHistory, history.getSequenceDetail(sequence.execution.id))
+                assertEquals(plan, plans.getPlan(plan.id))
+                assertEquals(series, statistics.seriesCatalog().map { it.id }.toSet())
+                assertEquals(counts, executionCounts())
+            }
+            assertEquals(config, ids.map(f::lifecycleTemplate))
+            assertEquals(frozenWithRuntime, f.frozenFacts())
+            // Fresh production launcher discovery uses its canonical root catalog.
+            assertEquals(
+                setOf(ids[1]),
+                f.store.library
+                    .getRoot()
+                    .contents.activities
+                    .map { it.id }
+                    .toSet(),
+            )
+        }
+
+    @Test
+    fun emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val empty = FolderId("empty")
+            val sourceRoot = FolderId("source-root")
+            val sourceDestination = FolderId("source-destination")
+            val destination = FolderId("destination")
+            val child = FolderId("child")
+            val grandchild = FolderId("grandchild")
+            listOf(empty, sourceRoot, sourceDestination, destination).forEach {
+                f.store.library.createFolder(it, it.value, null, f.seedTime)
+            }
+            f.store.library.createFolder(child, "Child", sourceDestination, f.seedTime)
+            f.store.library.createFolder(grandchild, "Grandchild", child, f.seedTime)
+            f.store.library.moveTemplatesToFolder(listOf(ids.first()), sourceRoot, f.seedTime.plusSeconds(1))
+            f.store.library.moveTemplatesToFolder(listOf(ids.last()), sourceDestination, f.seedTime.plusSeconds(1))
+            val config = ids.map(f::lifecycleTemplate)
+            val frozen = f.frozenFacts()
+            f.launch()
+            f.enterLibrary()
+            var context = f.requestDeletion(empty)
+            f.organizationMutation(f.text(R.string.library_delete_empty_confirm, context))
+            context = f.requestDeletion(sourceRoot)
+            val beforeChoice = f.store.durableFacts()
+            f.description(f.text(R.string.library_move_contents_target, context))
+            assertEquals(beforeChoice, f.store.durableFacts())
+            f.organizationMutation(f.text(R.string.library_move_contents_root, context))
+            context = f.requestDeletion(sourceDestination)
+            f.description(f.text(R.string.library_move_contents_target, context))
+            val inspected =
+                (
+                    f.library.state.value.folderDeletion!!
+                        .options as LibraryLoad.Content
+                ).value
+            val destinationIndex = inspected.destinations.indexOfFirst { it.id == destination }
+            val target = f.text(R.string.library_folder_context, destination.value, destinationIndex + 1)
+            f.organizationMutation(f.text(R.string.library_move_contents_destination, context, target))
+            f.reopenOrganization {
+                assertEquals(setOf(destination, child, grandchild), library.getFolders().map { it.id }.toSet())
+                assertEquals(listOf(destination, child, grandchild), library.getFolderPath(grandchild).map { it.id })
+                assertNull(library.getAll().single { it.id == ids.first() }.folderId)
+                assertEquals(destination, library.getAll().single { it.id == ids.last() }.folderId)
+                assertEquals(emptyList<LibraryTemplateId>(), library.getArchived().map { it.id })
+                assertEquals(0L to 0L, executionCounts())
+            }
+            assertEquals(config, ids.map(f::lifecycleTemplate))
+            assertEquals(frozen, f.frozenFacts())
+        }
+
+    @Test
+    fun deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val source = FolderId("source")
+            val child = FolderId("child")
+            f.store.library.createFolder(source, "Same folder", null, f.seedTime)
+            f.store.library.createFolder(child, "Child", source, f.seedTime)
+            f.store.library.moveTemplatesToFolder(listOf(ids.first()), source, f.seedTime.plusSeconds(1))
+            f.store.library.moveTemplatesToFolder(listOf(ids.last()), child, f.seedTime.plusSeconds(1))
+            val activity =
+                f.store.library.startActivityFromTemplate(
+                    (ids.first() as LibraryTemplateId.Activity).id,
+                    f.seedTime.plusSeconds(2),
+                    f.seedTime.plusSeconds(2),
+                    java.time.ZoneOffset.UTC,
+                )
+            f.store.live.completeActiveActivity(f.seedTime.plusSeconds(4))
+            val detail = f.store.history.getActivityDetail(activity.id)
+            val config = ids.map(f::lifecycleTemplate)
+            val series =
+                f.store.statistics
+                    .seriesCatalog()
+                    .map { it.id }
+                    .toSet()
+            val frozen = f.frozenFacts()
+            f.launch()
+            f.enterLibrary()
+            var context = f.requestDeletion(source)
+            val before = f.store.durableFacts()
+            f.description(f.text(R.string.library_delete_contents_target, context))
+            assertEquals(before, f.store.durableFacts())
+            androidx.test.espresso.Espresso
+                .pressBack()
+            f.await { f.library.state.value.folderDeletion == null }
+            assertEquals(before, f.store.durableFacts())
+            context = f.requestDeletion(source)
+            f.description(f.text(R.string.library_delete_contents_target, context))
+            val confirmation =
+                compose.onNodeWithContentDescription(
+                    f.text(R.string.library_delete_contents_confirm, context),
+                )
+            val beforeGeneration = f.library.state.value.mutationSuccessGeneration
+            confirmation.performSemanticsAction(SemanticsActions.RequestFocus).performKeyInput { pressKey(Key.Enter) }
+            f.await { f.library.state.value.mutationSuccessGeneration == beforeGeneration + 1 }
+            f.awaitOrganization()
+            compose.onNodeWithText(f.text(R.string.library_back)).assertIsFocused()
+            f.reopenOrganization {
+                assertEquals(emptyList<FolderId>(), library.getFolders().map { it.id })
+                assertEquals(setOf(ids.first(), ids.last()), library.getArchived().map { it.id }.toSet())
+                assertEquals(listOf(ids[1]), library.getAll().map { it.id })
+                assertEquals(detail, history.getActivityDetail(activity.id))
+                assertEquals(series, statistics.seriesCatalog().map { it.id }.toSet())
+                assertEquals(1L to 0L, executionCounts())
+            }
+            assertEquals(config, ids.map(f::lifecycleTemplate))
+            assertEquals(frozen, f.frozenFacts())
+        }
+
+    @Test
+    fun hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites() =
+        journey { f ->
+            val source = FolderId("source")
+            val destination = FolderId("destination")
+            f.store.library.createFolder(source, "Same", null, f.seedTime)
+            f.store.library.createFolder(destination, "Same", null, f.seedTime)
+            f.launch()
+            f.enterLibrary()
+            var context = f.requestDeletion(source)
+            val hidden =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Hidden", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    com.alexandr5476.lifetracing.domain
+                        .TemplateLibraryPlacement(folderId = source),
+                    f.seedTime.plusSeconds(1),
+                )
+            f.store.library.archiveActivityTemplate(hidden.id, f.seedTime.plusSeconds(2))
+            val beforeEmpty = f.store.durableFacts()
+            val generation = f.library.state.value.mutationSuccessGeneration
+            f.description(f.text(R.string.library_delete_empty_confirm, context))
+            f.await { !f.library.state.value.isMutating && f.library.state.value.mutationFailure != null }
+            assertEquals(beforeEmpty, f.store.durableFacts())
+            assertEquals(generation, f.library.state.value.mutationSuccessGeneration)
+            compose.onNodeWithText(f.text(R.string.library_organization_updated)).assertDoesNotExist()
+            context = f.requestDeletion(source)
+            assertEquals(
+                false,
+                (
+                    f.library.state.value.folderDeletion!!
+                        .options as LibraryLoad.Content
+                ).value.isEmpty,
+            )
+            f.description(f.text(R.string.library_move_contents_target, context))
+            val options =
+                (
+                    f.library.state.value.folderDeletion!!
+                        .options as LibraryLoad.Content
+                ).value
+            val index = options.destinations.indexOfFirst { it.id == destination }
+            val target = f.text(R.string.library_folder_context, "Same", index + 1)
+            f.store.library.deleteEmptyFolder(destination, Instant.now())
+            val beforeMove = f.store.durableFacts()
+            f.description(f.text(R.string.library_move_contents_destination, context, target))
+            f.await { !f.library.state.value.isMutating && f.library.state.value.mutationFailure != null }
+            assertEquals(beforeMove, f.store.durableFacts())
+            assertEquals(generation, f.library.state.value.mutationSuccessGeneration)
+            f.invoke(R.string.library_retry)
+            f.awaitOrganization()
+            f.reopenOrganization {
+                assertEquals(listOf(source), library.getFolders().map { it.id })
+                assertEquals(listOf(source), library.getFolderPath(source).map { it.id })
+                assertEquals(listOf(LibraryTemplateId.Activity(hidden.id)), library.getArchived().map { it.id })
+                assertEquals(source, library.getArchived().single().folderId)
+                assertEquals(beforeMove, durableFacts())
+                assertEquals(0L to 0L, executionCounts())
+            }
+        }
+
     private fun journey(body: (Fixture) -> Unit) =
         runBlocking {
             val app = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
@@ -629,6 +879,39 @@ class LibraryAccessibilityRouteTest {
             compose.waitForIdle()
         }
 
+        fun requestDeletion(id: FolderId): String {
+            awaitOrganization()
+            organizeFolder(id)
+            val folders = (library.state.value.browse as LibraryLoad.Content).value.contents.folders
+            val index = folders.indexOfFirst { it.id == id }
+            val folder = folders[index]
+            val context = text(R.string.library_folder_context, folder.name, index + 1)
+            description(text(R.string.library_delete_folder_target, context))
+            await {
+                library.state.value.folderDeletion
+                    ?.options is LibraryLoad.Content
+            }
+            compose.waitForIdle()
+            return context
+        }
+
+        fun lifecycleTemplate(id: LibraryTemplateId): Any =
+            when (id) {
+                is LibraryTemplateId.Activity ->
+                    store.authoring
+                        .getActivityTemplate(id.id)!!
+                        .copy(deletedAt = null, folderId = null, tagIds = emptySet())
+                is LibraryTemplateId.Sequence ->
+                    store.authoring.getSequenceTemplate(id.id)!!.copy(
+                        deletedAt = null,
+                        folderId = null,
+                        tagIds = emptySet(),
+                        userState =
+                            com.alexandr5476.lifetracing.domain
+                                .SequenceTemplateUserState(),
+                    )
+            }
+
         fun awaitOrganization() {
             await {
                 !library.state.value.isMutating &&
@@ -762,16 +1045,19 @@ class LibraryAccessibilityRouteTest {
                     it == "active_session"
             }
 
-        fun reopenOrganization(checks: RuntimeRecoveryStore.() -> Unit) {
+        fun reopenOrganization(
+            expectedSession: com.alexandr5476.lifetracing.domain.ActiveSession? = null,
+            checks: RuntimeRecoveryStore.() -> Unit,
+        ) {
             val before = store.durableFacts()
-            assertNull(store.live.getActiveSession())
+            assertEquals(expectedSession, store.live.getActiveSession())
             scenario?.close()
             scenario = null
             closeGraph()
             store.close()
             store = RuntimeRecoveryStore(app, "lifetracing.db")
             assertEquals(before, store.durableFacts())
-            assertNull(store.live.getActiveSession())
+            assertEquals(expectedSession, store.live.getActiveSession())
             store.checks()
         }
 

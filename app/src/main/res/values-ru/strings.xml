@@ -749,4 +749,20 @@
     <string name="library_name_context">Название: %1$s</string>
     <string name="library_organization_busy">Сохранение организации…</string>
     <string name="library_organization_updated">Организация обновлена.</string>
+    <string name="library_archive_target">Архивировать %1$s</string>
+    <string name="library_archive_confirm">Подтвердить архивацию: %1$s</string>
+    <string name="library_delete_folder_target">Удалить %1$s</string>
+    <string name="library_delete_folder_inspection">Проверка перед удалением: %1$s</string>
+    <string name="library_delete_empty_confirm">Удалить пустую папку: %1$s</string>
+    <string name="library_delete_disposition">Выберите действие для %1$s</string>
+    <string name="library_move_contents_target">Перенести содержимое %1$s (безопасный вариант)</string>
+    <string name="library_move_contents_root">Перенести содержимое %1$s в корень Библиотеки и удалить папку</string>
+    <string name="library_move_contents_destination">Перенести содержимое %1$s в %2$s и удалить папку</string>
+    <string name="library_delete_contents_target">Архивировать шаблоны и удалить дерево %1$s</string>
+    <string name="library_delete_contents_confirm">Подтвердить архивацию шаблонов и удаление дерева %1$s</string>
+    <string name="library_retry_inspection">Повторить проверку: %1$s</string>
+    <string name="library_inspection_error">Ошибка проверки: %1$s</string>
+    <string name="library_dialog_context">Диалог: %1$s</string>
+    <string name="library_archive_outcome">Архивирован %1$s. История и статистика сохранены.</string>
+    <string name="library_folder_deleted_outcome">Удалена %1$s. История и статистика сохранены.</string>
 </resources>

@@ -68,6 +68,8 @@ internal class LibraryFocusRecovery {
     var removedOwner by mutableStateOf<Any?>(null)
     var hasFocus by mutableStateOf(false)
     var restoreTarget by mutableStateOf<LibraryFocusHandle?>(null)
+    var deletionOrigin by mutableStateOf<LibraryDeletionOrigin?>(null)
+    var lifecycleOutcome by mutableStateOf<LibraryLifecycleOutcome?>(null)
 
     val root: Modifier
         get() = Modifier.onFocusChanged { hasFocus = it.hasFocus }.focusGroup()
@@ -141,6 +143,7 @@ internal fun rememberLibraryMutationFeedback(state: LibraryPresentationState): B
         if (state.isMutating) succeeded = false
         if (state.mutationSuccessGeneration != generation) {
             generation = state.mutationSuccessGeneration
+            succeeded = false
             pending = true
         }
         if (state.mutationFailure != null) {
@@ -153,7 +156,7 @@ internal fun rememberLibraryMutationFeedback(state: LibraryPresentationState): B
             succeeded = true
         }
     }
-    return succeeded
+    return succeeded && state.mutationSuccessGeneration == generation && state.mutationFailure == null
 }
 
 /** Call inside the typed row key so a surviving target keeps its native focus node. */

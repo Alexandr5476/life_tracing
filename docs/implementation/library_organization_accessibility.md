@@ -1,5 +1,9 @@
 # Non-destructive Library organization accessibility (Slice S2)
 
+[Slice S3 lifecycle accessibility](library_destructive_accessibility.md) now covers
+the archive and Folder-deletion dialog boundary deferred in this record. S2's
+non-destructive commands and canonical persistence boundaries remain unchanged.
+
 Product v0.16 §33, domain v0.10 §§17–19, schema v0.6 and implementation
 clarifications remain authoritative. This extends the accepted
 [S1 discovery implementation](library_accessibility.md); its typed actions,

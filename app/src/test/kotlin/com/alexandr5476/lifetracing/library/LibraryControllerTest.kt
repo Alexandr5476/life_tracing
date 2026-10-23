@@ -26,6 +26,75 @@ import java.time.Instant
 
 class LibraryControllerTest {
     @Test
+    fun refreshInvalidatesFolderInspectionAndRetryGetsANewRequestIdentity() =
+        runBlocking {
+            val source = folder("source", "Same")
+            val writes = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(source), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source), emptyList()) },
+                    { writes += it },
+                    readFolderDeletionIsEmpty = { true },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            controller.awaitFolderDeletion()
+            val first =
+                controller.state.value.folderDeletion!!
+                    .requestId
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            controller.awaitFolderDeletion()
+            assertTrue(
+                controller.state.value.folderDeletion!!
+                    .requestId > first,
+            )
+            val browseRequest = controller.state.value.browseRequestId
+            controller.dispatch(LibraryAction.Refresh)
+            assertTrue(controller.state.value.browseRequestId > browseRequest)
+            assertNull(controller.state.value.folderDeletion)
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(source.id))
+            assertTrue(writes.isEmpty())
+            controller.close()
+        }
+
+    @Test
+    fun supersedingRefreshRevokesAnInspectionStillReadingDurableOccupancy() =
+        runBlocking {
+            val source = folder("source", "Same")
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(source), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source), emptyList()) },
+                    readFolderDeletionIsEmpty = {
+                        entered.complete(Unit)
+                        release.await()
+                        true
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            entered.await()
+            controller.dispatch(LibraryAction.Refresh)
+            assertNull(controller.state.value.folderDeletion)
+            release.complete(Unit)
+            // The released reader has no more suspension points on this single-thread test scope.
+            kotlinx.coroutines.yield()
+            assertNull(controller.state.value.folderDeletion)
+            controller.close()
+        }
+
+    @Test
     fun organizationCompletionGenerationWaitsForWriterAndNeverAdvancesOnFailureOrRetry() =
         runBlocking {
             val entered = CompletableDeferred<Unit>()

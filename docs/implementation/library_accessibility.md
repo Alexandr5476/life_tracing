@@ -1,5 +1,10 @@
 # Library discovery accessibility (Slice S1)
 
+Archive and Folder-deletion dialogs are extended by
+[Slice S3 lifecycle accessibility](library_destructive_accessibility.md).
+That record covers contextual confirmation, inspection/stage guards, focus and
+canonical physical-reopen assertions; S1 discovery behavior remains required.
+
 The accepted discovery behavior is extended by
 [Slice S2 non-destructive organization](library_organization_accessibility.md).
 That record supersedes S1's organization-dialog deferral and records the new

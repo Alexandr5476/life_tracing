@@ -1078,7 +1078,7 @@ class LibraryScreenPresentationTest {
         val widthPixels = 320 * context.resources.displayMetrics.density
         val organize = context.getString(R.string.library_organize)
         val delete = context.getString(R.string.library_delete)
-        val dialogContext = composeTestRule.activity
+        val dialogContext = context
 
         clickInside(composeTestRule.onAllNodesWithText(organize)[1], widthPixels)
         clickInside(composeTestRule.onNodeWithText(delete), widthPixels)

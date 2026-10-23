@@ -749,4 +749,20 @@
     <string name="library_name_context">Name: %1$s</string>
     <string name="library_organization_busy">Saving organization changes…</string>
     <string name="library_organization_updated">Organization updated.</string>
+    <string name="library_archive_target">Archive %1$s</string>
+    <string name="library_archive_confirm">Confirm archive of %1$s</string>
+    <string name="library_delete_folder_target">Delete %1$s</string>
+    <string name="library_delete_folder_inspection">Inspect deletion of %1$s</string>
+    <string name="library_delete_empty_confirm">Delete empty %1$s</string>
+    <string name="library_delete_disposition">Choose what to do with %1$s</string>
+    <string name="library_move_contents_target">Move contents of %1$s (safe option)</string>
+    <string name="library_move_contents_root">Move contents of %1$s to Library root and delete the folder</string>
+    <string name="library_move_contents_destination">Move contents of %1$s to %2$s and delete the folder</string>
+    <string name="library_delete_contents_target">Archive templates and delete the hierarchy of %1$s</string>
+    <string name="library_delete_contents_confirm">Confirm archiving templates and deleting the hierarchy of %1$s</string>
+    <string name="library_retry_inspection">Retry inspection of %1$s</string>
+    <string name="library_inspection_error">Inspection failed: %1$s</string>
+    <string name="library_dialog_context">Dialog: %1$s</string>
+    <string name="library_archive_outcome">Archived %1$s. History and statistics remain available.</string>
+    <string name="library_folder_deleted_outcome">Removed %1$s. History and statistics remain available.</string>
 </resources>
