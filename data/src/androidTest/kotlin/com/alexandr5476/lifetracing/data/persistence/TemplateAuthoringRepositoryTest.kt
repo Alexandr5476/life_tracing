@@ -416,6 +416,26 @@ class TemplateAuthoringRepositoryTest {
                 }.map { it.label },
         )
 
+        // Canonical reads interleave archived options by persisted position; resolution appends them.
+        val canonical = requireNotNull(repository.getActivityTemplate(removedSelected.id))
+        assertEquals(3L, canonical.revision)
+        assertTrue(
+            canonical.fields
+                .single()
+                .categoryOptions
+                .first()
+                .isArchived,
+        )
+        val noOp =
+            repository.saveActivityTemplate(
+                canonical.id,
+                canonical.revision,
+                canonical.toAuthoringDraft(),
+                at(5),
+            )
+        assertEquals(canonical, noOp)
+        assertEquals(canonical, repository.getActivityTemplate(canonical.id))
+
         val colliding =
             TemplateAuthoringRepository(
                 database,
@@ -831,6 +851,19 @@ class TemplateAuthoringRepositoryTest {
         assertTrue(
             repository.getSequenceTemplateAuthoringState(created.id)!!.activitySnapshots.containsKey(linkedSnapshot),
         )
+        // Include the retained deleted Field and archived option in exact no-op timestamp/provenance checks.
+        val canonical = requireNotNull(repository.getSequenceTemplateAuthoringState(created.id))
+        assertTrue(canonical.sequence.fields.any { it.deletedAt != null })
+        assertTrue(canonical.sequence.fields.any { field -> field.categoryOptions.any { it.isArchived } })
+        val noOp =
+            repository.saveSequenceTemplate(
+                created.id,
+                canonical.sequence.revision,
+                canonical.toAuthoringDraft(),
+                at(4),
+            )
+        assertEquals(canonical.sequence, noOp)
+        assertEquals(canonical, repository.getSequenceTemplateAuthoringState(created.id))
     }
 
     @Test

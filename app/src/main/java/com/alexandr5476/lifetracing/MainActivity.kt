@@ -697,6 +697,7 @@ internal fun LifeTracingApp(
                             } else {
                                 ActivityTemplateEditorRoute(
                                     session.controller,
+                                    isRouteVisible = backStack.lastOrNull() == NewActivityTemplateEditor,
                                     onBack = {
                                         editorSessions.release(session)
                                         backStack.removeActivityTemplateEditor()
@@ -722,6 +723,7 @@ internal fun LifeTracingApp(
                             } else {
                                 ActivityTemplateEditorRoute(
                                     session.controller,
+                                    isRouteVisible = backStack.lastOrNull() == route,
                                     onBack = {
                                         editorSessions.release(session)
                                         backStack.removeActivityTemplateEditor()

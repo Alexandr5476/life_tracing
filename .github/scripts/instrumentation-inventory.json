@@ -675,8 +675,8 @@
       "sequenceFieldsUseStableIdentityAndMissingDenominator",
       "sequenceSeriesDetailBatchesMixedFieldHistoryReadsAndMatchesCanonicalReaders",
       "seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults",
-        "seriesDetailRejectsRawNumberSampleMaterialization",
-        "seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory",
+      "seriesDetailRejectsRawNumberSampleMaterialization",
+      "seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory",
       "seriesSplitIsAtomicPreservesOldPlanSnapshotAndRenameMirrorsLabel",
       "seriesSplitRejectsStalePersistedMillisecondForBothKinds"
     ],
@@ -742,16 +742,20 @@
     ],
     "com.alexandr5476.lifetracing.LibraryAccessibilityRouteTest": [
       "accessibleArchiveReopensExactTemplatesWithHistoryPlansAndStatisticsPreserved",
-      "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
+      "backgroundCatalogRemovalAndEditorReturnCannotReplayNavigationOrFocusRemovedRow",
       "deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen",
-      "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
-      "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
-      "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
-      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
       "duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites",
-      "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
+      "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
+      "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
+      "nativeExistingAuthoringPreservesEligibleSourcesMetadataAndFrozenHistoryOnReopen",
+      "nativeNewActivityAuthoringCommitsOnceAndPhysicallyReopensCanonicalFields",
+      "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
       "nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission",
-      "backgroundCatalogRemovalAndEditorReturnCannotReplayNavigationOrFocusRemovedRow"
+      "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
+      "productionConflictRequiresExplicitReloadAndDiscardLeavesNoPartialWriteOnReopen",
+      "productionLoadRetryAndGatedWriterFailurePreserveSessionAndBackAdmissionUntilCommit",
+      "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
+      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
@@ -884,12 +888,27 @@
       "sparseActiveFieldAndOptionPositionsAppendInEditorOrderAfterFreshCanonicalReload"
     ],
     "com.alexandr5476.lifetracing.editor.ActivityTemplateEditorScreenPresentationTest": [
+      "authoritativeValidationFailureIsAnnouncedWithoutWriterAndNativeMainValueCanResolveIt",
       "cleanToolbarBackExitsAndFocusedEditorHasNoPrimaryNavigation",
       "dirtyToolbarAndNativeBackShareDiscardConfirmationAndCancelKeepsDraft",
+      "discardInitialKeyboardFocusDismissalAndRetainedDialogActionsAreSafe",
+      "duplicateCategoryOptionsRenameSelectClearAndRemoveExactIdentities",
+      "duplicateFieldControlsAndMainValueDispatchToStableIdentities",
+      "englishCombinedScaleExtremesKeepNativeTargetsReachable",
       "englishCompactChoicesStayInsideBounds",
+      "existingContextLoadingFailureKeyboardRetryAndReadyKeepExactTarget",
+      "gatedSavingDisablesBackAndSaveThenCommittedHasNoSecondAction",
+      "hiddenOrDisposedEditorCannotStealForegroundFocusOrSubmitRetainedActions",
       "ioWriterCompletionReturnsToComposeOnceOnTheMainThread",
+      "nativeTrackingSelectionAndTimerErrorsDispatchExactDraftTransitions",
+      "newContextHeadingsAndNativeEditableTextDoNotWriteOnFocusOrTab",
+      "numberControlsExposeNativeErrorsPrecisionUnitsAndMissingVersusZero",
+      "ordinaryFailureExplicitSaveRetryAndConflictReloadRetainUnsavedText",
+      "removedFieldAndOptionNativeCallbacksCannotMutateTheirSuccessors",
+      "russianCombinedScaleExtremesKeepNativeTargetsReachable",
       "russianCompactChoicesStayInsideBounds",
-      "selectedCategoryDefaultCanBeClearedWithoutRemovingItsOption"
+      "selectedCategoryDefaultCanBeClearedWithoutRemovingItsOption",
+      "stableSurvivingFieldFocusAndNativeAddTypeChangeRemainReachable"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorPersistenceTest": [
       "editorUnitReplacementHelperPersistsANewLocalFieldWhilePreservingStepAndSnapshotProvenance",

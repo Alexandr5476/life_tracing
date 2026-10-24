@@ -765,4 +765,16 @@
     <string name="library_dialog_context">Диалог: %1$s</string>
     <string name="library_archive_outcome">Архивирован %1$s. История и статистика сохранены.</string>
     <string name="library_folder_deleted_outcome">Удалена %1$s. История и статистика сохранены.</string>
+    <string name="activity_editor_new_context">Создание шаблона Activity</string>
+    <string name="activity_editor_existing_context">Редактирование шаблона Activity</string>
+    <string name="activity_editor_field_context">Поле %2$d (%1$s): %3$s</string>
+    <string name="activity_editor_option_context">%1$s, вариант %2$d: %3$s</string>
+    <string name="activity_editor_control_context">%1$s: %2$s</string>
+    <string name="activity_editor_change_type_context">Изменить тип на %1$s: %2$s</string>
+    <string name="activity_editor_add_field_context">Добавить поле типа %1$s</string>
+    <string name="activity_editor_timer_guidance">Введите положительное целое число секунд.</string>
+    <string name="activity_editor_precision_guidance">Введите 0, 1, 2 или 3 знака после запятой либо оставьте пустым. Другие значения не принимаются.</string>
+    <string name="activity_editor_committed">Шаблон Activity сохранён.</string>
+    <string name="activity_editor_pristine">Нет несохранённых изменений</string>
+    <string name="activity_editor_modified">Есть несохранённые изменения</string>
 </resources>

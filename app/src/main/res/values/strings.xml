@@ -765,4 +765,16 @@
     <string name="library_dialog_context">Dialog: %1$s</string>
     <string name="library_archive_outcome">Archived %1$s. History and statistics remain available.</string>
     <string name="library_folder_deleted_outcome">Removed %1$s. History and statistics remain available.</string>
+    <string name="activity_editor_new_context">Create Activity Template</string>
+    <string name="activity_editor_existing_context">Edit Activity Template</string>
+    <string name="activity_editor_field_context">%1$s field %2$d: %3$s</string>
+    <string name="activity_editor_option_context">%1$s, option %2$d: %3$s</string>
+    <string name="activity_editor_control_context">%1$s: %2$s</string>
+    <string name="activity_editor_change_type_context">Change type to %1$s: %2$s</string>
+    <string name="activity_editor_add_field_context">Add %1$s field</string>
+    <string name="activity_editor_timer_guidance">Enter a positive whole number of seconds.</string>
+    <string name="activity_editor_precision_guidance">Use 0, 1, 2 or 3 decimal places, or leave blank. Other input is not accepted.</string>
+    <string name="activity_editor_committed">Activity Template saved.</string>
+    <string name="activity_editor_pristine">No unsaved changes</string>
+    <string name="activity_editor_modified">Unsaved changes</string>
 </resources>

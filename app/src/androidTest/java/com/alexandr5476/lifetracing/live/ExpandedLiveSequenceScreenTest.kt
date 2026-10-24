@@ -2059,15 +2059,8 @@ class ExpandedLiveSequenceScreenTest {
         target: SemanticsNodeInteraction,
         keyCode: Int,
     ) {
-        val view =
-            (target.fetchSemanticsNode().root as androidx.compose.ui.platform.ViewRootForTest).view
-        // Compose focus/idle does not imply that Android has transferred input focus
-        // after a native popup/dialog was attached or removed. Inject exactly once,
-        // only when the intended window owns native focus; callers await its outcome.
-        composeRule.waitUntil(5_000) {
-            composeRule.runOnIdle { view.isAttachedToWindow && view.hasWindowFocus() }
-        }
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode)
+        // Espresso waits for the exact native root to own input focus and injects once.
+        keyboardInput.sendKey(target, keyCode)
     }
 
     private fun awaitAbsent(matcher: SemanticsMatcher) {

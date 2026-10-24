@@ -7,25 +7,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.test.pressKey
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.Folder
@@ -63,10 +58,10 @@ class LibraryDestructivePresentationTest {
             compose
                 .onNodeWithText(text(R.string.library_archive_template_title))
                 .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
-            compose.onNodeWithText(text(R.string.library_cancel)).assertIsFocused()
+            compose.onNodeWithText(text(R.string.library_cancel)).awaitKeyboardFocus()
             assertEquals(index, actions.size)
             cancel()
-            compose.onNodeWithContentDescription(trigger).assertIsFocused()
+            compose.onNodeWithContentDescription(trigger).awaitKeyboardFocus()
             click(trigger)
             dismissDialogWithSystemBack()
             assertEquals(index, actions.size)
@@ -127,7 +122,7 @@ class LibraryDestructivePresentationTest {
         state = catalog(emptyList())
         compose.waitForIdle()
         compose.runOnIdle { removed() }
-        compose.onNodeWithText(text(R.string.library_back)).assertIsFocused()
+        compose.onNodeWithText(text(R.string.library_back)).awaitKeyboardFocus()
         assertTrue(actions.isEmpty())
     }
 
@@ -144,7 +139,7 @@ class LibraryDestructivePresentationTest {
         keyboard.enter(compose.onNodeWithText(text(R.string.library_cancel)))
         compose.onNodeWithText(text(R.string.library_delete_folder_inspecting)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.library_delete_folder)).assertDoesNotExist()
-        compose.onNodeWithText(text(R.string.library_cancel)).assertIsFocused()
+        compose.onNodeWithText(text(R.string.library_cancel)).awaitKeyboardFocus()
         state = state.copy(folderDeletion = LibraryFolderDeletion(source, LibraryLoad.Failure("Offline"), 1))
         compose.onNodeWithText(text(R.string.library_inspection_error, "Offline")).assertIsDisplayed()
         val retry =
@@ -192,7 +187,7 @@ class LibraryDestructivePresentationTest {
         assertEquals(4, actions.size)
         state = catalog().copy(isMutating = true)
         compose.waitForIdle()
-        compose.onNodeWithText(text(R.string.library_back)).assertIsFocused()
+        compose.onNodeWithText(text(R.string.library_back)).awaitKeyboardFocus()
     }
 
     @Test
@@ -220,7 +215,7 @@ class LibraryDestructivePresentationTest {
             click(text(R.string.library_move_contents_target, context))
             compose.runOnIdle { deleteBranch() }
             compose.onNodeWithText(text(R.string.library_delete_contents_title)).assertDoesNotExist()
-            compose.onNodeWithText(text(R.string.library_cancel)).assertIsFocused()
+            compose.onNodeWithText(text(R.string.library_cancel)).awaitKeyboardFocus()
             assertEquals((request - 1).toInt(), actions.size)
             val destination =
                 if (request == 1L) {
@@ -358,7 +353,7 @@ class LibraryDestructivePresentationTest {
                 val move = compose.onNodeWithText(label(R.string.library_move_contents))
                 val cancel = compose.onNodeWithText(label(R.string.library_cancel))
                 move.performScrollTo().assertIsDisplayed()
-                cancel.assertIsFocused()
+                cancel.awaitKeyboardFocus()
                 val minPx = 48 * compose.activity.resources.displayMetrics.density
                 for ((name, node) in listOf("move" to move, "cancel" to cancel)) {
                     val bounds = node.fetchSemanticsNode().touchBoundsInRoot
@@ -431,7 +426,7 @@ class LibraryDestructivePresentationTest {
                 state = state.copy(folderDeletion = LibraryFolderDeletion(source, options, ++request))
                 if (phase == "move") click(text(R.string.library_move_contents_target, context))
                 if (phase == "delete") click(text(R.string.library_delete_contents_target, context))
-                compose.onNodeWithText(text(R.string.library_cancel)).assertIsFocused()
+                compose.onNodeWithText(text(R.string.library_cancel)).awaitKeyboardFocus()
                 if (systemDismiss) {
                     dismissDialogWithSystemBack()
                 } else {
@@ -441,7 +436,7 @@ class LibraryDestructivePresentationTest {
                 assertTrue(actions.all { it == LibraryAction.DismissFolderDeletion })
                 state = state.copy(folderDeletion = null)
                 compose.waitForIdle()
-                compose.onNodeWithText(text(R.string.library_back)).assertIsFocused()
+                compose.onNodeWithText(text(R.string.library_back)).awaitKeyboardFocus()
             }
         }
     }
@@ -473,17 +468,22 @@ class LibraryDestructivePresentationTest {
             performScrollTo()
         }
         performSemanticsAction(SemanticsActions.RequestFocus)
-        performKeyInput { pressKey(Key.Enter) }
+        awaitKeyboardFocus()
+        keyboard.sendKey(this, android.view.KeyEvent.KEYCODE_ENTER)
     }
+
+    private fun SemanticsNodeInteraction.awaitKeyboardFocus() = apply { keyboard.awaitFocus(this) }
 
     private fun dismissDialogWithSystemBack() {
         val cancel = compose.onNodeWithText(text(R.string.library_cancel))
-        cancel.assertIsDisplayed().assertIsFocused()
-        val view = (cancel.fetchSemanticsNode().root as ViewRootForTest).view
-        compose.waitUntil(timeoutMillis = 5_000) { compose.runOnIdle { view.hasWindowFocus() } }
-        androidx.test.espresso.Espresso
-            .pressBack()
-        compose.waitForIdle()
+        cancel.assertIsDisplayed().awaitKeyboardFocus()
+        keyboard.sendKey(cancel, android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) {
+            compose
+                .onAllNodes(hasText(text(R.string.library_cancel)) and hasClickAction())
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
     }
 
     private fun cancel() = compose.onNodeWithText(text(R.string.library_cancel)).enter()
