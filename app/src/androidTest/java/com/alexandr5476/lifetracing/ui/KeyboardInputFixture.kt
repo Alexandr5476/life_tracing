@@ -1,10 +1,22 @@
 package com.alexandr5476.lifetracing.ui
 
+import android.app.KeyguardManager
+import android.os.ParcelFileDescriptor
+import android.os.PowerManager
+import android.view.View
 import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.action.ViewActions.closeSoftKeyboard
+import androidx.test.espresso.action.ViewActions.pressKey
+import androidx.test.espresso.matcher.RootMatchers.withDecorView
+import androidx.test.espresso.matcher.ViewMatchers.isRoot
 import androidx.test.platform.app.InstrumentationRegistry
+import org.hamcrest.Matchers.sameInstance
 import org.junit.Assert.assertTrue
 import org.junit.rules.ExternalResource
 
@@ -13,9 +25,39 @@ class KeyboardInputFixture(
     private val compose: ComposeTestRule,
 ) : ExternalResource() {
     private var previousTouchMode: Boolean? = null
+    private val screenFlags = mutableMapOf<View, Boolean>()
+
+    override fun before() = wakeDisplay()
+
+    private fun wakeDisplay() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        if (!context.getSystemService(PowerManager::class.java).isInteractive) {
+            shell("input keyevent KEYCODE_WAKEUP")
+        }
+        if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
+            shell("wm dismiss-keyguard")
+        }
+    }
+
+    private fun shell(command: String) {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).use { it.readBytes() }
+    }
+
+    private fun attachedView(target: SemanticsNodeInteraction): View {
+        wakeDisplay()
+        val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
+        compose.runOnIdle {
+            val root = view.rootView
+            screenFlags.putIfAbsent(root, root.keepScreenOn)
+            root.keepScreenOn = true
+        }
+        return view
+    }
 
     fun enter(target: SemanticsNodeInteraction = compose.onRoot()) {
-        val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
+        val view = attachedView(target)
         compose.runOnIdle {
             if (previousTouchMode == null) previousTouchMode = view.isInTouchMode
             assertTrue("The attached Compose view must accept keyboard focus", view.requestFocusFromTouch())
@@ -23,8 +65,46 @@ class KeyboardInputFixture(
         compose.waitUntil(timeoutMillis = 5_000) { compose.runOnIdle { !view.isInTouchMode } }
     }
 
+    /** Observes native root admission without assigning focus to a semantic control. */
+    fun awaitWindowFocus(target: SemanticsNodeInteraction) {
+        val view = attachedView(target)
+        onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).check { root, failure ->
+            failure?.let { throw it }
+            assertTrue("The intended native root must own window focus", root?.hasWindowFocus() == true)
+        }
+    }
+
+    /** Waits for the production focus effect, never requests the expected control's focus. */
+    fun awaitFocus(target: SemanticsNodeInteraction) {
+        awaitWindowFocus(target)
+        compose.waitUntil(timeoutMillis = 5_000) {
+            val semantics = target.fetchSemanticsNode().config
+            semantics.contains(SemanticsProperties.Focused) && semantics[SemanticsProperties.Focused]
+        }
+        target.assertIsFocused()
+    }
+
+    /** Hides the IME in this control's window, including when a dialog owns native focus. */
+    fun closeKeyboard(target: SemanticsNodeInteraction) {
+        val view = attachedView(target)
+        onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(closeSoftKeyboard())
+    }
+
+    /** Routes a native key through the target's attached window, rather than global input focus. */
+    fun sendKey(
+        target: SemanticsNodeInteraction,
+        keyCode: Int,
+    ) {
+        val view = attachedView(target)
+        onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(pressKey(keyCode))
+    }
+
     @Suppress("DEPRECATION") // Restore the platform mode even if the Activity rule has already closed.
     override fun after() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            screenFlags.forEach { (view, previous) -> view.keepScreenOn = previous }
+            screenFlags.clear()
+        }
         previousTouchMode?.let { InstrumentationRegistry.getInstrumentation().setInTouchMode(it) }
         previousTouchMode = null
     }

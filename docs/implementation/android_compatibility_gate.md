@@ -1,5 +1,101 @@
 # Android compatibility release gate
 
+## Activity Template authoring accessibility (Slice S4)
+
+Adds fifteen Activity editor presentation identities and four isolated production-route
+physical-reopen identities. The mandatory inventory is now **510 app, 627 data and
+2 independent startup cases per API**, with zero prior removals. See
+[S4 Activity editor evidence](activity_template_editor_accessibility.md) for typed
+Field/option actions, native focus/keyboard/scaling, Save/Conflict admission,
+physical-reopen canonical/provenance assertions and exact local check results.
+The repository writers, schema and historical snapshot rules are unchanged. The
+confirmed S4 no-op rule now compares Field/option identity and persisted positions
+independently of incidental materialization order; real changes retain the existing
+revision policy.
+Controller owns all unfiltered API 26/31/33/35/36 managed-device gates, independent
+startup and exact-head GitHub verification. AndroidTest compilation and automated
+semantics are not device execution or manual TalkBack/Switch Access certification.
+
+The 2026-10-24 CI repair retains every original identity and adds one sleeping-display
+keyboard-fixture regression. It addresses Library dialog-window admission, asynchronous
+focus recovery and keyboard-fixture display prerequisites. See the S4 record's
+cross-API CI repair section for the supplied failures, diagnosis limits and local
+verification. Full device execution remains Controller-owned.
+
+S4 Controller attempt 1 stopped after 148 app cases with six failures and a device
+SurfaceFlinger crash. The two authorized six-case repair probes progressed from
+four to five passing cases and exposed an unchanged configuration after archived
+Field/option materialization incrementing revision 2 to 3. The explicit human
+decision resolved this stop boundary; the shared comparison is corrected and the
+original assertion remains. See the S4 record's API 35 repair and no-op decision
+sections for regression and verification results. Inventory stays 509/627/2;
+full unfiltered compatibility and independent GitHub verification remain required.
+
+S4 Controller attempt 2 passed all 15 Library route cases, all 6 editor persistence
+cases and all 627 mandatory data cases, including physical reopen and the restored
+no-op assertion. It stopped after 393 app cases with nine failures and a native
+input dispatch timeout. The authorized nine-case repair probes progressed from
+five to eight to **nine passing cases**. The final REAL probe passed all nine with
+zero failures, errors or skips after scoped editor Tab/Shift+Tab navigation and
+fixture synchronization/target-bound corrections. App JVM tests (421), ktlint,
+Detekt and AndroidTest APK assembly also passed. See the S4 record for exact
+commands, original identities and artifacts. Inventory remains **509/627/2**;
+this focused PASS does not replace the complete Controller-owned gates.
+
+S4 Controller attempt 3 stopped after 261 app cases with nine failures and a
+SurfaceFlinger abort at its 4,096-layer limit; all 627 mandatory data cases passed.
+The fresh nine-case baseline reproduced Library focus restoration after Cancel.
+After fixtures began awaiting exact native-root and semantic-focus completion,
+the repaired REAL probe passed **all nine**, with zero failures/errors/skips
+(150.2 seconds). All focus, typed-action, stale-callback and no-write assertions
+remain. App ktlint, Detekt and AndroidTest APK assembly passed; this repair changes
+only test synchronization. See the S4 record for exact artifacts and platform-crash
+evidence. Inventory is unchanged. Full-suite native stability and all complete
+Controller-owned gates remain required.
+
+## Template archive and Folder deletion accessibility (Slice S3)
+
+Adds nine lifecycle presentation identities and four isolated production-route
+physical-reopen identities. The mandatory inventory now requires **490 app,
+627 data and 2 independent startup cases per API**; all earlier identities remain.
+See [S3 lifecycle evidence](library_destructive_accessibility.md) for exact tests,
+dialog/focus admission, canonical archive/subtree/rejection assertions and local
+verification. Existing large-subtree safe-bind, hidden occupancy and rollback
+repository regressions remain mandatory. Controller owns all unfiltered API
+26/31/33/35/36 gates, independent startup and exact-head GitHub evidence. Compilation
+and automated semantics assertions do not certify manual TalkBack/Switch Access.
+
+Controller API 35 attempt 2 completed all 490 app cases with six failures; all
+eleven Library production-route cases, including the four S3 physical-reopen
+journeys, passed. The authorized repair probe subsequently passed all six failing
+identities after dialog-owner, native-window synchronization, locale and scaled
+target-layout corrections. See the S3 record for all four probes and their exact
+artifacts. The full repaired-tree five-API matrix and independent exact-head gates
+remain Controller-owned requirements; the mandatory inventory is unchanged.
+
+## Non-destructive Library organization accessibility (Slice S2)
+
+Adds nine organization presentation identities and three isolated production-route
+physical-reopen identities. The mandatory inventory now contains **477 app,
+627 data and 2 independent startup cases per API**, with zero prior removals.
+See [S2 organization evidence](library_organization_accessibility.md) for exact
+test names, local checks, typed mutation admission, focus and canonical reopen
+assertions. All unfiltered API 26/31/33/35/36 gates, independent production startup
+and exact-head GitHub evidence remain Controller-owned requirements. Source/APK
+compilation and automated semantics assertions do not certify manual TalkBack or
+Switch Access operation.
+
+## Library discovery accessibility (Slice S1)
+
+Adds eight Library presentation identities and four isolated production-route
+identities. The pinned inventory now requires **465 app, 627 data and 2 independent
+startup cases per API**. Every previous identity remains mandatory. See
+[library_accessibility.md](library_accessibility.md) for target boundaries, duplicate
+typed identities, keyboard recovery, localization/scaling, exact testcase names and
+local verification. Controller owns fail-first/corrected device evidence and the
+unfiltered API 26/31/33/35/36 gates plus exact-head GitHub CI. AndroidTest compilation
+and automated semantics are not manual TalkBack/Switch Access certification.
+
 Delivery-plan item 7 and the S5 Parent contract define this gate. Product v0.16, domain v0.10, database v0.6 and the implementation clarifications remain authoritative. These checks preserve schema v10, durable identities, runtime semantics and existing permission UX.
 
 S3 expanded Sequence accessibility evidence is described in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).

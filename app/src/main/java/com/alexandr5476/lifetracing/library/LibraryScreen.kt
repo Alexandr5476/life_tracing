@@ -8,29 +8,41 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
@@ -42,6 +54,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -56,6 +69,8 @@ fun LibraryRoute(
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
     onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
+    isRouteVisible: Boolean = true,
+    currentRouteVisible: () -> Boolean = { isRouteVisible },
 ) {
     val state by controller.state.collectAsState()
     LibraryScreen(
@@ -67,6 +82,9 @@ fun LibraryRoute(
         onOpenActivity = onOpenActivity,
         onOpenSequence = onOpenSequence,
         onQuickStart = onQuickStart,
+        isRouteVisible = isRouteVisible,
+        currentState = { controller.state.value },
+        currentRouteVisible = currentRouteVisible,
     )
 }
 
@@ -79,13 +97,75 @@ internal fun LibraryScreen(
     onOpenActivity: (ActivityTemplateId) -> Unit = {},
     onOpenSequence: (SequenceTemplateId) -> Unit = {},
     onQuickStart: (LibraryTemplateId) -> Unit = {},
+    isRouteVisible: Boolean = true,
+    currentState: (() -> LibraryPresentationState)? = null,
+    currentRouteVisible: (() -> Boolean)? = null,
     onRouteBack: () -> Unit,
 ) {
+    val focus = rememberLibraryFocusRecovery(isRouteVisible)
+    val feedback = rememberLibraryRetryFeedback(state)
+    val latestState = rememberUpdatedState(state)
+    val latestVisible = rememberUpdatedState(isRouteVisible)
+    val path = (state.browse as? LibraryLoad.Content)?.value?.path.orEmpty()
+    val location = (listOf(stringResource(R.string.library_root)) + path.map(Folder::name)).joinToString(" / ")
+    val scope =
+        LibraryOrganizationScope(
+            state,
+            currentState ?: { latestState.value },
+            currentRouteVisible ?: { latestVisible.value },
+            location,
+        )
+    val dispatch: (LibraryAction) -> Unit = {
+        if (it == LibraryAction.Retry) feedback.request(state)
+        onAction(it)
+    }
+    LifeTracingAccessibleTargets {
+        CompositionLocalProvider(
+            LocalLibraryFocus provides focus,
+            LocalLibraryVisible provides isRouteVisible,
+            LocalLibraryOrganization provides scope,
+        ) {
+            LibraryContent(
+                state,
+                dispatch,
+                onCreateActivity,
+                onCreateSequence,
+                onOpenActivity,
+                onOpenSequence,
+                onQuickStart,
+                feedback.succeeded,
+                onRouteBack,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryContent(
+    state: LibraryPresentationState,
+    onAction: (LibraryAction) -> Unit,
+    onCreateActivity: () -> Unit,
+    onCreateSequence: () -> Unit,
+    onOpenActivity: (ActivityTemplateId) -> Unit,
+    onOpenSequence: (SequenceTemplateId) -> Unit,
+    onQuickStart: (LibraryTemplateId) -> Unit,
+    retrySucceeded: Boolean,
+    onRouteBack: () -> Unit,
+) {
+    val focus = LocalLibraryFocus.current
+    val mutationSucceeded = rememberLibraryMutationFeedback(state)
+    val lifecycleOutcome = libraryLifecycleOutcome(state)
+    val searchDescription =
+        stringResource(
+            if (state.query.isBlank()) R.string.library_search_inactive else R.string.library_search_active,
+        )
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             modifier =
                 Modifier
                     .fillMaxSize()
+                    .then(focus.root)
+                    .semantics { isTraversalGroup = true }
                     .verticalScroll(rememberScrollState())
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
@@ -94,19 +174,19 @@ internal fun LibraryScreen(
                 if (state.folderId == null) onRouteBack() else onAction(LibraryAction.Back)
             })
             if (state.folderId == null) {
-                LifeTracingPrimaryButton(onClick = onCreateActivity, modifier = Modifier.fillMaxWidth()) {
+                LifeTracingPrimaryButton(onClick = onCreateActivity, modifier = libraryFocusTarget().fillMaxWidth()) {
                     Text(stringResource(R.string.library_new_activity))
                 }
-                LifeTracingPrimaryButton(onClick = onCreateSequence, modifier = Modifier.fillMaxWidth()) {
+                LifeTracingPrimaryButton(onClick = onCreateSequence, modifier = libraryFocusTarget().fillMaxWidth()) {
                     Text(stringResource(R.string.library_new_sequence))
                 }
             }
             val browse = (state.browse as? LibraryLoad.Content)?.value
-            if (browse != null) Breadcrumb(browse.path)
+            Breadcrumb(browse?.path, state.folderId != null)
             LifeTracingOutlinedTextField(
                 value = state.query,
                 onValueChange = { onAction(LibraryAction.Search(it)) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = libraryFocusTarget().fillMaxWidth().semantics { stateDescription = searchDescription },
                 label = { Text(stringResource(R.string.library_search_hint)) },
             )
             FilterRow(state.filter) { onAction(LibraryAction.SetFilter(it)) }
@@ -132,30 +212,83 @@ internal fun LibraryScreen(
                     onQuickStart,
                 )
             }
-            when (state.organization) {
-                LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_organization_loading)) }
-                is LibraryLoad.Failure -> FailureCard(R.string.library_organization_failure, onAction)
-                is LibraryLoad.Content -> Unit
+            OrganizationReadStatus(state.organization, onAction)
+            if (retrySucceeded) {
+                val visible = LocalLibraryVisible.current
+                Text(
+                    stringResource(R.string.library_retry_success),
+                    modifier = Modifier.semantics { if (visible) liveRegion = LiveRegionMode.Polite },
+                )
+            }
+            val visible = LocalLibraryVisible.current
+            if (state.isMutating || mutationSucceeded) {
+                Text(
+                    lifecycleOutcome?.takeIf { !state.isMutating } ?: stringResource(
+                        if (state.isMutating) {
+                            R.string.library_organization_busy
+                        } else {
+                            R.string.library_organization_updated
+                        },
+                    ),
+                    modifier = Modifier.semantics { if (visible) liveRegion = LiveRegionMode.Polite },
+                )
             }
             state.mutationFailure?.let { FailureCard(R.string.library_mutation_failure, onAction) }
         }
-        state.folderDeletion?.let { FolderDeletionDialog(it, state.isMutating, onAction) }
+        FolderDeletionHost(state.folderDeletion, onAction)
     }
 }
 
 @Composable
+private fun OrganizationReadStatus(
+    load: LibraryLoad<LibraryOrganization>,
+    onAction: (LibraryAction) -> Unit,
+) {
+    when (load) {
+        LibraryLoad.Loading -> LibraryCard { Text(stringResource(R.string.library_organization_loading)) }
+        is LibraryLoad.Failure -> FailureCard(R.string.library_organization_failure, onAction)
+        is LibraryLoad.Content ->
+            Text(
+                stringResource(R.string.library_organization_ready),
+                style = MaterialTheme.typography.bodySmall,
+            )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun LibraryHeader(onBack: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(stringResource(R.string.library_title), style = MaterialTheme.typography.headlineSmall)
-        TextButton(onClick = onBack) { Text(stringResource(R.string.library_back)) }
+    FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            stringResource(R.string.library_title),
+            modifier = Modifier.semantics { heading() },
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        TextButton(
+            onClick = onBack,
+            modifier = libraryFocusTarget().focusRequester(LocalLibraryFocus.current.landing),
+        ) {
+            Text(stringResource(R.string.library_back))
+        }
     }
 }
 
 @Composable
-private fun Breadcrumb(path: List<Folder>) {
+private fun Breadcrumb(
+    path: List<Folder>?,
+    nested: Boolean,
+) {
     val root = stringResource(R.string.library_root)
+    val location =
+        if (path == null && nested) {
+            stringResource(R.string.library_nested_location)
+        } else {
+            (listOf(root) + path.orEmpty().map(Folder::name)).joinToString(" / ")
+        }
+    val description = stringResource(R.string.library_location, location)
     Text(
-        text = (listOf(root) + path.map(Folder::name)).joinToString(" / "),
+        text = location,
+        modifier = Modifier.semantics { contentDescription = description },
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         style = MaterialTheme.typography.labelLarge,
     )
@@ -182,6 +315,7 @@ private fun FilterRow(
                 )
             LifeTracingChoiceButton(
                 selected = filter == selected,
+                modifier = libraryFocusTarget().semantics { this.selected = filter == selected },
                 onClick = { onSelect(filter) },
             ) { Text(label) }
         }
@@ -275,8 +409,17 @@ private fun FailureCard(
     message: Int,
     onAction: (LibraryAction) -> Unit,
 ) = LibraryCard(container = MaterialTheme.colorScheme.errorContainer) {
-    Text(stringResource(message), color = MaterialTheme.colorScheme.onErrorContainer)
-    LifeTracingPrimaryButton(onClick = { onAction(LibraryAction.Retry) }) {
+    val visible = LocalLibraryVisible.current
+    Text(
+        stringResource(message),
+        color = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.semantics { if (visible) liveRegion = LiveRegionMode.Polite },
+    )
+    val retryLabel = stringResource(R.string.library_retry_for, stringResource(message))
+    LifeTracingPrimaryButton(
+        onClick = { onAction(LibraryAction.Retry) },
+        modifier = libraryFocusTarget().semantics { contentDescription = retryLabel },
+    ) {
         Text(stringResource(R.string.library_retry))
     }
 }
@@ -299,10 +442,11 @@ private fun FolderSection(
             label = R.string.library_create_folder,
             confirm = R.string.library_create,
             isMutating = isMutating,
+            context = stringResource(R.string.library_create_folder_here, LocalLibraryOrganization.current.location),
         ) { onAction(LibraryAction.CreateFolder(it)) }
     }
-    folders.forEach { folder ->
-        FolderRow(folder, organization, isMutating, onAction)
+    folders.forEachIndexed { index, folder ->
+        key(folder.id) { FolderRow(folder, index + 1, organization, isMutating, onAction) }
     }
 }
 
@@ -318,8 +462,20 @@ private fun TrackableSection(
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     SectionTitle(title)
-    items.forEach {
-        TrackableRow(it, organization, isMutating, onAction, onOpenActivity, onOpenSequence, onQuickStart)
+    items.forEachIndexed { index, item ->
+        key(item.id) {
+            TrackableRow(
+                item,
+                title,
+                index + 1,
+                organization,
+                isMutating,
+                onAction,
+                onOpenActivity,
+                onOpenSequence,
+                onQuickStart,
+            )
+        }
     }
 }
 
@@ -336,50 +492,70 @@ private fun PinnedSection(
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) = LibraryCard {
     var showOrdering by remember { mutableStateOf(false) }
+    val handle = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrdering) R.string.library_expanded else R.string.library_collapsed)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
         SectionTitle(R.string.library_pinned)
-        TextButton(onClick = { showOrdering = !showOrdering }) {
-            Text(stringResource(R.string.library_reorder_pinned))
-        }
+        TextButton(
+            onClick = {
+                showOrdering = !showOrdering
+                if (!showOrdering) recovery.restoreTarget = handle
+            },
+            modifier =
+                libraryFocusTarget().focusRequester(handle.requester).semantics {
+                    stateDescription = expanded
+                    selected = showOrdering
+                },
+        ) { Text(stringResource(R.string.library_reorder_pinned)) }
     }
-    allPinned.filtered(filter).forEach { item ->
-        TrackableRow(item, organization, isMutating, onAction, onOpenActivity, onOpenSequence, onQuickStart)
+    allPinned.filtered(filter).forEachIndexed { index, item ->
+        key(item.id) {
+            TrackableRow(
+                item,
+                R.string.library_pinned,
+                index + 1,
+                organization,
+                isMutating,
+                onAction,
+                onOpenActivity,
+                onOpenSequence,
+                onQuickStart,
+            )
+        }
     }
     if (showOrdering) {
         allPinned.forEachIndexed { index, item ->
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                ) {
-                    if (index > 0) {
-                        TextButton(
-                            enabled = !isMutating,
-                            onClick = {
-                                onAction(
-                                    LibraryAction.ReorderPinned(
-                                        allPinned.move(index, index - 1).map(LibraryTrackable::id),
-                                    ),
-                                )
-                            },
-                        ) { Text(stringResource(R.string.library_move_up)) }
-                    }
-                    if (index < allPinned.lastIndex) {
-                        TextButton(
-                            enabled = !isMutating,
-                            onClick = {
-                                onAction(
-                                    LibraryAction.ReorderPinned(
-                                        allPinned.move(index, index + 1).map(LibraryTrackable::id),
-                                    ),
-                                )
-                            },
-                        ) { Text(stringResource(R.string.library_move_down)) }
+            key(item.id) {
+                val context = libraryTemplateContext(item, R.string.library_pinned, index + 1)
+                Column(Modifier.fillMaxWidth()) {
+                    Text(context)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+                    ) {
+                        OrganizationButton(
+                            stringResource(R.string.library_move_up),
+                            stringResource(R.string.library_pinned_move_up, context),
+                            !isMutating && index > 0,
+                        ) {
+                            onAction(
+                                LibraryAction.ReorderPinned(allPinned.move(index, index - 1).map(LibraryTrackable::id)),
+                            )
+                        }
+                        OrganizationButton(
+                            stringResource(R.string.library_move_down),
+                            stringResource(R.string.library_pinned_move_down, context),
+                            !isMutating && index < allPinned.lastIndex,
+                        ) {
+                            onAction(
+                                LibraryAction.ReorderPinned(allPinned.move(index, index + 1).map(LibraryTrackable::id)),
+                            )
+                        }
                     }
                 }
             }
@@ -388,9 +564,11 @@ private fun PinnedSection(
 }
 
 @Composable
-@Suppress("LongMethod") // Row actions remain adjacent so their independent hit targets stay visible.
+@OptIn(ExperimentalLayoutApi::class)
 private fun TrackableRow(
     item: LibraryTrackable,
+    section: Int,
+    position: Int,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
@@ -398,64 +576,82 @@ private fun TrackableRow(
     onOpenSequence: (SequenceTemplateId) -> Unit,
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
-    val activityId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Activity
-    val sequenceId = item.id as? com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence
     val shape = MaterialTheme.shapes.medium
+    val kind =
+        stringResource(
+            if (item.kind == LibraryTrackableKind.ACTIVITY) {
+                R.string.library_activity
+            } else {
+                R.string.library_sequence
+            },
+        )
+    // Section/position disambiguate discovery labels only; callbacks capture the typed ID.
+    val context = stringResource(R.string.library_template_context, kind, item.name, stringResource(section), position)
+    val openLabel = stringResource(R.string.library_open_template, context)
+    val openDescription =
+        item.shortComment?.let {
+            stringResource(R.string.library_template_details, openLabel, it)
+        } ?: openLabel
+    val quickLabel = stringResource(R.string.library_quick_start_template, context)
+    val organizeLabel = stringResource(R.string.library_organize_template, context)
     var showOrganization by remember(item.id) { mutableStateOf(false) }
+    val organizationFocus = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrganization) R.string.library_expanded else R.string.library_collapsed)
     Card(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .then(
-                    if (activityId != null) {
-                        Modifier.clip(shape).clickable { onOpenActivity(activityId.id) }
-                    } else if (sequenceId != null) {
-                        Modifier.clip(shape).clickable { onOpenSequence(sequenceId.id) }
-                    } else {
-                        Modifier
-                    },
-                ),
+        modifier = Modifier.fillMaxWidth().semantics { isTraversalGroup = true },
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = shape,
     ) {
         Column(
-            modifier = Modifier.padding(MaterialTheme.spacing.medium),
+            modifier =
+                libraryFocusTarget()
+                    .fillMaxWidth()
+                    .heightIn(min = LocalMinimumInteractiveComponentSize.current)
+                    .clip(shape)
+                    .clickable(role = Role.Button, onClickLabel = openLabel) {
+                        when (val id = item.id) {
+                            is LibraryTemplateId.Activity -> onOpenActivity(id.id)
+                            is LibraryTemplateId.Sequence -> onOpenSequence(id.id)
+                        }
+                    }.semantics { contentDescription = openDescription }
+                    .padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.xSmall),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+            Text(item.name, style = MaterialTheme.typography.titleSmall)
+            Text(kind, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelLarge)
+            item.shortComment?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = MaterialTheme.spacing.medium),
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+        ) {
+            LifeTracingPrimaryButton(
+                onClick = { onQuickStart(item.id) },
+                modifier = libraryFocusTarget().semantics { contentDescription = quickLabel },
             ) {
-                Text(
-                    item.name,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                LifeTracingPrimaryButton(onClick = { onQuickStart(item.id) }) {
-                    Text(stringResource(R.string.library_quick_start))
-                }
+                Text(stringResource(R.string.library_quick_start))
             }
-            TextButton(onClick = { showOrganization = !showOrganization }) {
+            TextButton(
+                onClick = {
+                    showOrganization = !showOrganization
+                    if (!showOrganization) recovery.restoreTarget = organizationFocus
+                },
+                modifier =
+                    libraryFocusTarget().focusRequester(organizationFocus.requester).semantics {
+                        contentDescription = organizeLabel
+                        stateDescription = expanded
+                    },
+            ) {
                 Text(stringResource(R.string.library_organize))
             }
-            Text(
-                stringResource(
-                    if (item.kind == LibraryTrackableKind.ACTIVITY) {
-                        R.string.library_activity
-                    } else {
-                        R.string.library_sequence
-                    },
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelLarge,
-            )
-            item.shortComment?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            if (showOrganization) {
-                OrganizationActions(item, organization, isMutating, onAction)
+        }
+        if (showOrganization) {
+            Column(modifier = Modifier.padding(MaterialTheme.spacing.medium)) {
+                OrganizationActions(item, context, organization, isMutating, onAction)
             }
         }
     }
@@ -465,6 +661,7 @@ private fun TrackableRow(
 @OptIn(ExperimentalLayoutApi::class)
 private fun OrganizationActions(
     item: LibraryTrackable,
+    context: String,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
@@ -474,98 +671,110 @@ private fun OrganizationActions(
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
-        TextButton(
-            enabled = !isMutating,
-            onClick = { onAction(LibraryAction.SetPinned(item.id, item.pinnedRank == null)) },
-        ) { Text(stringResource(if (item.pinnedRank == null) R.string.library_pin else R.string.library_unpin)) }
-        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveTemplate(item.id, null)) }) {
-            Text(stringResource(R.string.library_move_to_root))
+        val pinned = item.pinnedRank != null
+        OrganizationButton(
+            stringResource(if (pinned) R.string.library_unpin else R.string.library_pin),
+            stringResource(if (pinned) R.string.library_unpin_target else R.string.library_pin_target, context),
+            !isMutating,
+            selected = pinned,
+        ) { onAction(LibraryAction.SetPinned(item.id, !pinned)) }
+        OrganizationButton(
+            stringResource(R.string.library_move_to_root),
+            stringResource(R.string.library_move_target_root, context),
+            !isMutating,
+        ) {
+            onAction(LibraryAction.MoveTemplate(item.id, null))
         }
     }
-    catalog.folders.filter { it.id != item.folderId }.forEach { folder ->
-        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveTemplate(item.id, folder.id)) }) {
-            Text(stringResource(R.string.library_move_to_folder, folder.name))
+    catalog.folders.forEachIndexed { index, folder ->
+        key(folder.id) {
+            if (folder.id != item.folderId) {
+                OrganizationButton(
+                    stringResource(R.string.library_move_to_folder, folder.name),
+                    stringResource(
+                        R.string.library_move_target_folder,
+                        context,
+                        libraryFolderContext(folder, index + 1),
+                    ),
+                    !isMutating,
+                ) { onAction(LibraryAction.MoveTemplate(item.id, folder.id)) }
+            }
         }
     }
     FolderNameAction(
-        label = R.string.library_create_tag,
-        confirm = R.string.library_create,
+        R.string.library_create_tag,
+        R.string.library_create,
         isMutating = isMutating,
-    ) { onAction(LibraryAction.CreateAndAssignTag(item.id, it)) }
-    catalog.tags.forEach { tag ->
-        val assigned = tag.id in item.tagIds
-        TextButton(
-            enabled = !isMutating,
-            onClick = {
+        context = stringResource(R.string.library_create_tag_target, context),
+    ) {
+        onAction(LibraryAction.CreateAndAssignTag(item.id, it))
+    }
+    catalog.tags.forEachIndexed { index, tag ->
+        key(tag.id) {
+            val assigned = tag.id in item.tagIds
+            val tagContext = stringResource(R.string.library_tag_context, tag.name, index + 1)
+            OrganizationButton(
+                stringResource(if (assigned) R.string.library_remove_tag else R.string.library_add_tag, tag.name),
+                stringResource(
+                    if (assigned) R.string.library_unassign_target_tag else R.string.library_assign_target_tag,
+                    context,
+                    tagContext,
+                ),
+                !isMutating,
+                selected = assigned,
+            ) {
                 onAction(
                     if (assigned) {
-                        LibraryAction.UnassignTag(item.id, tag.id)
+                        LibraryAction.UnassignTag(
+                            item.id,
+                            tag.id,
+                        )
                     } else {
                         LibraryAction.AssignTag(item.id, tag.id)
                     },
                 )
-            },
-        ) {
-            Text(stringResource(if (assigned) R.string.library_remove_tag else R.string.library_add_tag, tag.name))
+            }
         }
     }
-    TemplateArchiveAction(item, isMutating, onAction)
-}
-
-@Composable
-private fun TemplateArchiveAction(
-    item: LibraryTrackable,
-    isMutating: Boolean,
-    onAction: (LibraryAction) -> Unit,
-) {
-    var open by remember(item.id) { mutableStateOf(false) }
-    if (open) {
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(stringResource(R.string.library_archive_template_title)) },
-            text = { Text(stringResource(R.string.library_archive_template_message, item.name)) },
-            confirmButton = {
-                TextButton(
-                    enabled = !isMutating,
-                    onClick = {
-                        onAction(LibraryAction.ArchiveTemplate(item.id))
-                        open = false
-                    },
-                ) {
-                    Text(
-                        stringResource(R.string.library_archive),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { open = false }) { Text(stringResource(R.string.library_cancel)) }
-            },
-        )
-    }
-    TextButton(enabled = !isMutating, onClick = { open = true }) {
-        Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error)
-    }
+    TemplateArchiveAction(item, context, isMutating, onAction)
 }
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun FolderRow(
     folder: Folder,
+    position: Int,
     organization: LibraryLoad<LibraryOrganization>,
     isMutating: Boolean,
     onAction: (LibraryAction) -> Unit,
 ) {
     var showOrganization by remember(folder.id) { mutableStateOf(false) }
+    val context = libraryFolderContext(folder, position)
+    val openLabel = stringResource(R.string.library_open_folder, folder.name, position)
+    val organizeLabel = stringResource(R.string.library_organize_folder, folder.name, position)
+    val handle = rememberLibraryFocusHandle(true)
+    val recovery = LocalLibraryFocus.current
+    val expanded = stringResource(if (showOrganization) R.string.library_expanded else R.string.library_collapsed)
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
-        TextButton(onClick = { onAction(LibraryAction.OpenFolder(folder.id)) }) { Text(folder.name) }
-        TextButton(onClick = { showOrganization = !showOrganization }) {
-            Text(stringResource(R.string.library_organize))
-        }
+        TextButton(
+            onClick = { onAction(LibraryAction.OpenFolder(folder.id)) },
+            modifier = libraryFocusTarget().semantics { contentDescription = openLabel },
+        ) { Text(folder.name) }
+        TextButton(
+            onClick = {
+                showOrganization = !showOrganization
+                if (!showOrganization) recovery.restoreTarget = handle
+            },
+            modifier =
+                libraryFocusTarget().focusRequester(handle.requester).semantics {
+                    contentDescription = organizeLabel
+                    stateDescription = expanded
+                },
+        ) { Text(stringResource(R.string.library_organize)) }
     }
     if (!showOrganization) return
     val folders = (organization as? LibraryLoad.Content)?.value?.folders ?: return
@@ -575,221 +784,49 @@ private fun FolderRow(
             folders.associate { it.id to it.parentFolderId },
         )
     FolderNameAction(
-        label = R.string.library_rename_folder,
-        confirm = R.string.library_rename,
+        R.string.library_rename_folder,
+        R.string.library_rename,
         initialValue = folder.name,
         isMutating = isMutating,
-    ) { onAction(LibraryAction.RenameFolder(folder.id, it)) }
-    TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.MoveFolder(folder.id, null)) }) {
-        Text(stringResource(R.string.library_move_to_root))
-    }
-    folders
-        .filterNot { it.id in forbidden }
-        .forEach { destination ->
-            TextButton(
-                enabled = !isMutating,
-                onClick = { onAction(LibraryAction.MoveFolder(folder.id, destination.id)) },
-            ) {
-                Text(stringResource(R.string.library_move_to_folder, destination.name))
-            }
-        }
-    TextButton(
-        enabled = !isMutating,
-        onClick = { onAction(LibraryAction.RequestFolderDeletion(folder)) },
+        context = stringResource(R.string.library_rename_folder_target, context),
     ) {
-        Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error)
+        onAction(LibraryAction.RenameFolder(folder.id, it))
     }
-}
-
-private enum class FolderDeleteStage { DISPOSITION, MOVE_CONTENTS, DELETE_CONTENTS }
-
-@Composable
-private fun FolderDeletionDialog(
-    deletion: LibraryFolderDeletion,
-    isMutating: Boolean,
-    onAction: (LibraryAction) -> Unit,
-) {
-    val options = deletion.options
-    var stage by remember(deletion.folder.id, options) { mutableStateOf(FolderDeleteStage.DISPOSITION) }
-    val dismiss = { onAction(LibraryAction.DismissFolderDeletion) }
-    when (options) {
-        LibraryLoad.Loading ->
-            AlertDialog(
-                onDismissRequest = dismiss,
-                title = { Text(stringResource(R.string.library_delete_folder_title)) },
-                text = { Text(stringResource(R.string.library_delete_folder_inspecting)) },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = dismiss) { Text(stringResource(R.string.library_cancel)) }
-                },
-            )
-        is LibraryLoad.Failure ->
-            AlertDialog(
-                onDismissRequest = dismiss,
-                title = { Text(stringResource(R.string.library_delete_folder_title)) },
-                text = { Text(stringResource(R.string.library_delete_folder_inspection_failure)) },
-                confirmButton = {
-                    TextButton(onClick = { onAction(LibraryAction.RequestFolderDeletion(deletion.folder)) }) {
-                        Text(stringResource(R.string.library_retry))
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = dismiss) { Text(stringResource(R.string.library_cancel)) }
-                },
-            )
-        is LibraryLoad.Content ->
-            if (options.value.isEmpty) {
-                EmptyFolderDeletionDialog(deletion.folder, isMutating, dismiss, onAction)
-            } else {
-                NonEmptyFolderDeletionDialog(deletion.folder, options.value, stage, { stage = it }, dismiss, onAction)
+    OrganizationButton(
+        stringResource(R.string.library_move_to_root),
+        stringResource(R.string.library_move_target_root, context),
+        !isMutating,
+    ) {
+        onAction(LibraryAction.MoveFolder(folder.id, null))
+    }
+    folders.forEachIndexed { index, destination ->
+        key(destination.id) {
+            if (destination.id !in forbidden) {
+                OrganizationButton(
+                    stringResource(R.string.library_move_to_folder, destination.name),
+                    stringResource(
+                        R.string.library_move_target_folder,
+                        context,
+                        libraryFolderContext(
+                            destination,
+                            index + 1,
+                        ),
+                    ),
+                    !isMutating,
+                ) { onAction(LibraryAction.MoveFolder(folder.id, destination.id)) }
             }
-    }
-}
-
-@Composable
-private fun EmptyFolderDeletionDialog(
-    folder: Folder,
-    isMutating: Boolean,
-    onDismiss: () -> Unit,
-    onAction: (LibraryAction) -> Unit,
-) = AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(stringResource(R.string.library_delete_folder_title)) },
-    text = { Text(stringResource(R.string.library_delete_empty_folder_message, folder.name)) },
-    confirmButton = {
-        TextButton(enabled = !isMutating, onClick = { onAction(LibraryAction.DeleteEmptyFolder(folder.id)) }) {
-            Text(stringResource(R.string.library_delete_folder), color = MaterialTheme.colorScheme.error)
         }
-    },
-    dismissButton = {
-        TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
-    },
-)
-
-@Composable
-@OptIn(ExperimentalLayoutApi::class)
-@Suppress("LongMethod") // The three explicit destructive dialog stages remain adjacent and visible.
-private fun NonEmptyFolderDeletionDialog(
-    folder: Folder,
-    options: LibraryFolderDeletionOptions,
-    stage: FolderDeleteStage,
-    onStage: (FolderDeleteStage) -> Unit,
-    onDismiss: () -> Unit,
-    onAction: (LibraryAction) -> Unit,
-) {
-    when (stage) {
-        FolderDeleteStage.DISPOSITION ->
-            AlertDialog(
-                onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.library_delete_non_empty_folder_title)) },
-                text = { Text(stringResource(R.string.library_delete_non_empty_folder_message, folder.name)) },
-                confirmButton = {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                        TextButton(onClick = { onStage(FolderDeleteStage.MOVE_CONTENTS) }) {
-                            Text(stringResource(R.string.library_move_contents))
-                        }
-                        TextButton(onClick = { onStage(FolderDeleteStage.DELETE_CONTENTS) }) {
-                            Text(
-                                stringResource(R.string.library_delete_contents),
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
-                },
-            )
-        FolderDeleteStage.MOVE_CONTENTS ->
-            AlertDialog(
-                onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.library_move_contents_title)) },
-                text = {
-                    Column {
-                        Text(stringResource(R.string.library_move_contents_message))
-                        TextButton(
-                            onClick = {
-                                onAction(LibraryAction.DeleteFolderMovingContents(folder.id, null))
-                            },
-                        ) { Text(stringResource(R.string.library_root)) }
-                        options.destinations.forEach { destination ->
-                            TextButton(
-                                onClick = {
-                                    onAction(
-                                        LibraryAction.DeleteFolderMovingContents(folder.id, destination.id),
-                                    )
-                                },
-                            ) { Text(destination.name) }
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
-                },
-            )
-        FolderDeleteStage.DELETE_CONTENTS ->
-            AlertDialog(
-                onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.library_delete_contents_title)) },
-                text = { Text(stringResource(R.string.library_delete_contents_message, folder.name)) },
-                confirmButton = {
-                    TextButton(
-                        onClick = { onAction(LibraryAction.DeleteFolderAndArchiveContents(folder.id)) },
-                    ) {
-                        Text(
-                            stringResource(R.string.library_delete_contents),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.library_cancel)) }
-                },
-            )
     }
+    FolderDeleteAction(folder, context, isMutating, onAction)
 }
 
 @Composable
-private fun FolderNameAction(
-    label: Int,
-    confirm: Int,
-    initialValue: String = "",
-    isMutating: Boolean,
-    onConfirm: (String) -> Unit,
-) {
-    var open by remember(label, initialValue) { mutableStateOf(false) }
-    if (open) {
-        var value by remember { mutableStateOf(initialValue) }
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(stringResource(label)) },
-            text = {
-                LifeTracingOutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    label = { Text(stringResource(R.string.library_name)) },
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = value.isNotBlank() && !isMutating,
-                    onClick = {
-                        onConfirm(value.trim())
-                        open = false
-                    },
-                ) { Text(stringResource(confirm)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { open = false }) { Text(stringResource(R.string.library_cancel)) }
-            },
-        )
-    }
-    TextButton(enabled = !isMutating, onClick = { open = true }) { Text(stringResource(label)) }
-}
-
-@Composable
-private fun SectionTitle(id: Int) = Text(stringResource(id), style = MaterialTheme.typography.titleMedium)
+private fun SectionTitle(id: Int) =
+    Text(
+        stringResource(id),
+        modifier = Modifier.semantics { heading() },
+        style = MaterialTheme.typography.titleMedium,
+    )
 
 @Composable
 private fun LibraryCard(
