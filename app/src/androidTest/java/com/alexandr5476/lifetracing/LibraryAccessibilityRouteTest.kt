@@ -4,11 +4,10 @@ package com.alexandr5476.lifetracing
 
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -77,7 +76,7 @@ class LibraryAccessibilityRouteTest {
             for (id in ids) {
                 val row = f.templateAction(id, R.string.library_open_template)
                 row.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-                row.assertIsFocused()
+                row.awaitKeyboardFocus()
                 assertEquals(before, f.store.durableFacts())
                 row.performKeyInput { pressKey(Key.Enter) }
                 when (id) {
@@ -222,7 +221,7 @@ class LibraryAccessibilityRouteTest {
             val session = f.host().activityTemplateEditorRouteSessions.activeSession!!
             val editorName = compose.onNode(hasText(f.text(R.string.activity_editor_name)) and hasSetTextAction())
             editorName.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-            editorName.assertIsFocused()
+            editorName.awaitKeyboardFocus()
             f.store.library.archiveActivityTemplate(id.id, f.seedTime.plusSeconds(1))
             val afterArchive = f.store.durableFacts()
             compose.runOnIdle { f.host().libraryControllerOwner.refreshIfInitialized() }
@@ -234,7 +233,7 @@ class LibraryAccessibilityRouteTest {
                     true
             }
             assertSame(session, f.host().activityTemplateEditorRouteSessions.activeSession)
-            editorName.assertIsFocused()
+            editorName.awaitKeyboardFocus()
             assertEquals(afterArchive, f.store.durableFacts())
             f.systemBack()
             f.libraryLanding()
@@ -651,10 +650,11 @@ class LibraryAccessibilityRouteTest {
                     f.text(R.string.library_delete_contents_confirm, context),
                 )
             val beforeGeneration = f.library.state.value.mutationSuccessGeneration
-            confirmation.performSemanticsAction(SemanticsActions.RequestFocus).performKeyInput { pressKey(Key.Enter) }
+            confirmation.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+            keyboard.sendKey(confirmation, KeyEvent.KEYCODE_ENTER)
             f.await { f.library.state.value.mutationSuccessGeneration == beforeGeneration + 1 }
             f.awaitOrganization()
-            compose.onNodeWithText(f.text(R.string.library_back)).assertIsFocused()
+            compose.onNodeWithText(f.text(R.string.library_back)).awaitKeyboardFocus()
             f.reopenOrganization {
                 assertEquals(emptyList<FolderId>(), library.getFolders().map { it.id })
                 assertEquals(setOf(ids.first(), ids.last()), library.getArchived().map { it.id }.toSet())
@@ -1178,6 +1178,9 @@ class LibraryAccessibilityRouteTest {
             }
         }
 
+    private fun androidx.compose.ui.test.SemanticsNodeInteraction.awaitKeyboardFocus() =
+        apply { keyboard.awaitFocus(this) }
+
     private fun journey(body: (Fixture) -> Unit) =
         runBlocking {
             val app = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
@@ -1351,13 +1354,13 @@ class LibraryAccessibilityRouteTest {
                     library.state.value.organization is LibraryLoad.Content
             }
             compose.waitForIdle()
-            compose.onNodeWithText(text(R.string.library_back)).assertIsFocused()
+            compose.onNodeWithText(text(R.string.library_back)).awaitKeyboardFocus()
         }
 
         fun dailyLanding() {
             compose.waitForIdle()
             compose.onNodeWithText(text(R.string.daily_library)).assertIsDisplayed()
-            compose.onNodeWithContentDescription(text(R.string.daily_previous_day)).assertIsFocused()
+            compose.onNodeWithContentDescription(text(R.string.daily_previous_day)).awaitKeyboardFocus()
         }
 
         fun invoke(id: Int) {
@@ -1426,20 +1429,12 @@ class LibraryAccessibilityRouteTest {
 
         fun dismissDialogWithSystemBack(cancelDescription: String) {
             val cancel = compose.onNodeWithContentDescription(cancelDescription)
-            val view = (cancel.fetchSemanticsNode().root as ViewRootForTest).view
-            await { compose.runOnIdle { view.hasWindowFocus() } }
-            cancel.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
-            androidx.test.espresso.Espresso
-                .onView(
-                    androidx.test.espresso.matcher.ViewMatchers
-                        .isRoot(),
-                ).inRoot(
-                    androidx.test.espresso.matcher.RootMatchers
-                        .isDialog(),
-                ).perform(
-                    androidx.test.espresso.action.ViewActions
-                        .pressKey(KeyEvent.KEYCODE_BACK),
-                )
+            keyboard.closeKeyboard(cancel)
+            cancel.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+            keyboard.sendKey(cancel, KeyEvent.KEYCODE_BACK)
+            compose.waitUntil(5_000) {
+                compose.onAllNodes(hasContentDescription(cancelDescription)).fetchSemanticsNodes().isEmpty()
+            }
             compose.waitForIdle()
         }
 
@@ -1583,12 +1578,12 @@ class LibraryAccessibilityRouteTest {
             confirm: Int,
         ) {
             description(context)
-            dialogInput(context).performTextReplacement(name)
+            dialogInput(context).awaitKeyboardFocus().performTextReplacement(name)
             val before = library.state.value.mutationSuccessGeneration
-            compose
-                .onNodeWithContentDescription(text(R.string.library_confirm_context, text(confirm), context))
-                .performSemanticsAction(SemanticsActions.RequestFocus)
-                .performKeyInput { pressKey(Key.Enter) }
+            val accept =
+                compose.onNodeWithContentDescription(text(R.string.library_confirm_context, text(confirm), context))
+            accept.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+            keyboard.sendKey(accept, KeyEvent.KEYCODE_ENTER)
             await { library.state.value.mutationSuccessGeneration == before + 1 }
             awaitOrganization()
         }

@@ -657,8 +657,7 @@ class ActivityTemplateEditorScreenPresentationTest {
         awaitReady(controller)
         keyboard.enter()
         input(R.string.activity_editor_name).awaitKeyboardFocus().performTextReplacement("Unsaved")
-        androidx.test.espresso.Espresso
-            .closeSoftKeyboard()
+        keyboard.closeKeyboard(input(R.string.activity_editor_name))
         composeTestRule
             .onNodeWithText(
                 text(R.string.activity_editor_back),
@@ -875,8 +874,7 @@ class ActivityTemplateEditorScreenPresentationTest {
                 assertTrue(bounds.right <= composeTestRule.activity.resources.displayMetrics.widthPixels)
             }
         }
-        androidx.test.espresso.Espresso
-            .closeSoftKeyboard()
+        keyboard.closeKeyboard(composeTestRule.onNodeWithText(context.getString(R.string.activity_editor_back)))
         val back =
             composeTestRule
                 .onNodeWithText(context.getString(R.string.activity_editor_back))

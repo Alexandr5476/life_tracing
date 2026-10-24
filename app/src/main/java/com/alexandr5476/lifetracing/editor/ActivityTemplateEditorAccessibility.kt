@@ -92,12 +92,15 @@ internal fun rememberEditorFocus(
             }
         }
     }
-    LaunchedEffect(visible, focus.removed, window.isWindowFocused) {
-        val canRecover = visible && window.isWindowFocused && editable
-        if (canRecover && focus.removed && !state.discardConfirmationVisible) {
+    val canRecover = visible && window.isWindowFocused && editable && !state.discardConfirmationVisible
+    LaunchedEffect(canRecover, focus.removed, focus.hasFocus) {
+        if (canRecover && focus.removed && !focus.hasFocus) {
             withFrameNanos { }
-            if (!focus.hasFocus) focus.landing.requestFocus()
-            focus.removed = false
+            // Keep the removal pending while native disposal still reports group focus.
+            if (!focus.hasFocus) {
+                focus.landing.requestFocus()
+                focus.removed = false
+            }
         }
     }
     return focus

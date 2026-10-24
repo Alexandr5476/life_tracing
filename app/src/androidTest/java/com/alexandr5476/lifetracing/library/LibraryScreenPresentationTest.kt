@@ -23,7 +23,6 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
@@ -306,10 +305,10 @@ class LibraryScreenPresentationTest {
         keyboardInput.enter()
         val open = composeTestRule.onNodeWithText(item.name)
         open.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-        open.assertIsFocused()
+        open.awaitKeyboardFocus()
         open.performKeyInput { pressKey(Key.Tab) }
         val quick = composeTestRule.onNodeWithText(text(R.string.library_quick_start))
-        quick.assertIsFocused()
+        quick.awaitKeyboardFocus()
         assertTrue(started.isEmpty())
         assertTrue(opened.isEmpty())
         assertTrue(actions.isEmpty())
@@ -317,7 +316,7 @@ class LibraryScreenPresentationTest {
         assertEquals(listOf(item.id), started)
         quick.performKeyInput { pressKey(Key.Tab) }
         val organize = composeTestRule.onNodeWithText(text(R.string.library_organize))
-        organize.assertIsFocused()
+        organize.awaitKeyboardFocus()
         organize.performKeyInput { pressKey(Key.Enter) }
         assertTrue(opened.isEmpty())
         assertTrue(actions.isEmpty())
@@ -351,9 +350,9 @@ class LibraryScreenPresentationTest {
         val search = composeTestRule.onNode(hasSetTextAction())
         search.performSemanticsAction(SemanticsActions.RequestFocus)
         state = state.copy(search = LibraryLoad.Loading, organization = LibraryLoad.Failure("unrelated"))
-        search.assertIsFocused()
+        search.awaitKeyboardFocus()
         state = state.copy(search = LibraryLoad.Content(listOf(preceding, item)))
-        search.assertIsFocused()
+        search.awaitKeyboardFocus()
         val filter = composeTestRule.onNodeWithText(text(R.string.library_filter_activities))
         filter.performSemanticsAction(SemanticsActions.RequestFocus)
         state =
@@ -361,11 +360,11 @@ class LibraryScreenPresentationTest {
                 filter = LibraryKindFilter.ACTIVITIES,
                 organization = LibraryLoad.Content(LibraryOrganization(emptyList(), emptyList())),
             )
-        filter.assertIsFocused()
+        filter.awaitKeyboardFocus()
         val result = composeTestRule.onNodeWithText(item.name)
         result.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
         state = state.copy(search = LibraryLoad.Content(listOf(item.copy(shortComment = "Refreshed detail"))))
-        result.assertIsFocused()
+        result.awaitKeyboardFocus()
         result.performScrollTo()
         composeTestRule.onNodeWithText("Refreshed detail", useUnmergedTree = true).assertExists()
         assertTrue(actions.isEmpty())
@@ -405,15 +404,15 @@ class LibraryScreenPresentationTest {
             state = baseline
             val row = composeTestRule.onNodeWithText(item.name)
             row.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-            row.assertIsFocused()
+            row.awaitKeyboardFocus()
             state = replacement
-            back.assertIsFocused()
+            back.awaitKeyboardFocus()
         }
         val retry = composeTestRule.onNodeWithText(text(R.string.library_retry))
         retry.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-        retry.assertIsFocused()
+        retry.awaitKeyboardFocus()
         state = baseline
-        back.assertIsFocused()
+        back.awaitKeyboardFocus()
         state =
             baseline.copy(
                 browse =
@@ -430,24 +429,24 @@ class LibraryScreenPresentationTest {
             .onNodeWithText(folder.name)
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.RequestFocus)
-            .assertIsFocused()
+            .awaitKeyboardFocus()
         state = baseline.copy(folderId = folder.id, browse = LibraryLoad.Loading)
-        back.assertIsFocused()
+        back.awaitKeyboardFocus()
         state = baseline
         val row = composeTestRule.onNodeWithText(item.name)
         row.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
-        row.assertIsFocused()
+        row.awaitKeyboardFocus()
         visible = false
         val foreground = composeTestRule.onNodeWithText("Foreground route control")
         foreground.performSemanticsAction(SemanticsActions.RequestFocus)
-        foreground.assertIsFocused()
+        foreground.awaitKeyboardFocus()
         state = baseline.copy(browse = LibraryLoad.Loading)
-        foreground.assertIsFocused()
+        foreground.awaitKeyboardFocus()
         back.assert(SemanticsMatcher.expectValue(SemanticsProperties.Focused, false))
         state = baseline
-        foreground.assertIsFocused()
+        foreground.awaitKeyboardFocus()
         visible = true
-        back.assertIsFocused()
+        back.awaitKeyboardFocus()
         assertTrue(actions.isEmpty())
         assertEquals(0, opens)
         assertEquals(0, foregroundActivations)
@@ -522,7 +521,7 @@ class LibraryScreenPresentationTest {
                 val bounds = nodes.map { it.fetchSemanticsNode().touchBoundsInRoot }
                 for (a in bounds.indices) for (b in a + 1 until bounds.size) assertTrue(!bounds[a].overlaps(bounds[b]))
                 quick.performSemanticsAction(SemanticsActions.RequestFocus)
-                quick.assertIsFocused()
+                quick.awaitKeyboardFocus()
                 quick.performKeyInput { pressKey(Key.Enter) }
                 organize.performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
                 assertEquals(0, opens)
@@ -531,6 +530,8 @@ class LibraryScreenPresentationTest {
         }
         assertEquals(List(4) { item.id }, started)
     }
+
+    private fun SemanticsNodeInteraction.awaitKeyboardFocus() = apply { keyboardInput.awaitFocus(this) }
 
     private fun catalog(
         items: List<LibraryTrackable>,

@@ -3,7 +3,7 @@
 ## Activity Template authoring accessibility (Slice S4)
 
 Adds fifteen Activity editor presentation identities and four isolated production-route
-physical-reopen identities. The mandatory inventory is now **509 app, 627 data and
+physical-reopen identities. The mandatory inventory is now **510 app, 627 data and
 2 independent startup cases per API**, with zero prior removals. See
 [S4 Activity editor evidence](activity_template_editor_accessibility.md) for typed
 Field/option actions, native focus/keyboard/scaling, Save/Conflict admission,
@@ -15,6 +15,12 @@ revision policy.
 Controller owns all unfiltered API 26/31/33/35/36 managed-device gates, independent
 startup and exact-head GitHub verification. AndroidTest compilation and automated
 semantics are not device execution or manual TalkBack/Switch Access certification.
+
+The 2026-10-24 CI repair retains every original identity and adds one sleeping-display
+keyboard-fixture regression. It addresses Library dialog-window admission, asynchronous
+focus recovery and keyboard-fixture display prerequisites. See the S4 record's
+cross-API CI repair section for the supplied failures, diagnosis limits and local
+verification. Full device execution remains Controller-owned.
 
 S4 Controller attempt 1 stopped after 148 app cases with six failures and a device
 SurfaceFlinger crash. The two authorized six-case repair probes progressed from

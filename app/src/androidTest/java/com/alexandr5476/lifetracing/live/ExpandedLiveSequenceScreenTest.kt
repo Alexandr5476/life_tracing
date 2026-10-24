@@ -35,7 +35,6 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
-import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -1697,7 +1696,7 @@ class ExpandedLiveSequenceScreenTest {
                     // Text entry can show the IME, which consumes Back before the dialog.
                     // Enter keyboard mode on the dialog owner after hiding the IME;
                     // opening it via touch can undo the route's earlier keyboard mode.
-                    Espresso.closeSoftKeyboard()
+                    keyboardInput.closeKeyboard(cancel)
                     keyboardInput.enter(cancel)
                     cancel.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
                     cancel.assertIsFocused()

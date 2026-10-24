@@ -87,13 +87,15 @@ internal fun rememberLibraryFocusRecovery(isVisible: Boolean): LibraryFocusRecov
             recovery.landing.requestFocus()
         }
     }
-    LaunchedEffect(isVisible, window.isWindowFocused, recovery.removedOwner) {
+    LaunchedEffect(isVisible, window.isWindowFocused, recovery.removedOwner, recovery.hasFocus) {
         val removedOnVisibleRoute = isVisible && window.isWindowFocused && recovery.removedOwner != null
         if (removedOnVisibleRoute && recovery.restoreTarget == null) {
-            // Disposal and native focus clearing settle before considering a landing.
+            // Observe actual group focus loss; disposal may take more than one frame.
             withFrameNanos { }
-            if (!recovery.hasFocus) recovery.landing.requestFocus()
-            recovery.removedOwner = null
+            if (!recovery.hasFocus) {
+                recovery.landing.requestFocus()
+                recovery.removedOwner = null
+            }
         }
     }
     val restore = recovery.restoreTarget

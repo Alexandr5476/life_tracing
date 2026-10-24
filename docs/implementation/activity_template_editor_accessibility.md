@@ -551,3 +551,142 @@ identities were added, renamed or removed. Inventory remains **509/627/2**.
 The long-run native layer exhaustion and the complete unfiltered five-API/startup/
 independent GitHub gates remain Controller-owned verification obligations. The
 scoped pass does not establish full-suite stability or manual accessibility certification.
+
+## Cross-API CI repair (2026-10-24)
+
+CI run `40059549209` tested head `846ed9f26b617b30e68ff485ebe103ef2482d222`
+and tree `c19af2d55b374494635339e5680f402a75169191fbd189aa98fc56bb9434ca71`.
+The supplied failure inventory contains these distinct cases per check (duplicate
+artifact copies count once):
+
+| API | Failure coverage |
+| --- | --- |
+| 26 and 31 | One Library organization case: removed-control recovery to Back. |
+| 33 | Three Library route, three Activity editor, eight destructive Library and three organization cases. |
+| 36 | Two Library route, fourteen Activity editor, eight destructive Library, two organization and seven expanded live Sequence cases. |
+
+An earlier local pass does not close these CI failures. This repair addresses the
+following shared boundaries without changing authoring, persistence or runtime
+commands:
+
+- `FolderNameAction` requested initial input focus from the parent composition,
+  before the native dialog acquired its own window. It now observes that dialog's
+  `LocalWindowInfo` and an attachment frame. Lifecycle dialogs likewise wait for
+  their own window before focusing Cancel. Their effect lifetime and route guard
+  own this focus request; an unrelated whole-state reference comparison no longer
+  discards an otherwise valid focus request during a refresh.
+- Library removal recovery could discard its pending marker while the focus group
+  still temporarily reported focus. It now observes the group's focus changes and
+  retains the marker until focus loss permits recovery, or a surviving control
+  claims focus. The equivalent Activity editor mechanism is corrected as well,
+  including its editable/discard-dialog admission dependencies.
+- The remaining Library organization, discovery and production-route fixtures now
+  await exact native-window and semantic-focus completion. `assertIsFocused`
+  remains inside the shared observer; that observer never requests the expected
+  control's focus. Dialog Enter/Back uses the exact-root native key helper; the
+  route name-mutation helper observes initial input focus before editing and
+  Confirm focus before sending Enter. Back dismissal explicitly closes the IME
+  first and observes dialog removal. Exact typed actions, counters, retained
+  callback rejection, drafts and canonical physical-reopen assertions remain.
+  Keyboard-focused organization scenarios use semantic activation for non-key
+  actions, avoiding pointer injection that would change the fixture's input mode.
+- `KeyboardInputFixture` previously assumed an awake, unlocked display throughout
+  a long suite. It now establishes those prerequisites, keeps the participating
+  root awake during keyboard interaction and restores each root's previous
+  `keepScreenOn` value on teardown. It does not change device timeout settings,
+  application permissions or production windows. All exact-root window-focus and
+  semantic-focus assertions remain. This shared fixture is also used by the
+  reported Activity editor and expanded live Sequence cases. Native-window
+  observation and key dispatch establish the same display prerequisites even
+  when a test has not called keyboard entry first.
+
+The sustained API 36 `RootViewWithoutFocusException` failures are consistent with
+the missing display prerequisite. The supplied artifacts establish lost native
+window focus, not a confirmed screen-off/keyguard event; that causal explanation
+remains an inference until Controller executes the repaired matrix. These failures
+are not reclassified as an external platform failure, and no new device pass or
+full-suite stability claim is made here.
+
+The new original-JUnit case
+`LibraryOrganizationPresentationTest.keyboardEntryWakesSleepingDisplayAndRetainsNativeLandingWithoutCommands`
+establishes initial keyboard focus, explicitly puts the display to sleep, observes
+that prerequisite, reenters keyboard
+mode and requires an awake display, real native Back focus, an awake-window flag
+and zero commands. Its finally block wakes the display even on failure. The case
+was added before the fixture repair; fail-first device execution was unavailable.
+It is pinned in the mandatory inventory, bringing the current totals to
+**510 app / 627 data / 2 startup per API**, with zero removed identities.
+
+The authorized command `D:\controller\.runtime\agent-tools\repair-probe.cmd`
+returned exit 1 with `No active repair-probe lease` before any device/testcase
+execution. No emulator or managed-device task was launched directly. Controller
+must run this regression and all reported cases on the repaired tree, followed by
+the complete five-API suites and independent exact-head gates. Automated source
+and APK checks do not establish manual TalkBack/Switch Access certification.
+
+Final local verification completed with exit 0 (`BUILD SUCCESSFUL`, 3m 39s):
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*LibraryControllerTest' --tests '*ActivityTemplateEditorControllerTest' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain
+python -m unittest discover -s .github/scripts -p 'test_*.py'
+git diff --check
+```
+
+The relevant JVM reports contain 28 Library controller and 20 Activity editor
+controller cases, with zero failures, errors or skips. The final invocation reused
+the matching successful JVM task. App ktlint, Detekt, Android lint and AndroidTest
+compilation/APK assembly passed. Earlier formatting, line-length and method-length
+findings were corrected before the successful invocation. All 17 runner/inventory
+host tests passed; their printed device commands are mocked and launch no devices.
+A source/inventory audit confirmed every pinned app identity, including parameterized
+names, and exactly one addition with no removals. Controller's prompt retained its
+supplied SHA-256. All intended changes remain uncommitted; no new repository path
+was introduced.
+
+## API 35 dialog-root repair follow-up (2026-10-24)
+
+Controller's full local execution reported
+`LibraryAccessibilityRouteTest.deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen`
+with `RootViewWithoutFocusException` on a base Activity window. The full execution
+also timed out; its data suite completed, but its app suite did not finish.
+The authorized probe is restricted to this one original route identity.
+
+The first probe attempt stalled before test discovery (zero executed cases).
+Controller cleaned stale managed devices and retried automatically. The unchanged
+baseline then passed the route case (REAL execution, 102.8 seconds; testcase time
+17.207 seconds), so the supplied focus failure remains intermittent.
+
+The remaining global `Espresso.closeSoftKeyboard()` calls in the affected Library,
+Activity editor and expanded live Sequence fixtures used Espresso's default root
+selection. They now share `KeyboardInputFixture.closeKeyboard(target)`, which
+derives the attached native window from the supplied semantic control and performs
+the normal Espresso keyboard-dismiss action in that exact root. This also retains
+the fixture's awake-display prerequisites and native-window admission. The route's
+non-input destructive dialog therefore no longer asks a global root selector to
+choose a window before Back dismissal. Existing focus, one-shot dispatch,
+stale-callback, zero-write and physical-reopen assertions remain intact.
+
+This is a fixture reliability correction, not proof that root selection caused
+every supplied cross-API failure. The preceding production focus repairs are
+preserved. No test identity is added or removed; inventory remains 510 app / 627
+data / 2 startup per API. Full unfiltered compatibility, independent GitHub gates
+and manual TalkBack/Switch Access validation remain outside this scoped evidence.
+
+The baseline log and JUnit report are under
+`D:/controller/.runtime/repair-probes/wf-2933485f29755d0f9317fdc0a813f2f8/e02df2b3eb33404ea0e1879ae35dc670/tree-1/attempt-2/`
+(`01.log` and `reports/app/TEST-pixel2Api35-_app-.xml`).
+
+Local verification of the follow-up passed (`BUILD SUCCESSFUL`, 2m 40s):
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest --tests '*LibraryControllerTest' --tests '*ActivityTemplateEditorControllerTest' --continue --console=plain
+python -m unittest discover -s .github/scripts -p 'test_*.py'
+git diff --check
+```
+
+The JVM task reused its matching cache result: 28 Library and 20 Activity editor
+controller cases, zero failures/errors/skips. All 17 host runner/inventory cases
+passed (device commands in their output are mocked). The repaired-tree authorized
+probe uses the same exact command and one-case scope as the baseline; its result
+and artifact location are reported in the structured completion. A scoped pass
+does not certify full-suite or cross-API stability.

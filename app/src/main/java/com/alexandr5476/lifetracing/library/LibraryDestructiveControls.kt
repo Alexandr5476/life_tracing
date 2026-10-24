@@ -29,6 +29,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -492,9 +493,12 @@ private fun LifecycleDialog(
         confirmButton = { withLibraryLocals { confirm() } },
         dismissButton = {
             withLibraryLocals {
-                LaunchedEffect(phase) {
-                    withFrameNanos { }
-                    if (scope.visible() && scope.readCurrent() === scope.state) cancelFocus.requestFocus()
+                val window = LocalWindowInfo.current
+                LaunchedEffect(phase, window.isWindowFocused) {
+                    if (window.isWindowFocused) {
+                        withFrameNanos { }
+                        if (scope.visible()) cancelFocus.requestFocus()
+                    }
                 }
                 TextButton(
                     onClick = cancel,

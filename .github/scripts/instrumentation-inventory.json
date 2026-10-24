@@ -1012,6 +1012,7 @@
       "englishRussianLifecycleDialogsKeepIndependentTargetsAtCombinedScaleExtremes"
     ],
     "com.alexandr5476.lifetracing.library.LibraryOrganizationPresentationTest": [
+      "keyboardEntryWakesSleepingDisplayAndRetainsNativeLandingWithoutCommands",
       "retainedMutationCallbackChecksLiveRouteOwnershipBeforeRecomposition",
       "filteredPinnedMovesSubmitTheCompleteTypedOrderAndRespectMutationAdmission",
       "pinnedBoundariesExpansionAndCollapseRetainNativeFocusWithoutCommands",

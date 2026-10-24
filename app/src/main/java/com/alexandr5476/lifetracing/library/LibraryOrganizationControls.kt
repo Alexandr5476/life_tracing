@@ -17,9 +17,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -149,11 +151,17 @@ internal fun FolderNameAction(
                 onConfirm(value.trim())
                 close()
             }
-        LaunchedEffect(Unit) { if (scope.visible()) input.requestFocus() }
         AlertDialog(
             onDismissRequest = close,
             title = { Text(context, modifier = Modifier.semantics { heading() }) },
             text = {
+                val window = LocalWindowInfo.current
+                LaunchedEffect(window.isWindowFocused) {
+                    if (window.isWindowFocused) {
+                        withFrameNanos { }
+                        if (scope.visible()) input.requestFocus()
+                    }
+                }
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     LifeTracingOutlinedTextField(
                         value = value,
