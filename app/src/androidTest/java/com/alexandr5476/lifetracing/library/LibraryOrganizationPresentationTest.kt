@@ -5,9 +5,16 @@ package com.alexandr5476.lifetracing.library
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -17,6 +24,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
@@ -60,13 +68,37 @@ class LibraryOrganizationPresentationTest {
     @Test
     fun keyboardEntryWakesSleepingDisplayAndRetainsNativeLandingWithoutCommands() {
         val actions = mutableListOf<LibraryAction>()
-        compose.setContent { LifeTracingTheme { LibraryScreen(content(emptyList()), actions::add) {} } }
+        var mode by mutableStateOf(InputMode.Touch)
+        val modes =
+            object : InputModeManager {
+                override val inputMode: InputMode get() = mode
+
+                override fun requestInputMode(inputMode: InputMode): Boolean {
+                    mode = inputMode
+                    return true
+                }
+            }
+        compose.setContent {
+            CompositionLocalProvider(LocalInputModeManager provides modes) {
+                LifeTracingTheme { LibraryScreen(content(emptyList()), actions::add) {} }
+            }
+        }
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val power = instrumentation.targetContext.getSystemService(PowerManager::class.java)
         val back = compose.onNodeWithText(text(R.string.library_back))
         try {
             keyboard.enter(back)
+            keyboard.awaitWindowFocus(back)
+            back.assertIsNotFocused()
+            compose.runOnIdle { mode = InputMode.Keyboard }
             keyboard.awaitFocus(back)
+            val diagnostics = keyboard.windowDiagnostics((back.fetchSemanticsNode().root as ViewRootForTest).view)
+            assertTrue(
+                diagnostics,
+                diagnostics.lineSequence().any {
+                    "mCurrentFocus=" in it && instrumentation.targetContext.packageName in it
+                },
+            )
             screenKey("KEYCODE_SLEEP")
             compose.waitUntil(5_000) { !power.isInteractive }
             keyboard.enter(back)
@@ -238,7 +270,20 @@ class LibraryOrganizationPresentationTest {
     fun dialogsKeepDraftsValidateRestoreInvokerAndNeverMutateOnCancelOrDismiss() {
         val actions = mutableListOf<LibraryAction>()
         var state by mutableStateOf(content(emptyList()))
-        compose.setContent { LifeTracingTheme { LibraryScreen(state, actions::add) {} } }
+        var visible by mutableStateOf(true)
+        compose.setContent {
+            LifeTracingTheme {
+                Box {
+                    LibraryScreen(
+                        state,
+                        actions::add,
+                        isRouteVisible = visible,
+                        currentRouteVisible = { visible },
+                    ) {}
+                    if (!visible) TextButton(onClick = {}) { Text("Foreground") }
+                }
+            }
+        }
         keyboard.enter()
         val context = text(R.string.library_create_folder_here, text(R.string.library_root))
         val entry = compose.onNodeWithContentDescription(context)
@@ -246,7 +291,13 @@ class LibraryOrganizationPresentationTest {
         entry.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
         compose.onNodeWithText(context).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
         val input = dialogInput(context)
-        input.awaitKeyboardFocus().performTextInput("Draft")
+        input.awaitKeyboardFocus()
+        val dialogView = (input.fetchSemanticsNode().root as ViewRootForTest).view
+        assertTrue(
+            "The admitted dialog must be in native keyboard mode",
+            compose.runOnIdle { !dialogView.isInTouchMode },
+        )
+        input.performTextInput("Draft")
         state = state.copy(mutationSuccessGeneration = 4)
         dialogInput(context).assertTextContains("Draft")
         assertTrue(actions.isEmpty())
@@ -256,12 +307,35 @@ class LibraryOrganizationPresentationTest {
         entry.awaitKeyboardFocus()
         assertTrue(actions.isEmpty())
         entry.performSemanticsAction(SemanticsActions.OnClick)
+        dialogInput(context).awaitKeyboardFocus().performTextInput("Hidden draft")
+        val hiddenConfirm =
+            compose
+                .onNodeWithContentDescription(
+                    text(R.string.library_confirm_context, text(R.string.library_create), context),
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        compose.runOnIdle {
+            visible = false
+            hiddenConfirm()
+        }
+        dialogInput(context).assertDoesNotExist()
+        compose
+            .onNodeWithText("Foreground")
+            .performSemanticsAction(SemanticsActions.RequestFocus)
+            .awaitKeyboardFocus()
+        assertTrue(actions.isEmpty())
+        compose.runOnIdle { visible = true }
+        dialogInput(context).assertDoesNotExist()
+        compose.runOnIdle { hiddenConfirm() }
+        assertTrue(actions.isEmpty())
+        entry.performSemanticsAction(SemanticsActions.OnClick)
         val accept =
             compose.onNodeWithContentDescription(
                 text(R.string.library_confirm_context, text(R.string.library_create), context),
             )
         accept.assertIsNotEnabled()
-        dialogInput(context).performTextInput("  ")
+        dialogInput(context).awaitKeyboardFocus().performTextInput("  ")
         accept.assertIsNotEnabled()
         val cancel = compose.onNodeWithContentDescription(text(R.string.library_cancel_context, context))
         keyboard.closeKeyboard(cancel)
@@ -270,7 +344,7 @@ class LibraryOrganizationPresentationTest {
         entry.awaitKeyboardFocus()
         assertTrue(actions.isEmpty())
         entry.performSemanticsAction(SemanticsActions.OnClick)
-        dialogInput(context).performTextInput("Created")
+        dialogInput(context).awaitKeyboardFocus().performTextInput("Created")
         accept.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
         keyboard.sendKey(accept, android.view.KeyEvent.KEYCODE_ENTER)
         assertEquals(listOf(LibraryAction.CreateFolder("Created")), actions)
@@ -341,12 +415,24 @@ class LibraryOrganizationPresentationTest {
         organize.awaitKeyboardFocus()
         organize.performSemanticsAction(SemanticsActions.OnClick)
         organize.awaitKeyboardFocus()
-        pin.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        pin.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
         val retained = pin.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         state = state.copy(organization = LibraryLoad.Loading)
         compose.waitForIdle()
+        pin.assertDoesNotExist()
         compose.onNodeWithText(text(R.string.library_back)).awaitKeyboardFocus()
         compose.runOnIdle { retained() }
+        assertTrue(actions.isEmpty())
+        state = content(listOf(item))
+        pin.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+        val search = compose.onNodeWithText(text(R.string.library_search_hint))
+        search.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, text(R.string.library_search_inactive)),
+        )
+        search.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+        state = state.copy(organization = LibraryLoad.Loading)
+        pin.assertDoesNotExist()
+        search.awaitKeyboardFocus()
         assertTrue(actions.isEmpty())
         state = state.copy(organization = LibraryLoad.Failure("read"))
         compose.onNodeWithText(text(R.string.library_organization_failure)).performScrollTo().assertIsDisplayed()

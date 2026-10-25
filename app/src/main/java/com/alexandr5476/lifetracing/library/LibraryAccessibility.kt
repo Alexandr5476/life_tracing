@@ -14,7 +14,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
+import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 
 @Immutable
 internal data class LibraryRetryReads(
@@ -66,50 +68,63 @@ internal class LibraryFocusRecovery {
     val landing = FocusRequester()
     var owner: Any? = null
     var removedOwner by mutableStateOf<Any?>(null)
-    var hasFocus by mutableStateOf(false)
     var restoreTarget by mutableStateOf<LibraryFocusHandle?>(null)
     var deletionOrigin by mutableStateOf<LibraryDeletionOrigin?>(null)
     var lifecycleOutcome by mutableStateOf<LibraryLifecycleOutcome?>(null)
 
     val root: Modifier
-        get() = Modifier.onFocusChanged { hasFocus = it.hasFocus }.focusGroup()
+        get() = Modifier.focusGroup()
 }
 
 @Composable
 internal fun rememberLibraryFocusRecovery(isVisible: Boolean): LibraryFocusRecovery {
     val recovery = remember { LibraryFocusRecovery() }
     val window = LocalWindowInfo.current
+    val inputMode = LocalInputModeManager.current.inputMode
+    var landingPending by remember { mutableStateOf(isVisible) }
     LaunchedEffect(isVisible) {
         if (isVisible) {
             recovery.removedOwner = null
             recovery.restoreTarget = null
-            withFrameNanos { }
-            recovery.landing.requestFocus()
+            landingPending = true
         }
     }
-    LaunchedEffect(isVisible, window.isWindowFocused, recovery.removedOwner, recovery.hasFocus) {
-        val removedOnVisibleRoute = isVisible && window.isWindowFocused && recovery.removedOwner != null
-        if (removedOnVisibleRoute && recovery.restoreTarget == null) {
-            // Observe actual group focus loss; disposal may take more than one frame.
+    LaunchedEffect(isVisible, window.isWindowFocused, inputMode, landingPending) {
+        if (isVisible && window.isWindowFocused && landingPending) {
             withFrameNanos { }
-            if (!recovery.hasFocus) {
-                recovery.landing.requestFocus()
-                recovery.removedOwner = null
-            }
+            landingPending = !recovery.landing.requestFocus()
         }
+    }
+    LaunchedEffect(isVisible, window.isWindowFocused, inputMode, recovery.removedOwner, recovery.restoreTarget) {
+        val removed = recovery.removedOwner
+        val pending = removed != null && recovery.restoreTarget == null
+        if (isVisible && window.isWindowFocused && pending) recovery.recoverRemoved(removed)
     }
     val restore = recovery.restoreTarget
-    LaunchedEffect(isVisible, window.isWindowFocused, restore, restore?.attached, restore?.enabled) {
+    LaunchedEffect(isVisible, window.isWindowFocused, inputMode, restore, restore?.attached, restore?.enabled) {
         if (isVisible && window.isWindowFocused && restore != null) {
             if (!restore.attached || restore.enabled) {
-                withFrameNanos { }
-                if (!restore.attached || !restore.requester.requestFocus()) recovery.landing.requestFocus()
-                recovery.restoreTarget = null
-                recovery.removedOwner = null
+                recovery.restore(restore)
             }
         }
     }
     return recovery
+}
+
+private suspend fun LibraryFocusRecovery.recoverRemoved(removed: Any?) {
+    withFrameNanos { }
+    // Detachment may assign framework fallback focus before this deferred recovery.
+    val unchanged = removedOwner === removed && restoreTarget == null
+    if (unchanged && landing.requestFocus()) removedOwner = null
+}
+
+private suspend fun LibraryFocusRecovery.restore(target: LibraryFocusHandle) {
+    withFrameNanos { }
+    val restored = target.attached && target.requester.requestFocus()
+    if (restored || landing.requestFocus()) {
+        restoreTarget = null
+        removedOwner = null
+    }
 }
 
 internal class LibraryFocusHandle {
@@ -166,15 +181,12 @@ internal fun rememberLibraryMutationFeedback(state: LibraryPresentationState): B
 internal fun libraryFocusTarget(): Modifier {
     val recovery = LocalLibraryFocus.current
     val token = remember { Any() }
-    DisposableEffect(recovery, token) {
-        onDispose {
-            if (recovery.owner === token) recovery.removedOwner = token
+    return Modifier
+        .onFocusTargetAttachmentChanged { attached ->
+            if (!attached && recovery.owner === token) recovery.removedOwner = token
+        }.onFocusChanged {
+            if (it.isFocused) {
+                recovery.owner = token
+            }
         }
-    }
-    return Modifier.onFocusChanged {
-        if (it.isFocused) {
-            recovery.owner = token
-            recovery.removedOwner = null
-        }
-    }
 }

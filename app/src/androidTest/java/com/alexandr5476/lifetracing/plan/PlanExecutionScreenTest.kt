@@ -31,7 +31,6 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
-import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
@@ -217,7 +216,7 @@ class PlanExecutionScreenTest {
                     .TextExecutionValue(fields[1].id, "edited text"),
                 session.quickDraft!!.values[fields[1].id],
             )
-            Espresso.closeSoftKeyboard()
+            keyboard.closeKeyboard(compose.onNode(hasText(numberLabel) and hasSetTextAction()))
             invoke("Effort: A")
             compose
                 .onNode(hasText("Selected: Effort: A") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Selected))
@@ -510,7 +509,9 @@ class PlanExecutionScreenTest {
                         .touchBoundsInRoot
                 assertTrue(!completeNow.overlaps(secondaryNow))
                 assertTrue(complete.height > 0 && secondary.height > 0)
-                Espresso.closeSoftKeyboard()
+                keyboard.closeKeyboard(
+                    compose.onNode(hasText(context.getString(R.string.plan_back)) and hasClickAction()),
+                )
                 invoke(context.getString(R.string.plan_execution_category_value, "Effort", "A"))
                 val missing =
                     compose
@@ -560,7 +561,9 @@ class PlanExecutionScreenTest {
                         .touchBoundsInRoot
                 assertTrue(bounds.height >= minimum - 1 && bounds.width >= minimum - 1)
             }
-            Espresso.closeSoftKeyboard()
+            keyboard.closeKeyboard(
+                compose.onNode(hasText(context.getString(R.string.plan_back)) and hasClickAction()),
+            )
             invoke(context.getString(R.string.plan_execution_category_value, "Effort", "A"))
             val missingBounds =
                 compose

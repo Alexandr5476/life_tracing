@@ -6,10 +6,13 @@ import android.os.PowerManager
 import android.view.View
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToString
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.closeSoftKeyboard
 import androidx.test.espresso.action.ViewActions.pressKey
@@ -40,9 +43,11 @@ class KeyboardInputFixture(
         }
     }
 
-    private fun shell(command: String) {
+    private fun shell(command: String): String {
         val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
-        ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).use { it.readBytes() }
+        return ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).use {
+            it.reader().readText()
+        }
     }
 
     private fun attachedView(target: SemanticsNodeInteraction): View {
@@ -63,30 +68,74 @@ class KeyboardInputFixture(
             assertTrue("The attached Compose view must accept keyboard focus", view.requestFocusFromTouch())
         }
         compose.waitUntil(timeoutMillis = 5_000) { compose.runOnIdle { !view.isInTouchMode } }
+        awaitWindowFocus(target)
     }
 
-    /** Observes native root admission without assigning focus to a semantic control. */
+    /** Admits the native root and establishes keyboard mode for each window of an active fixture. */
     fun awaitWindowFocus(target: SemanticsNodeInteraction) {
+        keyboardView(target)
+    }
+
+    private fun keyboardView(target: SemanticsNodeInteraction): View {
         val view = attachedView(target)
-        onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).check { root, failure ->
-            failure?.let { throw it }
-            assertTrue("The intended native root must own window focus", root?.hasWindowFocus() == true)
+        try {
+            onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).check { root, failure ->
+                failure?.let { throw it }
+                assertTrue("The intended native root must own window focus", root?.hasWindowFocus() == true)
+            }
+        } catch (failure: RuntimeException) {
+            val diagnostics = runCatching { windowDiagnostics(view) }.getOrElse { it.toString() }
+            throw AssertionError("Native keyboard window admission failed. $diagnostics", failure)
         }
+        if (previousTouchMode != null && compose.runOnIdle { view.isInTouchMode }) {
+            compose.runOnIdle {
+                assertTrue("The admitted Compose window must accept keyboard focus", view.requestFocusFromTouch())
+            }
+            compose.waitUntil(timeoutMillis = 5_000) { compose.runOnIdle { !view.isInTouchMode } }
+        }
+        return view
+    }
+
+    internal fun windowDiagnostics(view: View): String {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val interactive = context.getSystemService(PowerManager::class.java).isInteractive
+        val locked = context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        val native =
+            compose.runOnIdle {
+                "attached=${view.isAttachedToWindow}, windowFocused=${view.hasWindowFocus()}, " +
+                    "touchMode=${view.isInTouchMode}, focusedView=${view.rootView.findFocus()}"
+            }
+        val windows =
+            shell("dumpsys window")
+                .lineSequence()
+                .filter { "mCurrentFocus=" in it || "mFocusedApp=" in it }
+                .joinToString("\n")
+        return "interactive=$interactive, keyguardLocked=$locked, $native\n$windows"
     }
 
     /** Waits for the production focus effect, never requests the expected control's focus. */
     fun awaitFocus(target: SemanticsNodeInteraction) {
         awaitWindowFocus(target)
-        compose.waitUntil(timeoutMillis = 5_000) {
-            val semantics = target.fetchSemanticsNode().config
-            semantics.contains(SemanticsProperties.Focused) && semantics[SemanticsProperties.Focused]
+        try {
+            compose.waitUntil(timeoutMillis = 5_000) {
+                val semantics = target.fetchSemanticsNode().config
+                semantics.contains(SemanticsProperties.Focused) && semantics[SemanticsProperties.Focused]
+            }
+        } catch (failure: ComposeTimeoutException) {
+            val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
+            val focused = compose.onAllNodes(isFocused()).fetchSemanticsNodes()
+            throw AssertionError(
+                "Production focus unavailable. ${windowDiagnostics(view)}\nTarget: ${target.printToString()}\n" +
+                    "Focused: ${focused.joinToString { it.config.toString() }}",
+                failure,
+            )
         }
         target.assertIsFocused()
     }
 
     /** Hides the IME in this control's window, including when a dialog owns native focus. */
     fun closeKeyboard(target: SemanticsNodeInteraction) {
-        val view = attachedView(target)
+        val view = keyboardView(target)
         onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(closeSoftKeyboard())
     }
 
@@ -95,7 +144,7 @@ class KeyboardInputFixture(
         target: SemanticsNodeInteraction,
         keyCode: Int,
     ) {
-        val view = attachedView(target)
+        val view = keyboardView(target)
         onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(pressKey(keyCode))
     }
 

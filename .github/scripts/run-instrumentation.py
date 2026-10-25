@@ -1,4 +1,4 @@
-"""Run full GMD suites and independent manifest startup sequentially and retain original JUnit evidence."""
+"""Run full GMD suites and independent startup sequentially; retain JUnit and native diagnostics."""
 
 import argparse
 from datetime import datetime, timezone
@@ -37,6 +37,18 @@ def sdkmanager_command():
     return [manager] + ([f"--sdk_root={sdk_root}"] if sdk_root else []) + ["--install", "emulator"]
 
 
+def retain_artifact(repo, directory, module, path):
+    # Startup reuses app's AGP output path; retain each invocation independently.
+    destination = directory / ("startup" if module == "startup" else "") / path.relative_to(repo)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with path.open("rb") as original, destination.open("wb") as retained:
+        while chunk := original.read(1024 * 1024):
+            retained.write(chunk)
+            digest.update(chunk)
+    return dict(path=destination.relative_to(directory).as_posix(), sha256=digest.hexdigest())
+
+
 def collect_reports(repo, directory, module, api):
     reports, counts, observed = [], dict(total=0, failures=0, errors=0, skipped=0), set()
     # Pinned independently of discovery/results: disappearing tests cannot shrink the gate.
@@ -45,14 +57,13 @@ def collect_reports(repo, directory, module, api):
     executed = {}
     target_module = "app" if module == "startup" else module
     source = repo / target_module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
+    # Preserve focus/system evidence before JUnit validation can fail and before startup replaces it.
+    diagnostic_files = sorted({path for pattern in ("logcat-*.txt", "adb.*.logcat.*.txt")
+                               for path in source.glob(pattern) if path.is_file()})
+    diagnostics = [retain_artifact(repo, directory, module, path) for path in diagnostic_files]
     for path in sorted(source.glob("TEST-*.xml")):
         # Retain original evidence even if parsing or mandatory inventory validation fails.
-        # Startup reuses app's AGP output path. Preserve both original invocations independently.
-        destination = directory / ("startup" if module == "startup" else "") / path.relative_to(repo)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, destination)
-        reports.append({"path": destination.relative_to(directory).as_posix(),
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        reports.append(retain_artifact(repo, directory, module, path))
         tree = ET.parse(path)
         if tree.getroot().tag not in ("testsuite", "testsuites"):
             raise ValueError(f"{module}: malformed JUnit root")
@@ -89,7 +100,7 @@ def collect_reports(repo, directory, module, api):
     if invalid:
         raise ValueError(f"{module}: {len(invalid)} missing, duplicate or unsuccessful mandatory testcases "
                          f"(first 20): {', '.join(invalid[:20])}")
-    return dict(counts, observed_apis=sorted(observed), reports=reports,
+    return dict(counts, observed_apis=sorted(observed), reports=reports, diagnostic_artifacts=diagnostics,
                 mandatory_inventory_passed=True, mandatory_testcases=len(required))
 
 

@@ -650,6 +650,7 @@ class LibraryAccessibilityRouteTest {
                     f.text(R.string.library_delete_contents_confirm, context),
                 )
             val beforeGeneration = f.library.state.value.mutationSuccessGeneration
+            keyboard.awaitWindowFocus(confirmation)
             confirmation.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
             keyboard.sendKey(confirmation, KeyEvent.KEYCODE_ENTER)
             f.await { f.library.state.value.mutationSuccessGeneration == beforeGeneration + 1 }

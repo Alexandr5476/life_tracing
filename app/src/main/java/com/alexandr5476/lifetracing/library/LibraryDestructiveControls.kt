@@ -29,6 +29,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -494,10 +495,12 @@ private fun LifecycleDialog(
         dismissButton = {
             withLibraryLocals {
                 val window = LocalWindowInfo.current
-                LaunchedEffect(phase, window.isWindowFocused) {
-                    if (window.isWindowFocused) {
+                val inputMode = LocalInputModeManager.current.inputMode
+                var initialFocusPending by remember(phase) { mutableStateOf(true) }
+                LaunchedEffect(phase, window.isWindowFocused, inputMode, initialFocusPending) {
+                    if (window.isWindowFocused && initialFocusPending) {
                         withFrameNanos { }
-                        if (scope.visible()) cancelFocus.requestFocus()
+                        if (scope.visible()) initialFocusPending = !cancelFocus.requestFocus()
                     }
                 }
                 TextButton(

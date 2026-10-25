@@ -21,6 +21,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -140,7 +141,10 @@ internal fun FolderNameAction(
         open = false
         recovery.restoreTarget = handle
     }
-    if (open) {
+    if (open && scope.visible()) {
+        DisposableEffect(Unit) {
+            onDispose { open = false }
+        }
         var value by remember { mutableStateOf(initialValue) }
         val input = remember { FocusRequester() }
         val confirmDescription = stringResource(R.string.library_confirm_context, stringResource(confirm), context)
@@ -156,10 +160,12 @@ internal fun FolderNameAction(
             title = { Text(context, modifier = Modifier.semantics { heading() }) },
             text = {
                 val window = LocalWindowInfo.current
-                LaunchedEffect(window.isWindowFocused) {
-                    if (window.isWindowFocused) {
+                val inputMode = LocalInputModeManager.current.inputMode
+                var initialFocusPending by remember { mutableStateOf(true) }
+                LaunchedEffect(window.isWindowFocused, inputMode, initialFocusPending) {
+                    if (window.isWindowFocused && initialFocusPending) {
                         withFrameNanos { }
-                        if (scope.visible()) input.requestFocus()
+                        if (scope.visible()) initialFocusPending = !input.requestFocus()
                     }
                 }
                 Column(Modifier.verticalScroll(rememberScrollState())) {

@@ -690,3 +690,425 @@ passed (device commands in their output are mocked). The repaired-tree authorize
 probe uses the same exact command and one-case scope as the baseline; its result
 and artifact location are reported in the structured completion. A scoped pass
 does not certify full-suite or cross-API stability.
+
+## CI run 40088219148: pending-focus repair (2026-10-24)
+
+This repair starts at head `ccdf847dff1603c9c7f0b08c436cf113517150f2`.
+The supplied current failures, deduplicated across artifact copies, are:
+
+| API | Failing original identities |
+| --- | ---: |
+| 26 | 1 Library organization case |
+| 31 | 1 Library organization case |
+| 33 | 17: 3 Library route, 3 editor, 8 destructive Library, 3 organization |
+| 36 | 56: 15 Library route, 14 editor, 8 destructive Library, 5 organization, 4 discovery, 8 expanded Sequence, 2 Plan Execution |
+
+The earlier focused local passes do not close these remote failures. All supplied
+cases and their adjacent fixture operations were inspected. Source inspection
+found two focus-request problems within their shared boundary:
+
+- Removal recovery used the whole focus group's `hasFocus` as evidence that a
+  surviving control had focus. A scroll container can retain group focus after a
+  tracked control disappears. Recovery now checks the removed owner token after
+  the deferred frame; a surviving tracked target clears that token itself.
+  The equivalent editor removal marker follows the same policy.
+- Library route landing and Library/editor restoration consumed requests even
+  when `FocusRequester.requestFocus()` returned false. The pinned Compose 1.10.0
+  artifact's `Focusability.SystemDefined` refuses button focus in Touch input
+  mode. Pending requests now survive refusal and observe input-mode changes as
+  well as native window ownership. Dialog initial-focus requests are consumed
+  only after acceptance, once per dialog or deletion phase. They cannot reapply
+  an already accepted initial request on an ordinary window-focus return.
+  Existing route visibility, action leases and enabled/attachment guards remain.
+
+The existing organization removal regression was strengthened before the
+production change: it establishes Pin focus, observes Pin removal and still
+requires Back recovery and rejection of the retained callback. It also covers
+Search retaining focus while organization controls disappear. The existing
+sleeping-display identity now explicitly withholds Compose keyboard eligibility,
+checks Back remains unfocused, then admits Keyboard mode and requires the
+production landing request to complete before its original sleep/wake checks.
+These are additional assertions; no original testcase or inventory identity was
+removed or renamed. The inventory remains 510 app / 627 data / 2 startup per API.
+
+The adjacent-test audit also found three global `Espresso.closeSoftKeyboard()`
+calls in `PlanExecutionScreenTest`, including both supplied Plan failures. All
+three now use `KeyboardInputFixture.closeKeyboard(target)` with a control in the
+intended native window. Field values, selected/missing Category state, native
+keyboard actions and scaling assertions remain. No Plan production behavior or
+execution command changed.
+
+The missing native-window focus in API 36 remains a separate unclosed concern.
+The supplied reports do not identify the competing window or establish a
+screen-off/keyguard cause. On native-root admission failure, the shared keyboard
+fixture now includes display/keyguard state, view attachment/touch/focus state
+and WindowManager's current focused window/application in the assertion, while
+preserving the original exception as its cause. It still requires the exact
+native root and expected semantic focus; it never focuses the expected control,
+bypasses admission, extends the timeout or retries an assertion until it passes.
+
+The one authorized probe command was:
+
+```powershell
+D:\controller\.runtime\agent-tools\repair-probe.cmd
+```
+
+Probe artifacts are under
+`D:/controller/.runtime/repair-probes/wf-2933485f29755d0f9317fdc0a813f2f8/54301d51e3db45f2891184e1294968ac/tree-1/attempt-1/`.
+API 26's `01.log` records an EmulatorTimeoutException after repeated zero-device
+discovery: no testcase ran. API 31's `02.log` records five failed snapshot-setup
+attempts and a locked `snapshots/default_boot/ram.img`, also before test discovery.
+API 33 also failed snapshot setup before test discovery. Overlapping local
+Gradle invocations additionally collided in Kotlin incremental caches; subsequent
+verification must run sequentially. API 36's `04.log` records launcher exit 255
+with a shell syntax error before Gradle started. Its formatted command is 8,175
+characters long and carries 56 exact testcase selectors; expansion inside the
+Windows batch launcher is a likely command-length problem. Controller must
+repair the probe launch scope rather than interpret this as a testcase failure.
+The telemetry records **zero testcases across all four check attempts**.
+
+The launcher ultimately returned `FOREIGN_CANDIDATE_MUTATION`: source edits were
+made while the original-tree probe was running. That invalidates its candidate
+receipt; it is not a repaired-tree verification result. Controller's automatic
+recovery cleaned the managed devices successfully, then failed rebuilding the
+API 26 snapshot before discovery (`pre-discovery-device-recovery/setup.log`).
+All local Gradle checks were subsequently rerun sequentially, without changing
+source during those executions.
+
+The probe began before the repair; later source compilation during that operation
+is not certification of the final repaired tree. No fail-first device run or
+repaired-tree device PASS was available. The supplied CI testcase failures,
+including API 36 native window ownership, remain unclosed. Retrying the same
+unhealthy setup mechanically would not produce new repository evidence.
+
+No domain, persistence, snapshot, revision, History, Plan or runtime-command
+semantics change. The source changes remain uncommitted. All fresh complete API
+gates and independent GitHub verification remain Controller-owned. Manual
+TalkBack/Switch Access validation remains unperformed.
+
+### Sequential local verification of the pending-focus repair
+
+After the probe and overlapping Gradle processes ended, this command passed with
+exit 0 and `BUILD SUCCESSFUL` in 3m 27s:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*LibraryControllerTest' --tests '*ActivityTemplateEditorControllerTest' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain --no-daemon --no-parallel --max-workers=2
+```
+
+The XML reports contain 28 Library controller and 20 Activity editor controller
+cases, all passing with zero failures/errors/skips. App ktlint, Detekt, lint and
+AndroidTest compilation/assembly passed. The first implementation check had
+reported a long condition and excess complexity; the deferred Library recovery
+operations were extracted into small private suspend functions before this
+successful sequential verification.
+
+The subsequent Plan fixture-only correction passed the following sequential
+command with exit 0 and `BUILD SUCCESSFUL` in 2m 13s:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain --no-daemon --no-parallel --max-workers=2
+```
+
+No production code changed between those commands. The host runner/inventory
+suite also passed all 17 tests (`python -m unittest discover -s .github/scripts
+-p 'test_*.py'`); its printed device commands are mocked. An identity comparison
+against HEAD found no removed or renamed tests in either changed test class.
+`git diff --check` passed. The Controller prompt retained its supplied SHA-256.
+No new repository path was introduced. These checks do not resolve the supplied
+remote failures or certify the strengthened focus regressions on a device.
+
+## Controller continuation: native-window ownership (2026-10-24)
+
+The Controller rejected the earlier overall `local_test_infra` classification:
+CI run `40088219148` contains real failing testcases. Its 1/1/17/56 failures on
+API 26/31/33/36 remain OPEN. Local passes and local pre-discovery failures do not
+resolve that verification disagreement.
+
+The API 36 stacks narrow the remaining diagnosis: all fifteen Library route
+failures occur in `Fixture.enterLibrary()` at its initial `libraryLanding()`,
+before a name dialog opens. The missing base-window focus therefore cannot be
+explained by the name-dialog defect below. The original keyboard fixture admitted
+View focus and keyboard mode without first checking native window ownership.
+Its entry prerequisite now uses the existing exact-window admission check,
+before navigation, so a later failure identifies whether window ownership was
+already missing at fixture entry. This never requests the expected semantic
+control's focus, changes root selection, or increases a timeout. Display,
+keyguard and WindowManager diagnostics remain attached to admission failures.
+
+The route-lifecycle audit did find a separate concrete defect in
+`FolderNameAction`: callbacks and initial focus checked `scope.visible()`, but
+the open `AlertDialog` itself did not. A hidden Library could retain its native
+modal window over the foreground route. Archive, Folder deletion and Activity
+editor Discard already gate their dialog composition by route visibility.
+
+Decision recorded before the repair: a Library name dialog belongs to its visible
+route. Hiding that route disposes the dialog and retires its local open state and
+submission leases; returning requires a new explicit open. Ordinary visible-route
+refreshes still retain the draft. Losing native window focus or putting the app
+in the background does not itself hide the route or discard the draft. This is
+ephemeral UI ownership; no domain, persistence, Save, revision or snapshot policy
+changes. The shared correction covers Folder create/rename and Tag creation.
+
+The existing `dialogsKeepDraftsValidateRestoreInvokerAndNeverMutateOnCancelOrDismiss`
+regression was extended before the production edit. It opens and edits a name
+dialog, hides the Library, invokes retained confirmation before recomposition,
+requires dialog removal and real foreground native-window/semantic focus, then
+returns and rejects both dialog resurrection and the retained confirmation.
+Its original refresh/draft, Cancel/Back, validation, invoker restoration and
+single explicit Create assertions remain. No test identity is added or removed.
+
+One authorized probe command ran to completion against the preceding repair:
+`c6a6e4928b47466b934967324a3f7339/tree-1`, with the worktree unchanged throughout.
+The Controller performed three automatic attempts. Each attempt's telemetry
+records zero testcases across all four scoped checks. API 26/31/33 snapshot setup
+timed out and subsequent snapshot attempts exited; locked `ram.img` cleanup is
+also recorded. API 36's launcher exited 255 with a shell syntax error before
+Gradle on every attempt. Logs and telemetry are under the probe's
+`attempt-1`, `attempt-2` and `attempt-3` directories. The command returned exit 1
+with `LOCAL_TEST_INFRA_FAILURE`, without `FOREIGN_CANDIDATE_MUTATION`.
+
+That probe predates the hidden-dialog regression/repair and earlier entry check.
+It neither executes the regression nor proves a red/green result. No second
+identical probe is useful while setup and the API 36 launcher remain unavailable.
+Fresh device execution, independent GitHub verification and manual assistive
+validation remain unperformed. In particular the API 36 initial-window cause
+is still unproven, and the overall repair is incomplete rather than reclassified
+as an infrastructure-only task.
+
+### Verification after the ownership repair
+
+The following sequential command passed with exit 0 and `BUILD SUCCESSFUL` in
+3m 18s after the dialog and fixture changes:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*LibraryControllerTest' --tests '*ActivityTemplateEditorControllerTest' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain --no-daemon --no-parallel --max-workers=2
+```
+
+The XML reports contain 28 Library controller and 20 Activity editor controller
+cases with zero failures/errors/skips. App ktlint, Detekt, lint and AndroidTest
+APK compilation/assembly passed. The log is retained in the continuation's
+`scratch/verification-hidden-dialog.log`. No check or edit overlapped the probe.
+The authorized write-helper transactions 1, 2 and 3 completed sequentially;
+transaction 1 added the regression before transaction 2 repaired the dialog.
+An identity comparison against HEAD found no added or removed test methods in
+the changed organization or Plan classes. No new repository path was created.
+The Controller prompt retained SHA-256
+`db1e53647aed5fe4084f687193da4ecf621e3a0ded9495ab71bd6803c7977a1a`.
+The native regression's runtime red/green result and the supplied CI failures
+remain unverified; the overall task is not complete.
+
+## Controller continuation: retain failing-suite diagnostics (2026-10-24)
+
+The `f0cf2b1fee154fd5afbc6d98` continuation preserves all preceding Android
+source/test repairs. Its prompt no longer grants a repair probe; no emulator,
+raw device task or probe was launched. The canonical failures remain OPEN.
+
+Inspection of the downloaded API 36 artifacts exposed a separate, reproducible
+evidence-loss bug. Under
+`reports-40088219148-120855376604-1/12559094328`, the preserved
+`ci-evidence/api36/app/.../TEST-pixel2Api36-_app-.xml` contains all 510 full-app
+cases. The final raw `app/build/outputs/androidTest-results/.../pixel2Api36`
+directory contains only two startup cases and their two per-test logcats. The
+preserved full-app directory contains zero per-test logcats. The independent
+startup invocation replaced the full app's AGP output; `collect_reports` had
+copied only the XML beforehand. The uploaded full-app Gradle log does not contain
+the native focus-owner details needed to explain the initial-window failures.
+The earlier statement that the competing window is unknown therefore remains
+valid, but does not mean all original native diagnostics were retained.
+
+The repository runner now retains `logcat-*.txt` and `adb.*.logcat.*.txt` from
+the selected module/API output before parsing or validating JUnit. App and
+startup remain in separate evidence directories, just as their XML already did.
+The existing artifact upload glob includes these files. Successful collection
+lists diagnostic-file SHA-256 values; files remain retained if JUnit validation
+subsequently fails. Copying/hashing uses a bounded 1 MiB buffer rather than loading
+a potentially large raw logcat in memory. Other API output and unrelated files
+such as ADB environment dumps are excluded. XML parsing, mandatory identities,
+case counts, Gradle commands, startup isolation and pass/fail admission remain
+unchanged. This repairs diagnostic retention, not native window ownership.
+
+Two host regressions were added before the runner change. They reproduce lost
+full-app diagnostics when startup overwrites the same paths, and lost diagnostics
+when JUnit is missing, malformed or contains a failing mandatory case. The first
+test also checks exact bytes and hashes for a multi-MiB, non-UTF-8 raw logcat,
+startup separation and exclusion of unrelated/other-API files. Each fixture is
+self-contained. No Android test identity or inventory count changes.
+
+Verification:
+
+- `python -m unittest discover -s .github/scripts -p test_run_instrumentation.py -k native_diagnostics`
+  failed before the runner repair: two tests, with four `FileNotFoundError`
+  failures across the missing retained-logcat scenarios. It then passed both
+  tests after the repair.
+- `python -m unittest discover -s .github/scripts -p 'test_*.py'` passed all
+  19 host tests, including the expanded binary/large-log assertions. Device
+  commands printed by these tests are mocked; no Gradle device command runs.
+- The focused app verification command from the preceding section was rerun
+  successfully in 31s: 130 tasks, one executed and 129 up-to-date. Existing JVM,
+  ktlint, Detekt, lint and AndroidTest APK outputs remain current; this is cached
+  verification, not new device execution. The log is
+  `f0cf2b1fee154fd5afbc6d98/scratch/verification-continuation.log`.
+
+The already overwritten CI logcats cannot be reconstructed from XML. A fresh
+Controller-owned device/CI run must execute the repaired tree and retain its
+native focus-owner diagnostics to distinguish the initial fixture/window state
+from route behavior. The supplied 1/1/17/56 failures and API 36's initial-window
+cause remain unresolved. No infrastructure-only classification or device PASS
+is inferred. The overall task remains incomplete.
+
+### Archived-failure replay (continuation 432e42f3a27d40d1a2948dbb)
+
+This continuation supplied the same canonical failures and no new device result.
+The existing source/test repairs were preserved. The current collector was run
+offline against the actual archived full-app XML for API 26/31/33/36. It rejected
+exactly 1/1/17/56 unsuccessful mandatory identities, and every retained XML matched
+the original bytes and SHA-256. Original Controller artifacts were read only;
+replayed copies and hashes are in this continuation's
+`scratch/canonical-replay-summary.json` and `scratch/canonical-replay-api*/`.
+This verifies failure admission and evidence preservation, not Android execution.
+
+All 19 host runner tests passed again. The focused app JVM/static/APK command
+also passed in 30s, with one task executed and 129 up-to-date; its log is
+`scratch/verification-preserved-repair.log`. No new behavioral code change was
+justified by the unchanged evidence, and no device/probe task was launched.
+
+The required next step is fresh Controller-owned Android execution of the repaired
+tree, retaining the initial native-window admission diagnostics and full-app
+logcats before startup. Further source-only continuations with the same archived
+XML cannot identify the unknown competing window. The canonical stability
+obligation remains OPEN; no product decision or human approval is pending.
+
+### Authorized probe and diagnostic correction (continuation c00b98b228edd3a2a517c042)
+
+The renewed authorization ran the exact Controller repair-probe command against
+the preserved candidate. Probe `c6a6e4928b47466b934967324a3f7339/tree-2` completed
+three automatic attempts before any further repository edit or Gradle check.
+It returned exit 1, `LOCAL_TEST_INFRA_FAILURE`: all twelve scoped executions
+reached zero testcases. Telemetry recorded 17/15/15 emulator boots (47 total).
+Each API 26/31/33 execution failed in managed-device snapshot setup, with a setup
+timeout followed by snapshot retry/file-lock errors. Each API 36 execution exited
+255 before Gradle began. Cleanup reports for all three attempts mark all four
+devices safe/reconciled with no owned survivors. A separate host process query
+did not establish an orphan: CIM access was denied and the process-name fallback
+could not attribute the one observed emulator/QEMU pair to an AVD.
+
+Read-only analysis identified a concrete API 36 command-transport limit. The
+logged command has 8,175 characters and passes 8,144 characters as batch arguments.
+Substituting those arguments into the current wrapper's Java invocation yields
+at least 8,301 characters, even with the shortest Java executable spelling and
+empty optional JVM flags. This exceeds cmd.exe's documented 8,191-character
+limit and is consistent with the immediate syntax error and absent Gradle output.
+No raw device command was executed for this calculation. Controller must shorten
+the selectors or use a transport that avoids this batch expansion before the
+API 36 probe can provide app evidence. See [Microsoft's command-line limit](https://learn.microsoft.com/en-au/troubleshoot/windows-client/shell-experience/command-line-string-limitation).
+
+A further audit of the original full-app XML confirms that all 56 API 36 failures
+are `RootViewWithoutFocusException`; API 26/31/33 instead have 1/1/17 Compose
+timeouts. All fifteen API 36 route cases failed at their first Library landing,
+before a Library dialog opened. The later startup logcat cannot identify the
+original full-app focus owner. The existing pending-focus and hidden-dialog
+repairs therefore remain candidates, not a demonstrated explanation of all CI
+failures. The native owner at initial API 36 admission is still unknown.
+
+The diagnostic capture itself had an Android 16 gap: `dumpsys window windows`
+does not include the display dump that prints `mCurrentFocus`/`mFocusedApp`.
+This is verified by the Android 16 [WindowManagerService command dispatch](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/services/core/java/com/android/server/wm/WindowManagerService.java)
+and [DisplayContent dump](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/services/core/java/com/android/server/wm/DisplayContent.java).
+The existing sleeping-display/keyboard test was first extended to require that
+the shared diagnostic capture identify the admitted target application's native
+focus owner. The fixture then changed to the complete `dumpsys window` query.
+The same internal capture API serves the failure path and this assertion;
+expected production-control focus is still observed through native admission.
+The testcase identity and mandatory inventory are preserved. The new assertion
+has compiled but has not executed on a device; no runtime red/green is claimed.
+
+After the probe and diagnostic correction, the fresh command
+`./gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain --no-daemon --no-parallel --max-workers=2`
+passed in 3m 44s (8 tasks executed, 115 up-to-date). The operation's own
+`scratch/verification-window-diagnostics.log` and `scratch/probe-observations.json`
+record the build and detailed probe/transport analysis. The earlier 48 focused
+app JVM tests and 19 host runner tests remain passing evidence for unchanged
+production/runner code. Original Controller artifacts and prompts were preserved.
+
+The probe predates the final diagnostic-only fixture/test correction. Another
+mechanical probe would encounter the same snapshot/command-transport barriers,
+so none was launched. Fresh Android execution after Controller environment and
+transport recovery, followed by independent unfiltered five-API CI, remains
+required. The canonical stability obligation is OPEN; the overall repair is
+incomplete, with no unresolved product decision or human approval requirement.
+
+### Restored runtime probes and final scoped repair
+
+Operator continuation `f3dc02035f06463a8f276ada` supplied fresh, real testcase
+execution after Controller repaired Windows selector transport with a Java
+argument file and recovered device startup. The unchanged preceding candidate
+failed 1/1/17/1 cases on API 26/31/33/36 respectively. API 36 already passed 55
+of its 56 scoped cases; its remaining failure was a test selector asking for
+`Search inactive` as a content description, while the field exposes it as a
+state description. The selector now uses the Search label and explicitly checks
+the state description.
+
+The added semantic-timeout diagnostics retained native window ownership,
+attachment, touch mode, and the actual focused semantics. This separated two
+remaining mechanisms:
+
+- Sixteen API 33 failures owned the intended native window but were in touch
+  mode after dialog transitions. An active keyboard fixture now establishes
+  native keyboard mode for each admitted window, including keyboard dismissal
+  and native-key dispatch. Explicit test focus requests run after that
+  prerequisite. The existing dialog test additionally checks native keyboard
+  mode. Exact-root admission, production-focus assertions and 5-second bounds
+  are retained; fixture setup requests only the Compose owner's native focus.
+- Removed-control recovery on API 26/31/33 had native keyboard mode and window
+  focus, but Compose had fallen back to `New activity`. Keeping the pending
+  removal flag alone was insufficient: the `DisposableEffect` owner check ran
+  after framework fallback had already replaced the recorded owner. The shipped
+  Compose 1.10.0 [UI sources](https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-android/1.10.0/ui-android-1.10.0-sources.jar)
+  schedule owner-focus invalidation during target detachment, and the
+  [runtime sources](https://dl.google.com/dl/android/maven2/androidx/compose/runtime/runtime-android/1.10.0/runtime-android-1.10.0-sources.jar)
+  dispatch remember observers after the applier finishes its changes.
+  The shared [attachment hook](../../app/src/main/java/com/alexandr5476/lifetracing/ui/components/FocusTargetAttachment.kt)
+  now records detachment before that invalidation. Library and editor retain
+  pending recovery through automatic fallback focus until landing/restoration
+  succeeds. Editor handle attachment also follows actual node attachment.
+  A control already focused before unrelated removal remains the owner; the
+  existing surviving-Search and no-command assertions verify this boundary.
+
+The four probes below used the exact authorized command, with the repository unchanged
+through each execution and with no overlapping Gradle checks:
+
+| Lease c6a6e4928b47466b934967324a3f7339 | Executed cases | Result |
+| --- | ---: | --- |
+| tree-3 | 0 | Diagnostic-fixture import error; corrected and compiled before runtime diagnosis |
+| tree-4 | 75 | 19 failures: 1/1/17/0 by API; established touch-mode versus removal-recovery failures |
+| tree-5 | 75 | 4 failures: 1/1/2/0; exposed late disposal and one confirmation requesting focus before keyboard admission |
+| tree-6 | 75 | PASS: 1/1, 1/1, 17/17, 56/56 on API 26/31/33/36; zero failures, errors or skips |
+
+The final probe returned `PASS`, `Execution: REAL`, in 1156.2 seconds. Its actual
+case identities exactly match the four operator diagnostic scopes. Telemetry
+records 75 testcases, zero zero-test executions and eight observed emulator boots;
+all four cleanup receipts are safe/reconciled with no owned survivors. Reports
+remain under `c6a6e4928b47466b934967324a3f7339/tree-6/attempt-1/reports/app`.
+This operation's `scratch/final-verification.json` records exact paths, SHA-256
+hashes, scope equality and cleanup evidence. Earlier reproduced diagnostics are
+also retained in `scratch/reproduced-focus-failures.json`.
+
+All 48 focused JVM controller tests passed (28 Library, 20 Activity editor).
+The ordinary app ktlint/Detekt/lint/AndroidTest APK command passed in 2m 14s
+(8 tasks executed, 4 from cache, 111 up-to-date), recorded in
+`scratch/verification-detach-lifecycle-final.log`. An assertion-format error was
+corrected before this pass. A stale incremental lookup of the unchanged
+`onLazyNode` helper cleared after a full Kotlin compilation with the quoted
+`--project-prop 'kotlin.incremental=false'` argument; that compilation passed in
+3m 18s and the subsequent ordinary build passed. No compiler setting was persisted.
+The initial shell-split property attempt and successful retry logs are preserved.
+The unchanged runner's earlier 19 host tests remain passing evidence. Android
+test identities and mandatory inventories remain 510 app / 627 data / 2 startup.
+
+The local scoped repair is verified. Unfiltered five-API app/data execution,
+independent production startup and exact-head GitHub CI remain mandatory and
+Controller-owned; canonical stability stays OPEN until those gates accept the
+new candidate. The historical CI API 36 native focus owner remains unknown
+because its original full-app logcat was overwritten. Current scoped passes
+do not identify that old owner. Improved diagnostics and full-app log retention
+remain in place for independent CI. No product decision or human approval is pending.

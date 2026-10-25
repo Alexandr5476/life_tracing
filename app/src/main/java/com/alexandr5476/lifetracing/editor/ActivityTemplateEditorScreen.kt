@@ -45,6 +45,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -605,10 +606,12 @@ private fun EditorDiscard(
         dismissButton = {
             locals {
                 val window = LocalWindowInfo.current
-                LaunchedEffect(window.isWindowFocused) {
-                    if (window.isWindowFocused) {
+                val inputMode = LocalInputModeManager.current.inputMode
+                var initialFocusPending by remember { mutableStateOf(true) }
+                LaunchedEffect(window.isWindowFocused, inputMode, initialFocusPending, lease.visible) {
+                    if (window.isWindowFocused && initialFocusPending) {
                         withFrameNanos { }
-                        focus.requestFocus()
+                        lease.invoke { initialFocusPending = !focus.requestFocus() }
                     }
                 }
                 TextButton(

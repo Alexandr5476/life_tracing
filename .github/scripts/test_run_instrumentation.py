@@ -1,5 +1,6 @@
 import importlib.util
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -331,6 +332,61 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             ci.collect_reports(root, root / "evidence", "startup", 26)
             self.assertEqual((root / "evidence" / source.relative_to(root)).read_bytes(), original)
             self.assertEqual((root / "evidence/startup" / source.relative_to(root)).read_bytes(), source.read_bytes())
+
+    def test_native_diagnostics_survive_startup_output_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.write_inventory(root, "app", 36)
+            originals = {
+                "logcat-FailingRouteTest-nativeWindow.txt": b"full app window focus diagnostic\n",
+                "adb.021.logcat.aborted.txt": b"full app system logcat\n" * 100_000 + b"final focus owner\x00\xff\n",
+            }
+            for name, content in originals.items():
+                source.with_name(name).write_bytes(content)
+            unrelated = source.with_name("adb.011.printenv.ok.txt")
+            unrelated.write_text("unrelated output", encoding="utf-8")
+            other_api = source.parent.with_name("pixel2Api35") / "logcat-other.txt"
+            other_api.parent.mkdir()
+            other_api.write_text("other API", encoding="utf-8")
+
+            evidence = root / "evidence"
+            result = ci.collect_reports(root, evidence, "app", 36)
+            self.write_inventory(root, "startup", 36)
+            for name in originals:
+                source.with_name(name).write_bytes(b"startup logcat\n")
+            ci.collect_reports(root, evidence, "startup", 36)
+
+            for name, content in originals.items():
+                relative = source.with_name(name).relative_to(root)
+                self.assertEqual((evidence / relative).read_bytes(), content)
+                self.assertEqual((evidence / "startup" / relative).read_bytes(), b"startup logcat\n")
+            self.assertEqual(len(result["reports"]), 1)
+            self.assertEqual(len(result["diagnostic_artifacts"]), 2)
+            hashes = {item["path"]: item["sha256"] for item in result["diagnostic_artifacts"]}
+            for name, content in originals.items():
+                relative = source.with_name(name).relative_to(root).as_posix()
+                self.assertEqual(hashes[relative], hashlib.sha256(content).hexdigest())
+            self.assertFalse((evidence / unrelated.relative_to(root)).exists())
+            self.assertFalse((evidence / other_api.relative_to(root)).exists())
+
+    def test_native_diagnostics_survive_missing_malformed_or_unsuccessful_reports(self):
+        for defect in ("missing", "malformed", "failure"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, suite = self.write_inventory(root, "app", 36)
+                diagnostic = source.with_name("logcat-FailingRouteTest-nativeWindow.txt")
+                content = b"native-window evidence must survive a failing invocation\n"
+                diagnostic.write_bytes(content)
+                if defect == "missing":
+                    source.unlink()
+                elif defect == "malformed":
+                    source.write_bytes(b"<testsuite>")
+                else:
+                    ET.SubElement(suite.find("testcase"), "failure")
+                    self.save_report(source, suite)
+                with self.assertRaises((ValueError, ET.ParseError)):
+                    ci.collect_reports(root, root / "evidence", "app", 36)
+                self.assertEqual((root / "evidence" / diagnostic.relative_to(root)).read_bytes(), content)
 
     def test_merge_checkout_is_rejected_before_running_gradle(self):
         with tempfile.TemporaryDirectory() as temporary:

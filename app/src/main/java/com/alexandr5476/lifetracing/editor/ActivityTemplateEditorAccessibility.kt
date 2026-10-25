@@ -4,7 +4,6 @@ package com.alexandr5476.lifetracing.editor
 
 import androidx.compose.foundation.focusGroup
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,9 +23,11 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 
 internal val LocalEditorFocus = staticCompositionLocalOf<EditorFocus> { error("Editor focus missing") }
 internal val LocalEditorVisible = staticCompositionLocalOf { false }
@@ -52,6 +53,7 @@ internal fun rememberEditorFocus(
 ): EditorFocus {
     val focus = remember { EditorFocus() }
     val window = LocalWindowInfo.current
+    val inputMode = LocalInputModeManager.current.inputMode
     val phase =
         when (state.load) {
             ActivityTemplateEditorLoad.Loading -> 0
@@ -72,6 +74,7 @@ internal fun rememberEditorFocus(
         state.generation,
         state.discardConfirmationVisible,
         window.isWindowFocused,
+        inputMode,
         editable,
         landingPending,
     ) {
@@ -82,25 +85,23 @@ internal fun rememberEditorFocus(
                 withFrameNanos { }
                 if (dialogWasOpen) {
                     val target = focus.owner
-                    if (target?.attached != true || !target.requester.requestFocus()) focus.landing.requestFocus()
-                    dialogWasOpen = false
-                    landingPending = false
+                    val restored = target?.attached == true && target.requester.requestFocus()
+                    if (restored || focus.landing.requestFocus()) {
+                        dialogWasOpen = false
+                        landingPending = false
+                    }
                 } else if (landingPending || !focus.hasFocus) {
-                    focus.landing.requestFocus()
-                    landingPending = false
+                    landingPending = !focus.landing.requestFocus()
                 }
             }
         }
     }
     val canRecover = visible && window.isWindowFocused && editable && !state.discardConfirmationVisible
-    LaunchedEffect(canRecover, focus.removed, focus.hasFocus) {
-        if (canRecover && focus.removed && !focus.hasFocus) {
+    LaunchedEffect(canRecover, inputMode, focus.removed) {
+        if (canRecover && focus.removed) {
             withFrameNanos { }
-            // Keep the removal pending while native disposal still reports group focus.
-            if (!focus.hasFocus) {
-                focus.landing.requestFocus()
-                focus.removed = false
-            }
+            // Detachment may assign framework fallback focus before this deferred recovery.
+            if (focus.removed && focus.landing.requestFocus()) focus.removed = false
         }
     }
     return focus
@@ -126,18 +127,14 @@ internal fun editorInputFocusTarget(description: String? = null): Modifier {
 internal fun editorFocusTarget(description: String? = null): Modifier {
     val focus = LocalEditorFocus.current
     val handle = remember { EditorFocusHandle() }
-    DisposableEffect(handle) {
-        onDispose {
-            handle.attached = false
-            if (focus.owner === handle) focus.removed = true
-        }
-    }
     return Modifier
-        .focusRequester(handle.requester)
+        .onFocusTargetAttachmentChanged { attached ->
+            handle.attached = attached
+            if (!attached && focus.owner === handle) focus.removed = true
+        }.focusRequester(handle.requester)
         .onFocusChanged {
             if (it.isFocused) {
                 focus.owner = handle
-                focus.removed = false
             }
         }.semantics { if (description != null) contentDescription = description }
 }

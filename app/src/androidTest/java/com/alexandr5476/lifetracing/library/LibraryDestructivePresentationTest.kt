@@ -467,6 +467,7 @@ class LibraryDestructivePresentationTest {
         ) {
             performScrollTo()
         }
+        keyboard.awaitWindowFocus(this)
         performSemanticsAction(SemanticsActions.RequestFocus)
         awaitKeyboardFocus()
         keyboard.sendKey(this, android.view.KeyEvent.KEYCODE_ENTER)

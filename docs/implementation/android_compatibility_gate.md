@@ -22,6 +22,42 @@ focus recovery and keyboard-fixture display prerequisites. See the S4 record's
 cross-API CI repair section for the supplied failures, diagnosis limits and local
 verification. Full device execution remains Controller-owned.
 
+CI run `40088219148` remains unclosed. The follow-up retains refused focus
+requests, observes keyboard eligibility and recovers from tracked-target removal;
+its regression additions and native-window diagnostics are recorded in the S4
+record's pending-focus repair section. Local emulator setup failures are separate
+from the supplied CI testcase failures and do not establish device PASS.
+The continuation also closes a hidden Library name-dialog window and retires its
+submission lease, while requiring native-window admission before fixture navigation.
+See the S4 native-window ownership section for the unchanged-tree, zero-test probe
+and the unresolved historical API 36 initial-window cause.
+The runner also now retains full-suite native logcats before independent startup
+replaces app output. Its two new host regressions reproduce that evidence loss;
+all 19 runner tests pass. This preserves future diagnosis and does not close the
+supplied native focus failures or change mandatory test admission.
+The renewed scoped probe completed twelve zero-test executions across three
+automatic attempts (47 observed emulator boots). API 26/31/33 stopped in snapshot
+setup; API 36 exceeded the batch-wrapper command-length limit before Gradle.
+The final fixture correction captures the complete WindowManager dump so Android
+16 display focus ownership is retained, with an existing keyboard test extended
+to verify the admitted application's owner. Fresh app static checks and AndroidTest
+APK compilation pass; device execution of that assertion and the canonical
+stability obligation remain open. See the S4 authorized-probe continuation for
+the transport calculation, original failure classification and evidence paths.
+
+After Controller recovered transport/startup, fresh runtime evidence narrowed
+API 36 to one incorrect Search selector (55/56 scoped cases already passed).
+The final repair establishes native keyboard mode per admitted window and records
+focus-target detachment before Compose owner-focus invalidation, using a shared
+Library/editor modifier hook. The authorized tree-6 probe now passes all 75
+original scoped identities: API 26 1/1, API 31 1/1, API 33 17/17, API 36 56/56,
+with zero failures/errors/skips and safe device cleanup. The 48 focused JVM tests
+and ordinary app static/lint/APK checks also pass. See the S4
+[final scoped repair](activity_template_editor_accessibility.md#restored-runtime-probes-and-final-scoped-repair)
+for red/green evidence, exact report hashes and the historical diagnostic limit.
+The unfiltered five-API suites, startup checks and independent exact-head CI
+remain mandatory; the scoped local PASS does not close canonical CI stability.
+
 S4 Controller attempt 1 stopped after 148 app cases with six failures and a device
 SurfaceFlinger crash. The two authorized six-case repair probes progressed from
 four to five passing cases and exposed an unchanged configuration after archived
