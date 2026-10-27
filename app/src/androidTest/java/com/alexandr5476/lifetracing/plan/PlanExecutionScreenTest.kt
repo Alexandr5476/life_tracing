@@ -673,24 +673,28 @@ class PlanExecutionScreenTest {
                     )
                 val start = choice(true, false)
                 val end = choice(false, true)
+                val firstInput = compose.onNodeWithTag("plan-time-start")
+                keyboard.awaitFocus(firstInput)
+                keyboard.closeKeyboard(firstInput)
+
+                fun focusChoice(node: SemanticsNodeInteraction): SemanticsNodeInteraction {
+                    // Keep focus and scroll on the same choice after selection changes its size.
+                    node.performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(node)
+                    return node.performScrollTo().assertIsDisplayed()
+                }
+
                 for (label in listOf(start, end)) {
-                    compose
-                        .onNode(hasText(label) and hasClickAction())
-                        .performScrollTo()
-                        .assertIsDisplayed()
-                        .assertIsNotSelected()
-                        .performSemanticsAction(SemanticsActions.RequestFocus)
+                    val node = compose.onNode(hasText(label) and hasClickAction())
+                    focusChoice(node).assertIsNotSelected()
                 }
                 assertNull(session.timeDraft?.startedOffset)
                 assertNull(session.timeDraft?.completedOffset)
                 invoke(start)
                 invoke(end)
                 for (label in listOf(start, end)) {
-                    compose
-                        .onNode(hasText(label, substring = true) and hasClickAction())
-                        .performScrollTo()
-                        .assertIsDisplayed()
-                        .assertIsSelected()
+                    val node = compose.onNode(hasText(label, substring = true) and hasClickAction())
+                    focusChoice(node).assertIsSelected()
                 }
                 compose.runOnIdle {
                     zone = ZoneOffset.UTC

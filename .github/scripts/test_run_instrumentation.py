@@ -279,6 +279,9 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 self.assertTrue(all(startup_property not in c for c in commands[:2]))
                 self.assertIn(startup_property, commands[2])
                 self.assertTrue(all(not any("Arguments.class" in arg for arg in c) for c in commands))
+                for command in commands:
+                    graphics = [arg for arg in command if arg.startswith("-Pandroid.testoptions.manageddevices.emulator.gpu=")]
+                    self.assertEqual(graphics, ["-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader"])
 
     def test_emulator_install_failure_is_observable_and_keeps_failed_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

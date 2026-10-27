@@ -259,6 +259,79 @@ emulator. Controller owns fresh device/CI verification. The original startup ANR
 and stability obligation remain **unresolved**; this patch repairs its confirmed
 diagnostic omission without changing application behavior or test assertions.
 
+### API 33 offset visibility and API 36 graphics startup (CI round 5)
+
+CI run `40461748715`, head `36b426768159f81f4947b9757abe0580392d6a3a`,
+adds one independent API 33 failure: the Russian selected start-offset button is
+outside the viewport at maximum combined scale. The unchanged-tree repair probe
+`fd80f59af5214d508e50622b1bf29df5/tree-1` first passes that isolated testcase,
+then its automatic recovery attempt reproduces the same selected-choice assertion
+in English at line 692. This reproduces within the original test itself; a prior
+test's mutable fixture is not required. The retained CI log also shows IME input
+activity during the measurement sequence.
+
+The fixture requested focus on one choice and scrolled to another without waiting
+for native/semantic focus or closing the form's IME. Selection also grows the
+localized button label. It now awaits initial form focus, closes the IME in that
+window, and aligns focus with each choice before scrolling and asserting visibility.
+Exact unselected labels, selected labels, both selection assertions, passive-focus
+checks, explicit zone review and retained local-text assertions remain enforced.
+No product or persistence behavior changes.
+
+The API 36 persistent report now supplies the missing startup stack: SystemUI PID
+997 is blocked in `SurfaceControl.getGPUContextPriority` from
+`SystemUIApplication.onCreate`, with a 13,611 ms outgoing binder transaction to
+SurfaceFlinger PID 506. Its startup ANR is timestamped **06:35:47**, before app
+testing, and its dialog `8d53f7c` subsequently blocks all 114 reported native-window
+admissions. All affected methods in twelve classes still use the shared keyboard
+fixture. Their downstream assertions were not reached by this failure.
+
+The CI invocation still selected `swiftshader_indirect` on Emulator **37.2.12.0**.
+Android's current [graphics configuration documentation](https://developer.android.com/studio/run/emulator-acceleration)
+marks that mode deprecated since **36.4.9** and documents `swiftshader` as the
+supported explicit SwiftShader GLES/Vulkan mode. The shared CI runner now selects
+`swiftshader` for data, app and independent startup on all five APIs. A host
+regression first fails on every API, then all **26** runner tests pass after the
+change. Inventory, complete-suite admission, assertions and ANR failure gating
+remain intact. This removes reliance on the legacy renderer; it does not prove
+that the modern renderer alone prevents the captured graphics startup stall.
+
+The baseline API 36 probe executed **zero** tests in both automatic attempts,
+reporting an instrumentation-process crash before discovery without positive
+repository or device-ownership evidence. It neither reproduces nor clears the
+remote ANR. The leased Controller probes still request `swiftshader_indirect`;
+they do not validate the changed Linux CI renderer or establish CI/local graphics
+parity. Fresh Controller-owned CI with the updated command remains necessary.
+
+Local focused Plan session/controller JVM tests pass (**26** cases), app ktlint and
+Detekt pass, and the changed AndroidTest APK compiles/packages successfully. A
+subsequent ktlint/APK check also passes after preserving the original selectors.
+The red/green host logs, all-114 source/fixture index and justified class scope are
+under `D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/b4e6f66a949130ce6e374932/scratch/`.
+The original remote failures and independent stability obligation remain open.
+
+The repaired containing-class probe completed **REAL PASS** at
+`fd80f59af5214d508e50622b1bf29df5/tree-2/attempt-2`: **10/10 API 33** and
+**225/225 API 36**, with zero failures, errors or skips. The final reports contain
+each of the original **115** failing identities exactly once and successful; report
+hashes and this membership check are in `scratch/repaired-probe-evidence.json`.
+Controller cleanup reports `safe=true`, complete enumeration and no owned live
+processes or survivors for both devices.
+
+Its first automatic attempt passed the ten Plan cases but could not install the
+API 36 APK: the package service returned **Broken pipe**, followed by a missing
+Android activity service. That zero-test result is not app execution or PASS.
+Controller recovery restored device execution before the successful 225-case run;
+the repeated Plan class also passed. An earlier API 33-only scope request was
+refused before execution because the lease requires both checks; the accepted
+class scope retains every original failure on both leased checks.
+
+This local PASS verifies the repaired fixture and the existing affected app
+classes on Windows. It still uses the leased legacy graphics flag and does not
+establish Linux renderer equivalence, certify the changed CI command, explain the
+underlying SurfaceFlinger startup stall, or close the original CI stability
+obligation. Only this evidence record changed after the successful probe.
+
 ## Template archive and Folder deletion accessibility (Slice S3)
 
 Adds nine lifecycle presentation identities and four isolated production-route

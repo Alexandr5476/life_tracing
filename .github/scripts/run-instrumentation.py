@@ -201,7 +201,8 @@ def main():
             target_module = "app" if module == "startup" else module
             command = ["./gradlew", f":{target_module}:pixel2Api{args.api}DebugAndroidTest",
                        f"-Plifetracing.compatibility.expectedApi={args.api}",
-                       "-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect",
+                       # The indirect renderer is deprecated since Emulator 36.4.9.
+                       "-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader",
                        "-Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5",
                        "--no-parallel", "--max-workers=2", "--no-daemon", "--no-configuration-cache",
                        "--rerun-tasks", "--no-build-cache", "--console=plain", "--stacktrace"]
