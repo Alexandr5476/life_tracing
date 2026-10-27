@@ -89,6 +89,95 @@ only test synchronization. See the S4 record for exact artifacts and platform-cr
 evidence. Inventory is unchanged. Full-suite native stability and all complete
 Controller-owned gates remain required.
 
+## API 26 CI interruption: bounded diagnostic continuation (2026-10-27)
+
+CI run `40152984828`, job `121058069021`, at head
+`ae78358d21c3f233fbe6130dbd4611632725b240` stopped after 314 completed app
+cases. Its 315th testcase,
+`ExpandedLiveSequenceScreenTest#alreadyOpenOccurrenceMenuIsDismissedWhenStateAuthorizationChanges`,
+has an empty failure entry and elapsed time of 374.641 seconds. The original XML
+SHA-256 is `f2c4ff99b13ea7d10d647d46c3ac66c20076933d80c40cb037cb608f93b745e7`.
+Native output stops at `03:16:06.761`, after the Activity's PAUSED event, without
+a TestRunner finish, assertion stack, ANR or Java/native crash message. The host
+logcat command eventually exits 255 at `03:22:20.929`. This does not establish
+whether the test body completed or what interrupted teardown/device transport.
+
+The repository collector had a confirmed diagnostic-loss defect: it retained only
+two logcat filename patterns before independent startup reused app output. UTP
+logs, instrumentation status/command logs, binary results and additional native
+output were overwritten. Parsing a malformed first XML also prevented later
+original XML files from being copied. The collector now snapshots all selected
+device output, additional output and the merged result protobuf before parsing
+any XML. It excludes transient `.lck` files, streams bytes and hashes, separates
+startup artifacts, and writes `<module>-artifacts.json` before validation so hashes
+remain available when validation rejects the invocation. Mandatory inventory,
+commands and gate admission are unchanged. This shared collector covers data,
+app and startup at every API.
+
+Two host regressions reproduce the evidence loss against the original HEAD
+collector; all **21** runner tests pass against the correction. Coverage includes
+startup overwriting UTP, nested command/status logs and binary results, a large
+binary-tailed logcat, malformed-first XML, additional native output, merged results,
+empty device output, and preservation of the existing rejection rules. Original
+red/green logs and results are in the current operation's
+`scratch/collector-regression-*.log`, `scratch/collector-regression-results.json`
+and `scratch/collector-regression-final-results.json`.
+
+Authorized REAL diagnostic probes, using only `gmd-api26-app`, established:
+
+- Both Expanded Sequence classes together: **64/64**, zero failures/errors/skips,
+  313.5 seconds; lease `083d9f3b219e4bc694e16a2098ae1096`, `tree-2/attempt-1`.
+- The **31 explicit classes** reached by the original CI report: **357/357**, zero
+  failures/errors/skips, 1148.6 seconds; the same lease, `tree-3/attempt-1`. Its
+  first **315 testcase identities and execution order exactly match** the failed
+  CI report. The original failing testcase completes in 1.334 seconds. Local XML
+  SHA-256: `f1c99e97d2608d75f3d2ce5f30c4d2a7c73d34500685d0afd96e5d4eec8d1480`.
+
+Before any later invocation, original JUnit, UTP, binary/native/command output and
+Controller command/cleanup logs were copied into the operation
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/0fb2997f0793a64cadd888f5/scratch/`:
+`class-probe-evidence/manifest.json` indexes 108 artifacts and
+`prefix-probe-evidence/manifest.json` indexes 402. Each manifest records hashes;
+the prefix manifest also records the original-order comparison. Scope JSON files
+record both hypotheses and exact explicit class lists.
+
+The underlying CI interruption remains **unresolved**. The local grouped and
+original-prefix runs do not reproduce it. The retained local native logs report
+GLES 2 while CI reports GLES 3; this observed environment difference does not
+prove a graphics cause. No application assertion or behavior was changed. Further
+repetition of these passing local scopes would add no justified evidence. Fresh
+Controller-owned CI with the corrected diagnostic retention is needed to expose
+the original runner/device failure if it recurs. These diagnostic passes grant
+no canonical CI PASS credit or closure of the open stability obligation.
+
+### Command I/O continuation
+
+The next physical turn preserved the three partial file changes and verified every
+hash in both retained probe manifests: all **510** artifacts still match, and the
+original 315-case prefix/order comparison still holds. No passing device scope was
+repeated.
+
+A new host experiment confirmed another path through the same evidence-loss
+boundary: an I/O exception while streaming Gradle output, waiting for the process,
+or closing its output skipped collection and allowed startup to overwrite the
+original app artifacts. One regression exercises all three phases with real
+temporary JUnit, UTP, protobuf and command-log files and a simulated Gradle process.
+Each phase reproduces missing retained artifacts before the repair.
+
+The shared invocation loop now attempts collection after a command I/O error,
+records `execution_error` separately from `evidence_error`, and rejects a command
+error even when the process returned zero and the report inventory passed. Normal
+test/validation failures still permit the independent startup invocation. All
+**22** runner tests pass. These are host-only changes; no application assertion or
+runtime behavior was changed, and the original CI interruption remains unresolved.
+
+Fresh red/green logs, `transport-retention-results.json` and
+`retained-evidence-validation.json` are under
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/8b7c4afce6a347aa88216537/scratch/`.
+This experiment confirms the repository's command-error collection defect, not
+that CI run `40152984828` took that Python exception path. Fresh Controller-owned
+CI remains necessary; no additional local PASS credit is claimed.
+
 ## Template archive and Folder deletion accessibility (Slice S3)
 
 Adds nine lifecycle presentation identities and four isolated production-route
@@ -363,7 +452,7 @@ Controller must retain fail-first device evidence by removing only the requireVa
 
 Each API uploads these artifacts even on failure, retained for 30 days:
 
-- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log, startup.log and byte-for-byte original per-invocation TEST-*.xml with SHA-256 digests.
+- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log, startup.log, per-invocation `<module>-artifacts.json` hash manifests, and byte-for-byte original JUnit, UTP, binary results, command/status logs and additional native output. Snapshots and manifests precede XML validation, including for failed or malformed invocations.
 - `instrumentation-reports-api<API>-attempt<ATTEMPT>`: the same evidence plus each module's build/reports, build/outputs/androidTest-results and managed-device additional output.
 
 Original per-device XML is under `<module>/build/outputs/androidTest-results/managedDevice/debug/pixel2Api<API>/`. HTML is under `<module>/build/reports/androidTests/managedDevice/debug/pixel2Api<API>/`. Each module's AndroidCompatibilityDeviceTest name records actual SDK; system output/logs record fingerprint. evidence.json records commands, timestamps, exit codes, API observation, mandatory inventory certification, counts, SHA and report hashes. Compare all three invocation observations with the selected API. Combined allDevices reports, compilation and cached ignored outputs are insufficient evidence.

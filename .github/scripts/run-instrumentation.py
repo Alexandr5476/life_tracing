@@ -57,13 +57,22 @@ def collect_reports(repo, directory, module, api):
     executed = {}
     target_module = "app" if module == "startup" else module
     source = repo / target_module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
-    # Preserve focus/system evidence before JUnit validation can fail and before startup replaces it.
-    diagnostic_files = sorted({path for pattern in ("logcat-*.txt", "adb.*.logcat.*.txt")
-                               for path in source.glob(pattern) if path.is_file()})
+    additional = repo / target_module / "build/outputs/managed_device_android_test_additional_output/debug" / f"pixel2Api{api}"
+    report_files = sorted(source.glob("TEST-*.xml"))
+    # Startup replaces AGP's device output, including UTP/command logs and binary results.
+    # Snapshot the complete selected invocation before parsing any possibly malformed XML.
+    report_set = set(report_files)
+    diagnostic_files = sorted(path for root in (source, additional) for path in root.rglob("*")
+                              if path.is_file() and path not in report_set and path.suffix != ".lck")
+    merged = source.parent / "test-result.pb"
+    if merged.is_file():
+        diagnostic_files.append(merged)
+    reports = [retain_artifact(repo, directory, module, path) for path in report_files]
     diagnostics = [retain_artifact(repo, directory, module, path) for path in diagnostic_files]
-    for path in sorted(source.glob("TEST-*.xml")):
-        # Retain original evidence even if parsing or mandatory inventory validation fails.
-        reports.append(retain_artifact(repo, directory, module, path))
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{module}-artifacts.json").write_text(
+        json.dumps(dict(reports=reports, diagnostic_artifacts=diagnostics), indent=2) + "\n", encoding="utf-8")
+    for path in report_files:
         tree = ET.parse(path)
         if tree.getroot().tag not in ("testsuite", "testsuites"):
             raise ValueError(f"{module}: malformed JUnit root")
@@ -146,6 +155,11 @@ def main():
                             print(line, end="", flush=True)
                             log.write(line)
                         record["exit_code"] = process.wait()
+            except (OSError, ValueError) as exc:
+                record["execution_error"] = str(exc)
+                print(f"::error::{module} API {args.api} command: {exc}", flush=True)
+            # A command/log transport error must not bypass retention before startup.
+            try:
                 record.update(collect_reports(repo, directory, module, args.api))
             except (OSError, ET.ParseError, ValueError) as exc:
                 record["evidence_error"] = str(exc)
@@ -153,6 +167,7 @@ def main():
             record["finished_at"] = timestamp()
             passed = (record["exit_code"] == 0 and record.get("total", 0) > 0
                       and record.get("mandatory_inventory_passed") is True and "evidence_error" not in record
+                      and "execution_error" not in record
                       and record.get("observed_apis") == [args.api]
                       and not any(record.get(key, 0) for key in ("failures", "errors")))
             failed |= not passed

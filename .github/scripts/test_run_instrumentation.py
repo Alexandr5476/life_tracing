@@ -176,6 +176,78 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertEqual(evidence["modules"]["app"]["exit_code"], 1)
             self.assertNotEqual(evidence["event_sha"], evidence["tested_sha"])
 
+    def test_command_io_failure_retains_app_artifacts_before_startup_and_rejects_gate(self):
+        for phase in ("stream", "wait", "close"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                originals, commands = {}, []
+                fixture = self
+
+                class Process:
+                    def __init__(self, command, **kwargs):
+                        commands.append(command)
+                        self.module = ("startup" if "-Plifetracing.compatibility.productionStartup=true" in command
+                                       else "data" if command[1].startswith(":data:") else "app")
+                        source, suite = fixture.write_inventory(root, self.module, 35)
+                        if self.module == "app":
+                            if phase != "close":
+                                ET.SubElement(suite.find("testcase"), "failure")
+                                fixture.save_report(source, suite)
+                            originals[source] = source.read_bytes()
+                            for name, content in {
+                                "utp.0.log": b"original runner interruption\n",
+                                "test-result.pb": b"\x00\xfforiginal binary results",
+                                "adb.023.instrument.fail.txt": b"original command stderr\n",
+                            }.items():
+                                path = source.with_name(name)
+                                path.write_bytes(content)
+                                originals[path] = content
+                        elif self.module == "startup":
+                            for path in originals:
+                                if path != source:
+                                    path.write_bytes(b"startup replacement\n")
+                        self.stdout = self.output()
+
+                    def output(self):
+                        yield f"{self.module} command output\n"
+                        if self.module == "app" and phase == "stream":
+                            raise OSError("app stream interrupted")
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        if self.module == "app" and phase == "close":
+                            raise OSError("app close interrupted")
+
+                    def wait(self):
+                        if self.module == "app" and phase == "wait":
+                            raise OSError("app wait interrupted")
+                        return 0
+
+                env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci.subprocess, "Popen", Process), \
+                        patch("sys.argv", ["ci", "--api", "35"]), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ci.main(), 1)
+
+                directory = root / "ci-evidence/api35"
+                for path, content in originals.items():
+                    self.assertEqual((directory / path.relative_to(root)).read_bytes(), content)
+                    self.assertNotEqual(path.read_bytes(), content)
+                record = json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["modules"]
+                self.assertEqual(record["app"]["execution_error"], f"app {phase} interrupted")
+                if phase == "close":
+                    self.assertEqual(record["app"]["exit_code"], 0)
+                    self.assertTrue(record["app"]["mandatory_inventory_passed"])
+                else:
+                    self.assertIn("mandatory", record["app"]["evidence_error"])
+                self.assertTrue(record["startup"]["mandatory_inventory_passed"])
+                self.assertEqual(len(commands), 3)
+                self.assertIn("app command output", (directory / "app.log").read_text(encoding="utf-8"))
+
     def test_emulator_install_is_api26_only_and_precedes_both_full_suites(self):
         for api in (26, 31, 33, 35, 36):
             with self.subTest(api=api), tempfile.TemporaryDirectory() as temporary:
@@ -340,10 +412,15 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             originals = {
                 "logcat-FailingRouteTest-nativeWindow.txt": b"full app window focus diagnostic\n",
                 "adb.021.logcat.aborted.txt": b"full app system logcat\n" * 100_000 + b"final focus owner\x00\xff\n",
+                "utp.0.log": b"original runner failure\n",
+                "test-result.pb": b"\x00\xfforiginal binary result\n",
+                "testlog/test-results.log": b"original instrumentation status\n",
+                "adb.023.instrument.fail.txt": b"original command and stderr\n",
             }
             for name, content in originals.items():
-                source.with_name(name).write_bytes(content)
-            unrelated = source.with_name("adb.011.printenv.ok.txt")
+                (source.parent / name).parent.mkdir(parents=True, exist_ok=True)
+                (source.parent / name).write_bytes(content)
+            unrelated = source.with_name("utp.0.log.lck")
             unrelated.write_text("unrelated output", encoding="utf-8")
             other_api = source.parent.with_name("pixel2Api35") / "logcat-other.txt"
             other_api.parent.mkdir()
@@ -353,21 +430,55 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             result = ci.collect_reports(root, evidence, "app", 36)
             self.write_inventory(root, "startup", 36)
             for name in originals:
-                source.with_name(name).write_bytes(b"startup logcat\n")
+                (source.parent / name).write_bytes(b"startup logcat\n")
             ci.collect_reports(root, evidence, "startup", 36)
 
             for name, content in originals.items():
-                relative = source.with_name(name).relative_to(root)
+                relative = (source.parent / name).relative_to(root)
                 self.assertEqual((evidence / relative).read_bytes(), content)
                 self.assertEqual((evidence / "startup" / relative).read_bytes(), b"startup logcat\n")
             self.assertEqual(len(result["reports"]), 1)
-            self.assertEqual(len(result["diagnostic_artifacts"]), 2)
+            self.assertEqual(len(result["diagnostic_artifacts"]), len(originals))
             hashes = {item["path"]: item["sha256"] for item in result["diagnostic_artifacts"]}
             for name, content in originals.items():
-                relative = source.with_name(name).relative_to(root).as_posix()
+                relative = (source.parent / name).relative_to(root).as_posix()
                 self.assertEqual(hashes[relative], hashlib.sha256(content).hexdigest())
             self.assertFalse((evidence / unrelated.relative_to(root)).exists())
             self.assertFalse((evidence / other_api.relative_to(root)).exists())
+
+    def test_all_original_xml_and_runner_evidence_survive_malformed_first_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.write_inventory(root, "app", 26)
+            malformed = source.with_name("TEST-0-malformed.xml")
+            malformed.write_bytes(b"<testsuite>")
+            runner = source.with_name("utp.0.log")
+            runner.write_bytes(b"Test run failed to complete: expected 510, received 314\n")
+            merged = source.parent.parent / "test-result.pb"
+            merged.write_bytes(b"\x00\xfforiginal merged result")
+            native = root / "app/build/outputs/managed_device_android_test_additional_output/debug/pixel2Api26/crash/window.png"
+            native.parent.mkdir(parents=True)
+            native.write_bytes(b"\x89PNG\x00original native output")
+            original = source.read_bytes()
+            evidence = root / "evidence"
+            with self.assertRaises(ET.ParseError):
+                ci.collect_reports(root, evidence, "app", 26)
+            self.assertEqual((evidence / source.relative_to(root)).read_bytes(), original)
+            self.assertEqual((evidence / runner.relative_to(root)).read_bytes(), runner.read_bytes())
+            self.assertEqual((evidence / merged.relative_to(root)).read_bytes(), merged.read_bytes())
+            self.assertEqual((evidence / native.relative_to(root)).read_bytes(), native.read_bytes())
+            manifest = json.loads((evidence / "app-artifacts.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["reports"]), 2)
+            self.assertEqual(len(manifest["diagnostic_artifacts"]), 3)
+
+    def test_empty_device_output_is_rejected_with_empty_artifact_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / "evidence"
+            with self.assertRaisesRegex(ValueError, "mandatory"):
+                ci.collect_reports(root, evidence, "app", 26)
+            manifest = json.loads((evidence / "app-artifacts.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest, dict(reports=[], diagnostic_artifacts=[]))
 
     def test_native_diagnostics_survive_missing_malformed_or_unsuccessful_reports(self):
         for defect in ("missing", "malformed", "failure"):
