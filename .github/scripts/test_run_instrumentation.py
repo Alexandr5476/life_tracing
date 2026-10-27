@@ -499,6 +499,112 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     ci.collect_reports(root, root / "evidence", "app", 36)
                 self.assertEqual((root / "evidence" / diagnostic.relative_to(root)).read_bytes(), content)
 
+    def test_system_ui_anr_captures_once_before_startup_and_cannot_pass_green_reports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdk = root / "sdk"
+            adb = sdk / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+            adb.parent.mkdir(parents=True)
+            adb.touch()
+            directory = root / "ci-evidence/api36"
+            fixture = self
+
+            class Process:
+                def __init__(self, command, **kwargs):
+                    module = ("startup" if "-Plifetracing.compatibility.productionStartup=true" in command
+                              else "data" if command[1].startswith(":data:") else "app")
+                    if module == "startup":
+                        fixture.assertTrue((directory / "app-system-ui/manifest.json").is_file())
+                    fixture.write_inventory(root, module, 36)
+                    self.stdout = (["mCurrentFocus=Window{abc Application Not Responding: com.android.systemui}\n"] * 2
+                                   if module == "app" else [])
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+                def wait(self):
+                    return 0
+
+            def capture(command, **kwargs):
+                self.assertEqual(kwargs["timeout"], 5)
+                self.assertEqual(command[0], str(adb))
+                if command[1:] == ["devices"]:
+                    output = "List of devices attached\nemulator-5554\tdevice\nphysical-device\tdevice\n"
+                else:
+                    self.assertEqual(command[1:3], ["-s", "emulator-5554"])
+                    output = "36\n" if "getprop" in command else "ANR in com.android.systemui\noriginal system state\n"
+                return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request", ANDROID_HOME=str(sdk))
+            with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci.subprocess, "Popen", Process), \
+                    patch.object(ci.subprocess, "run", side_effect=capture) as captured, \
+                    patch("sys.argv", ["ci", "--api", "36"]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.main(), 1)
+            app = json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["modules"]["app"]
+            self.assertTrue(app["system_ui_anr_observed"])
+            self.assertTrue(app["mandatory_inventory_passed"])
+            self.assertEqual(app["failures"], 0)
+            self.assertEqual(captured.call_count, 6)
+            diagnostics = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(diagnostics["serial"], "emulator-5554")
+            for record in diagnostics["commands"]:
+                content = (directory / record["artifact"]["path"]).read_bytes()
+                self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(content).hexdigest())
+            self.assertTrue(any("lastanr" in c.args[0] for c in captured.call_args_list))
+            self.assertTrue(any("system" in c.args[0] and "events" in c.args[0] for c in captured.call_args_list))
+
+    def test_system_ui_capture_refuses_missing_ambiguous_or_wrong_api_emulators(self):
+        for devices, actual_api, calls in [
+            ("physical-device\tdevice\n", None, 1),
+            ("emulator-5554\tdevice\nemulator-5556\tdevice\n", None, 1),
+            ("emulator-5554\toffline\n", None, 1),
+            ("emulator-5554\tdevice\n", "35\n", 2),
+        ]:
+            with self.subTest(devices=devices, api=actual_api), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                replies = [ci.subprocess.CompletedProcess([], 0, stdout=devices, stderr="")]
+                if actual_api:
+                    replies.append(ci.subprocess.CompletedProcess([], 0, stdout=actual_api, stderr=""))
+                with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                        patch.object(ci.shutil, "which", return_value="test-adb"), \
+                        patch.object(ci.subprocess, "run", side_effect=replies) as captured:
+                    ci.capture_system_ui_diagnostics(directory, "app", 36)
+                manifest = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
+                self.assertIn("capture_error", manifest)
+                self.assertEqual(captured.call_count, calls)
+
+    def test_system_ui_capture_retains_timeout_output_and_continues_other_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            def capture(command, **kwargs):
+                if command[1:] == ["devices"]:
+                    return ci.subprocess.CompletedProcess(command, 0, stdout="emulator-5554\tdevice\n", stderr="")
+                if "getprop" in command:
+                    return ci.subprocess.CompletedProcess(command, 0, stdout="36", stderr="")
+                if "lastanr" in command:
+                    raise ci.subprocess.TimeoutExpired(command, 5, output=b"partial ANR reason", stderr=b"partial stderr")
+                if "SurfaceFlinger" in command:
+                    raise OSError("capture unavailable")
+                return ci.subprocess.CompletedProcess(command, 0, stdout="remaining diagnostic", stderr="")
+            with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                    patch.object(ci.shutil, "which", return_value="test-adb"), \
+                    patch.object(ci.subprocess, "run", side_effect=capture) as captured:
+                ci.capture_system_ui_diagnostics(directory, "app", 36)
+            manifest = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(captured.call_count, 6)
+            timed_out = next(r for r in manifest["commands"] if "lastanr" in r["command"])
+            self.assertIn("error", timed_out)
+            partial = (directory / timed_out["artifact"]["path"]).read_text(encoding="utf-8")
+            self.assertIn("partial ANR reason", partial)
+            self.assertIn("partial stderr", partial)
+            self.assertTrue(any("SurfaceFlinger" in r["command"] and "error" in r for r in manifest["commands"]))
+
     def test_merge_checkout_is_rejected_before_running_gradle(self):
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(ci.Path, "cwd", return_value=Path(temporary)), \

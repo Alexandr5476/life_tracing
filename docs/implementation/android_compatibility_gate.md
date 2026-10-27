@@ -178,6 +178,52 @@ This experiment confirms the repository's command-error collection defect, not
 that CI run `40152984828` took that Python exception path. Fresh Controller-owned
 CI remains necessary; no additional local PASS credit is claimed.
 
+## API 36 SystemUI window obstruction (2026-10-27)
+
+CI run `40425756902`, job `121930975075`, at head
+`504471b8814c98b2a689567d8eb683a745efcff3` completed six app cases before the
+first native-window admission failure. All **110** reported failures across **12**
+classes reach the shared KeyboardInputFixture admission boundary and name exactly
+the same owner: `Window{a73a7ce u0 Application Not Responding: com.android.systemui}`.
+LifeTracing's Compose View is attached, but its native window lacks focus; the
+focused-app record still identifies LifeTracing. The SystemUI ANR dialog explains
+the shared focus obstruction. This is not evidence that the downstream product
+assertions failed. The job was canceled after reaching 344 of 510 app tests.
+
+The retained app `emulator.1.txt` records Emulator **37.2.12.0**, a successful
+`default_boot` snapshot restore followed immediately by missing ColorBuffer/invalid
+texture errors. Local capability reports **37.1.11**. These observations suggest
+a platform/graphics investigation; they do not prove why SystemUI became
+unresponsive or establish that a version change fixes it. Android's official
+[snapshot troubleshooting](https://developer.android.com/studio/run/emulator-snapshots)
+warns that software-rendered snapshots are unreliable. No speculative emulator
+downgrade, test skip, dialog dismissal or application focus workaround was added.
+
+The repository's existing AGP logcat command captures only `main` and `crash`,
+omitting system/event buffers containing ANR reasons. The CI runner now captures
+diagnostics **once per invocation**, at the first reported SystemUI ANR window,
+while that emulator and dialog still exist. It selects exactly one online emulator,
+verifies its API against the job, and reads `dumpsys activity lastanr`, system/event/
+crash logcat, WindowManager and SurfaceFlinger state. Each of six commands has a
+five-second timeout; partial output, stderr, failed commands and unavailable or
+ambiguous targets are retained with timestamps and hashes. It never sends input,
+dismisses the dialog, restarts a process, or retries a testcase.
+
+Logs and their manifest are written immediately under
+`ci-evidence/api<API>/<module>-system-ui/`, independently of final JUnit creation or
+job cancellation. The observed blocker remains a failed gate even if contradictory
+JUnit reports are green. Mandatory inventory and the three complete invocation
+commands remain unchanged. Three new regressions fail before this repair;
+all **25** runner tests now pass, covering one-time capture before startup,
+target/API admission and timeout/command-error evidence. No device run was repeated.
+
+The complete 110-case source/fixture index, common-owner check, original log hashes
+and red/green host evidence are under
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/7b61ea95b4e2b662b3d9e6d4/scratch/`.
+The SystemUI ANR's underlying cause and the CI stability obligation remain open.
+Controller owns fresh canonical execution and CI; prior local full-suite passes
+do not close this remote failure.
+
 ## Template archive and Folder deletion accessibility (Slice S3)
 
 Adds nine lifecycle presentation identities and four isolated production-route

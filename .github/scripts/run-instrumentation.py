@@ -49,6 +49,68 @@ def retain_artifact(repo, directory, module, path):
     return dict(path=destination.relative_to(directory).as_posix(), sha256=digest.hexdigest())
 
 
+def capture_system_ui_diagnostics(directory, module, api):
+    """Read the blocked emulator once; never dismiss a system dialog or retry a test."""
+    target = directory / f"{module}-system-ui"
+    target.mkdir(parents=True, exist_ok=True)
+    result = dict(expected_api=api, started_at=timestamp(), commands=[])
+
+    def text_output(value):
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+    def capture(command):
+        record = dict(command=command, started_at=timestamp(), return_code=None)
+        stdout, stderr = "", ""
+        try:
+            completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
+            stdout, stderr = text_output(completed.stdout), text_output(completed.stderr)
+            record["return_code"] = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = text_output(exc.output), text_output(exc.stderr)
+            record["error"] = str(exc)
+        except OSError as exc:
+            record["error"] = str(exc)
+        record["finished_at"] = timestamp()
+        content = ("command: " + json.dumps(command) + "\nstdout:\n" + stdout + "\nstderr:\n" + stderr).encode("utf-8")
+        path = target / f"{len(result['commands']) + 1:02d}.log"
+        path.write_bytes(content)
+        record["artifact"] = dict(path=path.relative_to(directory).as_posix(), sha256=hashlib.sha256(content).hexdigest())
+        result["commands"].append(record)
+        return stdout if record["return_code"] == 0 else None
+
+    try:
+        sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+        adb = Path(sdk) / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb") if sdk else None
+        adb = str(adb) if adb is not None and adb.is_file() else shutil.which("adb")
+        if adb is None:
+            raise ValueError("Cannot locate adb for SystemUI diagnostics")
+        devices = capture([adb, "devices"])
+        if devices is None:
+            raise ValueError("Cannot enumerate the blocked emulator")
+        serials = [parts[0] for line in devices.splitlines() if len(parts := line.split()) >= 2
+                   and re.fullmatch(r"emulator-\d+", parts[0]) and parts[1] == "device"]
+        if len(serials) != 1:
+            raise ValueError(f"Expected one online emulator; found {len(serials)}")
+        result["serial"] = serials[0]
+        selected = [adb, "-s", serials[0], "shell"]
+        actual_api = capture(selected + ["getprop", "ro.build.version.sdk"])
+        if actual_api is None or actual_api.strip() != str(api):
+            raise ValueError(f"Blocked emulator API does not match expected API {api}: {actual_api!r}")
+        for arguments in (["dumpsys", "activity", "lastanr"],
+                          ["logcat", "-d", "-v", "threadtime", "-b", "system", "-b", "events", "-b", "crash"],
+                          ["dumpsys", "window"], ["dumpsys", "SurfaceFlinger"]):
+            capture(selected + arguments)
+    except (OSError, ValueError) as exc:
+        result["capture_error"] = str(exc)
+    finally:
+        result["finished_at"] = timestamp()
+        manifest = target / "manifest.json"
+        content = (json.dumps(result, indent=2) + "\n").encode("utf-8")
+        manifest.write_bytes(content)
+    return dict(path=manifest.relative_to(directory).as_posix(), sha256=hashlib.sha256(content).hexdigest())
+
+
 def collect_reports(repo, directory, module, api):
     reports, counts, observed = [], dict(total=0, failures=0, errors=0, skipped=0), set()
     # Pinned independently of discovery/results: disappearing tests cannot shrink the gate.
@@ -154,6 +216,14 @@ def main():
                         for line in process.stdout:
                             print(line, end="", flush=True)
                             log.write(line)
+                            if ("Application Not Responding: com.android.systemui" in line
+                                    and not record.get("system_ui_anr_observed")):
+                                record["system_ui_anr_observed"] = True
+                                log.flush()
+                                try:
+                                    record["system_ui_diagnostics"] = capture_system_ui_diagnostics(directory, module, args.api)
+                                except (OSError, ValueError) as exc:
+                                    record["system_ui_diagnostics_error"] = str(exc)
                         record["exit_code"] = process.wait()
             except (OSError, ValueError) as exc:
                 record["execution_error"] = str(exc)
@@ -168,6 +238,7 @@ def main():
             passed = (record["exit_code"] == 0 and record.get("total", 0) > 0
                       and record.get("mandatory_inventory_passed") is True and "evidence_error" not in record
                       and "execution_error" not in record
+                      and not record.get("system_ui_anr_observed", False)
                       and record.get("observed_apis") == [args.api]
                       and not any(record.get(key, 0) for key in ("failures", "errors")))
             failed |= not passed
