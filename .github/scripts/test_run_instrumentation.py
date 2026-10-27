@@ -5,7 +5,10 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
@@ -17,6 +20,19 @@ spec.loader.exec_module(ci)
 
 
 class InstrumentationEvidenceTests(unittest.TestCase):
+    def successful_process(self, *args, **kwargs):
+        return SimpleNamespace(stdout=io.StringIO(), wait=lambda timeout=None: 0)
+
+    def setUp(self):
+        # These orchestration/report tests supply fake Gradle processes. Real host-side
+        # device admission and process deadlines are exercised separately below.
+        health = patch.object(ci, "DeviceHealth", create=True)
+        monitor = health.start().return_value
+        monitor.inspect.return_value = None
+        monitor.cleanup.return_value = True
+        monitor.serial, monitor.avd, monitor.observations = None, None, []
+        self.addCleanup(health.stop)
+
     def write_inventory(self, root, module="data", api=26):
         inventory = json.loads(Path(__file__).with_name("instrumentation-inventory.json").read_text())
         suite = ET.Element("testsuite")
@@ -115,6 +131,16 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     suite.remove(case)
             self.save_report(source, suite)
             original_collect = ci.collect_reports
+            def launch(command, **kwargs):
+                module = "startup" if "-Plifetracing.compatibility.productionStartup=true" in command else (
+                    "data" if command[1].startswith(":data:") else "app")
+                current, fixture = self.write_inventory(root, module)
+                if module == "data":
+                    for case in list(fixture):
+                        if not case.get("name").startswith("recordsActualApi"):
+                            fixture.remove(case)
+                    self.save_report(current, fixture)
+                return self.successful_process()
             def reports(repo, directory, module, api):
                 if module == "startup":
                     self.write_inventory(repo, module, api)
@@ -127,8 +153,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
                     patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "Popen") as worker, \
                     patch("sys.argv", ["ci", "--api", "26"]), contextlib.redirect_stdout(io.StringIO()):
-                worker.return_value.__enter__.return_value.stdout = []
-                worker.return_value.__enter__.return_value.wait.return_value = 0
+                worker.side_effect = launch
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
             self.assertEqual(evidence["modules"]["data"]["exit_code"], 0)
@@ -152,12 +177,12 @@ class InstrumentationEvidenceTests(unittest.TestCase):
         class Process:
             def __init__(self, command, **kwargs):
                 commands.append(command)
-                self.stdout = iter(["> Task " + command[1] + " FAILED\n"])
+                self.stdout = io.StringIO("> Task " + command[1] + " FAILED\n")
             def __enter__(self):
                 return self
             def __exit__(self, *args):
                 pass
-            def wait(self):
+            def wait(self, timeout=None):
                 return 1
         with tempfile.TemporaryDirectory() as temporary:
             commands = []
@@ -169,7 +194,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     patch.object(ci.subprocess, "run") as install, \
                     patch.object(ci.subprocess, "Popen", Process), patch("sys.argv", ["ci", "--api", "26"]):
                 self.assertEqual(ci.main(), 1)
-            install.assert_called_once_with(["sdkmanager", "--install", "emulator"], check=True)
+            install.assert_called_once_with(["sdkmanager", "--install", "emulator"], check=True, timeout=180)
             self.assertEqual([c[1] for c in commands], [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest",
                                   ":app:pixel2Api26DebugAndroidTest"])
             evidence = json.loads((Path(temporary) / "ci-evidence/api26/evidence.json").read_text())
@@ -206,7 +231,15 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                             for path in originals:
                                 if path != source:
                                     path.write_bytes(b"startup replacement\n")
-                        self.stdout = self.output()
+                        self.returncode = 0
+                        owner = self
+                        class Stream:
+                            def __iter__(self):
+                                return owner.output()
+                            def close(self):
+                                if owner.module == "app" and phase == "close":
+                                    raise OSError("app close interrupted")
+                        self.stdout = Stream()
 
                     def output(self):
                         yield f"{self.module} command output\n"
@@ -220,7 +253,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         if self.module == "app" and phase == "close":
                             raise OSError("app close interrupted")
 
-                    def wait(self):
+                    def wait(self, timeout=None):
                         if self.module == "app" and phase == "wait":
                             raise OSError("app wait interrupted")
                         return 0
@@ -230,6 +263,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
                         patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
                         patch.object(ci.subprocess, "Popen", Process), \
+                        patch.object(ci, "stop_process", return_value=True), \
                         patch("sys.argv", ["ci", "--api", "35"]), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(ci.main(), 1)
 
@@ -266,8 +300,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         patch.object(ci.subprocess, "Popen") as worker, \
                         patch.object(ci, "collect_reports", side_effect=reports), \
                         patch("sys.argv", ["ci", "--api", str(api)]):
-                    worker.return_value.__enter__.return_value.stdout = []
-                    worker.return_value.__enter__.return_value.wait.return_value = 0
+                    worker.side_effect = self.successful_process
                     self.assertEqual(ci.main(), 0)
                 self.assertEqual(calls, ([("install", ["sdkmanager", "--install", "emulator"])]
                                          if api == 26 else []) + [("suite", "data"), ("suite", "app"), ("suite", "startup")])
@@ -312,7 +345,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     if actual[0] != str(manager):
                         raise FileNotFoundError("sdkmanager is not on PATH")
                     self.assertEqual(actual, command)
-                    self.assertEqual(kwargs, {"check": True})
+                    self.assertEqual(kwargs, {"check": True, "timeout": 180})
                 env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
                            GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request", PATH="")
                 env[variable] = str(sdk)
@@ -324,10 +357,9 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         patch.object(ci, "collect_reports", return_value=dict(
                             total=1, failures=0, errors=0, observed_apis=[26], reports=[], mandatory_inventory_passed=True)), \
                         patch("sys.argv", ["ci", "--api", "26"]):
-                    worker.return_value.__enter__.return_value.stdout = []
-                    worker.return_value.__enter__.return_value.wait.return_value = 0
+                    worker.side_effect = self.successful_process
                     self.assertEqual(ci.main(), 0)
-                installation.assert_called_once_with(command, check=True)
+                installation.assert_called_once_with(command, check=True, timeout=180)
                 self.assertEqual([call.args[0][1] for call in worker.call_args_list],
                                  [":data:pixel2Api26DebugAndroidTest", ":app:pixel2Api26DebugAndroidTest",
                                   ":app:pixel2Api26DebugAndroidTest"])
@@ -389,13 +421,78 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     patch.object(ci.subprocess, "Popen") as worker, \
                     patch.object(ci, "collect_reports", side_effect=reports), \
                     patch("sys.argv", ["ci", "--api", "35"]), contextlib.redirect_stdout(io.StringIO()):
-                worker.return_value.__enter__.return_value.stdout = []
-                worker.return_value.__enter__.return_value.wait.return_value = 0
+                worker.side_effect = self.successful_process
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((Path(temporary) / "ci-evidence/api35/evidence.json").read_text())
             self.assertTrue(evidence["modules"]["data"]["mandatory_inventory_passed"])
             self.assertTrue(evidence["modules"]["app"]["mandatory_inventory_passed"])
             self.assertFalse(evidence["modules"]["startup"]["mandatory_inventory_passed"])
+
+    def test_known_successful_api26_timeline_fits_shared_execution_budget(self):
+        # CI387 attempt2: data 30:29, app 17:33, startup 2:34; row 50:46.
+        with tempfile.TemporaryDirectory() as temporary:
+            clock = [0.0]
+            durations = {"data": 1830, "app": 1054, "startup": 154}
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="2", GITHUB_EVENT_NAME="pull_request")
+            def run(command, directory, module, api, record, *, timeout):
+                record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                if durations[module] > timeout:
+                    record.update(exit_code=143, abort_reason="execution deadline exceeded")
+                else:
+                    self.write_inventory(Path(temporary), module, api)
+                clock[0] += durations[module]
+            def provision(*args, **kwargs):
+                clock[0] += 11
+            with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci.subprocess, "run", side_effect=provision), \
+                    patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                    patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(ci, "run_gradle", side_effect=run) as worker, \
+                    patch("sys.argv", ["ci", "--api", "26"]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.main(), 0)
+            self.assertEqual(worker.call_count, 3)
+            modules = json.loads((Path(temporary) / "ci-evidence/api26/evidence.json").read_text())["modules"]
+            self.assertEqual([r["status"] for r in modules.values()], ["PASSED"] * 3)
+
+    def test_expired_row_budget_never_launches_or_certifies_remaining_invocations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+            with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci.subprocess, "Popen") as worker, \
+                    patch.object(ci.time, "monotonic", side_effect=[0, 3301]), \
+                    patch("sys.argv", ["ci", "--api", "36"]):
+                self.assertEqual(ci.main(), 1)
+            worker.assert_not_called()
+            modules = json.loads((Path(temporary) / "ci-evidence/api36/evidence.json").read_text())["modules"]
+            self.assertEqual(set(modules), {"data", "app", "startup"})
+            for record in modules.values():
+                self.assertEqual(record["status"], "NOT_RUN")
+                self.assertIsNone(record["exit_code"])
+                self.assertFalse(record["mandatory_inventory_passed"])
+
+    def test_failed_cleanup_blocks_siblings_even_when_exit_and_inventory_are_green(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+            def run(command, directory, module, api, record, **kwargs):
+                record.update(exit_code=0, process_cleanup_passed=False, device_cleanup_passed=True)
+                self.write_inventory(directory.parent.parent, module, api)
+            with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci, "run_gradle", side_effect=run) as worker, \
+                    patch("sys.argv", ["ci", "--api", "36"]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.main(), 1)
+            self.assertEqual(worker.call_count, 1)
+            modules = json.loads((Path(temporary) / "ci-evidence/api36/evidence.json").read_text())["modules"]
+            self.assertTrue(modules["data"]["mandatory_inventory_passed"])
+            self.assertEqual(modules["data"]["status"], "FAILED")
+            for module in ("app", "startup"):
+                self.assertEqual(modules[module]["status"], "NOT_RUN")
+                self.assertEqual(modules[module]["blocked_by"], "data")
 
     def test_startup_evidence_does_not_overwrite_full_app_original_xml(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -502,7 +599,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     ci.collect_reports(root, root / "evidence", "app", 36)
                 self.assertEqual((root / "evidence" / diagnostic.relative_to(root)).read_bytes(), content)
 
-    def test_system_ui_anr_captures_once_before_startup_and_cannot_pass_green_reports(self):
+    def test_system_ui_anr_captures_once_blocks_startup_and_cannot_pass_green_reports(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sdk = root / "sdk"
@@ -519,8 +616,9 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     if module == "startup":
                         fixture.assertTrue((directory / "app-system-ui/manifest.json").is_file())
                     fixture.write_inventory(root, module, 36)
-                    self.stdout = (["mCurrentFocus=Window{abc Application Not Responding: com.android.systemui}\n"] * 2
-                                   if module == "app" else [])
+                    self.stdout = io.StringIO("mCurrentFocus=Window{abc Application Not Responding: com.android.systemui}\n" * 2
+                                              if module == "app" else "")
+                    self.returncode = -15 if module == "app" else 0
 
                 def __enter__(self):
                     return self
@@ -528,7 +626,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 def __exit__(self, *args):
                     pass
 
-                def wait(self):
+                def wait(self, timeout=None):
                     return 0
 
             def capture(command, **kwargs):
@@ -546,6 +644,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
                     patch.object(ci.subprocess, "Popen", Process), \
+                    patch.object(ci, "stop_process", return_value=True), \
                     patch.object(ci.subprocess, "run", side_effect=capture) as captured, \
                     patch("sys.argv", ["ci", "--api", "36"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ci.main(), 1)
@@ -553,6 +652,10 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertTrue(app["system_ui_anr_observed"])
             self.assertTrue(app["mandatory_inventory_passed"])
             self.assertEqual(app["failures"], 0)
+            modules = json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["modules"]
+            self.assertEqual(modules["startup"]["status"], "NOT_RUN")
+            self.assertFalse(modules["startup"]["mandatory_inventory_passed"])
+            self.assertEqual(modules["startup"]["blocked_by"], "app")
             self.assertEqual(captured.call_count, 7)
             diagnostics = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(diagnostics["serial"], "emulator-5554")
@@ -668,6 +771,190 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Checkout mismatch"):
                     ci.main()
                 worker.assert_not_called()
+
+
+class InstrumentationAdmissionTests(unittest.TestCase):
+    def test_saved_startup_anr_is_rejected_even_with_empty_lastanr_and_no_gradle_output(self):
+        calls = []
+        def adb(command, **kwargs):
+            calls.append(command)
+            if command[-1] == "devices":
+                output = "emulator-5554\tdevice\n" if len(calls) > 1 else "List of devices attached\n"
+            elif command[-1] == "ro.build.version.sdk":
+                output = "36\n"
+            elif command[-1] == "sys.boot_completed":
+                output = "1\n"
+            elif command[-3:] == ["emu", "avd", "name"]:
+                output = "pixel2-managed-api36\nOK\n"
+            elif "dropbox" in command:
+                output = "system_app_anr\nProcess: com.android.systemui\nSubject: Process failed to complete startup\n"
+            else:
+                output = "ACTIVITY MANAGER LAST ANR\n  <no ANR has occurred since boot>\n"
+            return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+        with patch.object(ci, "adb_command", return_value="adb", create=True), \
+                patch.object(ci.subprocess, "run", side_effect=adb):
+            monitor = ci.DeviceHealth(36)
+            self.assertIn("startup ANR", monitor.inspect())
+        self.assertEqual(monitor.serial, "emulator-5554")
+        self.assertEqual(monitor.avd, "pixel2-managed-api36")
+        self.assertTrue(any("window" in c for c in calls))
+        self.assertTrue(any("dropbox" in c for c in calls))
+
+    def test_startup_anr_is_rejected_before_boot_completion_but_registering_services_are_pending(self):
+        for response, expected in [("report", "startup ANR"), ("registering", None)]:
+            with self.subTest(response=response):
+                enumerations = 0
+                def adb(command, **kwargs):
+                    nonlocal enumerations
+                    if command[-1] == "devices":
+                        enumerations += 1
+                        output = "emulator-5554\tdevice\n" if enumerations > 1 else ""
+                    elif command[-1] == "ro.build.version.sdk":
+                        output = "36\n"
+                    elif command[-1] == "sys.boot_completed":
+                        output = "0\n"
+                    elif command[-3:] == ["emu", "avd", "name"]:
+                        output = "managed-avd\nOK\n"
+                    elif response == "registering":
+                        return ci.subprocess.CompletedProcess(command, 1, stdout="", stderr="service not registered")
+                    elif "dropbox" in command:
+                        output = "Process: com.android.systemui\nSubject: Process failed to complete startup\n"
+                    else:
+                        output = ""
+                    return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+                with patch.object(ci, "adb_command", return_value="adb"), \
+                        patch.object(ci.subprocess, "run", side_effect=adb):
+                    reason = ci.DeviceHealth(36).inspect()
+                if expected is None:
+                    self.assertIsNone(reason)
+                else:
+                    self.assertIn(expected, reason)
+
+    def test_device_admission_rejects_preexisting_ambiguous_and_wrong_api_targets(self):
+        for devices, actual_api in [("emulator-5554\tdevice\n", "35"),
+                                    ("emulator-5554\tdevice\nemulator-5556\tdevice\n", "36")]:
+            with self.subTest(devices=devices), \
+                    patch.object(ci, "adb_command", return_value="adb", create=True):
+                replies = [ci.subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                           ci.subprocess.CompletedProcess([], 0, stdout=devices, stderr=""),
+                           ci.subprocess.CompletedProcess([], 0, stdout=actual_api, stderr="")]
+                with patch.object(ci.subprocess, "run", side_effect=replies):
+                    monitor = ci.DeviceHealth(36)
+                    self.assertIsNotNone(monitor.inspect())
+                    self.assertIsNone(monitor.serial, "Unverified devices must never become cleanup targets")
+        with patch.object(ci, "adb_command", return_value="adb", create=True), \
+                patch.object(ci.subprocess, "run", return_value=ci.subprocess.CompletedProcess(
+                    [], 0, stdout="emulator-5554\tdevice\n", stderr="")):
+            with self.assertRaisesRegex(ValueError, "preexisting"):
+                ci.DeviceHealth(36)
+
+    def test_silent_owned_command_has_deadline_cleanup_and_retains_partial_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            record = {}
+            with patch.object(ci, "DeviceHealth", create=True) as health, \
+                    patch.object(ci, "capture_system_ui_diagnostics", return_value={"path": "timeout-manifest"}):
+                health.return_value.inspect.return_value = None
+                started = time.monotonic()
+                ci.run_gradle([sys.executable, "-u", "-c",
+                               "import threading; print('partial output', flush=True); threading.Event().wait()"],
+                              directory, "app", 36, record, timeout=1)
+            self.assertLess(time.monotonic() - started, 10)
+            self.assertEqual(record["abort_reason"], "execution deadline exceeded")
+            self.assertTrue(record["process_cleanup_passed"])
+            self.assertNotEqual(record["exit_code"], 0)
+            self.assertIn("partial output", (directory / "app.log").read_text(encoding="utf-8"))
+
+    def test_unhealthy_setup_is_captured_then_stopped_without_waiting_for_suite_completion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            record = {}
+            with patch.object(ci, "DeviceHealth", create=True) as health, \
+                    patch.object(ci, "capture_system_ui_diagnostics", return_value={"path": "saved-manifest"}) as capture:
+                health.return_value.inspect.return_value = "SystemUI startup ANR"
+                ci.run_gradle([sys.executable, "-u", "-c", "import threading; threading.Event().wait()"],
+                              directory, "data", 36, record, timeout=5)
+            self.assertIn("startup ANR", record["abort_reason"])
+            self.assertTrue(record["process_cleanup_passed"])
+            self.assertEqual(record["system_ui_diagnostics"], {"path": "saved-manifest"})
+            capture.assert_called_once()
+
+    def test_fresh_artifacts_are_required_after_prior_green_outputs_and_startup_reuses_app_paths(self):
+        fixture = InstrumentationEvidenceTests()
+        for module in ("data", "app", "startup"):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                directory = root / "evidence"
+                source, suite = fixture.write_inventory(root, module, 36)
+                original = source.read_bytes()
+                self.assertTrue(ci.collect_reports(root, root / "old", module, 36)["mandatory_inventory_passed"])
+                ci.quarantine_previous_outputs(root, directory, module, 36)
+                with self.assertRaisesRegex(ValueError, "mandatory"):
+                    ci.collect_reports(root, directory, module, 36)
+                self.assertEqual((directory / "previous" / module / source.relative_to(root)).read_bytes(), original)
+                fixture.write_inventory(root, module, 36)
+                result = ci.collect_reports(root, directory, module, 36)
+                self.assertTrue(result["mandatory_inventory_passed"])
+                self.assertEqual(result["total"], len(suite))
+
+    def test_cleanup_kills_only_verified_owned_emulator_and_rejects_identity_changes(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                commands, enumerations, names = [], 0, 0
+                def adb(command, **kwargs):
+                    nonlocal enumerations, names
+                    commands.append(command)
+                    if command[-1] == "devices":
+                        enumerations += 1
+                        output = "emulator-5554\tdevice\n" if enumerations in (2, 3) else ""
+                    elif command[-1] == "ro.build.version.sdk":
+                        output = "36\n"
+                    elif command[-1] == "sys.boot_completed":
+                        output = "1\n"
+                    elif command[-3:] == ["emu", "avd", "name"]:
+                        names += 1
+                        output = "foreign-avd\nOK\n" if changed and names == 2 else "managed-avd\nOK\n"
+                    else:
+                        output = ""
+                    return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+                with patch.object(ci, "adb_command", return_value="adb"), \
+                        patch.object(ci.subprocess, "run", side_effect=adb):
+                    monitor = ci.DeviceHealth(36)
+                    self.assertIsNone(monitor.inspect())
+                    self.assertEqual(monitor.cleanup(), not changed)
+                kills = [c for c in commands if c[-2:] == ["emu", "kill"]]
+                self.assertEqual(kills, [] if changed else [["adb", "-s", "emulator-5554", "emu", "kill"]])
+
+    def test_linux_cleanup_adopts_detached_children_escalates_and_never_kills_baseline_processes(self):
+        baseline = {11: (100, "old-start", "S")}
+        current = dict(baseline)
+        killed = []
+        def kill(pid, sig):
+            killed.append((pid, sig))
+            if sig == 9:
+                current.pop(pid)
+        with patch.object(ci.sys, "platform", "linux"), \
+                patch.object(ci.ctypes, "CDLL") as libc, \
+                patch.object(ci, "linux_descendants", side_effect=lambda: dict(current)), \
+                patch.object(ci.os, "kill", side_effect=kill, create=True), \
+                patch.object(ci.signal, "SIGKILL", 9, create=True), \
+                patch.object(ci.time, "monotonic", side_effect=[0, 0, 6]), \
+                patch.object(ci.time, "sleep"):
+            libc.return_value.prctl.return_value = 0
+            owned = ci.OwnedProcesses()
+            current[99] = (100, "detached-start", "S")
+            self.assertTrue(owned.cleanup())
+        self.assertEqual(killed, [(99, ci.signal.SIGTERM), (99, 9)])
+        self.assertEqual(current, baseline)
+
+    def test_linux_cleanup_reports_surviving_children_instead_of_silently_continuing(self):
+        with patch.object(ci.sys, "platform", "linux"), \
+                patch.object(ci.ctypes, "CDLL") as libc, \
+                patch.object(ci, "linux_descendants", side_effect=[{}, {99: (100, "start", "S")}]), \
+                patch.object(ci.time, "monotonic", side_effect=[0, 11]):
+            libc.return_value.prctl.return_value = 0
+            owned = ci.OwnedProcesses()
+            self.assertFalse(owned.cleanup())
 
 
 if __name__ == "__main__":

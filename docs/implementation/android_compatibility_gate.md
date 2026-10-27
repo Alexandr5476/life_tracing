@@ -178,6 +178,72 @@ This experiment confirms the repository's command-error collection defect, not
 that CI run `40152984828` took that Python exception path. Fresh Controller-owned
 CI remains necessary; no additional local PASS credit is claimed.
 
+## Bounded unhealthy-device rejection (2026-10-27, controlled repair)
+
+The completed diagnosis for head `8eed6675930dcaaab4b568b89c9f38a5eb86c925`
+identifies the same startup ANR window (`cfaccaa`) in all 113 reported API 36
+failures. SystemUI's `getGpuContextPriority` Binder wait precedes data
+instrumentation; the downstream product assertions were not reached. Earlier
+runner repairs captured this obstruction but continued executing until CI's job
+timeout. The underlying SurfaceFlinger delay remains unexplained.
+
+The runner now monitors the selected emulator during setup/snapshot boot and
+instrumentation, independently of whether Gradle produces another output line.
+It requires an initially exclusive emulator environment, checks serial, API and
+AVD identity, observes boot readiness and rejects an
+ANR window or persistent SystemUI ANR report. Empty `lastanr` is never health
+evidence. Offline observations confer no target ownership; incomplete boot does
+not confer health admission. A wrong API,
+ambiguous devices, failed health reads or changed AVD fail admission. This is
+periodic early rejection, not a claim that every platform fault can be detected
+before the first testcase starts.
+
+All invocations share a 55-minute execution budget, leaving room inside the
+existing 60-minute CI job for diagnostics, cleanup and uploads. Each invocation
+receives the remaining row budget. A separate 25-minute invocation cap and a
+50-minute row cap were rejected during review: the verified successful API 26
+CI387 attempt2 took 30:29 for data and 50:46 overall. A regression replays those
+durations and requires all three suites to complete. SDK provisioning is bounded
+to three minutes.
+On a blocker or deadline the runner first retains the existing bounded platform
+capture, then terminates its process group and verifies cleanup. On Linux it
+also adopts/reaps orphaned descendants to cover detached single-use Gradle
+daemons; cleanup escalates only its owned processes, preserving PID/start-time
+identity. Emulator cleanup revalidates the selected API/AVD before `emu kill` and
+checks disappearance. No ANR dismissal, testcase retry or platform recovery is
+performed. Unverified devices are never killed.
+
+An unhealthy/expired invocation or failed cleanup fails the row and marks later
+mandatory invocations `NOT_RUN`, with no execution or inventory PASS credit.
+Ordinary testcase failures still allow independent later suites after verified
+cleanup. Before launch, previous selected-device output is moved under
+`ci-evidence/api<API>/previous/<module>/`; a build/admission failure cannot certify
+old green XML, including when startup reuses app's output paths. Current original
+XML/native artifacts are still retained before inventory validation. Evidence
+records include health observations, abort reason and cleanup outcomes and are
+written after each invocation as well as at completion.
+
+The AGP 8.10.1 task graph was inspected with a local **dry run only** of
+`:data:pixel2Api36DebugAndroidTest`. It schedules packaging before device setup
+in that graph. No compilation/boot separation experiment or task-rerun strategy
+change is included: compilation overlap remains an unproven hypothesis. All
+three commands retain full suites, `--rerun-tasks`, the SwiftShader renderer and
+the original mandatory inventory at every API.
+
+Host regressions cover quiet-process deadlines with real disposable Python
+children, early rejection/capture, persistent ANR admission, identity checks,
+owned cleanup/escalation, stale evidence isolation and truthful blocked-suite
+reporting. Existing inventory, artifact-retention and orchestration regressions
+remain required. Local `python -m unittest discover -s .github/scripts -p "test_*.py"`
+passes **38 tests** on Windows and WSL Linux, including all 26 existing runner cases
+and the successful API 26 duration regression. The initial four new
+admission/deadline regressions failed before implementation. Host checks and
+simulated Linux/adb cases do not certify the
+Linux emulator or application journey. Controller owns fresh exact-head five-API
+CI, independent startup and the unresolved API 26 cancellation investigation.
+The original startup stall, unexecuted application cases and manual accessibility
+walkthroughs remain unverified.
+
 ## API 36 SystemUI window obstruction (2026-10-27)
 
 CI run `40425756902`, job `121930975075`, at head
@@ -395,7 +461,7 @@ S5 cross-route evidence and the assistive-service walkthrough are described in [
 | Managed-device instrumentation tests (API 33) | 33 | pixel2Api33 | data, app, startup |
 | Managed-device instrumentation tests (API 36) | 36 | pixel2Api36 | data, app, startup |
 
-The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data, the full isolated app suite, and the independent production-startup app suite in separate sequential Gradle invocations, even after module failure, avoiding shared AVD setup/teardown races. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
+The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data, the full isolated app suite, and the independent production-startup app suite in separate sequential Gradle invocations, including after ordinary testcase failure with verified cleanup, avoiding shared AVD setup/teardown races. Unhealthy-device admission, execution deadlines or failed cleanup fail the row and explicitly leave subsequent mandatory suites NOT_RUN; they never count as successful verification. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
 
 Checkout and runner verification use the PR head SHA (or github.sha for other events). The runner rejects a checkout mismatch before Gradle. evidence.json distinguishes tested SHA from GitHub event SHA, which may identify a merge ref.
 
