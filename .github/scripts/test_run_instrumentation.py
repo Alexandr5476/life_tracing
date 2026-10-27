@@ -550,14 +550,65 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertTrue(app["system_ui_anr_observed"])
             self.assertTrue(app["mandatory_inventory_passed"])
             self.assertEqual(app["failures"], 0)
-            self.assertEqual(captured.call_count, 6)
+            self.assertEqual(captured.call_count, 7)
             diagnostics = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(diagnostics["serial"], "emulator-5554")
             for record in diagnostics["commands"]:
                 content = (directory / record["artifact"]["path"]).read_bytes()
                 self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(content).hexdigest())
             self.assertTrue(any("lastanr" in c.args[0] for c in captured.call_args_list))
+            self.assertTrue(any("system_app_anr" in c.args[0] for c in captured.call_args_list))
             self.assertTrue(any("system" in c.args[0] and "events" in c.args[0] for c in captured.call_args_list))
+
+    def test_system_ui_capture_preserves_persistent_startup_anr_when_lastanr_is_empty(self):
+        for outcome in ("report", "denied", "timeout"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                startup_report = ("system_app_anr\nProcess: com.android.systemui\n"
+                                  "Subject: Process failed to complete startup\n"
+                                  '"main" prio=5 tid=1 Blocked\n  at startup.waitForService(Native method)\n')
+
+                def capture(command, **kwargs):
+                    self.assertEqual(kwargs["timeout"], 5)
+                    if command[1:] == ["devices"]:
+                        output = "emulator-5554\tdevice\n"
+                    elif "getprop" in command:
+                        output = "36\n"
+                    elif "lastanr" in command:
+                        output = "ACTIVITY MANAGER LAST ANR\n  <no ANR has occurred since boot>\n"
+                    elif "dropbox" in command:
+                        self.assertEqual(command[-4:], ["dumpsys", "dropbox", "--print", "system_app_anr"])
+                        if outcome == "timeout":
+                            raise ci.subprocess.TimeoutExpired(command, 5, output=startup_report.encode("utf-8"))
+                        if outcome == "denied":
+                            return ci.subprocess.CompletedProcess(command, 1, stdout="", stderr="Permission denied")
+                        output = startup_report
+                    else:
+                        output = "remaining platform state\n"
+                    return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+                with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                        patch.object(ci.shutil, "which", return_value="test-adb"), \
+                        patch.object(ci.subprocess, "run", side_effect=capture):
+                    reference = ci.capture_system_ui_diagnostics(directory, "app", 36)
+                content = (directory / reference["path"]).read_bytes()
+                self.assertEqual(reference["sha256"], hashlib.sha256(content).hexdigest())
+                manifest = json.loads(content)
+                reports = [r for r in manifest["commands"] if "dropbox" in r["command"]]
+                self.assertEqual(len(reports), 1, "The saved startup ANR stack must be requested even with empty lastanr")
+                record = reports[0]
+                report = (directory / record["artifact"]["path"]).read_bytes()
+                self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(report).hexdigest())
+                if outcome == "denied":
+                    self.assertEqual(record["return_code"], 1)
+                    self.assertIn(b"Permission denied", report)
+                else:
+                    self.assertIn(startup_report.encode("utf-8"), report)
+                    if outcome == "timeout":
+                        self.assertIn("error", record)
+                        self.assertIsNone(record["return_code"])
+                self.assertTrue(any("window" in r["command"] for r in manifest["commands"]))
+                self.assertTrue(any("SurfaceFlinger" in r["command"] for r in manifest["commands"]))
 
     def test_system_ui_capture_refuses_missing_ambiguous_or_wrong_api_emulators(self):
         for devices, actual_api, calls in [
@@ -597,7 +648,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     patch.object(ci.subprocess, "run", side_effect=capture) as captured:
                 ci.capture_system_ui_diagnostics(directory, "app", 36)
             manifest = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(captured.call_count, 6)
+            self.assertEqual(captured.call_count, 7)
             timed_out = next(r for r in manifest["commands"] if "lastanr" in r["command"])
             self.assertIn("error", timed_out)
             partial = (directory / timed_out["artifact"]["path"]).read_text(encoding="utf-8")

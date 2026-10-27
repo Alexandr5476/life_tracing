@@ -98,6 +98,8 @@ def capture_system_ui_diagnostics(directory, module, api):
         if actual_api is None or actual_api.strip() != str(api):
             raise ValueError(f"Blocked emulator API does not match expected API {api}: {actual_api!r}")
         for arguments in (["dumpsys", "activity", "lastanr"],
+                          # Restored boot snapshots can retain a startup ANR dialog after lastanr was cleared.
+                          ["dumpsys", "dropbox", "--print", "system_app_anr"],
                           ["logcat", "-d", "-v", "threadtime", "-b", "system", "-b", "events", "-b", "crash"],
                           ["dumpsys", "window"], ["dumpsys", "SurfaceFlinger"]):
             capture(selected + arguments)

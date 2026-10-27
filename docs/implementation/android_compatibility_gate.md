@@ -224,6 +224,41 @@ The SystemUI ANR's underlying cause and the CI stability obligation remain open.
 Controller owns fresh canonical execution and CI; prior local full-suite passes
 do not close this remote failure.
 
+### Persistent startup ANR trace gap
+
+The next capture, from CI run `40445540358`, job `121995817380`, at head
+`01c49f9c6645e1148bc4dfc849c3629654578c37`, narrows the obstruction to a saved
+device-startup failure. System/event log `app-system-ui/04.log` records SystemUI
+PID 983 failing to complete startup at **03:44:14**, with ANR report
+`/data/anr/anr_2026-10-27-03-44-13-447`. The same log creates ANR window `d6b1ccf`.
+This precedes the first data test invocation at **03:45:05**. The app emulator later
+loads `default_boot`; its captured system log still contains those startup events,
+and window `d6b1ccf` acquires input focus again at **04:00:25**. App tests begin at
+**04:00:37**, then 112 cases across 12 classes fail native-window admission before
+the job is canceled at 348/510. These observations identify an invalid boot-state
+prerequisite; they do not show a downstream product assertion failing or prove
+which emulator, graphics, snapshot or startup condition caused the ANR.
+
+Despite the retained ANR event, `app-system-ui/03.log` reports **no ANR since boot**.
+The earlier capture therefore still omits the blocked SystemUI thread stack. The
+runner now also requests `dumpsys dropbox --print system_app_anr`, Android's
+[persistent report dump](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/services/core/java/com/android/server/DropBoxManagerService.java).
+It runs immediately after `lastanr`, without depending on that command's contents,
+and before the other platform dumps. All seven commands retain the existing
+five-second bound, partial-output/error handling, target/API checks and one-time
+capture policy. An unavailable, expired or denied persistent report is retained
+as evidence, not treated as a recovered or healthy device.
+
+The new host regression first fails in all three subcases against the previous
+collector. After the repair, all **26** runner tests pass, including an empty
+`lastanr` with a saved startup stack, permission denial and timeout with a partial
+stack; later window/SurfaceFlinger capture and artifact hashes are also checked.
+Only the host runner suite was executed. No device probe was repeated: this patch
+does not reproduce the remote startup failure or validate the new dump on a live
+emulator. Controller owns fresh device/CI verification. The original startup ANR
+and stability obligation remain **unresolved**; this patch repairs its confirmed
+diagnostic omission without changing application behavior or test assertions.
+
 ## Template archive and Folder deletion accessibility (Slice S3)
 
 Adds nine lifecycle presentation identities and four isolated production-route
