@@ -774,6 +774,69 @@ class InstrumentationEvidenceTests(unittest.TestCase):
 
 
 class InstrumentationAdmissionTests(unittest.TestCase):
+    def test_ci_boot_probe_failures_can_recover_without_aborting_the_invocation(self):
+        # CI #389: API26/31/33 closed getprop; API36 timed it out; API35 timed out window.
+        for probe, failure in (("ro.build.version.sdk", "closed"),
+                               ("ro.build.version.sdk", "timeout"), ("window", "timeout")):
+            for previously_ready in (False, True):
+                with self.subTest(probe=probe, failure=failure, previously_ready=previously_ready):
+                    clock, mode, calls = [0], ["healthy"], []
+                    def adb(command, **kwargs):
+                        calls.append(command)
+                        if command[-1] == "devices":
+                            output = "" if len(calls) == 1 else "emulator-5554\tdevice\n"
+                        elif command[-1] == probe and mode[0] == "failing":
+                            if failure == "timeout":
+                                raise ci.subprocess.TimeoutExpired(command, 5)
+                            return ci.subprocess.CompletedProcess(command, 1, stdout="", stderr="error: closed\n")
+                        elif command[-1] == "ro.build.version.sdk":
+                            output = "36\n"
+                        elif command[-1] == "sys.boot_completed":
+                            output = "1\n" if mode[0] == "healthy" else "\n"
+                        elif command[-3:] == ["emu", "avd", "name"]:
+                            output = "managed-avd\nOK\n"
+                        else:
+                            output = ""
+                        return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+                    with patch.object(ci, "adb_command", return_value="adb"), \
+                            patch.object(ci.subprocess, "run", side_effect=adb), \
+                            patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]):
+                        monitor = ci.DeviceHealth(36)
+                        if previously_ready:
+                            self.assertIsNone(monitor.inspect())
+                        mode[0] = "failing"
+                        self.assertIsNone(monitor.inspect(), "A single probe failure is not a fatal device verdict")
+                        clock[0], mode[0] = 10, "healthy"
+                        self.assertIsNone(monitor.inspect())
+                        self.assertEqual(monitor.avd, "managed-avd")
+
+    def test_unavailable_device_has_bounded_recovery_and_healthy_probe_resets_it(self):
+        clock, available = [0], [False]
+        def read(arguments):
+            if arguments == ["devices"]:
+                return "emulator-5554\tdevice\n"
+            if not available[0]:
+                raise ci.subprocess.TimeoutExpired(arguments, 5)
+            if arguments[-1] == "ro.build.version.sdk":
+                return "36\n"
+            if arguments[-1] == "sys.boot_completed":
+                return "1\n"
+            if arguments[-3:] == ["emu", "avd", "name"]:
+                return "managed-avd\nOK\n"
+            return ""
+        with patch.object(ci, "adb_command", return_value="adb"), \
+                patch.object(ci.DeviceHealth, "devices", return_value=[]):
+            monitor = ci.DeviceHealth(36)
+        with patch.object(monitor, "read", side_effect=read), \
+                patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertIsNone(monitor.inspect())
+            clock[0], available[0] = 299, True
+            self.assertIsNone(monitor.inspect())
+            clock[0], available[0] = 400, False
+            self.assertIsNone(monitor.inspect())
+            clock[0] = 700
+            self.assertIn("300", monitor.inspect())
+
     def test_saved_startup_anr_is_rejected_even_with_empty_lastanr_and_no_gradle_output(self):
         calls = []
         def adb(command, **kwargs):

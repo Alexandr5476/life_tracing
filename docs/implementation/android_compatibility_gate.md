@@ -194,9 +194,30 @@ AVD identity, observes boot readiness and rejects an
 ANR window or persistent SystemUI ANR report. Empty `lastanr` is never health
 evidence. Offline observations confer no target ownership; incomplete boot does
 not confer health admission. A wrong API,
-ambiguous devices, failed health reads or changed AVD fail admission. This is
+ambiguous devices or changed AVD fail admission. A failed health read remains
+pending for a bounded recovery interval rather than immediately aborting. This is
 periodic early rejection, not a claim that every platform fault can be detected
 before the first testcase starts.
+
+CI run `40585512758` on head `79517c57784a20e01fa2dc85a697b6eae30595d0`
+exposed a runner regression on all five APIs before app tests: API 26/31/33
+reported transient `adb getprop` transport closure, API 36 a five-second getprop
+timeout, and API 35 a five-second window-service timeout before boot completion.
+The runner itself then stopped Gradle with exit 143; these are not app assertion
+failures or evidence that GitHub terminated those jobs. This finding does not
+identify the cause of the older CI388 runner shutdowns.
+
+Health probes now allow up to 300 seconds of continuous unavailability, matching
+the existing GMD setup allowance. Disconnection, offline state and unavailable
+properties cannot reset that bound; a complete healthy observation does. Concrete
+ANR evidence, wrong API, ambiguous devices and changed AVD still fail immediately.
+The abort reason is also printed in the job log. Regressions reproduce the exact
+closed/timeout cases before and after readiness, successful recovery and permanent
+unavailability; all 40 host tests pass on Windows and Linux. The complete local
+API35 suite (632 data cases, five skipped; 510 app cases, no failures) and 113
+focused API36 cases passed before this fix through Controller's direct Gradle
+checks. Those passes did not exercise the CI Python monitor. New exact-head CI
+remains mandatory to validate the complete GitHub execution path.
 
 All invocations share a 55-minute execution budget, leaving room inside the
 existing 60-minute CI job for diagnostics, cleanup and uploads. Each invocation

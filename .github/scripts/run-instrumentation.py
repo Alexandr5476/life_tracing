@@ -41,6 +41,7 @@ class DeviceHealth:
         self.adb, self.api = adb_command(), api
         self.serial, self.avd = None, None
         self.observations = []
+        self.pending_since = None
         if self.devices():
             raise ValueError("Device admission refuses preexisting emulators")
 
@@ -59,20 +60,30 @@ class DeviceHealth:
         return [(parts[0], parts[1]) for line in self.read(["devices"]).splitlines()
                 if len(parts := line.split()) >= 2 and re.fullmatch(r"emulator-\d+", parts[0])]
 
+    def pending(self, reason):
+        # Match GMD's five-minute setup allowance, including snapshot boot transitions.
+        if self.pending_since is None:
+            self.pending_since = time.monotonic()
+        if time.monotonic() - self.pending_since >= 300:
+            return f"Device health unavailable for 300 seconds: {reason}"
+        return None
+
     def inspect(self):
         try:
             devices = self.devices()
             if not devices:
+                if self.serial is not None or self.pending_since is not None:
+                    return self.pending("emulator disconnected")
                 return None  # Gradle may still be compiling or between setup and test boots.
             if len(devices) != 1:
                 return "Device admission found ambiguous emulators"
             serial, state = devices[0]
             # An emulator briefly registers offline while booting. Do not select it.
             if state != "device":
-                return None
+                return self.pending(f"emulator is {state}")
             actual = self.read(["-s", serial, "shell", "getprop", "ro.build.version.sdk"]).strip()
             if not actual:
-                return None
+                return self.pending("API property is not available")
             if actual != str(self.api):
                 return f"Device admission API mismatch: expected {self.api}, observed {actual!r}"
             avd = self.read(["-s", serial, "emu", "avd", "name"]).splitlines()[0].strip()
@@ -84,19 +95,17 @@ class DeviceHealth:
             booted = self.read(["-s", serial, "shell", "getprop", "sys.boot_completed"]).strip() == "1"
             # lastanr is deliberately not an admission signal: CI proved it can be
             # empty while a saved SystemUI startup ANR still owns window focus.
-            try:
-                window = self.read(["-s", serial, "shell", "dumpsys", "window"])
-                dropbox = self.read(["-s", serial, "shell", "dumpsys", "dropbox", "--print", "system_app_anr"])
-            except ValueError:
-                if not booted:
-                    return None  # Services can still be registering; no healthy admission yet.
-                raise
+            window = self.read(["-s", serial, "shell", "dumpsys", "window"])
             if "Application Not Responding" in window:
                 return "Device admission found an ANR window"
+            dropbox = self.read(["-s", serial, "shell", "dumpsys", "dropbox", "--print", "system_app_anr"])
             if re.search(r"Process:\s*com\.android\.systemui\b", dropbox):
                 return "Device admission found a persistent SystemUI startup ANR"
+            if not booted:
+                return self.pending("boot is not complete")
         except (OSError, ValueError, subprocess.TimeoutExpired, IndexError) as exc:
-            return f"Device health inspection failed: {exc}"
+            return self.pending(str(exc))
+        self.pending_since = None
         return None
 
     def cleanup(self):
@@ -236,6 +245,7 @@ def run_gradle(command, directory, module, api, record, timeout=3300):
 
     def abort(reason):
         record["abort_reason"] = reason
+        print(f"::error::{module} API {api} runner abort: {reason}", flush=True)
         # Capture the live obstruction before any owned-process/device teardown.
         try:
             record["system_ui_diagnostics"] = capture_system_ui_diagnostics(directory, module, api)
