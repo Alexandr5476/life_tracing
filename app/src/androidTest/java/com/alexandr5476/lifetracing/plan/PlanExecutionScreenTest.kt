@@ -7,6 +7,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -19,6 +20,7 @@ import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -214,6 +216,7 @@ class PlanExecutionScreenTest {
                     .TextExecutionValue(fields[1].id, "edited text"),
                 session.quickDraft!!.values[fields[1].id],
             )
+            keyboard.closeKeyboard(compose.onNode(hasText(numberLabel) and hasSetTextAction()))
             invoke("Effort: A")
             compose
                 .onNode(hasText("Selected: Effort: A") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Selected))
@@ -228,7 +231,7 @@ class PlanExecutionScreenTest {
                 session.quickDraft!!.values[category.id],
             )
             assertTrue(category.id !in session.quickDraft!!.changed)
-            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            dismissCategoryMenu(compose.onNode(isPopup()))
             compose
                 .onNode(
                     hasText("Effort: B") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Selected),
@@ -506,6 +509,9 @@ class PlanExecutionScreenTest {
                         .touchBoundsInRoot
                 assertTrue(!completeNow.overlaps(secondaryNow))
                 assertTrue(complete.height > 0 && secondary.height > 0)
+                keyboard.closeKeyboard(
+                    compose.onNode(hasText(context.getString(R.string.plan_back)) and hasClickAction()),
+                )
                 invoke(context.getString(R.string.plan_execution_category_value, "Effort", "A"))
                 val missing =
                     compose
@@ -517,7 +523,7 @@ class PlanExecutionScreenTest {
                 val menuBounds = missing.fetchSemanticsNode().touchBoundsInRoot
                 val minimumTarget = 48 * original.resources.displayMetrics.density
                 assertTrue(menuBounds.height >= minimumTarget - 1 && menuBounds.width >= minimumTarget - 1)
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+                dismissCategoryMenu(compose.onNode(isPopup()))
                 assertTrue(session.quickDraft!!.changed.isEmpty())
                 val timeEntry = actionNode(R.string.plan_time_entry_action)
                 timeEntry.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
@@ -555,6 +561,9 @@ class PlanExecutionScreenTest {
                         .touchBoundsInRoot
                 assertTrue(bounds.height >= minimum - 1 && bounds.width >= minimum - 1)
             }
+            keyboard.closeKeyboard(
+                compose.onNode(hasText(context.getString(R.string.plan_back)) and hasClickAction()),
+            )
             invoke(context.getString(R.string.plan_execution_category_value, "Effort", "A"))
             val missingBounds =
                 compose
@@ -578,7 +587,7 @@ class PlanExecutionScreenTest {
                     .touchBoundsInRoot
             assertTrue(missingBounds.height >= minimum - 1 && selectedBounds.height >= minimum - 1)
             assertTrue(!missingBounds.overlaps(selectedBounds))
-            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            dismissCategoryMenu(compose.onNode(isPopup()))
             assertTrue(session.quickDraft!!.changed.isEmpty())
             assertEquals(PlanExecutionCommandState.Idle, controller.state.value.command)
             controller.close()
@@ -664,24 +673,28 @@ class PlanExecutionScreenTest {
                     )
                 val start = choice(true, false)
                 val end = choice(false, true)
+                val firstInput = compose.onNodeWithTag("plan-time-start")
+                keyboard.awaitFocus(firstInput)
+                keyboard.closeKeyboard(firstInput)
+
+                fun focusChoice(node: SemanticsNodeInteraction): SemanticsNodeInteraction {
+                    // Keep focus and scroll on the same choice after selection changes its size.
+                    node.performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(node)
+                    return node.performScrollTo().assertIsDisplayed()
+                }
+
                 for (label in listOf(start, end)) {
-                    compose
-                        .onNode(hasText(label) and hasClickAction())
-                        .performScrollTo()
-                        .assertIsDisplayed()
-                        .assertIsNotSelected()
-                        .performSemanticsAction(SemanticsActions.RequestFocus)
+                    val node = compose.onNode(hasText(label) and hasClickAction())
+                    focusChoice(node).assertIsNotSelected()
                 }
                 assertNull(session.timeDraft?.startedOffset)
                 assertNull(session.timeDraft?.completedOffset)
                 invoke(start)
                 invoke(end)
                 for (label in listOf(start, end)) {
-                    compose
-                        .onNode(hasText(label, substring = true) and hasClickAction())
-                        .performScrollTo()
-                        .assertIsDisplayed()
-                        .assertIsSelected()
+                    val node = compose.onNode(hasText(label, substring = true) and hasClickAction())
+                    focusChoice(node).assertIsSelected()
                 }
                 compose.runOnIdle {
                     zone = ZoneOffset.UTC
@@ -705,6 +718,12 @@ class PlanExecutionScreenTest {
         } finally {
             scope.cancel()
         }
+    }
+
+    private fun dismissCategoryMenu(target: SemanticsNodeInteraction) {
+        keyboard.sendKey(target, android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) { compose.onAllNodes(isPopup()).fetchSemanticsNodes().isEmpty() }
+        compose.onNode(isPopup()).assertDoesNotExist()
     }
 
     private fun set(

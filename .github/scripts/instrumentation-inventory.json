@@ -675,8 +675,8 @@
       "sequenceFieldsUseStableIdentityAndMissingDenominator",
       "sequenceSeriesDetailBatchesMixedFieldHistoryReadsAndMatchesCanonicalReaders",
       "seriesDetailBatchesMixedFieldHistoryReadsWithoutChangingPerFieldResults",
-        "seriesDetailRejectsRawNumberSampleMaterialization",
-        "seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory",
+      "seriesDetailRejectsRawNumberSampleMaterialization",
+      "seriesDetailBoundsNumberRowsAndQueriesAcrossGrowingHistory",
       "seriesSplitIsAtomicPreservesOldPlanSnapshotAndRenameMirrorsLabel",
       "seriesSplitRejectsStalePersistedMillisecondForBothKinds"
     ],
@@ -739,6 +739,24 @@
     ],
     "com.alexandr5476.lifetracing.MainActivityPlanVisibilityTest": [
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
+    ],
+    "com.alexandr5476.lifetracing.LibraryAccessibilityRouteTest": [
+      "accessibleArchiveReopensExactTemplatesWithHistoryPlansAndStatisticsPreserved",
+      "backgroundCatalogRemovalAndEditorReturnCannotReplayNavigationOrFocusRemovedRow",
+      "deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen",
+      "duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites",
+      "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
+      "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
+      "nativeExistingAuthoringPreservesEligibleSourcesMetadataAndFrozenHistoryOnReopen",
+      "nativeNewActivityAuthoringCommitsOnceAndPhysicallyReopensCanonicalFields",
+      "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
+      "nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission",
+      "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
+      "productionConflictRequiresExplicitReloadAndDiscardLeavesNoPartialWriteOnReopen",
+      "productionLoadRetryAndGatedWriterFailurePreserveSessionAndBackAdmissionUntilCommit",
+      "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
+      "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
+      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
@@ -871,12 +889,27 @@
       "sparseActiveFieldAndOptionPositionsAppendInEditorOrderAfterFreshCanonicalReload"
     ],
     "com.alexandr5476.lifetracing.editor.ActivityTemplateEditorScreenPresentationTest": [
+      "authoritativeValidationFailureIsAnnouncedWithoutWriterAndNativeMainValueCanResolveIt",
       "cleanToolbarBackExitsAndFocusedEditorHasNoPrimaryNavigation",
       "dirtyToolbarAndNativeBackShareDiscardConfirmationAndCancelKeepsDraft",
+      "discardInitialKeyboardFocusDismissalAndRetainedDialogActionsAreSafe",
+      "duplicateCategoryOptionsRenameSelectClearAndRemoveExactIdentities",
+      "duplicateFieldControlsAndMainValueDispatchToStableIdentities",
+      "englishCombinedScaleExtremesKeepNativeTargetsReachable",
       "englishCompactChoicesStayInsideBounds",
+      "existingContextLoadingFailureKeyboardRetryAndReadyKeepExactTarget",
+      "gatedSavingDisablesBackAndSaveThenCommittedHasNoSecondAction",
+      "hiddenOrDisposedEditorCannotStealForegroundFocusOrSubmitRetainedActions",
       "ioWriterCompletionReturnsToComposeOnceOnTheMainThread",
+      "nativeTrackingSelectionAndTimerErrorsDispatchExactDraftTransitions",
+      "newContextHeadingsAndNativeEditableTextDoNotWriteOnFocusOrTab",
+      "numberControlsExposeNativeErrorsPrecisionUnitsAndMissingVersusZero",
+      "ordinaryFailureExplicitSaveRetryAndConflictReloadRetainUnsavedText",
+      "removedFieldAndOptionNativeCallbacksCannotMutateTheirSuccessors",
+      "russianCombinedScaleExtremesKeepNativeTargetsReachable",
       "russianCompactChoicesStayInsideBounds",
-      "selectedCategoryDefaultCanBeClearedWithoutRemovingItsOption"
+      "selectedCategoryDefaultCanBeClearedWithoutRemovingItsOption",
+      "stableSurvivingFieldFocusAndNativeAddTypeChangeRemainReachable"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorPersistenceTest": [
       "editorUnitReplacementHelperPersistsANewLocalFieldWhilePreservingStepAndSnapshotProvenance",
@@ -968,7 +1001,45 @@
       "nestedBrowseBackUsesRouteOwnershipForEveryNonIdleCommand",
       "passiveCountdownUsesRemainingTimeAtBeforeExactAndOverdueBoundaries"
     ],
+    "com.alexandr5476.lifetracing.library.LibraryDestructivePresentationTest": [
+      "cancelAndSystemDismissAtEveryFolderStageNeverDispatchAMutation",
+      "destructiveOutcomeWaitsForCanonicalRefreshAndFailureCannotLeakIntoAnotherCommit",
+      "duplicateArchiveTargetsRequireConfirmationAndDispatchEachTypedIdOnlyOnce",
+      "archiveBusyRemovalFailureAndRouteExitCannotReplayAConfirmation",
+      "inspectionLoadingFailureRetryAndDismissExposeContextWithoutDeleteAdmission",
+      "emptyFolderConfirmationIsOneShotAndRemovedInvokerRecoversToBack",
+      "nonemptyMoveUsesExplicitRootAndDuplicateDestinationIdsAndRevokesPreviousStages",
+      "finalDestructiveConfirmationCancelsDismissesAndRejectsRefreshAndBackgroundCallbacks",
+      "englishRussianLifecycleDialogsKeepIndependentTargetsAtCombinedScaleExtremes"
+    ],
+    "com.alexandr5476.lifetracing.library.LibraryActionAdmissionTest": [
+      "independentCommandsRemainKeyboardAndAccessibilityActionableWithoutOrganizationMetadata",
+      "independentCommandsRejectInvalidBrowseHiddenMutationDisposedAndStaleContexts",
+      "metadataDependentControlsRetireOnLoadingAndFailure",
+      "retainedOpenAndQuickStartRejectRemovedFilteredAndReplacedSearchRows",
+      "retainedNavigationRejectsHiddenAndDisposedRoutesAndFolderContextChanges"
+    ],
+    "com.alexandr5476.lifetracing.library.LibraryOrganizationPresentationTest": [
+      "keyboardEntryWakesSleepingDisplayAndRetainsNativeLandingWithoutCommands",
+      "retainedMutationCallbackChecksLiveRouteOwnershipBeforeRecomposition",
+      "filteredPinnedMovesSubmitTheCompleteTypedOrderAndRespectMutationAdmission",
+      "pinnedBoundariesExpansionAndCollapseRetainNativeFocusWithoutCommands",
+      "duplicateTemplateFolderAndTagControlsDispatchOnlyTypedTargetsAndExposeSelection",
+      "folderMoveExcludesSourceAndDescendantsAndKeepsDuplicateDestinationsDistinct",
+      "dialogsKeepDraftsValidateRestoreInvokerAndNeverMutateOnCancelOrDismiss",
+      "renameAndCreateTagDialogsIdentifyExactDuplicateOwners",
+      "disposedOrStaleCallbacksCannotSubmitAndFailureRecoveryDoesNotAnnounceFalseSuccess",
+      "englishRussianOrganizationTargetsAndDialogsReflowAtCombinedScaleExtremes"
+    ],
     "com.alexandr5476.lifetracing.library.LibraryScreenPresentationTest": [
+      "headingsNativeSearchAndSelectedFiltersDispatchExactlyOnce",
+      "folderActionsBreadcrumbAndToolbarBackKeepSeparateAdmission",
+      "browseSearchAndOrganizationStatesExposeFailuresAndExplicitRetryOutcomes",
+      "duplicateNamesHaveIndependentContextualActionsAndTypedDispatchAcrossProjections",
+      "keyboardTraversalAndEnterKeepTheThreeTemplateActionsIndependent",
+      "survivingSearchFilterAndTemplateFocusRemainDuringUnrelatedRefreshes",
+      "removedResultsFoldersAndRetryRecoverToBackOnlyOnTheVisibleRoute",
+      "englishRussianActionsReflowAndReserveTargetsAtCombinedScaleExtremes",
       "activityAndSequenceRowsOpenTheirEditorsWhileQuickStartRemainsIndependent",
       "canonicalPinnedFoldersAndKindsRespectTheSelectedFilter",
       "englishDestructiveLifecycleIsExplicitAtCompactWidth",
@@ -1251,6 +1322,17 @@
       "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
       "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
       "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
+    ],
+    "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
+      "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",
+      "captureFailureKeepsRemainingEvidenceAndCannotTriggerAnotherAttempt",
+      "boundedReadReportsTruncationAndErrorsAndClosesItsStream",
+      "deadlineReturnsWithoutWaitingForOpenAndClosesALateStream",
+      "oversizedDiagnosticsRetainOriginalCauseAndLateFocusEvidenceInTheExportedFailure",
+      "unicodeDiagnosticsAreLoggedWithoutLossAndLoggingFailureCannotReplaceTheAssertion"
+    ],
+    "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
+      "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
     ]
   },
   "startup": {

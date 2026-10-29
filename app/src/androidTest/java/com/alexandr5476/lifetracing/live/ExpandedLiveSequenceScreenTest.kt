@@ -35,7 +35,6 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
-import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
@@ -1697,7 +1696,7 @@ class ExpandedLiveSequenceScreenTest {
                     // Text entry can show the IME, which consumes Back before the dialog.
                     // Enter keyboard mode on the dialog owner after hiding the IME;
                     // opening it via touch can undo the route's earlier keyboard mode.
-                    Espresso.closeSoftKeyboard()
+                    keyboardInput.closeKeyboard(cancel)
                     keyboardInput.enter(cancel)
                     cancel.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
                     cancel.assertIsFocused()
@@ -2059,15 +2058,8 @@ class ExpandedLiveSequenceScreenTest {
         target: SemanticsNodeInteraction,
         keyCode: Int,
     ) {
-        val view =
-            (target.fetchSemanticsNode().root as androidx.compose.ui.platform.ViewRootForTest).view
-        // Compose focus/idle does not imply that Android has transferred input focus
-        // after a native popup/dialog was attached or removed. Inject exactly once,
-        // only when the intended window owns native focus; callers await its outcome.
-        composeRule.waitUntil(5_000) {
-            composeRule.runOnIdle { view.isAttachedToWindow && view.hasWindowFocus() }
-        }
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode)
+        // Espresso waits for the exact native root to own input focus and injects once.
+        keyboardInput.sendKey(target, keyCode)
     }
 
     private fun awaitAbsent(matcher: SemanticsMatcher) {

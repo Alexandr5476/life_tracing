@@ -1,5 +1,490 @@
 # Android compatibility release gate
 
+## Library review corrections W1/W2
+
+Adds five native Library action-admission cases and one production-route retained
+callback case, extending the existing background-archive/reopen case. Every prior
+original-JUnit identity remains mandatory. The current inventory requires **521 app,
+627 data and 2 independent startup cases per API**. See
+[Library review evidence](library_accessibility.md#pr-39-review-corrections-w1w2).
+The follow-up repair binds native semantics actions to their original presentation
+callbacks; its authorized 17-case API 35 group passed, including all four canonical
+failures. This is scoped diagnostic evidence. Controller retains all unfiltered API
+and exact-head gates, and manual TalkBack/Switch Access remains unverified.
+
+The later full API 35 attempt reports 120 native-window failures, all naming the same
+SystemUI ANR window. An unchanged-source authorized probe passes all 120 original
+identities, but the ANR cause and original full-suite stability obligation remain open.
+See [attempt 2 evidence](library_accessibility.md#canonical-attempt-2-systemui-window-obstruction).
+The diagnostic continuation adds five mandatory cases and a bounded, once-per-process
+native SystemUI capture to the shared keyboard fixture. Its REAL API 35 probe passes
+all 120 original failures plus the five new cases. This repairs evidence collection;
+the original ANR/full-suite stability obligation remains open. See
+[diagnostic repair evidence](library_accessibility.md#diagnostic-repair-retain-native-systemui-evidence).
+
+
+## Activity Template authoring accessibility (Slice S4)
+
+Adds fifteen Activity editor presentation identities and four isolated production-route
+physical-reopen identities. The mandatory inventory is now **510 app, 627 data and
+2 independent startup cases per API**, with zero prior removals. See
+[S4 Activity editor evidence](activity_template_editor_accessibility.md) for typed
+Field/option actions, native focus/keyboard/scaling, Save/Conflict admission,
+physical-reopen canonical/provenance assertions and exact local check results.
+The repository writers, schema and historical snapshot rules are unchanged. The
+confirmed S4 no-op rule now compares Field/option identity and persisted positions
+independently of incidental materialization order; real changes retain the existing
+revision policy.
+Controller owns all unfiltered API 26/31/33/35/36 managed-device gates, independent
+startup and exact-head GitHub verification. AndroidTest compilation and automated
+semantics are not device execution or manual TalkBack/Switch Access certification.
+
+The 2026-10-24 CI repair retains every original identity and adds one sleeping-display
+keyboard-fixture regression. It addresses Library dialog-window admission, asynchronous
+focus recovery and keyboard-fixture display prerequisites. See the S4 record's
+cross-API CI repair section for the supplied failures, diagnosis limits and local
+verification. Full device execution remains Controller-owned.
+
+CI run `40088219148` remains unclosed. The follow-up retains refused focus
+requests, observes keyboard eligibility and recovers from tracked-target removal;
+its regression additions and native-window diagnostics are recorded in the S4
+record's pending-focus repair section. Local emulator setup failures are separate
+from the supplied CI testcase failures and do not establish device PASS.
+The continuation also closes a hidden Library name-dialog window and retires its
+submission lease, while requiring native-window admission before fixture navigation.
+See the S4 native-window ownership section for the unchanged-tree, zero-test probe
+and the unresolved historical API 36 initial-window cause.
+The runner also now retains full-suite native logcats before independent startup
+replaces app output. Its two new host regressions reproduce that evidence loss;
+all 19 runner tests pass. This preserves future diagnosis and does not close the
+supplied native focus failures or change mandatory test admission.
+The renewed scoped probe completed twelve zero-test executions across three
+automatic attempts (47 observed emulator boots). API 26/31/33 stopped in snapshot
+setup; API 36 exceeded the batch-wrapper command-length limit before Gradle.
+The final fixture correction captures the complete WindowManager dump so Android
+16 display focus ownership is retained, with an existing keyboard test extended
+to verify the admitted application's owner. Fresh app static checks and AndroidTest
+APK compilation pass; device execution of that assertion and the canonical
+stability obligation remain open. See the S4 authorized-probe continuation for
+the transport calculation, original failure classification and evidence paths.
+
+After Controller recovered transport/startup, fresh runtime evidence narrowed
+API 36 to one incorrect Search selector (55/56 scoped cases already passed).
+The final repair establishes native keyboard mode per admitted window and records
+focus-target detachment before Compose owner-focus invalidation, using a shared
+Library/editor modifier hook. The authorized tree-6 probe now passes all 75
+original scoped identities: API 26 1/1, API 31 1/1, API 33 17/17, API 36 56/56,
+with zero failures/errors/skips and safe device cleanup. The 48 focused JVM tests
+and ordinary app static/lint/APK checks also pass. See the S4
+[final scoped repair](activity_template_editor_accessibility.md#restored-runtime-probes-and-final-scoped-repair)
+for red/green evidence, exact report hashes and the historical diagnostic limit.
+The unfiltered five-API suites, startup checks and independent exact-head CI
+remain mandatory; the scoped local PASS does not close canonical CI stability.
+
+S4 Controller attempt 1 stopped after 148 app cases with six failures and a device
+SurfaceFlinger crash. The two authorized six-case repair probes progressed from
+four to five passing cases and exposed an unchanged configuration after archived
+Field/option materialization incrementing revision 2 to 3. The explicit human
+decision resolved this stop boundary; the shared comparison is corrected and the
+original assertion remains. See the S4 record's API 35 repair and no-op decision
+sections for regression and verification results. Inventory stays 509/627/2;
+full unfiltered compatibility and independent GitHub verification remain required.
+
+S4 Controller attempt 2 passed all 15 Library route cases, all 6 editor persistence
+cases and all 627 mandatory data cases, including physical reopen and the restored
+no-op assertion. It stopped after 393 app cases with nine failures and a native
+input dispatch timeout. The authorized nine-case repair probes progressed from
+five to eight to **nine passing cases**. The final REAL probe passed all nine with
+zero failures, errors or skips after scoped editor Tab/Shift+Tab navigation and
+fixture synchronization/target-bound corrections. App JVM tests (421), ktlint,
+Detekt and AndroidTest APK assembly also passed. See the S4 record for exact
+commands, original identities and artifacts. Inventory remains **509/627/2**;
+this focused PASS does not replace the complete Controller-owned gates.
+
+S4 Controller attempt 3 stopped after 261 app cases with nine failures and a
+SurfaceFlinger abort at its 4,096-layer limit; all 627 mandatory data cases passed.
+The fresh nine-case baseline reproduced Library focus restoration after Cancel.
+After fixtures began awaiting exact native-root and semantic-focus completion,
+the repaired REAL probe passed **all nine**, with zero failures/errors/skips
+(150.2 seconds). All focus, typed-action, stale-callback and no-write assertions
+remain. App ktlint, Detekt and AndroidTest APK assembly passed; this repair changes
+only test synchronization. See the S4 record for exact artifacts and platform-crash
+evidence. Inventory is unchanged. Full-suite native stability and all complete
+Controller-owned gates remain required.
+
+## API 26 CI interruption: bounded diagnostic continuation (2026-10-27)
+
+CI run `40152984828`, job `121058069021`, at head
+`ae78358d21c3f233fbe6130dbd4611632725b240` stopped after 314 completed app
+cases. Its 315th testcase,
+`ExpandedLiveSequenceScreenTest#alreadyOpenOccurrenceMenuIsDismissedWhenStateAuthorizationChanges`,
+has an empty failure entry and elapsed time of 374.641 seconds. The original XML
+SHA-256 is `f2c4ff99b13ea7d10d647d46c3ac66c20076933d80c40cb037cb608f93b745e7`.
+Native output stops at `03:16:06.761`, after the Activity's PAUSED event, without
+a TestRunner finish, assertion stack, ANR or Java/native crash message. The host
+logcat command eventually exits 255 at `03:22:20.929`. This does not establish
+whether the test body completed or what interrupted teardown/device transport.
+
+The repository collector had a confirmed diagnostic-loss defect: it retained only
+two logcat filename patterns before independent startup reused app output. UTP
+logs, instrumentation status/command logs, binary results and additional native
+output were overwritten. Parsing a malformed first XML also prevented later
+original XML files from being copied. The collector now snapshots all selected
+device output, additional output and the merged result protobuf before parsing
+any XML. It excludes transient `.lck` files, streams bytes and hashes, separates
+startup artifacts, and writes `<module>-artifacts.json` before validation so hashes
+remain available when validation rejects the invocation. Mandatory inventory,
+commands and gate admission are unchanged. This shared collector covers data,
+app and startup at every API.
+
+Two host regressions reproduce the evidence loss against the original HEAD
+collector; all **21** runner tests pass against the correction. Coverage includes
+startup overwriting UTP, nested command/status logs and binary results, a large
+binary-tailed logcat, malformed-first XML, additional native output, merged results,
+empty device output, and preservation of the existing rejection rules. Original
+red/green logs and results are in the current operation's
+`scratch/collector-regression-*.log`, `scratch/collector-regression-results.json`
+and `scratch/collector-regression-final-results.json`.
+
+Authorized REAL diagnostic probes, using only `gmd-api26-app`, established:
+
+- Both Expanded Sequence classes together: **64/64**, zero failures/errors/skips,
+  313.5 seconds; lease `083d9f3b219e4bc694e16a2098ae1096`, `tree-2/attempt-1`.
+- The **31 explicit classes** reached by the original CI report: **357/357**, zero
+  failures/errors/skips, 1148.6 seconds; the same lease, `tree-3/attempt-1`. Its
+  first **315 testcase identities and execution order exactly match** the failed
+  CI report. The original failing testcase completes in 1.334 seconds. Local XML
+  SHA-256: `f1c99e97d2608d75f3d2ce5f30c4d2a7c73d34500685d0afd96e5d4eec8d1480`.
+
+Before any later invocation, original JUnit, UTP, binary/native/command output and
+Controller command/cleanup logs were copied into the operation
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/0fb2997f0793a64cadd888f5/scratch/`:
+`class-probe-evidence/manifest.json` indexes 108 artifacts and
+`prefix-probe-evidence/manifest.json` indexes 402. Each manifest records hashes;
+the prefix manifest also records the original-order comparison. Scope JSON files
+record both hypotheses and exact explicit class lists.
+
+The underlying CI interruption remains **unresolved**. The local grouped and
+original-prefix runs do not reproduce it. The retained local native logs report
+GLES 2 while CI reports GLES 3; this observed environment difference does not
+prove a graphics cause. No application assertion or behavior was changed. Further
+repetition of these passing local scopes would add no justified evidence. Fresh
+Controller-owned CI with the corrected diagnostic retention is needed to expose
+the original runner/device failure if it recurs. These diagnostic passes grant
+no canonical CI PASS credit or closure of the open stability obligation.
+
+### Command I/O continuation
+
+The next physical turn preserved the three partial file changes and verified every
+hash in both retained probe manifests: all **510** artifacts still match, and the
+original 315-case prefix/order comparison still holds. No passing device scope was
+repeated.
+
+A new host experiment confirmed another path through the same evidence-loss
+boundary: an I/O exception while streaming Gradle output, waiting for the process,
+or closing its output skipped collection and allowed startup to overwrite the
+original app artifacts. One regression exercises all three phases with real
+temporary JUnit, UTP, protobuf and command-log files and a simulated Gradle process.
+Each phase reproduces missing retained artifacts before the repair.
+
+The shared invocation loop now attempts collection after a command I/O error,
+records `execution_error` separately from `evidence_error`, and rejects a command
+error even when the process returned zero and the report inventory passed. Normal
+test/validation failures still permit the independent startup invocation. All
+**22** runner tests pass. These are host-only changes; no application assertion or
+runtime behavior was changed, and the original CI interruption remains unresolved.
+
+Fresh red/green logs, `transport-retention-results.json` and
+`retained-evidence-validation.json` are under
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/8b7c4afce6a347aa88216537/scratch/`.
+This experiment confirms the repository's command-error collection defect, not
+that CI run `40152984828` took that Python exception path. Fresh Controller-owned
+CI remains necessary; no additional local PASS credit is claimed.
+
+## Bounded unhealthy-device rejection (2026-10-27, controlled repair)
+
+The completed diagnosis for head `8eed6675930dcaaab4b568b89c9f38a5eb86c925`
+identifies the same startup ANR window (`cfaccaa`) in all 113 reported API 36
+failures. SystemUI's `getGpuContextPriority` Binder wait precedes data
+instrumentation; the downstream product assertions were not reached. Earlier
+runner repairs captured this obstruction but continued executing until CI's job
+timeout. The underlying SurfaceFlinger delay remains unexplained.
+
+The runner now monitors the selected emulator during setup/snapshot boot and
+instrumentation, independently of whether Gradle produces another output line.
+It requires an initially exclusive emulator environment, checks serial, API and
+AVD identity, observes boot readiness and rejects an
+ANR window or persistent SystemUI ANR report. Empty `lastanr` is never health
+evidence. Offline observations confer no target ownership; incomplete boot does
+not confer health admission. A wrong API,
+ambiguous devices or changed AVD fail admission. A failed health read remains
+pending for a bounded recovery interval rather than immediately aborting. This is
+periodic early rejection, not a claim that every platform fault can be detected
+before the first testcase starts.
+
+CI run `40585512758` on head `79517c57784a20e01fa2dc85a697b6eae30595d0`
+exposed a runner regression on all five APIs before app tests: API 26/31/33
+reported transient `adb getprop` transport closure, API 36 a five-second getprop
+timeout, and API 35 a five-second window-service timeout before boot completion.
+The runner itself then stopped Gradle with exit 143; these are not app assertion
+failures or evidence that GitHub terminated those jobs. This finding does not
+identify the cause of the older CI388 runner shutdowns.
+
+Health probes now allow up to 300 seconds of continuous unavailability, matching
+the existing GMD setup allowance. Disconnection, offline state and unavailable
+properties cannot reset that bound; a complete healthy observation does. Concrete
+ANR evidence, wrong API, ambiguous devices and changed AVD still fail immediately.
+The abort reason is also printed in the job log. Regressions reproduce the exact
+closed/timeout cases before and after readiness, successful recovery and permanent
+unavailability; all 40 host tests pass on Windows and Linux. The complete local
+API35 suite (632 data cases, five skipped; 510 app cases, no failures) and 113
+focused API36 cases passed before this fix through Controller's direct Gradle
+checks. Those passes did not exercise the CI Python monitor. New exact-head CI
+remains mandatory to validate the complete GitHub execution path.
+
+All invocations share a 55-minute execution budget, leaving room inside the
+existing 60-minute CI job for diagnostics, cleanup and uploads. Each invocation
+receives the remaining row budget. A separate 25-minute invocation cap and a
+50-minute row cap were rejected during review: the verified successful API 26
+CI387 attempt2 took 30:29 for data and 50:46 overall. A regression replays those
+durations and requires all three suites to complete. SDK provisioning is bounded
+to three minutes.
+On a blocker or deadline the runner first retains the existing bounded platform
+capture, then terminates its process group and verifies cleanup. On Linux it
+also adopts/reaps orphaned descendants to cover detached single-use Gradle
+daemons; cleanup escalates only its owned processes, preserving PID/start-time
+identity. Emulator cleanup revalidates the selected API/AVD before `emu kill` and
+checks disappearance. No ANR dismissal, testcase retry or platform recovery is
+performed. Unverified devices are never killed.
+
+An unhealthy/expired invocation or failed cleanup fails the row and marks later
+mandatory invocations `NOT_RUN`, with no execution or inventory PASS credit.
+Ordinary testcase failures still allow independent later suites after verified
+cleanup. Before launch, previous selected-device output is moved under
+`ci-evidence/api<API>/previous/<module>/`; a build/admission failure cannot certify
+old green XML, including when startup reuses app's output paths. Current original
+XML/native artifacts are still retained before inventory validation. Evidence
+records include health observations, abort reason and cleanup outcomes and are
+written after each invocation as well as at completion.
+
+The AGP 8.10.1 task graph was inspected with a local **dry run only** of
+`:data:pixel2Api36DebugAndroidTest`. It schedules packaging before device setup
+in that graph. No compilation/boot separation experiment or task-rerun strategy
+change is included: compilation overlap remains an unproven hypothesis. All
+three commands retain full suites, `--rerun-tasks`, the SwiftShader renderer and
+the original mandatory inventory at every API.
+
+Host regressions cover quiet-process deadlines with real disposable Python
+children, early rejection/capture, persistent ANR admission, identity checks,
+owned cleanup/escalation, stale evidence isolation and truthful blocked-suite
+reporting. Existing inventory, artifact-retention and orchestration regressions
+remain required. Local `python -m unittest discover -s .github/scripts -p "test_*.py"`
+passes **38 tests** on Windows and WSL Linux, including all 26 existing runner cases
+and the successful API 26 duration regression. The initial four new
+admission/deadline regressions failed before implementation. Host checks and
+simulated Linux/adb cases do not certify the
+Linux emulator or application journey. Controller owns fresh exact-head five-API
+CI, independent startup and the unresolved API 26 cancellation investigation.
+The original startup stall, unexecuted application cases and manual accessibility
+walkthroughs remain unverified.
+
+## API 36 SystemUI window obstruction (2026-10-27)
+
+CI run `40425756902`, job `121930975075`, at head
+`504471b8814c98b2a689567d8eb683a745efcff3` completed six app cases before the
+first native-window admission failure. All **110** reported failures across **12**
+classes reach the shared KeyboardInputFixture admission boundary and name exactly
+the same owner: `Window{a73a7ce u0 Application Not Responding: com.android.systemui}`.
+LifeTracing's Compose View is attached, but its native window lacks focus; the
+focused-app record still identifies LifeTracing. The SystemUI ANR dialog explains
+the shared focus obstruction. This is not evidence that the downstream product
+assertions failed. The job was canceled after reaching 344 of 510 app tests.
+
+The retained app `emulator.1.txt` records Emulator **37.2.12.0**, a successful
+`default_boot` snapshot restore followed immediately by missing ColorBuffer/invalid
+texture errors. Local capability reports **37.1.11**. These observations suggest
+a platform/graphics investigation; they do not prove why SystemUI became
+unresponsive or establish that a version change fixes it. Android's official
+[snapshot troubleshooting](https://developer.android.com/studio/run/emulator-snapshots)
+warns that software-rendered snapshots are unreliable. No speculative emulator
+downgrade, test skip, dialog dismissal or application focus workaround was added.
+
+The repository's existing AGP logcat command captures only `main` and `crash`,
+omitting system/event buffers containing ANR reasons. The CI runner now captures
+diagnostics **once per invocation**, at the first reported SystemUI ANR window,
+while that emulator and dialog still exist. It selects exactly one online emulator,
+verifies its API against the job, and reads `dumpsys activity lastanr`, system/event/
+crash logcat, WindowManager and SurfaceFlinger state. Each of six commands has a
+five-second timeout; partial output, stderr, failed commands and unavailable or
+ambiguous targets are retained with timestamps and hashes. It never sends input,
+dismisses the dialog, restarts a process, or retries a testcase.
+
+Logs and their manifest are written immediately under
+`ci-evidence/api<API>/<module>-system-ui/`, independently of final JUnit creation or
+job cancellation. The observed blocker remains a failed gate even if contradictory
+JUnit reports are green. Mandatory inventory and the three complete invocation
+commands remain unchanged. Three new regressions fail before this repair;
+all **25** runner tests now pass, covering one-time capture before startup,
+target/API admission and timeout/command-error evidence. No device run was repeated.
+
+The complete 110-case source/fixture index, common-owner check, original log hashes
+and red/green host evidence are under
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/7b61ea95b4e2b662b3d9e6d4/scratch/`.
+The SystemUI ANR's underlying cause and the CI stability obligation remain open.
+Controller owns fresh canonical execution and CI; prior local full-suite passes
+do not close this remote failure.
+
+### Persistent startup ANR trace gap
+
+The next capture, from CI run `40445540358`, job `121995817380`, at head
+`01c49f9c6645e1148bc4dfc849c3629654578c37`, narrows the obstruction to a saved
+device-startup failure. System/event log `app-system-ui/04.log` records SystemUI
+PID 983 failing to complete startup at **03:44:14**, with ANR report
+`/data/anr/anr_2026-10-27-03-44-13-447`. The same log creates ANR window `d6b1ccf`.
+This precedes the first data test invocation at **03:45:05**. The app emulator later
+loads `default_boot`; its captured system log still contains those startup events,
+and window `d6b1ccf` acquires input focus again at **04:00:25**. App tests begin at
+**04:00:37**, then 112 cases across 12 classes fail native-window admission before
+the job is canceled at 348/510. These observations identify an invalid boot-state
+prerequisite; they do not show a downstream product assertion failing or prove
+which emulator, graphics, snapshot or startup condition caused the ANR.
+
+Despite the retained ANR event, `app-system-ui/03.log` reports **no ANR since boot**.
+The earlier capture therefore still omits the blocked SystemUI thread stack. The
+runner now also requests `dumpsys dropbox --print system_app_anr`, Android's
+[persistent report dump](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/services/core/java/com/android/server/DropBoxManagerService.java).
+It runs immediately after `lastanr`, without depending on that command's contents,
+and before the other platform dumps. All seven commands retain the existing
+five-second bound, partial-output/error handling, target/API checks and one-time
+capture policy. An unavailable, expired or denied persistent report is retained
+as evidence, not treated as a recovered or healthy device.
+
+The new host regression first fails in all three subcases against the previous
+collector. After the repair, all **26** runner tests pass, including an empty
+`lastanr` with a saved startup stack, permission denial and timeout with a partial
+stack; later window/SurfaceFlinger capture and artifact hashes are also checked.
+Only the host runner suite was executed. No device probe was repeated: this patch
+does not reproduce the remote startup failure or validate the new dump on a live
+emulator. Controller owns fresh device/CI verification. The original startup ANR
+and stability obligation remain **unresolved**; this patch repairs its confirmed
+diagnostic omission without changing application behavior or test assertions.
+
+### API 33 offset visibility and API 36 graphics startup (CI round 5)
+
+CI run `40461748715`, head `36b426768159f81f4947b9757abe0580392d6a3a`,
+adds one independent API 33 failure: the Russian selected start-offset button is
+outside the viewport at maximum combined scale. The unchanged-tree repair probe
+`fd80f59af5214d508e50622b1bf29df5/tree-1` first passes that isolated testcase,
+then its automatic recovery attempt reproduces the same selected-choice assertion
+in English at line 692. This reproduces within the original test itself; a prior
+test's mutable fixture is not required. The retained CI log also shows IME input
+activity during the measurement sequence.
+
+The fixture requested focus on one choice and scrolled to another without waiting
+for native/semantic focus or closing the form's IME. Selection also grows the
+localized button label. It now awaits initial form focus, closes the IME in that
+window, and aligns focus with each choice before scrolling and asserting visibility.
+Exact unselected labels, selected labels, both selection assertions, passive-focus
+checks, explicit zone review and retained local-text assertions remain enforced.
+No product or persistence behavior changes.
+
+The API 36 persistent report now supplies the missing startup stack: SystemUI PID
+997 is blocked in `SurfaceControl.getGPUContextPriority` from
+`SystemUIApplication.onCreate`, with a 13,611 ms outgoing binder transaction to
+SurfaceFlinger PID 506. Its startup ANR is timestamped **06:35:47**, before app
+testing, and its dialog `8d53f7c` subsequently blocks all 114 reported native-window
+admissions. All affected methods in twelve classes still use the shared keyboard
+fixture. Their downstream assertions were not reached by this failure.
+
+The CI invocation still selected `swiftshader_indirect` on Emulator **37.2.12.0**.
+Android's current [graphics configuration documentation](https://developer.android.com/studio/run/emulator-acceleration)
+marks that mode deprecated since **36.4.9** and documents `swiftshader` as the
+supported explicit SwiftShader GLES/Vulkan mode. The shared CI runner now selects
+`swiftshader` for data, app and independent startup on all five APIs. A host
+regression first fails on every API, then all **26** runner tests pass after the
+change. Inventory, complete-suite admission, assertions and ANR failure gating
+remain intact. This removes reliance on the legacy renderer; it does not prove
+that the modern renderer alone prevents the captured graphics startup stall.
+
+The baseline API 36 probe executed **zero** tests in both automatic attempts,
+reporting an instrumentation-process crash before discovery without positive
+repository or device-ownership evidence. It neither reproduces nor clears the
+remote ANR. The leased Controller probes still request `swiftshader_indirect`;
+they do not validate the changed Linux CI renderer or establish CI/local graphics
+parity. Fresh Controller-owned CI with the updated command remains necessary.
+
+Local focused Plan session/controller JVM tests pass (**26** cases), app ktlint and
+Detekt pass, and the changed AndroidTest APK compiles/packages successfully. A
+subsequent ktlint/APK check also passes after preserving the original selectors.
+The red/green host logs, all-114 source/fixture index and justified class scope are
+under `D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/b4e6f66a949130ce6e374932/scratch/`.
+The original remote failures and independent stability obligation remain open.
+
+The repaired containing-class probe completed **REAL PASS** at
+`fd80f59af5214d508e50622b1bf29df5/tree-2/attempt-2`: **10/10 API 33** and
+**225/225 API 36**, with zero failures, errors or skips. The final reports contain
+each of the original **115** failing identities exactly once and successful; report
+hashes and this membership check are in `scratch/repaired-probe-evidence.json`.
+Controller cleanup reports `safe=true`, complete enumeration and no owned live
+processes or survivors for both devices.
+
+Its first automatic attempt passed the ten Plan cases but could not install the
+API 36 APK: the package service returned **Broken pipe**, followed by a missing
+Android activity service. That zero-test result is not app execution or PASS.
+Controller recovery restored device execution before the successful 225-case run;
+the repeated Plan class also passed. An earlier API 33-only scope request was
+refused before execution because the lease requires both checks; the accepted
+class scope retains every original failure on both leased checks.
+
+This local PASS verifies the repaired fixture and the existing affected app
+classes on Windows. It still uses the leased legacy graphics flag and does not
+establish Linux renderer equivalence, certify the changed CI command, explain the
+underlying SurfaceFlinger startup stall, or close the original CI stability
+obligation. Only this evidence record changed after the successful probe.
+
+## Template archive and Folder deletion accessibility (Slice S3)
+
+Adds nine lifecycle presentation identities and four isolated production-route
+physical-reopen identities. The mandatory inventory now requires **490 app,
+627 data and 2 independent startup cases per API**; all earlier identities remain.
+See [S3 lifecycle evidence](library_destructive_accessibility.md) for exact tests,
+dialog/focus admission, canonical archive/subtree/rejection assertions and local
+verification. Existing large-subtree safe-bind, hidden occupancy and rollback
+repository regressions remain mandatory. Controller owns all unfiltered API
+26/31/33/35/36 gates, independent startup and exact-head GitHub evidence. Compilation
+and automated semantics assertions do not certify manual TalkBack/Switch Access.
+
+Controller API 35 attempt 2 completed all 490 app cases with six failures; all
+eleven Library production-route cases, including the four S3 physical-reopen
+journeys, passed. The authorized repair probe subsequently passed all six failing
+identities after dialog-owner, native-window synchronization, locale and scaled
+target-layout corrections. See the S3 record for all four probes and their exact
+artifacts. The full repaired-tree five-API matrix and independent exact-head gates
+remain Controller-owned requirements; the mandatory inventory is unchanged.
+
+## Non-destructive Library organization accessibility (Slice S2)
+
+Adds nine organization presentation identities and three isolated production-route
+physical-reopen identities. The mandatory inventory now contains **477 app,
+627 data and 2 independent startup cases per API**, with zero prior removals.
+See [S2 organization evidence](library_organization_accessibility.md) for exact
+test names, local checks, typed mutation admission, focus and canonical reopen
+assertions. All unfiltered API 26/31/33/35/36 gates, independent production startup
+and exact-head GitHub evidence remain Controller-owned requirements. Source/APK
+compilation and automated semantics assertions do not certify manual TalkBack or
+Switch Access operation.
+
+## Library discovery accessibility (Slice S1)
+
+Adds eight Library presentation identities and four isolated production-route
+identities. The pinned inventory now requires **465 app, 627 data and 2 independent
+startup cases per API**. Every previous identity remains mandatory. See
+[library_accessibility.md](library_accessibility.md) for target boundaries, duplicate
+typed identities, keyboard recovery, localization/scaling, exact testcase names and
+local verification. Controller owns fail-first/corrected device evidence and the
+unfiltered API 26/31/33/35/36 gates plus exact-head GitHub CI. AndroidTest compilation
+and automated semantics are not manual TalkBack/Switch Access certification.
+
 Delivery-plan item 7 and the S5 Parent contract define this gate. Product v0.16, domain v0.10, database v0.6 and the implementation clarifications remain authoritative. These checks preserve schema v10, durable identities, runtime semantics and existing permission UX.
 
 S3 expanded Sequence accessibility evidence is described in [expanded_sequence_accessibility.md](expanded_sequence_accessibility.md).
@@ -20,7 +505,7 @@ S5 cross-route evidence and the assistive-service walkthrough are described in [
 | Managed-device instrumentation tests (API 33) | 33 | pixel2Api33 | data, app, startup |
 | Managed-device instrumentation tests (API 36) | 36 | pixel2Api36 | data, app, startup |
 
-The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data, the full isolated app suite, and the independent production-startup app suite in separate sequential Gradle invocations, even after module failure, avoiding shared AVD setup/teardown races. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
+The matrix uses separate CI runners per API, with fail-fast disabled. Within a row, [run-instrumentation.py](../../.github/scripts/run-instrumentation.py) runs data, the full isolated app suite, and the independent production-startup app suite in separate sequential Gradle invocations, including after ordinary testcase failure with verified cleanup, avoiding shared AVD setup/teardown races. Unhealthy-device admission, execution deadlines or failed cleanup fail the row and explicitly leave subsequent mandatory suites NOT_RUN; they never count as successful verification. It supplies the expected API and uses no class/method filters, no build cache, rerun-tasks, no configuration cache, no parallel tasks and at most two workers. API 26 explicitly provisions the emulator with sdkmanager from the configured SDK. AGP's old-API managed-device opt-in remains enabled; minSdk is 26 and targetSdk is 36.
 
 Checkout and runner verification use the PR head SHA (or github.sha for other events). The runner rejects a checkout mismatch before Gradle. evidence.json distinguishes tested SHA from GitHub event SHA, which may identify a merge ref.
 
@@ -231,7 +716,7 @@ Controller must retain fail-first device evidence by removing only the requireVa
 
 Each API uploads these artifacts even on failure, retained for 30 days:
 
-- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log, startup.log and byte-for-byte original per-invocation TEST-*.xml with SHA-256 digests.
+- `instrumentation-evidence-api<API>-attempt<ATTEMPT>`: `ci-evidence/api<API>/evidence.json`, data.log, app.log, startup.log, per-invocation `<module>-artifacts.json` hash manifests, and byte-for-byte original JUnit, UTP, binary results, command/status logs and additional native output. Snapshots and manifests precede XML validation, including for failed or malformed invocations.
 - `instrumentation-reports-api<API>-attempt<ATTEMPT>`: the same evidence plus each module's build/reports, build/outputs/androidTest-results and managed-device additional output.
 
 Original per-device XML is under `<module>/build/outputs/androidTest-results/managedDevice/debug/pixel2Api<API>/`. HTML is under `<module>/build/reports/androidTests/managedDevice/debug/pixel2Api<API>/`. Each module's AndroidCompatibilityDeviceTest name records actual SDK; system output/logs record fingerprint. evidence.json records commands, timestamps, exit codes, API observation, mandatory inventory certification, counts, SHA and report hashes. Compare all three invocation observations with the selected API. Combined allDevices reports, compilation and cached ignored outputs are insufficient evidence.

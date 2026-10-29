@@ -37,6 +37,134 @@ class TemplateAuthoringModelsTest {
     }
 
     @Test
+    fun `Activity Field and option materialization order is a no-op`() {
+        val current = activityWithArchivedFields()
+        val removed = current.fields.first()
+        val category = current.fields.last()
+        val options = category.categoryOptions
+        val reversedOptions = category.copy(categoryOptions = options.reversed())
+        val reordered = current.copy(fields = listOf(reversedOptions, removed))
+
+        listOf(
+            reordered,
+            current.copy(fields = listOf(category, removed)),
+            current.copy(fields = listOf(removed, reversedOptions)),
+        ).forEach { materialized ->
+            assertEquals(AuthoringSaveKind.NO_OP, TemplateAuthoringPolicy.classify(current, materialized))
+        }
+    }
+
+    @Test
+    fun `Activity persisted Field and option changes retain their save classification`() {
+        val current = activityWithArchivedFields()
+        val removed = current.fields.first()
+        val category = current.fields.last()
+        val options = category.categoryOptions
+        val reordered = current.copy(fields = listOf(category, removed))
+        listOf(
+            category.copy(position = 3),
+            category.copy(defaultCategoryOptionId = null),
+            category.copy(categoryOptions = listOf(options.first().copy(isArchived = false), options.last())),
+            category.copy(categoryOptions = listOf(options.first(), options.last().copy(position = 2))),
+            category.copy(
+                categoryOptions = listOf(options.first(), options.last().copy(id = CategoryOptionId("replacement"))),
+            ),
+            category.copy(categoryOptions = listOf(options.last())),
+        ).forEach { changed ->
+            assertEquals(
+                AuthoringSaveKind.SEMANTIC,
+                TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(changed, removed))),
+            )
+        }
+        assertEquals(
+            AuthoringSaveKind.SEMANTIC,
+            TemplateAuthoringPolicy.classify(
+                current,
+                reordered.copy(fields = listOf(category, removed.copy(deletedAt = null))),
+            ),
+        )
+        assertEquals(
+            AuthoringSaveKind.SEMANTIC,
+            TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(category))),
+        )
+        listOf(
+            category.copy(name = "Renamed"),
+            category.copy(categoryOptions = listOf(options.last().copy(label = "Renamed"), options.first())),
+        ).forEach { changed ->
+            assertEquals(
+                AuthoringSaveKind.PRESENTATION_ONLY,
+                TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(changed, removed))),
+            )
+        }
+    }
+
+    @Test
+    fun `Sequence Field and option materialization order is a no-op`() {
+        val current = sequenceWithArchivedFields()
+        val removed = current.fields.first()
+        val category = current.fields.last()
+        val options = category.categoryOptions
+        val reversedOptions = category.copy(categoryOptions = options.reversed())
+        val reordered = current.copy(fields = listOf(reversedOptions, removed))
+
+        listOf(
+            reordered,
+            current.copy(fields = listOf(category, removed)),
+            current.copy(fields = listOf(removed, reversedOptions)),
+        ).forEach { materialized ->
+            assertEquals(AuthoringSaveKind.NO_OP, TemplateAuthoringPolicy.classify(current, materialized))
+        }
+    }
+
+    @Test
+    fun `Sequence persisted Field and option changes retain their save classification`() {
+        val current = sequenceWithArchivedFields()
+        val removed = current.fields.first()
+        val category = current.fields.last()
+        val options = category.categoryOptions
+        val reordered = current.copy(fields = listOf(category, removed))
+        listOf(
+            category.copy(position = 3),
+            category.copy(defaultCategoryOptionId = null),
+            category.copy(categoryOptions = listOf(options.first().copy(isArchived = false), options.last())),
+            category.copy(categoryOptions = listOf(options.first(), options.last().copy(position = 2))),
+            category.copy(
+                categoryOptions =
+                    listOf(
+                        options.first(),
+                        options.last().copy(id = SequenceTemplateCategoryOptionId("replacement")),
+                    ),
+            ),
+            category.copy(categoryOptions = listOf(options.last())),
+        ).forEach { changed ->
+            assertEquals(
+                AuthoringSaveKind.SEMANTIC,
+                TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(changed, removed))),
+            )
+        }
+        assertEquals(
+            AuthoringSaveKind.SEMANTIC,
+            TemplateAuthoringPolicy.classify(
+                current,
+                reordered.copy(fields = listOf(category, removed.copy(deletedAt = null))),
+            ),
+        )
+        assertEquals(
+            AuthoringSaveKind.SEMANTIC,
+            TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(category))),
+        )
+        listOf(
+            category.copy(name = "Renamed"),
+            category.copy(categoryOptions = listOf(options.last().copy(label = "Renamed"), options.first())),
+        ).forEach { changed ->
+            assertEquals(
+                AuthoringSaveKind.PRESENTATION_ONLY,
+                TemplateAuthoringPolicy.classify(current, reordered.copy(fields = listOf(changed, removed))),
+            )
+        }
+    }
+
+    @Test
     fun `Sequence reorder is semantic while unchanged structure is a no-op`() {
         val first = ActivityStep(SequenceNodeId("first"), 0, ActivitySnapshotId("first-snapshot"))
         val second = ActivityStep(SequenceNodeId("second"), 1, ActivitySnapshotId("second-snapshot"))
@@ -151,6 +279,67 @@ class TemplateAuthoringModelsTest {
         assertTrue(TemplateAuthoringPolicy.shouldPropagate(false, LinkedStepPropagationMode.ONLY_UNMODIFIED))
         assertFalse(TemplateAuthoringPolicy.shouldPropagate(true, LinkedStepPropagationMode.ONLY_UNMODIFIED))
         assertTrue(TemplateAuthoringPolicy.shouldPropagate(true, LinkedStepPropagationMode.ALL))
+    }
+
+    private fun activityWithArchivedFields(): ActivityTemplate {
+        val options =
+            listOf(
+                CategoryOption(CategoryOptionId("archived"), 2, "Same", isArchived = true),
+                CategoryOption(CategoryOptionId("active"), 8, "Same"),
+            )
+        val category =
+            ActivityTemplateField(
+                ActivityTemplateFieldId("category"),
+                9,
+                "Same",
+                CustomFieldType.CATEGORY,
+                defaultCategoryOptionId = options.last().id,
+                createdAt = now,
+                updatedAt = now,
+                categoryOptions = options,
+            )
+        val removed =
+            category.copy(
+                id = ActivityTemplateFieldId("removed"),
+                position = 3,
+                deletedAt = now,
+                categoryOptions = emptyList(),
+                defaultCategoryOptionId = null,
+            )
+        return activityTemplate().copy(fields = listOf(removed, category))
+    }
+
+    private fun sequenceWithArchivedFields(): SequenceTemplate {
+        val options =
+            listOf(
+                SequenceTemplateCategoryOption(
+                    SequenceTemplateCategoryOptionId("archived"),
+                    2,
+                    "Same",
+                    isArchived = true,
+                ),
+                SequenceTemplateCategoryOption(SequenceTemplateCategoryOptionId("active"), 8, "Same"),
+            )
+        val category =
+            SequenceTemplateField(
+                SequenceTemplateFieldId("category"),
+                9,
+                "Same",
+                CustomFieldType.CATEGORY,
+                defaultCategoryOptionId = options.last().id,
+                createdAt = now,
+                updatedAt = now,
+                categoryOptions = options,
+            )
+        val removed =
+            category.copy(
+                id = SequenceTemplateFieldId("removed"),
+                position = 3,
+                deletedAt = now,
+                categoryOptions = emptyList(),
+                defaultCategoryOptionId = null,
+            )
+        return sequenceTemplate(emptyList()).copy(fields = listOf(removed, category))
     }
 
     private fun activityTemplate() =
