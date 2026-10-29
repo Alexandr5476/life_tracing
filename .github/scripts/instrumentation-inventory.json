@@ -755,6 +755,7 @@
       "productionConflictRequiresExplicitReloadAndDiscardLeavesNoPartialWriteOnReopen",
       "productionLoadRetryAndGatedWriterFailurePreserveSessionAndBackAdmissionUntilCommit",
       "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
+      "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
       "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
@@ -1010,6 +1011,13 @@
       "nonemptyMoveUsesExplicitRootAndDuplicateDestinationIdsAndRevokesPreviousStages",
       "finalDestructiveConfirmationCancelsDismissesAndRejectsRefreshAndBackgroundCallbacks",
       "englishRussianLifecycleDialogsKeepIndependentTargetsAtCombinedScaleExtremes"
+    ],
+    "com.alexandr5476.lifetracing.library.LibraryActionAdmissionTest": [
+      "independentCommandsRemainKeyboardAndAccessibilityActionableWithoutOrganizationMetadata",
+      "independentCommandsRejectInvalidBrowseHiddenMutationDisposedAndStaleContexts",
+      "metadataDependentControlsRetireOnLoadingAndFailure",
+      "retainedOpenAndQuickStartRejectRemovedFilteredAndReplacedSearchRows",
+      "retainedNavigationRejectsHiddenAndDisposedRoutesAndFolderContextChanges"
     ],
     "com.alexandr5476.lifetracing.library.LibraryOrganizationPresentationTest": [
       "keyboardEntryWakesSleepingDisplayAndRetainsNativeLandingWithoutCommands",
@@ -1314,6 +1322,17 @@
       "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
       "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
       "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
+    ],
+    "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
+      "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",
+      "captureFailureKeepsRemainingEvidenceAndCannotTriggerAnotherAttempt",
+      "boundedReadReportsTruncationAndErrorsAndClosesItsStream",
+      "deadlineReturnsWithoutWaitingForOpenAndClosesALateStream",
+      "oversizedDiagnosticsRetainOriginalCauseAndLateFocusEvidenceInTheExportedFailure",
+      "unicodeDiagnosticsAreLoggedWithoutLossAndLoggingFailureCannotReplaceTheAssertion"
+    ],
+    "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
+      "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
     ]
   },
   "startup": {

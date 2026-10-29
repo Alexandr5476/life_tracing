@@ -170,14 +170,25 @@ private fun LibraryContent(
                     .padding(MaterialTheme.spacing.xLarge),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
         ) {
-            LibraryHeader(onBack = {
-                if (state.folderId == null) onRouteBack() else onAction(LibraryAction.Back)
-            })
+            LibraryHeader(
+                onBack =
+                    libraryPresentationCallback {
+                        if (state.folderId == null) onRouteBack() else onAction(LibraryAction.Back)
+                    },
+            )
             if (state.folderId == null) {
-                LifeTracingPrimaryButton(onClick = onCreateActivity, modifier = libraryFocusTarget().fillMaxWidth()) {
+                val createActivity = libraryPresentationCallback(block = onCreateActivity)
+                val createSequence = libraryPresentationCallback(block = onCreateSequence)
+                LifeTracingPrimaryButton(
+                    onClick = createActivity,
+                    modifier = libraryFocusTarget().libraryActionSemantics(createActivity).fillMaxWidth(),
+                ) {
                     Text(stringResource(R.string.library_new_activity))
                 }
-                LifeTracingPrimaryButton(onClick = onCreateSequence, modifier = libraryFocusTarget().fillMaxWidth()) {
+                LifeTracingPrimaryButton(
+                    onClick = createSequence,
+                    modifier = libraryFocusTarget().libraryActionSemantics(createSequence).fillMaxWidth(),
+                ) {
                     Text(stringResource(R.string.library_new_sequence))
                 }
             }
@@ -266,7 +277,11 @@ private fun LibraryHeader(onBack: () -> Unit) {
         )
         TextButton(
             onClick = onBack,
-            modifier = libraryFocusTarget().focusRequester(LocalLibraryFocus.current.landing),
+            modifier =
+                libraryFocusTarget()
+                    .libraryActionSemantics(
+                        onBack,
+                    ).focusRequester(LocalLibraryFocus.current.landing),
         ) {
             Text(stringResource(R.string.library_back))
         }
@@ -443,6 +458,7 @@ private fun FolderSection(
             confirm = R.string.library_create,
             isMutating = isMutating,
             context = stringResource(R.string.library_create_folder_here, LocalLibraryOrganization.current.location),
+            requiresOrganization = false,
         ) { onAction(LibraryAction.CreateFolder(it)) }
     }
     folders.forEachIndexed { index, folder ->
@@ -542,6 +558,7 @@ private fun PinnedSection(
                             stringResource(R.string.library_move_up),
                             stringResource(R.string.library_pinned_move_up, context),
                             !isMutating && index > 0,
+                            requiresOrganization = false,
                         ) {
                             onAction(
                                 LibraryAction.ReorderPinned(allPinned.move(index, index - 1).map(LibraryTrackable::id)),
@@ -551,6 +568,7 @@ private fun PinnedSection(
                             stringResource(R.string.library_move_down),
                             stringResource(R.string.library_pinned_move_down, context),
                             !isMutating && index < allPinned.lastIndex,
+                            requiresOrganization = false,
                         ) {
                             onAction(
                                 LibraryAction.ReorderPinned(allPinned.move(index, index + 1).map(LibraryTrackable::id)),
@@ -577,6 +595,14 @@ private fun TrackableRow(
     onQuickStart: (LibraryTemplateId) -> Unit,
 ) {
     val shape = MaterialTheme.shapes.medium
+    val open =
+        libraryPresentationCallback {
+            when (val id = item.id) {
+                is LibraryTemplateId.Activity -> onOpenActivity(id.id)
+                is LibraryTemplateId.Sequence -> onOpenSequence(id.id)
+            }
+        }
+    val quickStart = libraryPresentationCallback { onQuickStart(item.id) }
     val kind =
         stringResource(
             if (item.kind == LibraryTrackableKind.ACTIVITY) {
@@ -611,12 +637,9 @@ private fun TrackableRow(
                     .fillMaxWidth()
                     .heightIn(min = LocalMinimumInteractiveComponentSize.current)
                     .clip(shape)
-                    .clickable(role = Role.Button, onClickLabel = openLabel) {
-                        when (val id = item.id) {
-                            is LibraryTemplateId.Activity -> onOpenActivity(id.id)
-                            is LibraryTemplateId.Sequence -> onOpenSequence(id.id)
-                        }
-                    }.semantics { contentDescription = openDescription }
+                    .libraryActionSemantics(open, openLabel)
+                    .clickable(role = Role.Button, onClickLabel = openLabel, onClick = open)
+                    .semantics { contentDescription = openDescription }
                     .padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.xSmall),
         ) {
@@ -630,8 +653,12 @@ private fun TrackableRow(
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
             LifeTracingPrimaryButton(
-                onClick = { onQuickStart(item.id) },
-                modifier = libraryFocusTarget().semantics { contentDescription = quickLabel },
+                onClick = quickStart,
+                modifier =
+                    libraryFocusTarget().libraryActionSemantics(quickStart).semantics {
+                        contentDescription =
+                            quickLabel
+                    },
             ) {
                 Text(stringResource(R.string.library_quick_start))
             }
@@ -752,6 +779,7 @@ private fun FolderRow(
     val context = libraryFolderContext(folder, position)
     val openLabel = stringResource(R.string.library_open_folder, folder.name, position)
     val organizeLabel = stringResource(R.string.library_organize_folder, folder.name, position)
+    val open = libraryPresentationCallback { onAction(LibraryAction.OpenFolder(folder.id)) }
     val handle = rememberLibraryFocusHandle(true)
     val recovery = LocalLibraryFocus.current
     val expanded = stringResource(if (showOrganization) R.string.library_expanded else R.string.library_collapsed)
@@ -761,8 +789,8 @@ private fun FolderRow(
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
     ) {
         TextButton(
-            onClick = { onAction(LibraryAction.OpenFolder(folder.id)) },
-            modifier = libraryFocusTarget().semantics { contentDescription = openLabel },
+            onClick = open,
+            modifier = libraryFocusTarget().libraryActionSemantics(open).semantics { contentDescription = openLabel },
         ) { Text(folder.name) }
         TextButton(
             onClick = {

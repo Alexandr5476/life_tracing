@@ -50,6 +50,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.Tag
 import com.alexandr5476.lifetracing.domain.TagId
+import com.alexandr5476.lifetracing.ui.nativeFailureReport
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -92,7 +93,10 @@ class LibraryOrganizationPresentationTest {
             back.assertIsNotFocused()
             compose.runOnIdle { mode = InputMode.Keyboard }
             keyboard.awaitFocus(back)
-            val diagnostics = keyboard.windowDiagnostics((back.fetchSemanticsNode().root as ViewRootForTest).view)
+            val diagnostics =
+                nativeFailureReport(
+                    keyboard.windowDiagnostics((back.fetchSemanticsNode().root as ViewRootForTest).view),
+                )
             assertTrue(
                 diagnostics,
                 diagnostics.lineSequence().any {

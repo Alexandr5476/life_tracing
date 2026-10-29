@@ -1,5 +1,28 @@
 # Android compatibility release gate
 
+## Library review corrections W1/W2
+
+Adds five native Library action-admission cases and one production-route retained
+callback case, extending the existing background-archive/reopen case. Every prior
+original-JUnit identity remains mandatory. The current inventory requires **521 app,
+627 data and 2 independent startup cases per API**. See
+[Library review evidence](library_accessibility.md#pr-39-review-corrections-w1w2).
+The follow-up repair binds native semantics actions to their original presentation
+callbacks; its authorized 17-case API 35 group passed, including all four canonical
+failures. This is scoped diagnostic evidence. Controller retains all unfiltered API
+and exact-head gates, and manual TalkBack/Switch Access remains unverified.
+
+The later full API 35 attempt reports 120 native-window failures, all naming the same
+SystemUI ANR window. An unchanged-source authorized probe passes all 120 original
+identities, but the ANR cause and original full-suite stability obligation remain open.
+See [attempt 2 evidence](library_accessibility.md#canonical-attempt-2-systemui-window-obstruction).
+The diagnostic continuation adds five mandatory cases and a bounded, once-per-process
+native SystemUI capture to the shared keyboard fixture. Its REAL API 35 probe passes
+all 120 original failures plus the five new cases. This repairs evidence collection;
+the original ANR/full-suite stability obligation remains open. See
+[diagnostic repair evidence](library_accessibility.md#diagnostic-repair-retain-native-systemui-evidence).
+
+
 ## Activity Template authoring accessibility (Slice S4)
 
 Adds fifteen Activity editor presentation identities and four isolated production-route

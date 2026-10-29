@@ -3,6 +3,7 @@ package com.alexandr5476.lifetracing.ui
 import android.app.KeyguardManager
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.util.Log
 import android.view.View
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -85,7 +86,9 @@ class KeyboardInputFixture(
             }
         } catch (failure: RuntimeException) {
             val diagnostics = runCatching { windowDiagnostics(view) }.getOrElse { it.toString() }
-            throw AssertionError("Native keyboard window admission failed. $diagnostics", failure)
+            val focusDiagnostics = nativeFocusDiagnostics.capture()
+            val report = nativeFailureReport("$diagnostics$focusDiagnostics")
+            throw AssertionError("Native keyboard window admission failed. $report", failure)
         }
         if (previousTouchMode != null && compose.runOnIdle { view.isInTouchMode }) {
             compose.runOnIdle {
@@ -110,7 +113,8 @@ class KeyboardInputFixture(
                 .lineSequence()
                 .filter { "mCurrentFocus=" in it || "mFocusedApp=" in it }
                 .joinToString("\n")
-        return "interactive=$interactive, keyguardLocked=$locked, $native\n$windows"
+        return "interactive=$interactive, keyguardLocked=$locked, $native\n$windows" +
+            systemUiDiagnostics.capture(windows)
     }
 
     /** Waits for the production focus effect, never requests the expected control's focus. */
@@ -124,11 +128,12 @@ class KeyboardInputFixture(
         } catch (failure: ComposeTimeoutException) {
             val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
             val focused = compose.onAllNodes(isFocused()).fetchSemanticsNodes()
-            throw AssertionError(
-                "Production focus unavailable. ${windowDiagnostics(view)}\nTarget: ${target.printToString()}\n" +
-                    "Focused: ${focused.joinToString { it.config.toString() }}",
-                failure,
-            )
+            val diagnostics =
+                nativeFailureReport(
+                    "${windowDiagnostics(view)}\nTarget: ${target.printToString()}\n" +
+                        "Focused: ${focused.joinToString { it.config.toString() }}",
+                )
+            throw AssertionError("Production focus unavailable. $diagnostics", failure)
         }
         target.assertIsFocused()
     }
@@ -157,4 +162,29 @@ class KeyboardInputFixture(
         previousTouchMode?.let { InstrumentationRegistry.getInstrumentation().setInTouchMode(it) }
         previousTouchMode = null
     }
+
+    private companion object {
+        val systemUiDiagnostics = SystemUiWindowDiagnostics { nativeDiagnosticShell().read(it) }
+        val nativeFocusDiagnostics = NativeFocusDiagnostics { nativeDiagnosticShell().read(it) }
+    }
 }
+
+internal fun nativeFailureReport(diagnostics: String): String =
+    NativeWindowFailureReport { chunk ->
+        check(Log.e("NativeWindowDiagnostics", chunk) > 0) { "Native diagnostic logcat write rejected" }
+    }.retain(diagnostics)
+
+internal fun nativeDiagnosticShell(): BoundedDiagnosticShell =
+    BoundedDiagnosticShell(
+        open = { command ->
+            val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+            val script = "$command 2>&1; printf '\\ncommand_exit=%s\\n' \"${'$'}?\""
+            // Runtime.exec tokenizes the command. Shell printf decodes one whitespace-free program.
+            val encoded =
+                script.toByteArray(Charsets.UTF_8).joinToString("") {
+                    "\\" + (it.toInt() and 0xff).toString(8).padStart(3, '0')
+                }
+            val transport = "sh -c printf${'$'}{IFS}'$encoded'|sh"
+            ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(transport))
+        },
+    )

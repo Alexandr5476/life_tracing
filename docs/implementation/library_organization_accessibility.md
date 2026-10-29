@@ -21,8 +21,10 @@ with native disabled boundaries. Ordering operates on the complete active Pinned
 collection even when a kind filter hides rows; the full typed-ID payload is
 constructed only on activation.
 
-Organization Loading/Failure and mutation-in-flight disable or remove mutation
-controls. An attached callback lease permits one submission from its current
+Organization Loading/Failure disables or removes commands that depend on the
+Folder/Tag catalog. Create Folder and complete typed Pinned reordering depend on
+loaded browse content and mutation admission, so an independent organization read
+cannot disable them. Mutation-in-flight still excludes all organization commands. An attached callback lease permits one submission from its current
 presentation context, checks the controller's live state and top-route ownership,
 and is revoked on disposal. This prevents retained callbacks from submitting after
 a refresh, removal, panel collapse or foreground-route change. The existing

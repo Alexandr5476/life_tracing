@@ -40,8 +40,10 @@ internal class LibraryOrganizationScope(
     val visible: () -> Boolean,
     val location: String,
 ) {
-    val enabled: Boolean get() =
-        state.organization is LibraryLoad.Content &&
+    val enabled: Boolean get() = admits(requiresOrganization = true)
+
+    fun admits(requiresOrganization: Boolean): Boolean =
+        (!requiresOrganization || state.organization is LibraryLoad.Content) &&
             !state.isMutating &&
             if (state.query.isBlank()) state.browse is LibraryLoad.Content else state.search is LibraryLoad.Content
 }
@@ -59,6 +61,7 @@ private class OrganizationLease {
 internal fun libraryOrganizationCallback(
     enabled: Boolean,
     draftKey: Any? = Unit,
+    requiresOrganization: Boolean = true,
     block: () -> Unit,
 ): () -> Unit {
     val scope = LocalLibraryOrganization.current
@@ -67,7 +70,7 @@ internal fun libraryOrganizationCallback(
     return {
         val current = scope.readCurrent()
         val attached = enabled && lease.attached && !lease.submitted && scope.visible()
-        val currentContext = scope.enabled && current == scope.state && !current.isMutating
+        val currentContext = scope.admits(requiresOrganization) && current == scope.state && !current.isMutating
         if (attached && currentContext) {
             lease.submitted = true
             block()
@@ -81,14 +84,15 @@ internal fun OrganizationButton(
     description: String,
     enabled: Boolean,
     selected: Boolean? = null,
+    requiresOrganization: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val callback = libraryOrganizationCallback(enabled, block = onClick)
+    val callback = libraryOrganizationCallback(enabled, requiresOrganization = requiresOrganization, block = onClick)
     TextButton(
-        enabled = enabled && LocalLibraryOrganization.current.enabled,
+        enabled = enabled && LocalLibraryOrganization.current.admits(requiresOrganization),
         onClick = callback,
         modifier =
-            libraryFocusTarget().semantics {
+            libraryFocusTarget().libraryActionSemantics(callback).semantics {
                 contentDescription = description
                 selected?.let { this.selected = it }
             },
@@ -130,10 +134,11 @@ internal fun FolderNameAction(
     initialValue: String = "",
     isMutating: Boolean,
     context: String,
+    requiresOrganization: Boolean = true,
     onConfirm: (String) -> Unit,
 ) {
     val scope = LocalLibraryOrganization.current
-    val enabled = !isMutating && scope.enabled
+    val enabled = !isMutating && scope.admits(requiresOrganization)
     val handle = rememberLibraryFocusHandle(enabled)
     val recovery = LocalLibraryFocus.current
     var open by remember(context) { mutableStateOf(false) }
@@ -151,7 +156,7 @@ internal fun FolderNameAction(
         val cancelDescription = stringResource(R.string.library_cancel_context, context)
         val inputDescription = stringResource(R.string.library_name_context, context)
         val accept =
-            libraryOrganizationCallback(value.isNotBlank() && enabled, value) {
+            libraryOrganizationCallback(value.isNotBlank() && enabled, value, requiresOrganization) {
                 onConfirm(value.trim())
                 close()
             }
@@ -184,7 +189,11 @@ internal fun FolderNameAction(
                 TextButton(
                     enabled = value.isNotBlank() && enabled,
                     onClick = accept,
-                    modifier = Modifier.semantics { contentDescription = confirmDescription },
+                    modifier =
+                        Modifier.libraryActionSemantics(accept).semantics {
+                            contentDescription =
+                                confirmDescription
+                        },
                 ) {
                     Text(stringResource(confirm))
                 }
@@ -196,11 +205,14 @@ internal fun FolderNameAction(
             },
         )
     }
+    val openDialog = libraryPresentationCallback(enabled = enabled, consume = false) { open = true }
     TextButton(
         enabled = enabled,
-        onClick = {
-            if (enabled && scope.visible() && scope.readCurrent() == scope.state) open = true
-        },
-        modifier = libraryFocusTarget().focusRequester(handle.requester).semantics { contentDescription = context },
+        onClick = openDialog,
+        modifier =
+            libraryFocusTarget().libraryActionSemantics(openDialog).focusRequester(handle.requester).semantics {
+                contentDescription =
+                    context
+            },
     ) { Text(stringResource(label)) }
 }

@@ -28,6 +28,7 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
+import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
@@ -43,6 +44,7 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.LauncherLoad
+import com.alexandr5476.lifetracing.library.LibraryAction
 import com.alexandr5476.lifetracing.library.LibraryBrowse
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryLoad
@@ -168,6 +170,87 @@ class LibraryAccessibilityRouteTest {
         }
 
     @Test
+    fun retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val folder = FolderId("retained-navigation-folder")
+            f.store.library.createFolder(folder, "Retained folder", null, f.seedTime)
+            val before = f.store.durableFacts()
+            f.launch()
+            f.enterLibrary()
+
+            fun callbacks(): List<() -> Boolean> {
+                val rows =
+                    ids.flatMap { id ->
+                        listOf(R.string.library_open_template, R.string.library_quick_start_template).map { operation ->
+                            f
+                                .templateAction(id, operation)
+                                .performScrollTo()
+                                .fetchSemanticsNode()
+                                .config[SemanticsActions.OnClick]
+                                .action!!
+                        }
+                    }
+                val creation =
+                    listOf(R.string.library_new_activity, R.string.library_new_sequence).map { label ->
+                        compose
+                            .onNodeWithText(f.text(label))
+                            .performScrollTo()
+                            .fetchSemanticsNode()
+                            .config[SemanticsActions.OnClick]
+                            .action!!
+                    }
+                val openFolder =
+                    compose
+                        .onNodeWithContentDescription(
+                            f.text(R.string.library_open_folder, "Retained folder", 1),
+                        ).performScrollTo()
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                return rows + creation + openFolder
+            }
+
+            fun assertNoNavigation() {
+                assertNull(f.host().activityTemplateEditorRouteSessions.activeSession)
+                assertNull(f.host().sequenceTemplateEditorRouteSessions.activeSession)
+                assertNull(f.host().startActivityRouteSessions.activeSession)
+                assertNull(f.library.state.value.folderId)
+                assertEquals(before, f.store.durableFacts())
+            }
+            val filtered = callbacks()
+            compose.runOnIdle {
+                f.library.dispatch(LibraryAction.SetFilter(LibraryKindFilter.ACTIVITIES))
+                filtered.forEach { it() }
+            }
+            compose.waitForIdle()
+            compose.runOnIdle { filtered.forEach { it() } }
+            assertNoNavigation()
+            compose.runOnIdle { f.library.dispatch(LibraryAction.SetFilter(LibraryKindFilter.ALL)) }
+            f.awaitOrganization()
+            val searched = callbacks()
+            compose.runOnIdle {
+                f.library.dispatch(LibraryAction.Search("no matching template"))
+                searched.forEach { it() }
+            }
+            f.await { f.library.state.value.search is LibraryLoad.Content }
+            compose.runOnIdle { searched.forEach { it() } }
+            assertNoNavigation()
+            compose.runOnIdle { f.library.dispatch(LibraryAction.Search("")) }
+            f.awaitOrganization()
+            val exited = callbacks()
+            f.invoke(R.string.library_back)
+            f.dailyLanding()
+            compose.runOnIdle { exited.forEach { it() } }
+            f.dailyLanding()
+            assertNoNavigation()
+            f.enterLibrary()
+            compose.runOnIdle { exited.forEach { it() } }
+            assertNoNavigation()
+            f.reopenUnchanged(before)
+        }
+
+    @Test
     fun nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission() =
         journey { f ->
             val parent = FolderId("parent")
@@ -204,6 +287,27 @@ class LibraryAccessibilityRouteTest {
             val id = f.seedDuplicates().first() as LibraryTemplateId.Activity
             f.launch()
             f.enterLibrary()
+            val staleOpen =
+                f
+                    .templateAction(id, R.string.library_open_template)
+                    .performScrollTo()
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val staleQuickStart =
+                f
+                    .templateAction(id, R.string.library_quick_start_template)
+                    .performScrollTo()
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val staleCreate =
+                compose
+                    .onNodeWithText(f.text(R.string.library_new_sequence))
+                    .performScrollTo()
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
             f
                 .templateAction(id, R.string.library_open_template)
                 .performScrollTo()
@@ -219,6 +323,14 @@ class LibraryAccessibilityRouteTest {
                     ActivityTemplateEditorLoad.Ready
             }
             val session = f.host().activityTemplateEditorRouteSessions.activeSession!!
+            compose.runOnIdle {
+                staleOpen()
+                staleQuickStart()
+                staleCreate()
+            }
+            assertSame(session, f.host().activityTemplateEditorRouteSessions.activeSession)
+            assertNull(f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertNull(f.host().startActivityRouteSessions.activeSession)
             val editorName = compose.onNode(hasText(f.text(R.string.activity_editor_name)) and hasSetTextAction())
             editorName.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
             editorName.awaitKeyboardFocus()
@@ -232,12 +344,25 @@ class LibraryAccessibilityRouteTest {
                 } ==
                     true
             }
+            compose.runOnIdle {
+                staleOpen()
+                staleQuickStart()
+                staleCreate()
+            }
             assertSame(session, f.host().activityTemplateEditorRouteSessions.activeSession)
+            assertNull(f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertNull(f.host().startActivityRouteSessions.activeSession)
             editorName.awaitKeyboardFocus()
             assertEquals(afterArchive, f.store.durableFacts())
             f.systemBack()
             f.libraryLanding()
+            compose.runOnIdle {
+                staleOpen()
+                staleQuickStart()
+                staleCreate()
+            }
             assertNull(f.host().activityTemplateEditorRouteSessions.activeSession)
+            assertNull(f.host().sequenceTemplateEditorRouteSessions.activeSession)
             assertNull(f.host().startActivityRouteSessions.activeSession)
             compose.runOnIdle { f.host().libraryControllerOwner.refreshIfInitialized() }
             f.libraryLanding()

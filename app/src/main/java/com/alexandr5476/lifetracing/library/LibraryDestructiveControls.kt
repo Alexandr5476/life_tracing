@@ -156,19 +156,24 @@ internal fun TemplateArchiveAction(
             },
         )
     }
+    val openDialog = {
+        val current = scope.readCurrent()
+        val attached = handle.attached && enabled
+        if (attached &&
+            scope.visible() &&
+            current === scope.state
+        ) {
+            session = LifecycleSession(scope.state.browseRequestId)
+        }
+    }
     TextButton(
         enabled = enabled,
-        onClick = {
-            val current = scope.readCurrent()
-            val attached = handle.attached && enabled
-            if (attached &&
-                scope.visible() &&
-                current === scope.state
-            ) {
-                session = LifecycleSession(scope.state.browseRequestId)
-            }
-        },
-        modifier = libraryFocusTarget().focusRequester(handle.requester).semantics { contentDescription = archive },
+        onClick = openDialog,
+        modifier =
+            libraryFocusTarget().libraryActionSemantics(openDialog).focusRequester(handle.requester).semantics {
+                contentDescription =
+                    archive
+            },
     ) { Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error) }
 }
 
@@ -193,7 +198,7 @@ internal fun FolderDeleteAction(
         enabled = enabled,
         onClick = request,
         modifier =
-            libraryFocusTarget().focusRequester(handle.requester).semantics {
+            libraryFocusTarget().libraryActionSemantics(request).focusRequester(handle.requester).semantics {
                 contentDescription = description
             },
     ) { Text(stringResource(R.string.library_delete), color = MaterialTheme.colorScheme.error) }
@@ -507,6 +512,7 @@ private fun LifecycleDialog(
                     onClick = cancel,
                     modifier =
                         Modifier
+                            .libraryActionSemantics(cancel)
                             .focusRequester(
                                 cancelFocus,
                             ).semantics { contentDescription = cancelDescription },
@@ -540,7 +546,7 @@ private fun LifecycleButton(
             ButtonDefaults.textButtonColors(
                 contentColor = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
             ),
-        modifier = Modifier.semantics { contentDescription = description },
+        modifier = Modifier.libraryActionSemantics(action).semantics { contentDescription = description },
     ) {
         Text(label)
     }
