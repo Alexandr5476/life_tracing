@@ -1061,6 +1061,111 @@ class InstrumentationAdmissionTests(unittest.TestCase):
             self.assertFalse(owned.cleanup())
 
 
+class HostMemoryProfileTests(unittest.TestCase):
+    def test_memory_abort_cannot_certify_partial_suite_or_run_following_suites(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                       GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+            def gradle(command, directory, module, api, record, timeout, profile_memory):
+                self.assertTrue(profile_memory)
+                record.update(exit_code=0, abort_reason="Host memory safety limit", process_cleanup_passed=True,
+                              device_cleanup_passed=True)
+            with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                    patch.object(ci.sys, "platform", "linux"), \
+                    patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                    patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                    patch.object(ci.subprocess, "run"), patch.object(ci, "HostSignalObserver") as sensor, \
+                    patch.object(ci, "emulator_revision", return_value={"revision": "37.2.13"}), \
+                    patch.object(ci, "run_gradle", side_effect=gradle) as worker, \
+                    patch.object(ci, "quarantine_previous_outputs"), \
+                    patch.object(ci, "collect_reports", return_value=dict(total=1, observed_apis=[26],
+                                                                         mandatory_inventory_passed=True)), \
+                    patch("sys.argv", ["ci", "--api", "26", "--trace-host-signals", "--profile-host-memory"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                sensor.return_value.start.return_value = {"calibrated": True}
+                sensor.return_value.close.return_value = True
+                self.assertEqual(ci.main(), 1)
+                worker.assert_called_once()
+            evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+            self.assertEqual(evidence["modules"]["data"]["status"], "FAILED")
+            self.assertEqual(evidence["modules"]["app"]["status"], "NOT_RUN")
+            self.assertEqual(evidence["modules"]["startup"]["status"], "NOT_RUN")
+
+    def test_memory_experiment_requires_linux_api26_and_the_signal_sensor(self):
+        for api, sensor, platform in ((35, True, "linux"), (26, False, "linux"), (26, True, "win32")):
+            args = ["ci", "--api", str(api), "--profile-host-memory"] + (["--trace-host-signals"] if sensor else [])
+            with patch("sys.argv", args), patch.object(ci.sys, "platform", platform), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    ci.main()
+
+    def test_emulator_revision_is_recorded_and_missing_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"ANDROID_HOME": temporary}):
+            path = Path(temporary) / "emulator/source.properties"
+            path.parent.mkdir()
+            path.write_text("Pkg.Revision=37.2.13\n")
+            self.assertEqual(ci.emulator_revision()["revision"], "37.2.13")
+            path.write_text("Pkg.Desc=emulator\n")
+            with self.assertRaisesRegex(ValueError, "revision"):
+                ci.emulator_revision()
+
+    def test_owned_emulator_memory_excludes_foreign_processes_and_pid_reuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            (proc / "meminfo").write_text("MemTotal: 16000000 kB\nMemAvailable: 4000000 kB\n")
+            for pid in (10, 11, 12):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / "status").write_text(
+                    "VmRSS: 5000000 kB\nVmHWM: 6000000 kB\nRssAnon: 4500000 kB\n")
+            labels = {10: dict(pid=10, comm="qemu-system-x86", start="100"),
+                      11: dict(pid=11, comm="qemu-system-x86", start="CHANGED"),
+                      12: dict(pid=12, comm="java", start="102")}
+            with patch.object(ci, "linux_descendants", return_value={
+                    10: (1, "100", "S"), 11: (1, "101", "S"), 12: (1, "102", "S")}), \
+                    patch.object(ci, "process_label", side_effect=labels.get):
+                sample = ci.owned_memory_sample(proc)
+            self.assertEqual([p["pid"] for p in sample["processes"]], [10, 12])
+            self.assertEqual(sample["emulator_rss_kib"], 5000000)
+            self.assertEqual(sample["host_kib"]["MemAvailable"], 4000000)
+
+    def test_memory_limit_aborts_before_expensive_guest_capture_and_is_durable(self):
+        for sample in (dict(emulator_rss_kib=8 * 1024 * 1024, host_kib={"MemAvailable": 4000000}),
+                       dict(emulator_rss_kib=1000000, host_kib={"MemAvailable": 1024 * 1024})):
+            with self.subTest(sample=sample), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(ci, "owned_memory_sample", return_value=sample), \
+                    patch.object(ci, "guest_memory_sample") as guest, contextlib.redirect_stdout(io.StringIO()):
+                profile = ci.HostMemoryProfile(Path(temporary), "app")
+                self.assertIn("Host memory safety limit", profile.inspect(None))
+                guest.assert_not_called()
+                saved = json.loads((Path(temporary) / "app-host-memory.jsonl").read_text())
+                self.assertEqual(saved["emulator_rss_kib"], sample["emulator_rss_kib"])
+                self.assertEqual(saved["module"], "app")
+
+    def test_memory_read_failure_is_explicit_not_zero_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises((OSError, ValueError)):
+                ci.owned_memory_sample(Path(temporary))
+
+    def test_low_memory_command_is_stopped_and_cannot_be_success(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ci, "DeviceHealth") as health, \
+                patch.object(ci, "HostMemoryProfile") as profile, \
+                patch.object(ci, "capture_system_ui_diagnostics") as capture, \
+                contextlib.redirect_stdout(io.StringIO()):
+            health.return_value.inspect.return_value = None
+            health.return_value.cleanup.return_value = True
+            health.return_value.serial = health.return_value.avd = None
+            health.return_value.observations = []
+            profile.return_value.inspect.return_value = "Host memory safety limit: emulator RSS"
+            record = {}
+            ci.run_gradle([sys.executable, "-c", "import time; time.sleep(30)"],
+                          Path(temporary), "app", 26, record, timeout=5, profile_memory=True)
+            self.assertIn("Host memory safety limit", record["abort_reason"])
+            self.assertNotEqual(record["exit_code"], 0)
+            self.assertTrue(record["process_cleanup_passed"])
+            capture.assert_not_called()
+
+
 class HostSignalObserverTests(unittest.TestCase):
     def test_signal_record_identifies_sender_and_receiver_without_claiming_external_initiator(self):
         line = ("  Runner.Worker-1370 [007] d..1. 303.735156: signal_generate: "

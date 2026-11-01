@@ -428,10 +428,113 @@ def stop_process(process):
     return process.poll() is not None
 
 
-def run_gradle(command, directory, module, api, record, timeout=3300):
+def owned_memory_sample(proc=Path("/proc")):
+    """Read only public memory counters of this invocation's descendants."""
+    def counters(path, wanted):
+        values = {name: int(value) for name, value in re.findall(
+            r"^(\w+):\s+(\d+) kB$", path.read_text(), re.MULTILINE) if name in wanted}
+        if not values:
+            raise ValueError(f"Missing memory counters in {path.name}")
+        return values
+
+    host = counters(proc / "meminfo", {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"})
+    if "MemAvailable" not in host:
+        raise ValueError("Host MemAvailable is missing")
+    processes = []
+    for pid, (_, start, state) in sorted(linux_descendants().items()):
+        identity = process_label(pid)
+        if not identity or identity["start"] != start or state == "Z":
+            continue
+        if not (identity["comm"].startswith("qemu-system") or identity["comm"] == "java"):
+            continue
+        try:
+            memory = counters(proc / str(pid) / "status", {"VmRSS", "VmHWM", "RssAnon", "RssFile", "RssShmem"})
+            # The process may exit or the PID may be reused during the read.
+            if process_label(pid) == identity:
+                processes.append(dict(identity, memory_kib=memory))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return dict(host_kib=host, processes=processes, emulator_rss_kib=sum(
+        p["memory_kib"].get("VmRSS", 0) for p in processes if p["comm"].startswith("qemu-system")))
+
+
+def guest_memory_sample(monitor):
+    """Bounded read-only Android counters; diagnostic errors never masquerade as zero."""
+    if not monitor or not monitor.serial:
+        return {"status": "NO_ADMITTED_DEVICE"}
+    result = {}
+    try:
+        identity = subprocess.run([monitor.adb, "-s", monitor.serial, "shell", "getprop", "ro.build.version.sdk"],
+                                  capture_output=True, text=True, timeout=2, check=False)
+        avd = subprocess.run([monitor.adb, "-s", monitor.serial, "emu", "avd", "name"],
+                             capture_output=True, text=True, timeout=2, check=False)
+        if (identity.returncode or avd.returncode or identity.stdout.strip() != str(monitor.api)
+                or avd.stdout.splitlines()[:1] != [monitor.avd]):
+            return {"status": "DEVICE_IDENTITY_NOT_CONFIRMED"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "DEVICE_IDENTITY_NOT_CONFIRMED", "error": type(exc).__name__}
+    commands = {"meminfo": ["cat", "/proc/meminfo"],
+                "app": ["dumpsys", "meminfo", "-s", "com.alexandr5476.lifetracing.debug"],
+                "surfaces": ["dumpsys", "SurfaceFlinger", "--list"]}
+    for name, command in commands.items():
+        try:
+            value = subprocess.run([monitor.adb, "-s", monitor.serial, "shell"] + command,
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                   timeout=2, check=False)
+            result[name] = dict(exit_code=value.returncode, stderr=value.stderr[:1024],
+                                truncated=len(value.stdout) > 16384)
+            if name == "surfaces":
+                result[name]["listed_lines"] = len(value.stdout.splitlines())
+            else:
+                result[name]["stdout"] = value.stdout[:16384]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            result[name] = {"error": type(exc).__name__}
+    return result
+
+
+class HostMemoryProfile:
+    """API26 OOM experiment. Stop our test before the host loses its evidence."""
+    def __init__(self, directory, module):
+        self.path = directory / f"{module}-host-memory.jsonl"
+        self.module, self.next_guest = module, 0
+
+    def inspect(self, monitor):
+        try:
+            sample = dict(owned_memory_sample(), at=timestamp(), module=self.module,
+                          limits_kib=dict(emulator_rss=8 * 1024 * 1024, host_available=1536 * 1024))
+        except (OSError, ValueError) as exc:
+            sample = dict(at=timestamp(), module=self.module, error=f"{type(exc).__name__}: {exc}")
+        reason = None
+        if "error" in sample:
+            reason = "Host memory observation failed: " + sample["error"]
+        elif (sample["emulator_rss_kib"] >= 8 * 1024 * 1024
+              or sample["host_kib"]["MemAvailable"] <= 1536 * 1024):
+            reason = "Host memory safety limit: " + json.dumps(sample, sort_keys=True)
+        elif time.monotonic() >= self.next_guest:
+            sample["guest"] = guest_memory_sample(monitor)
+            self.next_guest = time.monotonic() + 60
+        with self.path.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(sample) + "\n")
+        print("host-memory " + json.dumps(sample), flush=True)
+        return reason
+
+
+def emulator_revision():
+    sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if not sdk:
+        raise ValueError("API26 memory experiment requires an explicit SDK root")
+    properties = (Path(sdk) / "emulator/source.properties").read_text()
+    revision = re.search(r"^Pkg.Revision\s*=\s*(\S+)\s*$", properties, re.MULTILINE)
+    if revision is None:
+        raise ValueError("Installed emulator revision is missing")
+    return dict(revision=revision.group(1), properties_sha256=hashlib.sha256(properties.encode()).hexdigest())
+
+
+def run_gradle(command, directory, module, api, record, timeout=3300, profile_memory=False):
     """Keep watching health/deadline even when Gradle emits no complete lines."""
     monitor = DeviceHealth(api)  # Reject foreign devices before launching Gradle.
     owned = OwnedProcesses()
+    memory = HostMemoryProfile(directory, module) if profile_memory else None
     process, reader = None, None
     messages, finished = queue.Queue(maxsize=128), threading.Event()
     deadline = time.monotonic() + timeout
@@ -456,10 +559,12 @@ def run_gradle(command, directory, module, api, record, timeout=3300):
         finally:
             emit(None)
 
-    def abort(reason):
+    def abort(reason, capture=True):
         record["abort_reason"] = reason
         print(f"::error::{module} API {api} runner abort: {reason}", flush=True)
         # Capture the live obstruction before any owned-process/device teardown.
+        if not capture:
+            return  # Memory guard must stop owned processes before slow adb diagnostics.
         try:
             record["system_ui_diagnostics"] = capture_system_ui_diagnostics(directory, module, api)
         except (OSError, ValueError) as exc:
@@ -477,6 +582,11 @@ def run_gradle(command, directory, module, api, record, timeout=3300):
                     abort("execution deadline exceeded")
                     break
                 if now >= next_health:
+                    if memory is not None:
+                        reason = memory.inspect(monitor)
+                        if reason:
+                            abort(reason, capture=False)
+                            break
                     reason = monitor.inspect()
                     next_health = time.monotonic() + 5
                     if reason:
@@ -728,9 +838,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", required=True, type=int, choices=(26, 31, 33, 35, 36))
     parser.add_argument("--trace-host-signals", action="store_true")
+    parser.add_argument("--profile-host-memory", action="store_true")
     args = parser.parse_args()
     if args.trace_host_signals and args.api != 26:
         parser.error("Host signal experiment is restricted to API26")
+    if args.profile_host_memory and (args.api != 26 or not args.trace_host_signals or sys.platform != "linux"):
+        parser.error("Host memory experiment requires API26 Linux and calibrated signal observation")
     repo = Path.cwd()
     directory = repo / "ci-evidence" / f"api{args.api}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -754,6 +867,9 @@ def main():
         if args.api == 26:
             # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
             subprocess.run(sdkmanager_command(), check=True, timeout=180)
+        if args.profile_host_memory:
+            evidence["emulator_toolchain"] = emulator_revision()
+            print("emulator-toolchain " + json.dumps(evidence["emulator_toolchain"]), flush=True)
         blocked = None
         for module in ("data", "app", "startup"):
             target_module = "app" if module == "startup" else module
@@ -780,7 +896,8 @@ def main():
             try:
                 quarantine_previous_outputs(repo, directory, module, args.api)
                 run_gradle(command, directory, module, args.api, record,
-                           timeout=max(0, row_deadline - time.monotonic()))
+                           timeout=max(0, row_deadline - time.monotonic()),
+                           **({"profile_memory": True} if args.profile_host_memory else {}))
             except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
                 record["execution_error"] = str(exc)
                 print(f"::error::{module} API {args.api} command: {exc}", flush=True)

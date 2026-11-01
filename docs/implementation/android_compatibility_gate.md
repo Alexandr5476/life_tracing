@@ -980,3 +980,34 @@ are unchanged. API 26 cancellation and API 36's missing Gradle transform metadat
 remain unresolved, with no invented cause or PASS credit. Fresh Controller-owned
 canonical execution and exact-head CI remain required; a scoped diagnostic PASS
 does not close the existing stability obligation.
+
+### API26 host-memory experiment (2026-11-01)
+
+CI run 41305938631, API26 job 124846206522, recorded a kernel OOM victim
+`qemu-system-x86` (PID 6204, anonymous RSS 14506104 KiB). Kernel SIGKILL and
+mark_victim preceded systemd TERM of Runner.Worker by about 37 ms. Data passed
+632 cases (5 skips); app stopped at 353/526 with 0 failures. Remaining cases and
+startup were not executed. Why emulator memory grew remains unknown; this does
+not establish the cause of earlier runs.
+
+Only API26 enables `--profile-host-memory` alongside the calibrated signal sensor.
+It records the installed emulator revision, owned qemu/Java RSS and anonymous
+memory, host available memory every health probe, and bounded Android meminfo,
+app PSS and SurfaceFlinger listed-layer counts about once per minute. Process
+start IDs and ancestry exclude unrelated/reused PIDs; Android identity is checked
+before read-only captures. No argv or environment is recorded.
+
+The diagnostic guard fails the invocation when total owned emulator RSS reaches
+8 GiB or host MemAvailable falls to 1.5 GiB, before the observed 13.8 GiB OOM.
+It immediately uses normal owned cleanup without waiting for extra adb captures.
+Telemetry errors fail explicitly; guest diagnostic errors remain visible.
+Incomplete inventory remains failed, and later suites are NOT_RUN after abort.
+This is a bounded profiling experiment, not a memory-leak fix. Existing 55-minute
+row/60-minute job limits, renderer, tests, assertions and mandatory inventory are
+unchanged. Other API rows are unchanged.
+
+[Emulator 37.2.13 release notes](https://developer.android.com/studio/releases/emulator#37.2.13)
+describe an OpenGL host-memory leak fix. However this job installed an archive
+beginning `emulator-linux_x64-167...`; its full revision was not logged. No version
+change is claimed as a fix. The next exact-head run must establish the installed
+revision and host/guest memory trends before choosing a targeted mitigation.
