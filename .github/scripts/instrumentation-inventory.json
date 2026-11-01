@@ -1329,7 +1329,9 @@
       "boundedReadReportsTruncationAndErrorsAndClosesItsStream",
       "deadlineReturnsWithoutWaitingForOpenAndClosesALateStream",
       "oversizedDiagnosticsRetainOriginalCauseAndLateFocusEvidenceInTheExportedFailure",
-      "unicodeDiagnosticsAreLoggedWithoutLossAndLoggingFailureCannotReplaceTheAssertion"
+      "unicodeDiagnosticsAreLoggedWithoutLossAndLoggingFailureCannotReplaceTheAssertion",
+      "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
+      "unacknowledgedTransportKeepsTheArtifactAndOriginalFailure"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
       "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"

@@ -1,7 +1,9 @@
 package com.alexandr5476.lifetracing.ui
 
+import java.io.IOException
 import java.io.InputStream
 import java.util.Base64
+import java.util.UUID
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
@@ -59,10 +61,13 @@ internal class NativeFocusDiagnostics(
 /** Keep inline assertions below the runner limit and retain complete bounded reads in logcat. */
 internal class NativeWindowFailureReport(
     private val log: (String) -> Unit,
+    private val complete: () -> String = { "" },
+    private val retainArtifact: (ByteArray) -> String = { "" },
 ) {
     fun retain(diagnostics: String): String {
         var logFailure: String? = null
         val bytes = diagnostics.toByteArray(Charsets.UTF_8)
+        val artifact = runCatching { retainArtifact(bytes) }.getOrElse { "Diagnostic artifact failed: $it" }
         val capture = nextCapture.incrementAndGet()
         val total = maxOf(1, (bytes.size + 1_023) / 1_024)
         repeat(total) { index ->
@@ -74,9 +79,18 @@ internal class NativeWindowFailureReport(
                 if (logFailure == null) logFailure = "${it.javaClass.simpleName}: ${it.message}"
             }
         }
+        val receipt =
+            runCatching { complete() }.getOrElse {
+                if (logFailure == null) logFailure = "${it.javaClass.simpleName}: ${it.message}"
+                ""
+            }
         val reference =
-            "Full bounded diagnostics: logcat tag NativeWindowDiagnostics, NDIAG1 Base64 frames. " +
-                "Inline evidence is selected context.\n"
+            listOf(
+                artifact,
+                receipt,
+                "Full bounded diagnostics: logcat tag NativeWindowDiagnostics, NDIAG1 Base64 frames. " +
+                    "Inline evidence is selected context.",
+            ).filter(String::isNotEmpty).joinToString("\n") + "\n"
         val logging = logFailure?.let { "Logcat write failed: ${clipUtf8(it, 512)}\n" }.orEmpty()
         val sections = diagnostics.split(Regex("(?m)(?=^(?:dumpsys |logcat ))")).filter(String::isNotEmpty)
         val inline = reference + logging + sections.joinToString("\n", transform = ::compactSection)
@@ -132,7 +146,8 @@ internal class NativeWindowFailureReport(
     }
 
     private companion object {
-        val nextCapture = AtomicLong()
+        // A restored log buffer may contain frames from a previous instrumentation process.
+        val nextCapture = AtomicLong(UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE)
         val important =
             listOf(
                 "mCurrentFocus=",
@@ -153,6 +168,78 @@ internal class NativeWindowFailureReport(
                 "Timestamp:",
                 "Subject:",
             )
+    }
+}
+
+/** Keep only one small page in flight; a positive write is not a retention acknowledgment. */
+internal class AcknowledgedDiagnosticLog(
+    private val write: (String) -> Int,
+    private val read: () -> String,
+    private val now: () -> Long = System::nanoTime,
+    private val timeoutNanos: Long = TimeUnit.SECONDS.toNanos(5),
+) {
+    private val page = mutableListOf<String>()
+    private var stopped: Exception? = null
+    private var writes = 0
+    private var rejected = 0
+    private var lastRejection = 0
+    private var acknowledged = 0
+
+    fun append(frame: String) {
+        stopped?.let { throw IOException("Diagnostic transport stopped", it) }
+        page += frame
+        // 32 maximum-size records fit inside the bounded 64 KiB acknowledgment read.
+        if (page.size == 32) flush()
+    }
+
+    fun complete(): String {
+        flush()
+        return "Logcat transport: acknowledged=$acknowledged, write_calls=$writes, " +
+            "rejected_writes=$rejected, last_rejection=$lastRejection"
+    }
+
+    private fun flush() {
+        stopped?.let { throw IOException("Diagnostic transport stopped", it) }
+        if (page.isEmpty()) return
+        try {
+            val remaining = page.toMutableSet()
+            val pendingWrites = page.toMutableSet()
+            val deadline = now() + timeoutNanos
+            while (remaining.isNotEmpty()) {
+                for (frame in pendingWrites.toList()) {
+                    writes++
+                    val result = write(frame)
+                    if (result > 0) {
+                        pendingWrites.remove(frame)
+                    } else {
+                        rejected++
+                        lastRejection = result
+                        break
+                    }
+                }
+                val retained =
+                    read()
+                        .lineSequence()
+                        .mapNotNull { line ->
+                            val start = line.indexOf("NDIAG1 ")
+                            if (start < 0) null else line.substring(start).trimEnd()
+                        }.toSet()
+                val confirmed = remaining.filterTo(mutableSetOf()) { it.trimEnd() in retained }
+                acknowledged += confirmed.size
+                remaining.removeAll(confirmed)
+                pendingWrites.removeAll(confirmed)
+                if (remaining.isNotEmpty() && now() >= deadline) {
+                    throw IOException(
+                        "Unacknowledged diagnostic frames=${remaining.size}; " +
+                            "rejected_writes=$rejected, last_rejection=$lastRejection",
+                    )
+                }
+            }
+            page.clear()
+        } catch (failure: Exception) {
+            stopped = failure
+            throw failure
+        }
     }
 }
 

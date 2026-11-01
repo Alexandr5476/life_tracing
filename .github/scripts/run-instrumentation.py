@@ -580,6 +580,8 @@ def quarantine_previous_outputs(repo, directory, module, api):
     base = repo / target / "build/outputs"
     paths = [base / f"androidTest-results/managedDevice/debug/pixel2Api{api}",
              base / f"managed_device_android_test_additional_output/debug/pixel2Api{api}",
+             repo / target / "build/intermediates/managed_device_android_test_additional_output/debugAndroidTest"
+             / f"pixel2Api{api}DebugAndroidTest",
              base / "androidTest-results/managedDevice/debug/test-result.pb"]
     for source in paths:
         source.resolve().relative_to((repo / target / "build").resolve())
@@ -664,11 +666,14 @@ def collect_reports(repo, directory, module, api):
     target_module = "app" if module == "startup" else module
     source = repo / target_module / "build/outputs/androidTest-results/managedDevice/debug" / f"pixel2Api{api}"
     additional = repo / target_module / "build/outputs/managed_device_android_test_additional_output/debug" / f"pixel2Api{api}"
+    # AGP 8.10 exports additionalTestOutputDir here; do not rely on logcat capacity.
+    intermediate = (repo / target_module / "build/intermediates/managed_device_android_test_additional_output/debugAndroidTest"
+                    / f"pixel2Api{api}DebugAndroidTest")
     report_files = sorted(source.glob("TEST-*.xml"))
     # Startup replaces AGP's device output, including UTP/command logs and binary results.
     # Snapshot the complete selected invocation before parsing any possibly malformed XML.
     report_set = set(report_files)
-    diagnostic_files = sorted(path for root in (source, additional) for path in root.rglob("*")
+    diagnostic_files = sorted(path for root in (source, additional, intermediate) for path in root.rglob("*")
                               if path.is_file() and path not in report_set and path.suffix != ".lck")
     merged = source.parent / "test-result.pb"
     if merged.is_file():

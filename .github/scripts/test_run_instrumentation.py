@@ -571,6 +571,47 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertEqual(len(manifest["reports"]), 2)
             self.assertEqual(len(manifest["diagnostic_artifacts"]), 3)
 
+    def test_agp_intermediate_diagnostic_artifacts_survive_startup_and_are_quarantined(self):
+        for module in ("data", "app", "startup"):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.write_inventory(root, module, 35)
+                target = "app" if module == "startup" else module
+                base = root / target / "build/intermediates/managed_device_android_test_additional_output/debugAndroidTest"
+                capture = base / "pixel2Api35DebugAndroidTest/native-window-diagnostics/capture.txt"
+                capture.parent.mkdir(parents=True)
+                original = ("Ж🙂\n" * 90_000 + "final marker\n").encode("utf-8")
+                capture.write_bytes(original)
+                receipt = capture.with_suffix(".txt.receipt")
+                receipt.write_bytes(b"acknowledged=616\n")
+                other_api = base / "pixel2Api36DebugAndroidTest/native-window-diagnostics/capture.txt"
+                other_api.parent.mkdir(parents=True)
+                other_api.write_bytes(b"other API")
+                evidence = root / "evidence"
+                result = ci.collect_reports(root, evidence, module, 35)
+                prefix = Path("startup") if module == "startup" else Path()
+                retained = prefix / capture.relative_to(root)
+                self.assertEqual((evidence / retained).read_bytes(), original)
+                hashes = {a["path"]: a["sha256"] for a in result["diagnostic_artifacts"]}
+                self.assertEqual(hashes[retained.as_posix()], hashlib.sha256(original).hexdigest())
+                self.assertEqual((evidence / prefix / receipt.relative_to(root)).read_bytes(), receipt.read_bytes())
+                self.assertFalse((evidence / prefix / other_api.relative_to(root)).exists())
+                if module == "app":
+                    self.write_inventory(root, "startup", 35)
+                    capture.write_bytes(b"startup replacement")
+                    ci.collect_reports(root, evidence, "startup", 35)
+                    self.assertEqual((evidence / retained).read_bytes(), original)
+                    self.assertEqual((evidence / "startup" / capture.relative_to(root)).read_bytes(), b"startup replacement")
+                current = capture.read_bytes()
+                ci.quarantine_previous_outputs(root, evidence, module, 35)
+                self.assertFalse(capture.exists())
+                self.assertEqual((evidence / "previous" / module / capture.relative_to(root)).read_bytes(), current)
+                self.assertTrue(other_api.exists())
+                with self.assertRaisesRegex(ValueError, "mandatory"):
+                    ci.collect_reports(root, root / "failed-build", module, 35)
+                manifest = json.loads((root / "failed-build" / f"{module}-artifacts.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest, dict(reports=[], diagnostic_artifacts=[]))
+
     def test_empty_device_output_is_rejected_with_empty_artifact_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

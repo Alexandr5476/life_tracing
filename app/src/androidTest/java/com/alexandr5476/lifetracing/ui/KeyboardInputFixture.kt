@@ -23,6 +23,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.hamcrest.Matchers.sameInstance
 import org.junit.Assert.assertTrue
 import org.junit.rules.ExternalResource
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
+import java.util.UUID
 
 /** Enters native keyboard mode after setContent has attached the Compose owner. */
 class KeyboardInputFixture(
@@ -169,10 +173,47 @@ class KeyboardInputFixture(
     }
 }
 
+private val nativeDiagnosticReportLock = Any()
+
+internal fun nativeDiagnosticArtifactDirectory(): File {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val supplied = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+    val root = supplied?.let(::File) ?: instrumentation.targetContext.filesDir
+    return File(root, "native-window-diagnostics")
+}
+
 internal fun nativeFailureReport(diagnostics: String): String =
-    NativeWindowFailureReport { chunk ->
-        check(Log.e("NativeWindowDiagnostics", chunk) > 0) { "Native diagnostic logcat write rejected" }
-    }.retain(diagnostics)
+    synchronized(nativeDiagnosticReportLock) {
+        val directory = nativeDiagnosticArtifactDirectory()
+        val file = File(directory, "capture-${UUID.randomUUID()}.txt")
+        val transport =
+            AcknowledgedDiagnosticLog(
+                write = { Log.e("NativeWindowDiagnostics", it) },
+                read = {
+                    nativeDiagnosticShell().read(
+                        "sh -c 'logcat -d -v tag -b main -s NativeWindowDiagnostics:E | tail -n 32'",
+                    )
+                },
+            )
+        NativeWindowFailureReport(
+            log = transport::append,
+            complete = {
+                val receipt = transport.complete()
+                File(directory, "${file.name}.receipt").writeText(receipt, Charsets.UTF_8)
+                Log.i("NativeWindowDiagnostics", receipt)
+                receipt
+            },
+            retainArtifact = { bytes ->
+                check(directory.isDirectory || directory.mkdirs())
+                FileOutputStream(file).use { stream ->
+                    stream.write(bytes)
+                    stream.fd.sync()
+                }
+                val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+                "Full diagnostic artifact: ${file.absolutePath}, bytes=${bytes.size}, sha256=$sha"
+            },
+        ).retain(diagnostics)
+    }
 
 internal fun nativeDiagnosticShell(): BoundedDiagnosticShell =
     BoundedDiagnosticShell(

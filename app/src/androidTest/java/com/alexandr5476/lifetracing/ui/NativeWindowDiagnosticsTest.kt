@@ -154,22 +154,104 @@ class NativeWindowDiagnosticsTest {
         assertTrue(chunks.all { it.toByteArray().size <= 2_048 })
         assertTrue(chunks.none { it.contains('\uFFFD') || it.contains("TestRunner:") || it.contains('\n') })
         val empty = mutableListOf<String>()
-        NativeWindowFailureReport(empty::add).retain("")
+        val emptyTransport =
+            AcknowledgedDiagnosticLog(
+                write = {
+                    empty += it
+                    1
+                },
+                read = { empty.joinToString("\n") },
+            )
+        NativeWindowFailureReport(emptyTransport::append, emptyTransport::complete).retain("")
         assertEquals("", decodeFrames(empty))
         assertTrue(inline.toByteArray().size <= 24_576)
         var calls = 0
         val tail = mutableListOf<String>()
         val withFailure =
-            NativeWindowFailureReport { chunk ->
+            NativeWindowFailureReport(log = { chunk ->
                 calls++
                 if (calls == 1) throw IOException("log sink unavailable")
                 tail += chunk
-            }.retain(raw)
+            }).retain(raw)
         assertTrue(calls > 1)
         assertTrue(withFailure.contains("log sink unavailable"))
         assertTrue(withFailure.contains("dumpsys input"))
         assertTrue(withFailure.contains("command_exit=0"))
         assertTrue(decodeFrames(tail, complete = false).endsWith("last evidence"))
+    }
+
+    @Test
+    fun largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity() {
+        val marker = "large-diagnostic-final-marker"
+        val raw = "dumpsys input\nstatus=COMPLETE\n" + "\u0416\uD83D\uDE42".repeat(90_000) + "\n$marker"
+        assertTrue(raw.toByteArray(Charsets.UTF_8).size >= 512 * 1_024)
+        val retained = mutableListOf<String>()
+        val queued = mutableListOf<String>()
+        var rejected = 0
+        var writes = 0
+        val transport =
+            AcknowledgedDiagnosticLog(
+                write = { frame ->
+                    writes++
+                    if (queued.size >= 190 || writes % 37 == 0) {
+                        rejected++
+                        -11
+                    } else {
+                        queued += frame
+                        1
+                    }
+                },
+                read = {
+                    queued.joinToString("\n").also {
+                        retained.addAll(queued)
+                        queued.clear()
+                    }
+                },
+            )
+        val inline = NativeWindowFailureReport(transport::append, transport::complete).retain(raw)
+        assertTrue("Negative write return codes must be exercised", rejected > 0)
+        assertTrue(inline.contains("rejected_writes=$rejected"))
+        assertEquals("The complete report and final marker must survive bounded transport", raw, decodeFrames(retained))
+        assertTrue(inline.toByteArray(Charsets.UTF_8).size <= 24_576)
+    }
+
+    @Test
+    fun unacknowledgedTransportKeepsTheArtifactAndOriginalFailure() {
+        val raw = "dumpsys input\nstatus=COMPLETE\n" + "evidence\u0416\uD83D\uDE42\n".repeat(50_000) + "final marker"
+        var artifact: ByteArray? = null
+        var ticks = 0L
+        var reads = 0
+        var writes = 0
+        val transport =
+            AcknowledgedDiagnosticLog(
+                write = {
+                    writes++
+                    1
+                },
+                read = {
+                    reads++
+                    "status=COMPLETE\nno diagnostic frames retained"
+                },
+                now = { ticks++ },
+                timeoutNanos = 3,
+            )
+        val inline =
+            NativeWindowFailureReport(
+                log = transport::append,
+                complete = transport::complete,
+                retainArtifact = { bytes ->
+                    artifact = bytes
+                    "Full diagnostic artifact: test-retained"
+                },
+            ).retain(raw)
+        assertTrue(raw.toByteArray(Charsets.UTF_8).contentEquals(artifact))
+        assertEquals(3, reads)
+        assertEquals("Accepted writes must wait for acknowledgment without duplicate emission", 32, writes)
+        assertTrue(inline.contains("test-retained"))
+        assertTrue(inline.contains("Unacknowledged diagnostic frames"))
+        val cause = IllegalStateException("original native admission failure")
+        assertEquals(cause, AssertionError(inline, cause).cause)
+        assertTrue(inline.toByteArray(Charsets.UTF_8).size <= 24_576)
     }
 
     private fun decodeFrames(

@@ -931,3 +931,52 @@ The shared keyboard fixture now enters native keyboard mode after owner attachme
 and restores the previous mode on teardown. Its APK compilation and static checks
 passed; the new repair-probe invocation also had no active lease, so device
 confirmation remains pending.
+
+## API 35 diagnostic transport retention (2026-11-01)
+
+CI run `41288644023`, job `124795056893`, at head
+`46b60069d2021e95da41a3965820fe380480b79e` completed all 524 app cases with one
+failure: `NativeWindowDiagnosticsAndroidTest` could not find its final marker.
+The shell command completed with exit zero. The complete testcase log contains
+only frames 1 through 190 of 274; the assertion's filtered tail contains frames
+175 through 190. The original XML and native log remain Controller evidence.
+They do not establish whether missing frames were rejected during emission or
+lost later: the previous formatter caught write failures without acknowledgment,
+and the testcase did not retain those return codes in its failure message.
+
+The shared report transport now writes and syncs the complete UTF-8 report to
+AGP's additional-test-output directory before logging. Its inline reference records
+the file path, byte count and SHA-256. Logcat emission admits at most 32 frames at
+a time and checks readback before advancing; rejected writes retain their return
+codes and are retried within the existing bounded diagnostic interval. A successful
+receipt records acknowledged frames, write calls and rejected writes. A failed
+acknowledgment remains explicit alongside the original failure and full artifact.
+Process-specific capture IDs prevent older frames from satisfying readback.
+
+A deterministic regression first reproduces the missing tail with a report above
+512 KiB and finite transport capacity matching the observed 190-frame cutoff.
+The repaired transport also covers rejected writes and a bounded missing-readback
+case while preserving the full artifact and original failure. All eight focused
+JVM diagnostics cases pass. The Android regression adds a self-contained Unicode
+payload above 512 KiB, verifies the artifact byte for byte and requires every frame
+to be acknowledged; its original final-marker and TestRunner-isolation assertions
+remain intact. Inline assertions retain the 24,576-byte limit. The mandatory
+inventory adds the two regressions without removing any original identity.
+
+The first Android probe exported a 785,233-byte report and a receipt acknowledging
+all 767 frames. It also exposed AGP 8.10's actual export path under
+`build/intermediates/managed_device_android_test_additional_output/debugAndroidTest/`.
+The repository collector previously searched only public output directories.
+A new host regression reproduces the omission for data, app and independent
+startup. The collector now retains and quarantines the selected device's intermediate
+output too, preserving original bytes, SHA-256 and invocation separation before
+startup can replace it. All 47 runner tests pass. Existing CI artifact uploads
+already include the retained `ci-evidence` tree; no workflow change is needed.
+The first probe's candidate receipt was invalidated by a concurrent documentation
+edit, so its raw observations do not count as a successful scoped verification.
+
+Product semantics, API 26 trace observation, job time limits and companion jobs
+are unchanged. API 26 cancellation and API 36's missing Gradle transform metadata
+remain unresolved, with no invented cause or PASS credit. Fresh Controller-owned
+canonical execution and exact-head CI remain required; a scoped diagnostic PASS
+does not close the existing stability obligation.

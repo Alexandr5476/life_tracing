@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.ui
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,10 +44,21 @@ class NativeWindowDiagnosticsAndroidTest {
             )
         }
         val marker = "native-diagnostic-report-end-${System.nanoTime()}"
+        val artifactDirectory = nativeDiagnosticArtifactDirectory()
+        val previousArtifacts = artifactDirectory.listFiles().orEmpty().toSet()
+        val payload = "\u0416\uD83D\uDE420123456789\n".repeat(32_768)
+        assertTrue(payload.toByteArray(Charsets.UTF_8).size >= 512 * 1_024)
         val raw =
             "I TestRunner: started: capturedSnippet(example.Captured)\n" +
-                "I TestRunner: finished: capturedSnippet(example.Captured)\n$report$focus\n$marker"
+                "I TestRunner: finished: capturedSnippet(example.Captured)\n$report$focus\n$payload$marker"
         val inline = nativeFailureReport(raw)
+        val artifact =
+            artifactDirectory.listFiles().orEmpty().single { it !in previousArtifacts && it.extension == "txt" }
+        assertArrayEquals(raw.toByteArray(Charsets.UTF_8), artifact.readBytes())
+        assertTrue(inline.contains("Full diagnostic artifact:"))
+        val frames = maxOf(1, (raw.toByteArray(Charsets.UTF_8).size + 1_023) / 1_024)
+        assertTrue(inline, inline.contains("Logcat transport: acknowledged=$frames,"))
+        assertTrue(inline, !inline.contains("Logcat write failed:"))
         assertTrue(inline.toByteArray().size <= 24_576)
         assertTrue(inline.contains("dumpsys input"))
         assertTrue(inline.contains("dumpsys dropbox --print system_app_anr"))
