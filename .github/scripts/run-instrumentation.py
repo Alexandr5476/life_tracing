@@ -9,17 +9,230 @@ import os
 from pathlib import Path
 import queue
 import re
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import uuid
 import xml.etree.ElementTree as ET
 
 
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def process_label(pid):
+    """Public process identity only. Never read argv, environment or credentials."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+        comm, fields = text.split("(", 1)[1].rsplit(")", 1)
+        fields = fields.split()
+        return dict(pid=int(pid), comm=comm, parent=int(fields[1]), start=fields[19], state=fields[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def signal_event(line):
+    match = re.search(r"^\s*(.+)-(\d+)\s+\[\d+\].*?\s(\d+\.\d+):\s+signal_generate: "
+                      r"sig=(9|15) errno=(-?\d+) code=(-?\d+) comm=(.*?) pid=(\d+) grp=(\d+) res=(\d+)", line)
+    if match is None:
+        return None
+    sender, tid, trace_time, sig, error, code, target, pid, group, result = match.groups()
+    return dict(sender_comm=sender.strip(), sender_tid=int(tid), trace_seconds=trace_time,
+                signal=int(sig), errno=int(error), code=int(code),
+                target_comm=target, target_pid=int(pid), group=int(group), result=int(result))
+
+
+class HostSignalObserver:
+    """API26-only diagnostic sidecar; never intercept or forward workload signals."""
+    def __init__(self, directory):
+        self.directory = directory.resolve() / ("host-signals-" + uuid.uuid4().hex)
+        self.directory.mkdir()
+        self.process = None
+
+    def start(self):
+        if sys.platform != "linux":
+            raise RuntimeError("Host signal observation requires Linux tracefs")
+        owner = process_label(os.getpid())
+        if owner is None:
+            raise RuntimeError("Cannot identify signal observer owner")
+        command = [sys.executable, "-u", str(Path(__file__).resolve()), "--host-signal-observer",
+                   str(self.directory), str(os.getpid()), owner["start"]]
+        if os.geteuid() != 0:
+            command = ["sudo", "-n", "--"] + command
+        self.process = subprocess.Popen(command, start_new_session=True)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            ready = self.directory / "ready.json"
+            if ready.is_file():
+                result = json.loads(ready.read_text())
+                if result.get("calibrated") is True and self.process.poll() is None:
+                    return result
+                break
+            if self.process.poll() is not None:
+                break
+            time.sleep(0.1)
+        self.close()
+        raise RuntimeError("API26 signal observer failed its live calibration; see host-signals log")
+
+    def close(self):
+        (self.directory / "stop").touch()
+        if self.process is None:
+            return False
+        try:
+            return self.process.wait(timeout=10) == 0
+        except subprocess.TimeoutExpired:
+            # Root sidecar also exits on owner disappearance or its one-hour limit.
+            print("::error::Host signal observer did not acknowledge cleanup", flush=True)
+            return False
+
+
+def observe_host_signals(directory, owner_pid, owner_start):
+    """Isolated, bounded trace instance. Live output survives skipped artifact uploads.
+
+    Trace records identify kernel tasks, not the upstream initiator of a VM loss.
+    A calibration establishes whether kernel IDs match this /proc PID namespace.
+    """
+    directory = Path(directory)
+    instance = Path("/sys/kernel/tracing/instances") / ("lt26-" + uuid.uuid4().hex)
+    pipe, child = None, None
+    output = (directory / "events.jsonl").open("x", encoding="utf-8", buffering=1)
+    pending = b""
+    emitted = 0
+    truncated = False
+    calibrated = False
+    direct_pids = False
+    result = 1
+    stop_signal = None
+    previous_handlers = {}
+
+    def request_stop(sig, frame):
+        nonlocal stop_signal
+        stop_signal = sig  # Drain the sidecar's buffer; workload handlers stay untouched.
+
+    def emit(kind, **data):
+        nonlocal emitted, truncated
+        if emitted >= 4096:
+            if not truncated:
+                truncated = True
+                line = json.dumps(dict(kind="truncated", at=timestamp(), limit=4096))
+                output.write(line + "\n")
+                print("host-signal " + line, flush=True)
+            return
+        emitted += 1
+        line = json.dumps(dict(kind=kind, at=timestamp(), **data))
+        output.write(line + "\n")
+        print("host-signal " + line, flush=True)
+
+    def read_events(timeout):
+        nonlocal pending
+        events = []
+        if select.select([pipe], [], [], timeout)[0]:
+            chunk = os.read(pipe, 65536)
+            pending += chunk
+            lines = pending.split(b"\n")
+            pending = lines.pop()[-4096:]
+            for raw in lines:
+                line = raw.decode("utf-8", "replace")
+                event = signal_event(line)
+                if event is not None:
+                    if direct_pids:
+                        event["sender_identity"] = process_label(event["sender_tid"])
+                        event["target_identity"] = process_label(event["target_pid"])
+                    events.append(event)
+                    emit("signal", **event)
+                elif "mark_victim:" in line:
+                    emit("oom_victim", trace=line.strip()[:512])
+        return events
+
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[sig] = signal.signal(sig, request_stop)
+        owner = process_label(owner_pid)
+        if not owner or owner["start"] != owner_start or owner["state"] == "Z":
+            raise RuntimeError("Signal observer owner is absent or changed")
+        instance.mkdir()  # Never change another instance or the global tracer.
+        (instance / "buffer_size_kb").write_text("128")
+        (instance / "events/signal/signal_generate/filter").write_text("sig == 9 || sig == 15")
+        (instance / "events/signal/signal_generate/enable").write_text("1")
+        oom = instance / "events/oom/mark_victim/enable"
+        if oom.exists():
+            oom.write_text("1")
+        (instance / "tracing_on").write_text("1")
+        pipe = os.open(instance / "trace_pipe", os.O_RDONLY | os.O_NONBLOCK)
+        name = "lt26c" + uuid.uuid4().hex[:8]
+        dummy = ("import ctypes,signal; "
+                 f"assert ctypes.CDLL(None).prctl(15, {name.encode()!r}, 0, 0, 0)==0; "
+                 "print('ready',flush=True); signal.pause()")
+        child = subprocess.Popen([sys.executable, "-c", dummy], stdout=subprocess.PIPE, text=True)
+        if not select.select([child.stdout], [], [], 5)[0] or child.stdout.readline().strip() != "ready":
+            raise RuntimeError("Calibration child did not become ready")
+        child.terminate()  # Only this known dummy receives a diagnostic signal.
+        if child.wait(timeout=5) != -signal.SIGTERM:
+            raise RuntimeError("Calibration child did not terminate by SIGTERM")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not calibrated:
+            for event in read_events(0.1):
+                if event["target_comm"] == name and event["signal"] == 15 and event["result"] == 0:
+                    calibrated = True
+                    direct_pids = event["target_pid"] == child.pid and event["sender_tid"] == os.getpid()
+        if not calibrated:
+            raise RuntimeError("Known SIGTERM was not observed")
+        ready = dict(calibrated=True, direct_proc_ids=direct_pids, owner=owner,
+                     observer=process_label(os.getpid()), instance=instance.name, oom_enabled=oom.exists())
+        emit("ready", **ready)
+        temp = directory / "ready.tmp"
+        temp.write_text(json.dumps(ready), encoding="utf-8")
+        temp.replace(directory / "ready.json")
+        deadline = time.monotonic() + 3600
+        while time.monotonic() < deadline:
+            read_events(0.2)
+            current = process_label(owner_pid)
+            if stop_signal is not None:
+                emit("observer_signalled", signal=stop_signal)
+                result = 128 + stop_signal
+                break
+            if (directory / "stop").exists():
+                result = 0
+                break
+            if not current or current["start"] != owner_start or current["state"] == "Z":
+                emit("owner_exited")
+                result = 0
+                break
+        else:
+            emit("deadline", seconds=3600)
+    except Exception as exc:
+        emit("observer_error", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        if child is not None:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            child.stdout.close()
+        try:
+            if instance.exists():
+                (instance / "tracing_on").write_text("0")
+                if pipe is not None:
+                    read_events(0)
+                    os.close(pipe)
+                    pipe = None
+                stats = {p.parent.name: p.read_text() for p in (instance / "per_cpu").glob("cpu*/stats")}
+                (directory / "buffer-stats.json").write_text(json.dumps(stats), encoding="utf-8")
+                instance.rmdir()
+            emit("stopped", calibrated=calibrated, instance_removed=not instance.exists(), truncated=truncated)
+        except OSError as exc:
+            result = 1
+            emit("cleanup_error", error=str(exc))
+        finally:
+            if pipe is not None:
+                os.close(pipe)
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+            output.close()
+    return result
 
 
 def adb_command():
@@ -509,7 +722,10 @@ def collect_reports(repo, directory, module, api):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", required=True, type=int, choices=(26, 31, 33, 35, 36))
+    parser.add_argument("--trace-host-signals", action="store_true")
     args = parser.parse_args()
+    if args.trace_host_signals and args.api != 26:
+        parser.error("Host signal experiment is restricted to API26")
     repo = Path.cwd()
     directory = repo / "ci-evidence" / f"api{args.api}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -525,7 +741,11 @@ def main():
     # A successful API26 row took 50:46 (data alone 30:29). Share the budget
     # across suites, retaining five minutes inside the CI job for cleanup/uploads.
     row_deadline = time.monotonic() + 3300
+    host_observer = None
     try:
+        if args.trace_host_signals:
+            host_observer = HostSignalObserver(directory)
+            evidence["host_signal_observer"] = host_observer.start()
         if args.api == 26:
             # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
             subprocess.run(sdkmanager_command(), check=True, timeout=180)
@@ -585,10 +805,16 @@ def main():
             print(f"module={module} api={args.api} exit_code={record['exit_code']} "
                   f"tests={record.get('total', 0)} PASS={passed}", flush=True)
     finally:
+        if host_observer is not None:
+            stopped = host_observer.close()
+            evidence.setdefault("host_signal_observer", {})["cleanup_passed"] = stopped
+            failed |= not stopped
         evidence["finished_at"] = timestamp()
         (directory / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     return int(failed)
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--host-signal-observer"]:
+        sys.exit(observe_host_signals(Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4]))
     sys.exit(main())

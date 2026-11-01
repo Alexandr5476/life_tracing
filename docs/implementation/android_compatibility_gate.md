@@ -1,5 +1,28 @@
 # Android compatibility release gate
 
+## API26 hosted shutdown observation
+
+The API26 row enables an isolated Linux tracefs observer for TERM/KILL generation
+and, when available, OOM victim selection. Before starting Gradle it must observe
+a known SIGTERM sent only to its own disposable calibration child. Failure to
+calibrate stops the experiment with an explicit error. Other API rows are unchanged.
+The observer records bounded public task names/IDs, start identities and event
+times in live job output and `ci-evidence/api26/host-signals-*/`; it never reads
+process arguments or environment. It does not intercept or forward test signals.
+Its private trace instance is removed on completion, owner exit or a one-hour
+deadline. Buffer statistics and truncation markers expose incomplete observation.
+
+Kernel task IDs can differ from `/proc` IDs in a PID namespace. Calibration records
+whether direct mapping is valid; identities are enriched only when it is valid.
+An observed sender identifies the immediate kernel task, not necessarily the
+upstream cause of a hosted shutdown. A lost VM or unavailable final log remains
+inconclusive. No support request is sent by this experiment.
+
+The 60-minute job timeout, shared 55-minute row budget, renderer, unfiltered suites,
+mandatory inventory and five required API rows remain unchanged. Local API26
+completion with a longer diagnostic safety ceiling does not replace hosted CI
+or establish that the same workload will finish inside the hosted row budget.
+
 ## Library review corrections W1/W2
 
 Adds five native Library action-admission cases and one production-route retained

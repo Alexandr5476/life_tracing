@@ -1020,5 +1020,86 @@ class InstrumentationAdmissionTests(unittest.TestCase):
             self.assertFalse(owned.cleanup())
 
 
+class HostSignalObserverTests(unittest.TestCase):
+    def test_signal_record_identifies_sender_and_receiver_without_claiming_external_initiator(self):
+        line = ("  Runner.Worker-1370 [007] d..1. 303.735156: signal_generate: "
+                "sig=15 errno=0 code=0 comm=java pid=1376 grp=1 res=0")
+        event = ci.signal_event(line)
+        self.assertEqual((event["sender_comm"], event["sender_tid"]), ("Runner.Worker", 1370))
+        self.assertEqual((event["target_comm"], event["target_pid"], event["signal"]), ("java", 1376, 15))
+        self.assertEqual(event["trace_seconds"], "303.735156")
+        self.assertNotIn("initiator", event)
+        self.assertIsNone(ci.signal_event(line.replace("sig=15", "sig=18")))
+        self.assertEqual(ci.signal_event(line.replace("sig=15", "sig=9"))["signal"], 9)
+        self.assertIsNone(ci.signal_event("unrelated diagnostic message"))
+
+    def test_process_label_reads_only_stat_and_preserves_start_identity(self):
+        fields = ["S", "40"] + ["0"] * 17 + ["12345"]
+        with patch.object(ci.Path, "read_text", return_value="42 (test (worker)) " + " ".join(fields)) as read:
+            label = ci.process_label(42)
+        self.assertEqual(label, dict(pid=42, comm="test (worker)", parent=40, start="12345", state="S"))
+        read.assert_called_once_with()
+        with patch.object(ci.Path, "read_text", side_effect=FileNotFoundError):
+            self.assertIsNone(ci.process_label(42))
+
+    def test_unavailable_observer_does_not_silently_run_unobserved_experiment(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ci.sys, "platform", "win32"):
+            observer = ci.HostSignalObserver(Path(temporary))
+            with self.assertRaisesRegex(RuntimeError, "Linux"):
+                observer.start()
+            self.assertIsNone(observer.process)
+
+    def test_failed_observer_calibration_requests_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ci.sys, "platform", "linux"), \
+                patch.object(ci.os, "geteuid", return_value=0, create=True), \
+                patch.object(ci, "process_label", return_value=dict(start="1")), \
+                patch.object(ci.subprocess, "Popen") as worker:
+            worker.return_value.poll.return_value = 1
+            worker.return_value.wait.return_value = 1
+            observer = ci.HostSignalObserver(Path(temporary))
+            with self.assertRaisesRegex(RuntimeError, "calibration"):
+                observer.start()
+            self.assertTrue((observer.directory / "stop").exists())
+            self.assertTrue(worker.call_args.kwargs["start_new_session"])
+
+    def test_observation_keeps_test_failure_and_clean_success_status(self):
+        for exit_code, cleanup, expected in ((0, True, 0), (1, True, 1), (0, False, 1)):
+            with self.subTest(exit_code=exit_code, cleanup=cleanup), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                commands = []
+                def gradle(command, directory, module, api, record, timeout):
+                    commands.append(command)
+                    record.update(exit_code=exit_code, process_cleanup_passed=True, device_cleanup_passed=True)
+                reports = dict(total=2, failures=0, errors=0, observed_apis=[26], mandatory_inventory_passed=True)
+                env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                        patch.object(ci.subprocess, "run"), patch.object(ci, "HostSignalObserver") as observer, \
+                        patch.object(ci, "run_gradle", side_effect=gradle), \
+                        patch.object(ci, "quarantine_previous_outputs"), \
+                        patch.object(ci, "collect_reports", return_value=reports), \
+                        patch("sys.argv", ["ci", "--api", "26", "--trace-host-signals"]), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    observer.return_value.start.return_value = {"calibrated": True}
+                    observer.return_value.close.return_value = cleanup
+                    self.assertEqual(ci.main(), expected)
+                    observer.return_value.close.assert_called_once()
+                self.assertEqual(len(commands), 3)
+                self.assertTrue(all("--rerun-tasks" in command for command in commands))
+                evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+                self.assertEqual(evidence["modules"]["data"]["exit_code"], exit_code)
+                self.assertEqual(evidence["host_signal_observer"]["cleanup_passed"], cleanup)
+
+    def test_other_apis_cannot_accidentally_enable_experiment(self):
+        with patch("sys.argv", ["ci", "--api", "36", "--trace-host-signals"]), \
+                contextlib.redirect_stderr(io.StringIO()), patch.object(ci, "HostSignalObserver") as observer:
+            with self.assertRaises(SystemExit) as failure:
+                ci.main()
+            self.assertEqual(failure.exception.code, 2)
+            observer.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
