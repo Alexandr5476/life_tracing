@@ -1,5 +1,37 @@
 # Android compatibility release gate
 
+## API26 task-snapshot preparation
+
+The Linux API26 row prepares a private GMD `default_boot` before any product
+instrumentation. This profile requires the guarded SwANGLE path and the measured
+Emulator37.2.13. The ordinary GMD setup creates the Pixel2/API26 AOSP image; the
+preparer sets `persist.enable_task_snapshots=false` in that disposable guest and
+restarts only its zygote services before tests. It verifies old framework absence,
+a new system_server lifetime, actual API and framework field, and actual ANGLE on
+SwiftShader. A separately compiled read-only diagnostic APK is uninstalled before
+saving. A new read-only emulator must actually load the saved snapshot and repeat
+the field/backend checks. A loadability exit code alone is insufficient.
+
+API26 uses one private `ANDROID_AVD_HOME` for preparation and all three GMD suites.
+ADB uses5037 consistently with UTP. Setup, helper compilation, boot and restoration
+consume the existing shared55-minute budget; the job remains60minutes and the
+host memory guard remains8GiB/1.5GiB. Preparation/cleanup failures block admission.
+The existing mandatory API identity test in data, app and independent startup
+also asserts the actual framework flag when this explicit profile is requested.
+All original cases and assertions remain; no test count is reduced. Other API rows
+retain their existing device profile. No framework restart, GC signal, allocator
+operation or system-image/SELinux change occurs during a product suite.
+
+The justification is a controlled64-case A/B: disabling task snapshots reduced
+host in-use growth291.95MiB to173.10MiB, with all cases passing. A subsequent65-case
+distinct sample passed. Residual growth remains and speedup was not established.
+Actual AGP8.10.1 setup/reuse and UTP profile admission were independently checked:
+one diagnostic deliberately expecting true failed on actual false, then the same
+diagnostic expecting false passed. These results do not establish full inventory
+completion or hosted timing. New canonical and exact-head CI evidence are required.
+Snapshot metadata can change during a read-only load, so its recorded hash is
+evidence at save time, not an immutability gate across subsequent loads.
+
 ## API26 hosted shutdown observation
 
 The API26 row enables an isolated Linux tracefs observer for TERM/KILL generation
@@ -1011,3 +1043,43 @@ describe an OpenGL host-memory leak fix. However this job installed an archive
 beginning `emulator-linux_x64-167...`; its full revision was not logged. No version
 change is claimed as a fix. The next exact-head run must establish the installed
 revision and host/guest memory trends before choosing a targeted mitigation.
+
+### API26 isolated SwANGLE experiment (2026-11-01)
+
+Run 41330080433 attempt 1, head `de76e88f160b4ecdc5109002025d59b9030f794b`,
+recorded Emulator **37.2.13**, with GLES `swiftshader` and OpenGL ES SwiftShader
+4.0.0.1 in both retained emulator logs. Data completed 632 cases (5 skips).
+During app UI execution, host emulator RSS grew from about 2.6 GiB to 8.1 GiB;
+the memory guard stopped the owned invocation at 210/526 cases, with no observed
+test failures. App JUnit was not finalized; remaining app cases and startup did
+not run. The failed gate is preserved. Cleanup and artifact upload succeeded;
+this attempt has no recorded OOM event and all four trace buffers report zero
+overruns/dropped events.
+
+Over the corresponding guest samples, app PSS remained about 95–125 MiB, guest
+MemAvailable about 1.4 GiB, and SurfaceFlinger listed 5–7 layers. This localizes
+the large growth to the host emulator rather than guest application memory or
+an increasing layer count. It does not identify the leaking allocation or prove
+the cause of older runner stops. The advertised 37.2.13 fix is already installed.
+
+The API26 row now explicitly opts into `--api26-swangle`. This changes only its
+GLES path to ANGLE on SwiftShader Vulkan, using the documented
+[`swangle` mode](https://developer.android.com/studio/run/emulator-acceleration).
+Emulator 37.2.13's own `-help-gpu` confirms support; AGP 8.10.1 passes the selected
+GPU option through. The flag requires the existing Linux API26 memory/signal
+experiment. Other rows retain `swiftshader`; emulator/image versions, full
+data/app/startup suites, assertions, mandatory inventory, resource guard and
+55-minute row/60-minute job deadlines are unchanged. The requested renderer is
+recorded, and retained emulator logs must confirm the actual backend in CI.
+
+The exact Google-verified Linux archive's ANGLE libraries passed 64 real GLES
+context/pbuffer create, clear, pixel-readback and destroy cycles, reporting ANGLE
+on SwiftShader Vulkan with about 27–31 MiB RSS. This is a backend smoke, not an
+Android test or proof that emulator memory growth is fixed. Two orchestration
+regressions, including the initially failing experiment invocation, verify scope,
+all three suites, unchanged deadline and original failure status. The memory
+abort regression also covers the new path; all 56 host tests pass on Windows and
+Linux. Fresh canonical checks and full exact-head CI remain required. Compare
+actual backend, full inventory and host/guest memory trends before accepting the
+mitigation; do not classify a repeated guard failure as a random infrastructure
+failure or retry it blindly. API36's independent startup ANR remains unresolved.

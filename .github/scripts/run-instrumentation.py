@@ -834,16 +834,32 @@ def collect_reports(repo, directory, module, api):
                 mandatory_inventory_passed=True, mandatory_testcases=len(required))
 
 
+def create_api26_profile(directory, deadline):
+    from types import SimpleNamespace
+    from api26_profile import Api26Profile
+    helpers = SimpleNamespace(OwnedProcesses=OwnedProcesses, HostMemoryProfile=HostMemoryProfile,
+                              DeviceHealth=DeviceHealth, emulator_revision=emulator_revision,
+                              run_gradle=run_gradle, stop_process=stop_process, timestamp=timestamp)
+    return Api26Profile(helpers, directory, deadline)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", required=True, type=int, choices=(26, 31, 33, 35, 36))
     parser.add_argument("--trace-host-signals", action="store_true")
     parser.add_argument("--profile-host-memory", action="store_true")
+    parser.add_argument("--api26-swangle", action="store_true")
+    parser.add_argument("--api26-disable-task-snapshots", action="store_true")
     args = parser.parse_args()
     if args.trace_host_signals and args.api != 26:
         parser.error("Host signal experiment is restricted to API26")
     if args.profile_host_memory and (args.api != 26 or not args.trace_host_signals or sys.platform != "linux"):
         parser.error("Host memory experiment requires API26 Linux and calibrated signal observation")
+    if args.api26_swangle and not args.profile_host_memory:
+        parser.error("SwANGLE experiment requires the guarded API26 Linux memory profile")
+    if args.api26_disable_task_snapshots and not args.api26_swangle:
+        parser.error("Task-snapshot preparation requires the guarded API26 SwANGLE profile")
+    renderer = "swangle" if args.api26_swangle else "swiftshader"
     repo = Path.cwd()
     directory = repo / "ci-evidence" / f"api{args.api}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -854,34 +870,52 @@ def main():
     evidence = dict(tested_sha=head, event_sha=os.environ["GITHUB_SHA"],
                     api=args.api, run_id=int(os.environ["GITHUB_RUN_ID"]),
                     run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
-                    event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={})
+                    event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={},
+                    requested_renderer=renderer)
     failed = False
     # A successful API26 row took 50:46 (data alone 30:29). Share the budget
     # across suites, retaining five minutes inside the CI job for cleanup/uploads.
     row_deadline = time.monotonic() + 3300
     host_observer = None
+    profile = None
     try:
         if args.trace_host_signals:
             host_observer = HostSignalObserver(directory)
             evidence["host_signal_observer"] = host_observer.start()
         if args.api == 26:
             # API 26's image omits the emulator dependency; AGP 8.10.1 queries it at setup line 194.
-            subprocess.run(sdkmanager_command(), check=True, timeout=180)
+            packages = sdkmanager_command()
+            if args.api26_disable_task_snapshots:
+                # Setup alone need not install the tools used by the read-only probe.
+                packages += ["build-tools;35.0.0", "platforms;android-36"]
+            subprocess.run(packages, check=True, timeout=180)
         if args.profile_host_memory:
             evidence["emulator_toolchain"] = emulator_revision()
             print("emulator-toolchain " + json.dumps(evidence["emulator_toolchain"]), flush=True)
         blocked = None
+        if args.api26_disable_task_snapshots:
+            evidence['requested_task_snapshots'] = False
+            try:
+                profile = create_api26_profile(directory, row_deadline)
+                evidence['task_snapshot_profile'] = profile.record
+                profile.prepare()
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                evidence['profile_error'] = str(exc)
+                print(f'::error::API26 pre-test profile: {exc}', flush=True)
+                blocked, failed = 'task_snapshot_profile', True
         for module in ("data", "app", "startup"):
             target_module = "app" if module == "startup" else module
             command = ["./gradlew", f":{target_module}:pixel2Api{args.api}DebugAndroidTest",
                        f"-Plifetracing.compatibility.expectedApi={args.api}",
-                       # The indirect renderer is deprecated since Emulator 36.4.9.
-                       "-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader",
+                       # Both explicit modes avoid deprecated *_indirect CLI aliases.
+                       f"-Pandroid.testoptions.manageddevices.emulator.gpu={renderer}",
                        "-Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5",
                        "--no-parallel", "--max-workers=2", "--no-daemon", "--no-configuration-cache",
                        "--rerun-tasks", "--no-build-cache", "--console=plain", "--stacktrace"]
             if module == "startup":
                 command.append("-Plifetracing.compatibility.productionStartup=true")
+            if args.api26_disable_task_snapshots:
+                command.append("-Plifetracing.compatibility.taskSnapshotsDisabled=true")
             record = dict(command=command, started_at=timestamp(), exit_code=None)
             evidence["modules"][module] = record
             if not blocked and time.monotonic() >= row_deadline:
@@ -927,6 +961,12 @@ def main():
             print(f"module={module} api={args.api} exit_code={record['exit_code']} "
                   f"tests={record.get('total', 0)} PASS={passed}", flush=True)
     finally:
+        if profile is not None:
+            try:
+                failed |= not profile.close()
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                evidence['profile_cleanup_error'] = str(exc)
+                failed = True
         if host_observer is not None:
             stopped = host_observer.close()
             evidence.setdefault("host_signal_observer", {})["cleanup_passed"] = stopped

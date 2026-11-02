@@ -98,7 +98,7 @@ jobs:
           EXPECTED_TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ "${{ matrix.api }}" = "26" ]; then
-            python3 .github/scripts/run-instrumentation.py --api 26 --trace-host-signals --profile-host-memory
+            python3 .github/scripts/run-instrumentation.py --api 26 --trace-host-signals --profile-host-memory --api26-swangle --api26-disable-task-snapshots
           else
             python3 .github/scripts/run-instrumentation.py --api ${{ matrix.api }}
           fi

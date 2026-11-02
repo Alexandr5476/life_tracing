@@ -24,6 +24,16 @@ class AndroidCompatibilityDeviceTest(
         println("LifeTracing compatibility module=data actualApi=$actualApi fingerprint=${Build.FINGERPRINT}")
         assertTrue("Device is below minSdk: $actualApi", actualApi >= 26)
         if (expected != null) assertEquals("Wrong device image", expected.toInt(), actualApi)
+        if (InstrumentationRegistry.getArguments().getString("compatibilityTaskSnapshotsDisabled") != null) {
+            assertEquals("Task-snapshot profile is API26 only", 26, actualApi)
+            val actual =
+                Class
+                    .forName("android.app.ActivityManager")
+                    .getDeclaredField("ENABLE_TASK_SNAPSHOTS")
+                    .getBoolean(null)
+            println("LifeTracing compatibility module=data actualTaskSnapshots=$actual")
+            assertEquals("Prepared framework task-snapshot profile was lost", false, actual)
+        }
     }
 
     @Test

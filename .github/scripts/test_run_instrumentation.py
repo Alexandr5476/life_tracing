@@ -1062,6 +1062,64 @@ class InstrumentationAdmissionTests(unittest.TestCase):
 
 
 class HostMemoryProfileTests(unittest.TestCase):
+    def test_swangle_requires_explicit_linux_api26_memory_experiment(self):
+        for api, platform, profile, sensor in ((26, "linux", False, True), (26, "win32", True, True),
+                                               (35, "linux", True, True), (26, "linux", True, False)):
+            args = ["ci", "--api", str(api), "--api26-swangle"]
+            args += ["--profile-host-memory"] if profile else []
+            args += ["--trace-host-signals"] if sensor else []
+            with self.subTest(args=args, platform=platform), patch("sys.argv", args), \
+                    patch.object(ci.sys, "platform", platform), contextlib.redirect_stderr(io.StringIO()), \
+                    patch.object(ci, "run_gradle") as worker:
+                with self.assertRaises(SystemExit):
+                    ci.main()
+                worker.assert_not_called()
+
+    def test_swangle_runs_all_suites_with_same_budget_inventory_and_failure_status(self):
+        for app_exit in (0, 7):
+            with self.subTest(app_exit=app_exit), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                commands = []
+                def gradle(command, directory, module, api, record, timeout, profile_memory):
+                    self.assertTrue(profile_memory)
+                    self.assertEqual(api, 26)
+                    self.assertEqual(timeout, 3300)
+                    target = "app" if module == "startup" else module
+                    expected = ["./gradlew", f":{target}:pixel2Api26DebugAndroidTest",
+                                "-Plifetracing.compatibility.expectedApi=26",
+                                "-Pandroid.testoptions.manageddevices.emulator.gpu=swangle",
+                                "-Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5",
+                                "--no-parallel", "--max-workers=2", "--no-daemon", "--no-configuration-cache",
+                                "--rerun-tasks", "--no-build-cache", "--console=plain", "--stacktrace"]
+                    if module == "startup":
+                        expected.append("-Plifetracing.compatibility.productionStartup=true")
+                    self.assertEqual(command, expected)
+                    commands.append(module)
+                    record.update(exit_code=app_exit if module == "app" else 0,
+                                  process_cleanup_passed=True, device_cleanup_passed=True)
+                with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                        patch.object(ci.sys, "platform", "linux"), patch.object(ci.time, "monotonic", return_value=10), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                        patch.object(ci.subprocess, "run"), patch.object(ci, "HostSignalObserver") as sensor, \
+                        patch.object(ci, "emulator_revision", return_value={"revision": "37.2.13"}), \
+                        patch.object(ci, "run_gradle", side_effect=gradle), \
+                        patch.object(ci, "quarantine_previous_outputs"), \
+                        patch.object(ci, "collect_reports", return_value=dict(total=1, observed_apis=[26],
+                                                                             mandatory_inventory_passed=True)) as reports, \
+                        patch("sys.argv", ["ci", "--api", "26", "--trace-host-signals", "--profile-host-memory",
+                                           "--api26-swangle"]), contextlib.redirect_stdout(io.StringIO()):
+                    sensor.return_value.start.return_value = {"calibrated": True}
+                    sensor.return_value.close.return_value = True
+                    self.assertEqual(ci.main(), int(app_exit != 0))
+                    self.assertEqual(reports.call_count, 3)
+                self.assertEqual(commands, ["data", "app", "startup"])
+                evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+                self.assertEqual(evidence["requested_renderer"], "swangle")
+                self.assertEqual(evidence["modules"]["app"]["status"], "FAILED" if app_exit else "PASSED")
+
     def test_memory_abort_cannot_certify_partial_suite_or_run_following_suites(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1081,7 +1139,7 @@ class HostMemoryProfileTests(unittest.TestCase):
                     patch.object(ci, "quarantine_previous_outputs"), \
                     patch.object(ci, "collect_reports", return_value=dict(total=1, observed_apis=[26],
                                                                          mandatory_inventory_passed=True)), \
-                    patch("sys.argv", ["ci", "--api", "26", "--trace-host-signals", "--profile-host-memory"]), \
+                    patch("sys.argv", ["ci", "--api", "26", "--trace-host-signals", "--profile-host-memory", "--api26-swangle"]), \
                     contextlib.redirect_stdout(io.StringIO()):
                 sensor.return_value.start.return_value = {"calibrated": True}
                 sensor.return_value.close.return_value = True
