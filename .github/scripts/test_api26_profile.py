@@ -18,6 +18,86 @@ runner_spec.loader.exec_module(runner)
 
 
 class ProfileAdmissionTests(unittest.TestCase):
+    def test_installed_probe_artifact_survives_cleanup_without_private_signing_key(self):
+        import hashlib
+        import shutil
+        import zipfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdk = root/'sdk'
+            for relative in ['build-tools/35.0.0/aapt2', 'build-tools/35.0.0/d8',
+                             'build-tools/35.0.0/apksigner', 'platforms/android-36/android.jar']:
+                path = sdk/relative; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+            evidence = root/'evidence'; evidence.mkdir()
+            helpers = Mock(); helpers.timestamp.return_value = 'now'
+            helpers.OwnedProcesses.return_value.cleanup.return_value = True
+            with patch.object(profile.Path, 'cwd', return_value=root), \
+                    patch.dict(os.environ, {'ANDROID_HOME':str(sdk), 'ANDROID_ADB_SERVER_PORT':'5037',
+                                           'ADB_SERVER_SOCKET':'tcp:5037'}):
+                value = profile.Api26Profile(helpers, evidence, 100)
+                def command(arguments, label, *_):
+                    if label == 'probe-package':
+                        with zipfile.ZipFile(arguments[-1], 'w') as archive:
+                            archive.writestr('AndroidManifest.xml', b'manifest')
+                    elif label == 'probe-dex':
+                        (Path(arguments[arguments.index('--output')+1])/'classes.dex').write_bytes(b'dex')
+                    elif label == 'probe-key':
+                        Path(arguments[arguments.index('-keystore')+1]).write_bytes(b'private diagnostic key')
+                    elif label == 'probe-sign':
+                        shutil.copyfile(arguments[-1], arguments[arguments.index('--out')+1])
+                    return ''
+                value.command = command
+                apk = value.build_probe(); expected = apk.read_bytes()
+                value.close()
+                self.assertTrue(apk.is_file(), 'The exact APK used by both installs must survive cleanup')
+                self.assertEqual(apk.read_bytes(), expected)
+                self.assertEqual(value.record['probe']['apk_sha256'], hashlib.sha256(expected).hexdigest())
+                self.assertEqual(value.record['artifacts'][apk.relative_to(value.directory).as_posix()],
+                                 hashlib.sha256(expected).hexdigest())
+                self.assertFalse(value.temporary.exists())
+                self.assertEqual(list(evidence.rglob('*.jks')), [])
+
+    def test_scaled_raster_requires_actual_display_readback_and_preserves_logical_viewport(self):
+        good = ('INSTRUMENTATION_RESULT: actual_api=26\n'
+                'INSTRUMENTATION_RESULT: snapshot_actual=false\n'
+                'INSTRUMENTATION_RESULT: snapshot_property=false\n'
+                'INSTRUMENTATION_RESULT: display_width_px=720\n'
+                'INSTRUMENTATION_RESULT: display_height_px=1280\n'
+                'INSTRUMENTATION_RESULT: display_density_dpi=280\n'
+                'INSTRUMENTATION_RESULT: app_width_px=720\n'
+                'INSTRUMENTATION_RESULT: app_height_px=1196\nINSTRUMENTATION_CODE: 0\n')
+        result = profile.verify_probe(good, scaled_raster=True)
+        self.assertEqual(result['display'], dict(width_px=720, height_px=1280, density_dpi=280,
+                                               app_width_px=720, app_height_px=1196))
+        for field, wrong in [('display_width_px', '1080'), ('display_height_px', '1920'),
+                             ('display_density_dpi', '420'), ('app_width_px', '719'), ('app_height_px', '1280')]:
+            import re
+            for bad in [re.sub(field+'=\\d+', field+'='+wrong, good),
+                        re.sub('INSTRUMENTATION_RESULT: '+field+'=\\d+\\n', '', good),
+                        good+'INSTRUMENTATION_RESULT: '+field+'='+wrong+'\n']:
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    profile.verify_probe(bad, scaled_raster=True)
+
+    def test_scaled_raster_requires_both_owned_guest_overrides(self):
+        value = profile.Api26Profile.__new__(profile.Api26Profile)
+        value.scaled_raster = True
+        value.shell = Mock(side_effect=['', '', 'Physical size: 1080x1920\nOverride size: 720x1280\n',
+                                       'Physical density: 420\nOverride density: 280\n'])
+        value.configure_raster()
+        self.assertEqual(value.shell.call_args_list[0].args[0], ['wm', 'size', '720x1280'])
+        self.assertEqual(value.shell.call_args_list[1].args[0], ['wm', 'density', '280'])
+        value.shell = Mock(side_effect=['', '', 'Physical size: 1080x1920\n', 'Physical density: 420\n'])
+        with self.assertRaises(ValueError): value.configure_raster()
+        value.scaled_raster = False; value.shell.reset_mock()
+        value.configure_raster(); value.shell.assert_not_called()
+
+    def test_scaled_raster_cannot_bypass_snapshot_preparation(self):
+        with patch('sys.argv', ['ci', '--api', '26', '--trace-host-signals', '--profile-host-memory',
+                               '--api26-swangle', '--api26-scaled-raster']), \
+                patch.object(runner, 'create_api26_profile') as factory, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit): runner.main()
+            factory.assert_not_called()
+
     def test_restore_uses_a_distinct_port_pair_and_never_launches_on_an_occupied_pair(self):
         with tempfile.TemporaryDirectory() as temporary:
             value=profile.Api26Profile.__new__(profile.Api26Profile)
@@ -74,8 +154,8 @@ class ProfileAdmissionTests(unittest.TestCase):
                 factory.assert_not_called()
 
     def test_profile_failure_blocks_every_suite_and_preserves_shared_budget(self):
-        for defect in ('prepare', 'cleanup', None):
-            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+        for defect, scaled in [(d, s) for d in ('prepare', 'cleanup', None) for s in (False, True)]:
+            with self.subTest(defect=defect, scaled=scaled), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 env = dict(EXPECTED_TEST_SHA='a'*40, GITHUB_SHA='b'*40, GITHUB_RUN_ID='7',
                            GITHUB_RUN_ATTEMPT='1', GITHUB_EVENT_NAME='pull_request')
@@ -85,6 +165,7 @@ class ProfileAdmissionTests(unittest.TestCase):
                     self.assertLessEqual(timeout, 3300)
                     self.assertTrue(profile_memory)
                     self.assertIn('-Plifetracing.compatibility.taskSnapshotsDisabled=true', command)
+                    self.assertEqual('-Plifetracing.compatibility.scaledRaster=true' in command, scaled)
                     record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
                 with patch.object(runner.Path, 'cwd', return_value=root), patch.dict(os.environ, env), \
                         patch.object(runner.sys, 'platform', 'linux'), \
@@ -98,7 +179,8 @@ class ProfileAdmissionTests(unittest.TestCase):
                         patch.object(runner, 'quarantine_previous_outputs'), \
                         patch.object(runner, 'collect_reports', return_value=dict(total=1, observed_apis=[26], mandatory_inventory_passed=True)) as reports, \
                         patch('sys.argv', ['ci','--api','26','--trace-host-signals','--profile-host-memory',
-                                           '--api26-swangle','--api26-disable-task-snapshots']), \
+                                           '--api26-swangle','--api26-disable-task-snapshots']
+                                           + (['--api26-scaled-raster'] if scaled else [])), \
                         contextlib.redirect_stdout(io.StringIO()):
                     sensor.return_value.start.return_value = {'calibrated':True}
                     sensor.return_value.close.return_value = True

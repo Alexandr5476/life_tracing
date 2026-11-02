@@ -1,6 +1,8 @@
 package com.alexandr5476.lifetracing.runtime
 
 import android.os.Build
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -14,6 +16,7 @@ class AndroidCompatibilityDeviceTest(
     private val actualApi: Int,
 ) {
     @Test
+    @Suppress("DEPRECATION")
     fun recordsActualApiAndRejectsMismatchedRequestedTarget() {
         val expected = InstrumentationRegistry.getArguments().getString("compatibilityExpectedApi")
         println("LifeTracing compatibility module=app actualApi=$actualApi fingerprint=${Build.FINGERPRINT}")
@@ -28,6 +31,23 @@ class AndroidCompatibilityDeviceTest(
                     .getBoolean(null)
             println("LifeTracing compatibility module=app actualTaskSnapshots=$actual")
             assertEquals("Prepared framework task-snapshot profile was lost", false, actual)
+        }
+        if (InstrumentationRegistry.getArguments().getString("compatibilityScaledRaster") != null) {
+            assertEquals("Scaled raster profile is API26 only", 26, actualApi)
+            val metrics = DisplayMetrics()
+            InstrumentationRegistry
+                .getInstrumentation()
+                .targetContext
+                .getSystemService(WindowManager::class.java)
+                .defaultDisplay
+                .getRealMetrics(metrics)
+            println(
+                "LifeTracing compatibility module=app actualRaster=${metrics.widthPixels}x${metrics.heightPixels} " +
+                    "densityDpi=${metrics.densityDpi}",
+            )
+            assertEquals("Prepared display width was lost", 720, metrics.widthPixels)
+            assertEquals("Prepared display height was lost", 1280, metrics.heightPixels)
+            assertEquals("Prepared display density was lost", 280, metrics.densityDpi)
         }
     }
 

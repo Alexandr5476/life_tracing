@@ -25,13 +25,22 @@ class CommandTimeout(ValueError):
     pass
 
 
-def verify_probe(output):
+def verify_probe(output, scaled_raster=False):
     fields = dict(re.findall(r'^INSTRUMENTATION_RESULT: (\w+)=(.*)$', output, re.MULTILINE))
     if (fields.get('actual_api') != '26' or fields.get('snapshot_actual') != 'false'
             or fields.get('snapshot_property') != 'false' or 'probe_error' in fields
             or re.findall(r'^INSTRUMENTATION_CODE: (.*)$', output, re.MULTILINE) != ['0']):
         raise ValueError('Actual API26 framework task-snapshot profile was not confirmed')
-    return dict(actual_api=26, actual_field=False, actual_property=False)
+    result = dict(actual_api=26, actual_field=False, actual_property=False)
+    if scaled_raster:
+        expected = dict(display_width_px='720', display_height_px='1280', display_density_dpi='280',
+                        app_width_px='720', app_height_px='1196')
+        for key, value in expected.items():
+            if re.findall(r'^INSTRUMENTATION_RESULT: '+key+r'=(.*)$', output, re.MULTILINE) != [value]:
+                raise ValueError('Actual API26 scaled display was not confirmed: '+key)
+        result['display'] = dict(width_px=720, height_px=1280, density_dpi=280,
+                                 app_width_px=720, app_height_px=1196)
+    return result
 
 
 def verify_restore(output):
@@ -59,7 +68,7 @@ def find_avd(root):
 
 
 class Api26Profile:
-    def __init__(self, ci, directory, row_deadline):
+    def __init__(self, ci, directory, row_deadline, scaled_raster=False):
         # Validate before acquiring temporary resources or changing child environment.
         if (os.environ.get('ANDROID_ADB_SERVER_PORT', '5037') != '5037'
                 or os.environ.get('ADB_SERVER_SOCKET') not in (None, 'tcp:5037', 'tcp:localhost:5037')):
@@ -68,9 +77,11 @@ class Api26Profile:
         if not sdk: raise ValueError('API26 profile requires an explicit SDK root')
         self.sdk = Path(sdk)
         self.ci, self.deadline = ci, row_deadline
+        self.scaled_raster = scaled_raster
         self.directory = directory / 'task-snapshot-profile'
         self.directory.mkdir()
-        self.record = dict(status='PREPARING', started_at=ci.timestamp(), steps=[])
+        self.record = dict(status='PREPARING', started_at=ci.timestamp(), steps=[],
+                           requested_scaled_raster=scaled_raster)
         self.owned = ci.OwnedProcesses()
         # An AVD/snapshot is multi-GiB. /tmp can be a small RAM filesystem, which
         # also consumes host memory outside the emulator RSS guard.
@@ -171,9 +182,14 @@ class Api26Profile:
         self.command([tools/'apksigner', 'sign', '--ks', key, '--ks-pass', 'pass:android',
                       '--out', signed, unsigned], 'probe-sign', 30)
         self.command([tools/'apksigner', 'verify', signed], 'probe-verify', 30)
-        self.record['probe'] = dict(apk_sha256=hashlib.sha256(signed.read_bytes()).hexdigest(),
+        # Retain and install the same public artifact; the disposable signing key
+        # remains in temporary storage and is removed by close().
+        retained = self.directory/'profile-probe.apk'
+        shutil.copyfile(signed, retained)
+        self.record['probe'] = dict(apk_sha256=hashlib.sha256(retained.read_bytes()).hexdigest(),
+                                   apk_path=retained.name,
                                    source_sha256=hashlib.sha256((source/'ProfileProbe.java').read_bytes()).hexdigest())
-        return signed
+        return retained
 
     def setup(self):
         self.record['setup'] = dict(exit_code=None)
@@ -272,7 +288,7 @@ class Api26Profile:
         installed = self.command([self.adb, '-s', self.serial, 'install', '-r', '-t', apk], label+'-install', 30)
         if 'Success' not in installed: raise ValueError('Profile diagnostic APK installation not confirmed')
         output = self.shell(['am', 'instrument', '-w', '-r', PROBE], label+'-field', 30)
-        self.record[label] = verify_probe(output)
+        self.record[label] = verify_probe(output, scaled_raster=self.scaled_raster)
         surface = self.shell(['dumpsys', 'SurfaceFlinger'], label+'-surface')
         gles = [line.strip() for line in surface.splitlines() if 'GLES:' in line]
         if len(gles) != 1 or 'ANGLE' not in gles[0] or 'SwiftShader' not in gles[0]:
@@ -281,6 +297,18 @@ class Api26Profile:
         if 'Success' not in self.command([self.adb, '-s', self.serial, 'uninstall', PACKAGE], label+'-uninstall'):
             raise ValueError('Profile diagnostic APK uninstall not confirmed')
         self.save()
+
+    def configure_raster(self):
+        if not self.scaled_raster: return
+        # Only the disposable guest before product tests. The ratios preserve
+        # logical dimensions: 720/280=1080/420 and1280/280=1920/420.
+        self.shell(['wm', 'size', '720x1280'], 'scaled-size')
+        self.shell(['wm', 'density', '280'], 'scaled-density')
+        size = self.shell(['wm', 'size'], 'scaled-size-readback')
+        density = self.shell(['wm', 'density'], 'scaled-density-readback')
+        if (re.findall(r'^Override size: (.*)$', size, re.MULTILINE) != ['720x1280']
+                or re.findall(r'^Override density: (.*)$', density, re.MULTILINE) != ['280']):
+            raise ValueError('Owned guest raster overrides were not applied')
 
     def stop_emulator(self):
         self.command([self.adb, '-s', self.serial, 'emu', 'kill'], 'emulator-stop')
@@ -310,6 +338,7 @@ class Api26Profile:
             apk = self.build_probe()
             self.start_emulator(False)
             self.configure_guest()
+            self.configure_raster()
             self.field(apk, 'prepared')
             receipt = self.command([self.adb, '-s', self.serial, 'emu', 'avd', 'snapshot', 'save', 'default_boot'],
                                    'snapshot-save', 45)

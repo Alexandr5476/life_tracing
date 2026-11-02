@@ -1,5 +1,48 @@
 # Android compatibility release gate
 
+## API26 scaled raster draft (2026-11-02)
+
+Run41389414006/head42db0045 used the task-snapshot profile successfully but still
+hit the8GiB guard after513 app cases passed (expected526); startup did not run.
+The profile is insufficient on its own. Its native app log also contains186
+missing ColorBuffer events and186 corresponding invalid binds; duplicated UTP
+logging is not counted again. Those errors have not been attributed to snapshots.
+
+The API26-only `--api26-scaled-raster` option prepares a720x1280/dpi280 window
+manager override in the disposable guest before saving default_boot. The original
+GMD Pixel2 hardware profile remains1080x1920/dpi420. The effective raster and
+physical density coverage **change**; this must not be described as testing the
+original Pixel2 physical raster. Other API rows, including the canonical API35
+row, retain the original raster. The logical real-display size remains exactly
+411.428571x731.428571dp; the observed app area remains411.428571x683.428571dp.
+
+This is supported by a bounded comparison of five unchanged original API/UI
+cases covering the mandatory API/profile check, English/Russian scale extremes,
+pointer dragging and Live layout reflow. Each arm passed5/5 in one instrumentation
+invocation:31.66s/RSS growth239.98MiB versus30.91s/84.68MiB (64.715% less growth).
+This is RSS/PSS evidence, not allocator in-use, full526-case evidence, a speedup
+claim or proof that CI will finish. No original DPI-dependent assertion or case
+is removed or weakened. Existing launcher resources are vector XML; that does not
+make the changed physical density coverage equivalent to the original profile.
+
+Disabling API26 Task Snapshots leaves its legacy recents-thumbnail path active:
+AOSP8 ActivityRecord captures a legacy screenshot when ENABLE_TASK_SNAPSHOTS is
+false. A private Settings-to-Home transition produced a Bitmap and thumbnail.
+The proportional display override changed that PNG from648x1038 to432x692,
+exactly4/9 the pixel area. This does not attribute the CI memory growth solely
+to thumbnails or prove a leak. No app security, system image, SELinux, GC or
+allocator policy changes are made.
+
+Admission requires actual API/field/backend plus real720x1280/dpi280 and app
+720x1196 readbacks before save and after a separately restored snapshot. Existing
+mandatory data/app/startup tests also check the actual effective raster/density.
+The flag requires guarded API26 SwANGLE and task-snapshot preparation; failures
+block all suites. The shared3300-second row deadline,60-minute job,8GiB guard,
+original unfiltered inventory and all assertions remain. This is an unreviewed
+draft until native save/restore, regression/static checks and a new exact-file
+review are recorded. API36's CI SystemUI startup ANR remains independently open;
+a local actual-UTP diagnostic passed with its existing legacy SwiftShader backend.
+
 ## API26 task-snapshot preparation
 
 The Linux API26 row prepares a private GMD `default_boot` before any product

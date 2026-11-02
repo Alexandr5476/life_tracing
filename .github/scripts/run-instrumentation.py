@@ -834,13 +834,13 @@ def collect_reports(repo, directory, module, api):
                 mandatory_inventory_passed=True, mandatory_testcases=len(required))
 
 
-def create_api26_profile(directory, deadline):
+def create_api26_profile(directory, deadline, scaled_raster=False):
     from types import SimpleNamespace
     from api26_profile import Api26Profile
     helpers = SimpleNamespace(OwnedProcesses=OwnedProcesses, HostMemoryProfile=HostMemoryProfile,
                               DeviceHealth=DeviceHealth, emulator_revision=emulator_revision,
                               run_gradle=run_gradle, stop_process=stop_process, timestamp=timestamp)
-    return Api26Profile(helpers, directory, deadline)
+    return Api26Profile(helpers, directory, deadline, scaled_raster=scaled_raster)
 
 
 def main():
@@ -850,6 +850,7 @@ def main():
     parser.add_argument("--profile-host-memory", action="store_true")
     parser.add_argument("--api26-swangle", action="store_true")
     parser.add_argument("--api26-disable-task-snapshots", action="store_true")
+    parser.add_argument("--api26-scaled-raster", action="store_true")
     args = parser.parse_args()
     if args.trace_host_signals and args.api != 26:
         parser.error("Host signal experiment is restricted to API26")
@@ -859,6 +860,8 @@ def main():
         parser.error("SwANGLE experiment requires the guarded API26 Linux memory profile")
     if args.api26_disable_task_snapshots and not args.api26_swangle:
         parser.error("Task-snapshot preparation requires the guarded API26 SwANGLE profile")
+    if args.api26_scaled_raster and not args.api26_disable_task_snapshots:
+        parser.error("Scaled raster requires the guarded API26 snapshot preparation")
     renderer = "swangle" if args.api26_swangle else "swiftshader"
     repo = Path.cwd()
     directory = repo / "ci-evidence" / f"api{args.api}"
@@ -896,7 +899,7 @@ def main():
         if args.api26_disable_task_snapshots:
             evidence['requested_task_snapshots'] = False
             try:
-                profile = create_api26_profile(directory, row_deadline)
+                profile = create_api26_profile(directory, row_deadline, scaled_raster=args.api26_scaled_raster)
                 evidence['task_snapshot_profile'] = profile.record
                 profile.prepare()
             except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
@@ -916,6 +919,8 @@ def main():
                 command.append("-Plifetracing.compatibility.productionStartup=true")
             if args.api26_disable_task_snapshots:
                 command.append("-Plifetracing.compatibility.taskSnapshotsDisabled=true")
+            if args.api26_scaled_raster:
+                command.append("-Plifetracing.compatibility.scaledRaster=true")
             record = dict(command=command, started_at=timestamp(), exit_code=None)
             evidence["modules"][module] = record
             if not blocked and time.monotonic() >= row_deadline:
