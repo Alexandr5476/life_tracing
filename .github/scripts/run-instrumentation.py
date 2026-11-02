@@ -325,6 +325,20 @@ class DeviceHealth:
         if self.serial is None:
             return not self.devices()
         devices = self.devices()
+        if devices == [(self.serial, "offline")]:
+            # The owned process cleanup runs before this ADB check. Registration
+            # can outlive process exit; an offline guest cannot validate an emu kill.
+            # Only read registration here and require actual disappearance. A
+            # persistent, revived, foreign or ambiguous registration stays failure.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                time.sleep(0.2)
+                devices = self.devices()
+                if not devices:
+                    return True
+                if devices != [(self.serial, "offline")]:
+                    return False
+            return False
         if not any(s == self.serial for s, _ in devices):
             return True
         # Revalidate before the only mutating adb command. Never dismiss the ANR.

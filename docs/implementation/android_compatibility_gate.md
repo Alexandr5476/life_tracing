@@ -1126,3 +1126,40 @@ Linux. Fresh canonical checks and full exact-head CI remain required. Compare
 actual backend, full inventory and host/guest memory trends before accepting the
 mitigation; do not classify a repeated guard failure as a random infrastructure
 failure or retry it blindly. API36's independent startup ANR remains unresolved.
+
+### Teardown registration and API36 transform-cache boundaries (2026-11-02)
+
+Run `41445414041` at head `9b0c628019e4fbf130e2b00779227d6b667948f3`
+failed at two different boundaries. API26 setup completed successfully, but its
+previously admitted emulator remained listed as offline during process teardown;
+the cleanup API-property read failed. No helper, raster readback or product case
+was reached. Cleanup now waits for that exact offline registration to disappear,
+using only `adb devices`, and succeeds only on an empty list. A persistent,
+revived, foreign or ambiguous registration still fails. The wait uses the existing
+10-second interval and 5-second per-command timeout. Online API/AVD verification
+and the guarded emulator kill remain intact. Eight host regressions first exposed
+five errors in the old path; this does not prove that the failed CI registration
+eventually disappeared.
+
+API36 passed the original data suite (632 cases, five ignored fixtures) and then
+failed before app/startup instrumentation on missing Gradle 8.14.3 transform
+`metadata.bin`. The previous SystemUI startup ANR was not observed in this run.
+A private non-Android Gradle fixture reproduced the missing-metadata exception;
+recreating only its disposable transform workspace restored identical output.
+This proves the recovery behavior, not the origin of the CI missing file.
+
+Only the API36 matrix row excludes `caches/8.14.3/transforms` from setup-gradle's
+shared cache. The pinned provider applies exclusions after restoring common
+artifacts and before saving. Its actual post-restore code was exercised against
+a private synthetic cache: the selected directory was removed while dependencies,
+compiled scripts and unrelated paths stayed unchanged. The row therefore rebuilds
+transforms within the job while preserving downloaded dependency and wrapper
+caches. This is scoped cache policy on the ephemeral CI runner, with no deletion
+of developer caches, no Gradle upgrade and no automatic test retry. It does not
+address corruption arising later within the same job; that remains observable.
+
+The original API26 profile, physical-raster assertions, full testcase inventory,
+8 GiB guard and 55/60-minute deadlines remain required. Rebuilt transforms can
+increase API36 preparation time. Fresh exact-head CI must establish all original
+data/app/startup results on every API; local controls provide no full-matrix PASS
+credit and do not replace Controller review or the new Lead response.

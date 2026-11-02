@@ -1305,5 +1305,111 @@ class HostSignalObserverTests(unittest.TestCase):
             observer.assert_not_called()
 
 
+class CleanupOfflineControl(unittest.TestCase):
+    def run_sequence(self, sequence, *, api='26', avd='managed-avd', admitted=True):
+        commands, clock = [], [0.0]
+        states = iter([''] + sequence)
+        last = ['']
+        def adb(command, **kwargs):
+            commands.append(command[1:])
+            if command[-1] == 'devices':
+                last[0] = next(states, last[0])
+                return ci.subprocess.CompletedProcess(command, 0, 'List of devices attached\n'+last[0], '')
+            if 'offline' in last[0]:
+                return ci.subprocess.CompletedProcess(command, 1, '', 'adb: device offline\n')
+            if command[-1] == 'ro.build.version.sdk':
+                return ci.subprocess.CompletedProcess(command, 0, api+'\n', '')
+            if command[-3:] == ['emu','avd','name']:
+                return ci.subprocess.CompletedProcess(command, 0, avd+'\nOK\n', '')
+            if command[-2:] == ['emu','kill']:
+                return ci.subprocess.CompletedProcess(command, 0, 'OK\n', '')
+            raise AssertionError(command)
+        with patch.object(ci, 'adb_command', return_value='adb'), patch.object(ci.subprocess, 'run', side_effect=adb), \
+                patch.object(ci.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(ci.time, 'sleep', side_effect=lambda amount: clock.__setitem__(0, clock[0]+amount)):
+            monitor = ci.DeviceHealth(26)
+            if admitted:
+                monitor.serial, monitor.avd = 'emulator-5554', 'managed-avd'
+            result = monitor.cleanup()
+        return result, commands, clock[0]
+
+    def test_stopped_serial_must_actually_unregister_without_guest_command(self):
+        result, commands, elapsed = self.run_sequence(['emulator-5554\toffline\n','emulator-5554\toffline\n',''])
+        self.assertTrue(result)
+        self.assertTrue(all(c==['devices'] for c in commands))
+        self.assertGreater(elapsed, 0)
+
+    def test_persistent_offline_is_failure_within_existing_wait_budget(self):
+        result, commands, elapsed = self.run_sequence(['emulator-5554\toffline\n'])
+        self.assertFalse(result)
+        self.assertLessEqual(elapsed, 10.21)
+        self.assertTrue(all(c==['devices'] for c in commands))
+
+    def test_foreign_registration_during_offline_wait_is_rejected(self):
+        for foreign in ['emulator-5556\tdevice\n', 'emulator-5554\toffline\nemulator-5556\tdevice\n']:
+            with self.subTest(foreign=foreign):
+                result, commands, _ = self.run_sequence(['emulator-5554\toffline\n',foreign])
+                self.assertFalse(result)
+                self.assertTrue(all(c==['devices'] for c in commands))
+
+    def test_offline_to_online_does_not_get_unvalidated_kill_or_success(self):
+        result, commands, _ = self.run_sequence(['emulator-5554\toffline\n','emulator-5554\tdevice\n'])
+        self.assertFalse(result)
+        self.assertTrue(all(c==['devices'] for c in commands))
+
+    def test_never_admitted_offline_device_is_rejected(self):
+        result, commands, _ = self.run_sequence(['emulator-5554\toffline\n'],admitted=False)
+        self.assertFalse(result)
+        self.assertTrue(all(c==['devices'] for c in commands))
+
+    def test_online_identity_changes_still_block_kill(self):
+        for api,avd in [('36','managed-avd'),('26','foreign-avd')]:
+            result, commands, _ = self.run_sequence(['emulator-5554\tdevice\n'],api=api,avd=avd)
+            self.assertFalse(result)
+            self.assertFalse(any(c[-2:]==['emu','kill'] for c in commands))
+
+    def test_online_exact_identity_can_be_killed_and_requires_absence(self):
+        result, commands, _ = self.run_sequence(['emulator-5554\tdevice\n',''])
+        self.assertTrue(result)
+        self.assertEqual([c for c in commands if c[-2:]==['emu','kill']], [['-s','emulator-5554','emu','kill']])
+
+    def test_adb_io_failure_remains_observable(self):
+        with patch.object(ci,'adb_command',return_value='adb'), patch.object(ci.DeviceHealth,'devices',return_value=[]):
+            monitor=ci.DeviceHealth(26)
+            monitor.serial,monitor.avd='emulator-5554','managed-avd'
+        with patch.object(ci.DeviceHealth,'devices',side_effect=OSError(61,'No data available')):
+            with self.assertRaises(OSError):
+                monitor.cleanup()
+
+
+class WorkflowCachePolicyTests(unittest.TestCase):
+    def cache_exclusions_by_api(self):
+        import re
+        workflow = Path(__file__).parents[1] / "workflows" / "ci.yml"
+        row = workflow.read_text().split("  instrumented-tests:", 1)[1]
+        matrix = row.split("        include:", 1)[1].split("    runs-on:", 1)[0]
+        result = {}
+        for api, fields in re.findall(r"- api: (\d+)\n(.*?)(?=          - api:|\Z)", matrix, re.S):
+            match = re.search(r"^            gradle_cache_excludes: (.+)$", fields, re.M)
+            result[int(api)] = match.group(1).strip() if match else None
+        return result
+
+    def test_transform_cache_exclusion_applies_only_to_api36(self):
+        rows = self.cache_exclusions_by_api()
+        self.assertEqual(set(rows), {26, 31, 33, 35, 36})
+        self.assertEqual({api for api, value in rows.items() if value}, {36})
+
+    def test_exclusion_covers_current_gradle_transforms_without_other_cache_content(self):
+        import re
+        repository = Path(__file__).parents[2]
+        wrapper = (repository / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text()
+        version = re.search(r"gradle-([0-9.]+)-(?:bin|all)\.zip", wrapper).group(1)
+        excluded = self.cache_exclusions_by_api()[36]
+        self.assertEqual(excluded, f"caches/{version}/transforms")
+        self.assertNotIn("..", Path(excluded).parts)
+        for retained in ["caches/modules-2", "wrapper/dists", f"caches/{version}/kotlin-dsl", "caches/build-cache-1"]:
+            self.assertFalse(retained == excluded or retained.startswith(excluded + "/"))
+
+
 if __name__ == "__main__":
     unittest.main()

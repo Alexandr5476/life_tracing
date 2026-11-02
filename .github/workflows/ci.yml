@@ -77,6 +77,7 @@ jobs:
             name: Managed-device instrumentation tests (API 33)
           - api: 36
             name: Managed-device instrumentation tests (API 36)
+            gradle_cache_excludes: caches/8.14.3/transforms
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -93,6 +94,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-home-cache-excludes: ${{ matrix.gradle_cache_excludes || '' }}
       - name: Run complete suites and certify mandatory testcase inventory
         env:
           EXPECTED_TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
