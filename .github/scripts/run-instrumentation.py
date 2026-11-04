@@ -626,6 +626,15 @@ def run_gradle(command, directory, module, api, record, timeout=3300, profile_me
                 print(line, end="", flush=True)
                 log.write(line)
                 log.flush()
+                if "DeadSystemException" in line and not record.get("native_system_crash_observed"):
+                    record["native_system_crash_observed"] = True
+                    # The guest can reboot while Gradle is still exporting its failed JUnit.
+                    # Retain native evidence before owned cleanup; keep draining the original output.
+                    try:
+                        record["native_crash_diagnostics"] = capture_system_ui_diagnostics(
+                            directory, module, api, native_crash=True)
+                    except (OSError, ValueError) as exc:
+                        record["native_crash_diagnostics_error"] = str(exc)
                 if "Application Not Responding: com.android.systemui" in line:
                     record["system_ui_anr_observed"] = True
                     abort("SystemUI ANR window reported by instrumentation")
@@ -721,9 +730,9 @@ def quarantine_previous_outputs(repo, directory, module, api):
             shutil.move(str(source), str(destination))
 
 
-def capture_system_ui_diagnostics(directory, module, api):
-    """Read the blocked emulator once; never dismiss a system dialog or retry a test."""
-    target = directory / f"{module}-system-ui"
+def capture_system_ui_diagnostics(directory, module, api, *, native_crash=False):
+    """Read crash/obstruction evidence once; never repair the guest or retry a test."""
+    target = directory / f"{module}-{'native-crash' if native_crash else 'system-ui'}"
     target.mkdir(parents=True, exist_ok=True)
     result = dict(expected_api=api, started_at=timestamp(), commands=[])
 
@@ -769,11 +778,17 @@ def capture_system_ui_diagnostics(directory, module, api):
         actual_api = capture(selected + ["getprop", "ro.build.version.sdk"])
         if actual_api is None or actual_api.strip() != str(api):
             raise ValueError(f"Blocked emulator API does not match expected API {api}: {actual_api!r}")
-        for arguments in (["dumpsys", "activity", "lastanr"],
-                          # Restored boot snapshots can retain a startup ANR dialog after lastanr was cleared.
-                          ["dumpsys", "dropbox", "--print", "system_app_anr"],
-                          ["logcat", "-d", "-v", "threadtime", "-b", "system", "-b", "events", "-b", "crash"],
-                          ["dumpsys", "window"], ["dumpsys", "SurfaceFlinger"]):
+        commands = (["logcat", "-d", "-v", "threadtime", "-b", "main", "-b", "system", "-b", "events", "-b", "crash"],
+                    # Read only: AOSP userdebug permits su0; denial is retained on other images.
+                    ["su", "0", "sh", "-c", "'cat /data/tombstones/tombstone_*'"],
+                    ["dumpsys", "dropbox", "--print", "SYSTEM_TOMBSTONE"],
+                    ["dumpsys", "dropbox", "--print", "system_server_native_crash"]) if native_crash else (
+                    ["dumpsys", "activity", "lastanr"],
+                    # Restored boot snapshots can retain a startup ANR dialog after lastanr was cleared.
+                    ["dumpsys", "dropbox", "--print", "system_app_anr"],
+                    ["logcat", "-d", "-v", "threadtime", "-b", "system", "-b", "events", "-b", "crash"],
+                    ["dumpsys", "window"], ["dumpsys", "SurfaceFlinger"])
+        for arguments in commands:
             capture(selected + arguments)
     except (OSError, ValueError) as exc:
         result["capture_error"] = str(exc)
@@ -978,6 +993,7 @@ def main():
                       and record.get("process_cleanup_passed") is True
                       and record.get("device_cleanup_passed") is True
                       and not record.get("system_ui_anr_observed", False)
+                      and not record.get("native_system_crash_observed", False)
                       and record.get("observed_apis") == [args.api]
                       and not any(record.get(key, 0) for key in ("failures", "errors")))
             failed |= not passed

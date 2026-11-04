@@ -1,5 +1,45 @@
 # Android compatibility release gate
 
+## API26 native system crash evidence (2026-11-04)
+
+CI run `41762283141`, job `126352488365`, at head
+`b80d1e504332a43e4120cfb65e8da31e5a6799b7` stops after 329 app cases.
+The retained failure in `runtimeAddAllEditorsAndWritersAreDisabledDuringAdmittedCommand`
+surfaces in `ActivityScenario.close`/`ContextImpl.sendBroadcast`. Its native log
+first records system_server PID 2560, thread 2606 (`android.anim`), crashing at
+03:08:44.195 with SIGSEGV/null dereference; the logged stack has `memcpy+465` and
+an anonymous heap address. At 03:08:47.904 com.android.phone reports system death;
+the testcase reports DeadSystemException afterward. This establishes the immediate
+system-process failure, not the native defect or a particular triggering operation.
+The host memory guard did not abort this invocation. Missing cases remain missing.
+
+The log identifies `/data/tombstones/tombstone_00`, but no tombstone or system/event
+buffer capture exists in the retained artifact manifest. The runner previously
+triggered capture only for ANRs and removed the guest before startup. It now detects
+DeadSystemException once per invocation, captures main/system/events/crash buffers,
+reads native tombstones and both persistent native-crash DropBox tags, and retains
+command status, stderr, partial timeout output and SHA-256 before cleanup. Selection
+still requires one online emulator with the expected API. Each of six commands has
+the existing five-second bound. Tombstone access uses a read-only `su 0` command
+on the disposable AOSP guest; unsupported/denied access remains explicit evidence.
+No root setting, permission, renderer, snapshot/raster profile or budget changes.
+
+Capture errors cannot replace the original result. The runner continues draining
+Gradle output and collecting JUnit; an observed system death cannot certify green
+reports. Independent startup still runs after successful cleanup on its own guest.
+Two regressions cover capture-before-cleanup, one-time capture, contradictory green
+reports, preserved output, capture errors, complete native evidence, permission
+denial, partial timeouts and admission rejection. The original failing fixture,
+adjacent assertions and all mandatory inventories remain unchanged.
+
+The unchanged isolated API26 repair probe passes (204.3 seconds), which does not
+reproduce the CI crash after the preceding workload. Original XML, native log,
+artifact/run manifests and host-memory samples are preserved with hashes under
+`D:/controller/.runtime/codex-runs/wf-2933485f29755d0f9317fdc0a813f2f8/0afe418ce40262dc85ab1313/scratch/original-ci/`.
+The system_server crash and remote stability obligation remain unresolved. This
+patch repairs the confirmed native evidence omission; Controller owns fresh
+canonical execution and exact-head CI.
+
 ## CI execution budgets and API36 startup contention (2026-11-04)
 
 API26 now has a **110-minute shared execution budget inside a 120-minute job**.

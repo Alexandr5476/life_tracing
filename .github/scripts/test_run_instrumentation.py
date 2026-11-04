@@ -745,6 +745,117 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertTrue(any("system_app_anr" in c.args[0] for c in captured.call_args_list))
             self.assertTrue(any("system" in c.args[0] and "events" in c.args[0] for c in captured.call_args_list))
 
+    def test_dead_system_capture_precedes_cleanup_runs_once_and_cannot_certify_green_reports(self):
+        for capture_fails in (False, True):
+            with self.subTest(capture_fails=capture_fails), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                directory = root / "ci-evidence/api26"
+                fixture, invocations, captures = self, [], []
+
+                class Process:
+                    def __init__(self, command, **kwargs):
+                        module = ("startup" if "-Plifetracing.compatibility.productionStartup=true" in command
+                                  else "data" if command[1].startswith(":data:") else "app")
+                        invocations.append(module)
+                        fixture.write_inventory(root, module, 26)
+                        self.stdout = io.StringIO("java.lang.RuntimeException: android.os.DeadSystemException\n" * 2
+                                                  + "original output after crash\n" if module == "app" else "")
+                        self.returncode = 0  # Contradictory green reports must not erase the observed system death.
+
+                    def wait(self, timeout=None):
+                        return self.returncode
+
+                def capture(target, module, api, **kwargs):
+                    self.assertEqual((target, module, api, kwargs),
+                                     (directory, "app", 26, dict(native_crash=True)))
+                    captures.append(module)
+                    if capture_fails:
+                        raise OSError("native capture unavailable")
+                    path = target / "app-native-crash/manifest.json"
+                    path.parent.mkdir(parents=True)
+                    path.write_text("original crash evidence", encoding="utf-8")
+                    return dict(path="app-native-crash/manifest.json", sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+                def cleanup():
+                    if invocations[-1] == "app":
+                        self.assertEqual(captures, ["app"], "Capture must precede owned-process/device teardown")
+                    return True
+
+                with patch.object(ci.Path, "cwd", return_value=root), \
+                        patch.dict(os.environ, dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40,
+                                                    GITHUB_RUN_ID="7", GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci.subprocess, "Popen", Process), \
+                        patch.object(ci.subprocess, "run", return_value=ci.subprocess.CompletedProcess([], 0)), \
+                        patch.object(ci, "OwnedProcesses", return_value=SimpleNamespace(cleanup=cleanup)), \
+                        patch.object(ci, "capture_system_ui_diagnostics", side_effect=capture), \
+                        patch("sys.argv", ["ci", "--api", "26"]), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ci.main(), 1)
+                modules = json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["modules"]
+                self.assertEqual(invocations, ["data", "app", "startup"])
+                app = modules["app"]
+                self.assertTrue(app["native_system_crash_observed"])
+                self.assertEqual(app["status"], "FAILED")
+                self.assertEqual(app["exit_code"], 0)
+                self.assertTrue(app["mandatory_inventory_passed"])
+                self.assertEqual(app["failures"], 0)
+                self.assertEqual(modules["startup"]["status"], "PASSED")
+                self.assertIn("original output after crash", (directory / "app.log").read_text(encoding="utf-8"))
+                if capture_fails:
+                    self.assertEqual(app["native_crash_diagnostics_error"], "native capture unavailable")
+                else:
+                    self.assertEqual(app["native_crash_diagnostics"]["path"], "app-native-crash/manifest.json")
+
+    def test_native_crash_capture_retains_tombstones_errors_and_all_system_buffers(self):
+        for outcome in ("available", "denied", "timeout"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                original = "pid: 2560, tid: 2606, name: android.anim >>> system_server <<<\nfull tombstone maps\n"
+
+                def capture(command, **kwargs):
+                    self.assertEqual(kwargs["timeout"], 5)
+                    if command[1:] == ["devices"]:
+                        output = "emulator-5554\tdevice\n"
+                    elif "getprop" in command:
+                        output = "26\n"
+                    elif "su" in command:
+                        self.assertEqual(command[-5:], ["su", "0", "sh", "-c", "'cat /data/tombstones/tombstone_*'"])
+                        if outcome == "timeout":
+                            raise ci.subprocess.TimeoutExpired(command, 5, output=original.encode(), stderr=b"partial error")
+                        if outcome == "denied":
+                            return ci.subprocess.CompletedProcess(command, 1, stdout="", stderr="Permission denied")
+                        output = original
+                    else:
+                        output = "persisted crash evidence\n"
+                    return ci.subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+                with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                        patch.object(ci.shutil, "which", return_value="test-adb"), \
+                        patch.object(ci.subprocess, "run", side_effect=capture) as captured:
+                    reference = ci.capture_system_ui_diagnostics(directory, "app", 26, native_crash=True)
+                content = (directory / reference["path"]).read_bytes()
+                self.assertEqual(reference["sha256"], hashlib.sha256(content).hexdigest())
+                manifest = json.loads(content)
+                self.assertEqual(captured.call_count, 6)
+                commands = manifest["commands"]
+                self.assertEqual([r["command"][-1] for r in commands if "dropbox" in r["command"]],
+                                 ["SYSTEM_TOMBSTONE", "system_server_native_crash"])
+                logcat = next(r["command"] for r in commands if "logcat" in r["command"])
+                self.assertEqual(logcat[-8:], ["-b", "main", "-b", "system", "-b", "events", "-b", "crash"])
+                for record in commands:
+                    self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(
+                        (directory / record["artifact"]["path"]).read_bytes()).hexdigest())
+                tombstone = next(r for r in commands if "su" in r["command"])
+                retained = (directory / tombstone["artifact"]["path"]).read_text(encoding="utf-8")
+                if outcome == "denied":
+                    self.assertEqual(tombstone["return_code"], 1)
+                    self.assertIn("Permission denied", retained)
+                else:
+                    self.assertIn(original, retained)
+                    if outcome == "timeout":
+                        self.assertIn("error", tombstone)
+                        self.assertIn("partial error", retained)
+
     def test_system_ui_capture_preserves_persistent_startup_anr_when_lastanr_is_empty(self):
         for outcome in ("report", "denied", "timeout"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
@@ -802,18 +913,20 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             ("emulator-5554\toffline\n", None, 1),
             ("emulator-5554\tdevice\n", "35\n", 2),
         ]:
-            with self.subTest(devices=devices, api=actual_api), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                replies = [ci.subprocess.CompletedProcess([], 0, stdout=devices, stderr="")]
-                if actual_api:
-                    replies.append(ci.subprocess.CompletedProcess([], 0, stdout=actual_api, stderr=""))
-                with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
-                        patch.object(ci.shutil, "which", return_value="test-adb"), \
-                        patch.object(ci.subprocess, "run", side_effect=replies) as captured:
-                    ci.capture_system_ui_diagnostics(directory, "app", 36)
-                manifest = json.loads((directory / "app-system-ui/manifest.json").read_text(encoding="utf-8"))
-                self.assertIn("capture_error", manifest)
-                self.assertEqual(captured.call_count, calls)
+            for native_crash in (False, True):
+                with self.subTest(devices=devices, api=actual_api, native_crash=native_crash), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    replies = [ci.subprocess.CompletedProcess([], 0, stdout=devices, stderr="")]
+                    if actual_api:
+                        replies.append(ci.subprocess.CompletedProcess([], 0, stdout=actual_api, stderr=""))
+                    with patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                            patch.object(ci.shutil, "which", return_value="test-adb"), \
+                            patch.object(ci.subprocess, "run", side_effect=replies) as captured:
+                        reference = ci.capture_system_ui_diagnostics(directory, "app", 36, native_crash=native_crash)
+                    manifest = json.loads((directory / reference["path"]).read_text(encoding="utf-8"))
+                    self.assertIn("capture_error", manifest)
+                    self.assertEqual(captured.call_count, calls)
 
     def test_system_ui_capture_retains_timeout_output_and_continues_other_diagnostics(self):
         with tempfile.TemporaryDirectory() as temporary:
