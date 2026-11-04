@@ -93,6 +93,7 @@ import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1878,8 +1879,7 @@ class MainActivityRouteSessionTest {
                 ?.canRedo == true,
         )
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.sequence_editor_apply))
-            .performScrollTo()
+            .onLazyNode(hasText(composeTestRule.activity.getString(R.string.sequence_editor_apply)))
             .performClick()
         composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 1L }
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
@@ -2435,11 +2435,22 @@ class MainActivityRouteSessionTest {
         val coordinator = LifeTracingRuntimeGraph.from(previous).coordinator
         val semanticGeneration = coordinator.semanticGeneration.value
         composeTestRule.runOnUiThread(previous::recreate)
-        composeTestRule.waitUntil(5_000) {
-            runCatching {
-                composeTestRule.activity !== previous &&
-                    coordinator.semanticGeneration.value > semanticGeneration
-            }.getOrDefault(false)
+        try {
+            composeTestRule.waitUntil(5_000) {
+                runCatching {
+                    composeTestRule.activity !== previous &&
+                        coordinator.semanticGeneration.value > semanticGeneration
+                }.getOrDefault(false)
+            }
+        } catch (failure: androidx.compose.ui.test.ComposeTimeoutException) {
+            val current = composeTestRule.activity
+            throw AssertionError(
+                "Recreation/foreground publication: newActivity=${current !== previous}, " +
+                    "previousDestroyed=${previous.isDestroyed}, " +
+                    "sameCoordinator=${LifeTracingRuntimeGraph.from(current).coordinator === coordinator}, " +
+                    "semanticGeneration=$semanticGeneration -> ${coordinator.semanticGeneration.value}",
+                failure,
+            )
         }
         composeTestRule.waitForIdle()
     }

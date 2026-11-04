@@ -777,4 +777,9 @@
     <string name="activity_editor_committed">Шаблон Activity сохранён.</string>
     <string name="activity_editor_pristine">Нет несохранённых изменений</string>
     <string name="activity_editor_modified">Есть несохранённые изменения</string>
+    <string name="sequence_editor_new_context">Создание шаблона последовательности</string>
+    <string name="sequence_editor_existing_context">Редактирование шаблона последовательности</string>
+    <string name="sequence_editor_expanded">Развёрнуто</string>
+    <string name="sequence_editor_collapsed">Свёрнуто</string>
+    <string name="sequence_editor_reload_failure">Сохранено. Не удалось загрузить последовательность. Повторите загрузку сохранённой версии.</string>
 </resources>

@@ -11,6 +11,8 @@ import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSourceStatus
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
+import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
+import com.alexandr5476.lifetracing.domain.SequenceFieldDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
@@ -80,16 +82,16 @@ class SequenceTemplateEditorControllerTest {
                 )
             controller.awaitReady()
             controller.updateDraft { it.copy(name = "Canonical") }
-            controller.save()
+            controller.applyManipulation()
             withTimeout(2_000) {
                 controller.state.first {
-                    it.save is SequenceTemplateEditorSave.Committed && sequenceReads == 2
+                    it.appliedGeneration == 1L && sequenceReads == 2
                 }
             }
             controller.updateStepFromSource(SequenceNodeId("step-1"))
             withTimeout(2_000) {
                 controller.state.first {
-                    it.save is SequenceTemplateEditorSave.Idle && it.appliedGeneration == 1L
+                    it.save is SequenceTemplateEditorSave.Idle && it.appliedGeneration == 2L
                 }
             }
 
@@ -895,6 +897,385 @@ class SequenceTemplateEditorControllerTest {
             withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
             assertEquals(2, writes)
             controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // Both obsolete outcomes and closure share explicit read gates.
+    fun obsoleteSuccessAndFailureCannotReplaceNewerRetryOrPublishAfterClose() =
+        runBlocking {
+            for (fail in listOf(false, true)) {
+                val oldRead = CompletableDeferred<Unit>()
+                val oldFinished = CompletableDeferred<Unit>()
+                val started = CompletableDeferred<Unit>()
+                val canonical = authoringState()
+                var reads = 0
+                val controller =
+                    SequenceTemplateEditorController(
+                        this,
+                        SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                        {
+                            if (++reads == 1) {
+                                started.complete(Unit)
+                                oldRead.await()
+                                oldFinished.complete(Unit)
+                                if (fail) error("obsolete failure")
+                            }
+                            canonical
+                        },
+                        { emptyList() },
+                        { _, _, _ -> error("No write") },
+                        { _, _, _, _ -> error("No write") },
+                        { Instant.EPOCH },
+                    )
+                started.await()
+                controller.retry()
+                controller.awaitReady()
+                controller.updateDraft { it.copy(name = "Newer draft") }
+                oldRead.complete(Unit)
+                oldFinished.await()
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    "Newer draft",
+                    controller.state.value
+                        .readyDraft()
+                        ?.name,
+                )
+                controller.close()
+            }
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val canonical = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    {
+                        release.await()
+                        finished.complete(Unit)
+                        canonical
+                    },
+                    { emptyList() },
+                    { _, _, _ -> error("No write") },
+                    { _, _, _, _ -> error("No write") },
+                    { Instant.EPOCH },
+                )
+            controller.close()
+            val closed = controller.state.value
+            release.complete(Unit)
+            finished.await()
+            kotlinx.coroutines.yield()
+            assertEquals(closed, controller.state.value)
+        }
+
+    @Test
+    fun dismissedDiscardAndCommittedCallbacksCannotExitEditOrWrite() =
+        runBlocking {
+            val canonical = authoringState()
+            var writes = 0
+            var exits = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ ->
+                        writes++
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Changed") }
+            controller.requestBack { exits++ }
+            val dismissedDialog =
+                SequenceTemplateEditorActions(
+                    controller,
+                    controller.state.value.generation,
+                    controller.state.value.discardGeneration,
+                )
+            controller.updateDraft { it.copy(name = "Obsolete editor callback") }
+            controller.save()
+            assertEquals(
+                "Changed",
+                controller.state.value
+                    .readyDraft()
+                    ?.name,
+            )
+            assertEquals(0, writes)
+            controller.dismissDiscard()
+            controller.discard { exits++ }
+            assertEquals(0, exits)
+            controller.requestBack { exits++ }
+            dismissedDialog.invoke { controller.discard { exits++ } }
+            assertTrue(controller.state.value.discardConfirmationVisible)
+            assertEquals(0, exits)
+            controller.dismissDiscard()
+            controller.save()
+            withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
+            val committed = controller.state.value
+            controller.save()
+            controller.retry()
+            controller.updateDraft { it.copy(name = "Too late") }
+            controller.requestBack { exits++ }
+            controller.discard { exits++ }
+            assertEquals(committed, controller.state.value)
+            assertEquals(1, writes)
+            assertEquals(0, exits)
+            controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // The retained lease follows one draft through identity and lifetime changes.
+    fun presentationLeaseResolvesCurrentFieldAndOptionIdentitiesAndRejectsObsoleteOwners() =
+        runBlocking {
+            val canonical = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ -> error("No save") },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            val first = SequenceFieldDraft(DraftIdentity.New("first"), 0, "Same", CustomFieldType.TEXT)
+            val option1 = SequenceCategoryOptionDraft(DraftIdentity.New("option1"), 0, "Same")
+            val option2 = SequenceCategoryOptionDraft(DraftIdentity.New("option2"), 1, "Same")
+            val second =
+                SequenceFieldDraft(
+                    DraftIdentity.New("second"),
+                    1,
+                    "Same",
+                    CustomFieldType.CATEGORY,
+                    categoryOptions = listOf(option1, option2),
+                )
+            controller.updateDraft { it.copy(fields = listOf(first, second)) }
+            val actions = SequenceTemplateEditorActions(controller, controller.state.value.generation)
+            actions.removeField(first)
+            actions.field(second) { it.copy(name = "Renamed", categoryOptions = listOf(option2.copy(position = 0))) }
+            actions.option(second, option2) { field, option -> field.copy(defaultCategoryOption = option.identity) }
+            assertEquals(
+                option2.identity,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+                    .defaultCategoryOption,
+            )
+            val before = controller.state.value
+            actions.field(first) { it.copy(name = "Removed") }
+            actions.removeField(first)
+            actions.option(second, option1) { field, _ -> field.copy(defaultCategoryOption = option1.identity) }
+            assertEquals(before, controller.state.value)
+            actions.field(second) {
+                it.copy(type = CustomFieldType.TEXT, categoryOptions = emptyList(), defaultCategoryOption = null)
+            }
+            val changedType = controller.state.value
+            actions.field(second) { it.copy(name = "Obsolete category callback") }
+            assertEquals(changedType, controller.state.value)
+            actions.visible = false
+            actions.update { it.copy(name = "Hidden") }
+            actions.visible = true
+            actions.attached = false
+            actions.update { it.copy(name = "Disposed") }
+            assertEquals(changedType, controller.state.value)
+            actions.attached = true
+            controller.retry()
+            controller.awaitReady()
+            actions.update { it.copy(name = "Obsolete generation") }
+            assertEquals(
+                canonical.sequence.name,
+                controller.state.value
+                    .readyDraft()
+                    ?.name,
+            )
+            controller.close()
+            actions.update { it.copy(name = "Closed") }
+            assertEquals(
+                canonical.sequence.name,
+                controller.state.value
+                    .readyDraft()
+                    ?.name,
+            )
+        }
+
+    @Test
+    fun ordinarySaveFailureRetainsRawCountdownAndDraftForExplicitWriterRetry() =
+        runBlocking {
+            var canonical = authoringState()
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { id, revision, draft, _ ->
+                        if (++writes == 1) error("disk full")
+                        canonical = draft.toFakeAuthoring(id, revision + 1)
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Retained") }
+            val key = SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN
+            for (text in listOf("", "-1", "bad", "99999999999999999999999999")) {
+                controller.updateNumberInput(key, text, 0, 0) { error("Invalid countdown accepted") }
+                controller.save()
+                assertEquals(text, controller.state.value.inputText(key, "unused"))
+                assertTrue(
+                    controller.state.value.isDirty(controller.state.value.load as SequenceTemplateEditorLoad.Ready),
+                )
+                assertEquals(0, writes)
+            }
+            controller.updateNumberInput(key, "0", 0, 0) { value ->
+                controller.updateDraft {
+                    it.copy(
+                        settings = it.settings.copy(sequenceStartCountdown = Duration.ofSeconds(value)),
+                    )
+                }
+            }
+            controller.save()
+            controller.awaitFailure()
+            assertEquals(
+                "Retained",
+                controller.state.value
+                    .readyDraft()
+                    ?.name,
+            )
+            controller.updateDraft { it.copy(shortComment = "Explicit retry") }
+            controller.save()
+            withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
+            assertEquals(2, writes)
+            assertEquals("Explicit retry", canonical.sequence.shortComment)
+            controller.close()
+        }
+
+    @Test
+    fun doneRecoveryRejectsEveryDraftMutationAndRetriesCanonicalReadWithoutWriter() =
+        runBlocking {
+            var canonical = authoringState()
+            var reads = 0
+            var writes = 0
+            val release = CompletableDeferred<Unit>()
+            val started = CompletableDeferred<Unit>()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { if (++reads == 2) error("reload unavailable") else canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { id, revision, draft, _ ->
+                        writes++
+                        started.complete(Unit)
+                        release.await()
+                        canonical = draft.toFakeAuthoring(id, revision + 1)
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Saved") }
+            controller.save()
+            started.await()
+            val saving = controller.state.value
+            controller.updateDraft { it.copy(name = "Too late") }
+            controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, "bad", 0, 0) {}
+            controller.save()
+            controller.retry()
+            controller.requestBack { error("Saving exited") }
+            assertEquals(saving, controller.state.value)
+            release.complete(Unit)
+            assertTrue(controller.awaitFailure().committedAwaitingReload)
+            val recovering = controller.state.value
+            controller.updateDraft { it.copy(name = "Too late") }
+            controller.clearNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN)
+            controller.save()
+            controller.discard { error("Recovery exited") }
+            assertEquals(recovering, controller.state.value)
+            controller.retry()
+            withTimeout(2_000) { controller.state.first { it.save is SequenceTemplateEditorSave.Committed } }
+            controller.save()
+            assertEquals(1, writes)
+            assertEquals(3, reads)
+            controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // Both asynchronous outcomes and closure share explicit catalog read gates.
+    fun obsoletePickerSuccessAndFailureCannotPublishIntoNewGenerationOrClosedRoute() =
+        runBlocking {
+            for (fail in listOf(false, true)) {
+                val started = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val finished = CompletableDeferred<Unit>()
+                var reads = 0
+                val current = SequenceEditorActivityChoice(ActivityTemplateId("current"), "Current")
+                val controller =
+                    SequenceTemplateEditorController(
+                        this,
+                        SequenceTemplateEditorTarget.New,
+                        { null },
+                        {
+                            if (++reads == 1) {
+                                started.complete(Unit)
+                                release.await()
+                                finished.complete(Unit)
+                                if (fail) error("obsolete failure")
+                                listOf(SequenceEditorActivityChoice(ActivityTemplateId("old"), "Old"))
+                            } else {
+                                listOf(current)
+                            }
+                        },
+                        { _, _, _ -> error("No create") },
+                        { _, _, _, _ -> error("No save") },
+                        { Instant.EPOCH },
+                    )
+                controller.awaitReady()
+                controller.loadActivityPicker()
+                started.await()
+                controller.retry()
+                controller.awaitReady()
+                controller.loadActivityPicker()
+                withTimeout(2_000) { controller.state.first { it.availableActivities == listOf(current) } }
+                val accepted = controller.state.value
+                release.complete(Unit)
+                finished.await()
+                kotlinx.coroutines.yield()
+                assertEquals(accepted, controller.state.value)
+                controller.close()
+            }
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.New,
+                    { null },
+                    {
+                        release.await()
+                        finished.complete(Unit)
+                        error("closed picker failure")
+                    },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ -> error("No save") },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.loadActivityPicker()
+            controller.close()
+            val closed = controller.state.value
+            release.complete(Unit)
+            finished.await()
+            kotlinx.coroutines.yield()
+            assertEquals(closed, controller.state.value)
         }
 
     private suspend fun SequenceTemplateEditorController.awaitReady() {

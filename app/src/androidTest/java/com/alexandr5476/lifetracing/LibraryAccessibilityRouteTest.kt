@@ -6,13 +6,16 @@ import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
@@ -26,10 +29,13 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.FolderId
 import com.alexandr5476.lifetracing.domain.LibraryKindFilter
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
+import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
+import com.alexandr5476.lifetracing.domain.SequenceFieldDraft
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
@@ -40,6 +46,7 @@ import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorLoad
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorSave
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorLoad
+import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorSave
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.readyDraft
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
@@ -53,8 +60,11 @@ import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
@@ -1304,6 +1314,286 @@ class LibraryAccessibilityRouteTest {
             }
         }
 
+    @Test
+    fun nativeNewSequenceAuthoringCommitsOnceAndPhysicallyReopensCanonicalConfiguration() =
+        journey { f ->
+            f.launch()
+            f.enterLibrary()
+            val retainedLibrary = f.library
+            val before = f.store.durableFacts()
+            val originalSeries = f.store.statistics.seriesCatalog()
+            f.invoke(R.string.library_new_sequence)
+            f.awaitSequenceEditor()
+            val session = f.host().sequenceTemplateEditorRouteSessions.activeSession!!
+            assertEquals(SequenceTemplateEditorTarget.New, session.target)
+            f.editorInput(R.string.sequence_editor_name).performTextReplacement("Accessible Sequence")
+            f.editorInput(R.string.sequence_editor_short_comment).performTextReplacement("Comment")
+            f.invoke(R.string.sequence_editor_settings)
+            compose
+                .onLazyNode(hasContentDescription(f.text(R.string.sequence_editor_no_live_pause)))
+                .performScrollTo()
+                .performClick()
+            compose
+                .onLazyNode(hasContentDescription(f.text(R.string.sequence_editor_auto_advance)))
+                .performScrollTo()
+                .performClick()
+            f.editorInput(R.string.sequence_editor_start_countdown).performTextReplacement("3")
+            f.editorInput(R.string.sequence_editor_before_step_countdown).performTextReplacement("2")
+            f.addSequenceField(CustomFieldType.NUMBER)
+            f.sequenceControl(0, R.string.sequence_editor_field_name).performTextReplacement("Same")
+            f.sequenceControl(0, R.string.activity_editor_unit).performTextReplacement("kg")
+            f.sequenceControl(0, R.string.activity_editor_precision).performTextReplacement("2")
+            f.sequenceControl(0, R.string.activity_editor_default).performTextReplacement("0")
+            f.sequenceControl(0, R.string.sequence_editor_main_value).performClick()
+            f.addSequenceField(CustomFieldType.CATEGORY)
+            f.sequenceControl(1, R.string.sequence_editor_field_name).performTextReplacement("Same")
+            repeat(2) { option ->
+                f.sequenceControl(1, R.string.activity_editor_add_option).performClick()
+                f.sequenceOptionControl(1, option, R.string.activity_editor_option).performTextReplacement("Same")
+            }
+            f.sequenceOptionControl(1, 1, R.string.activity_editor_default).performClick()
+            f.addSequenceField(CustomFieldType.TEXT)
+            f.sequenceControl(2, R.string.sequence_editor_field_name).performTextReplacement("Same")
+            f.sequenceControl(2, R.string.activity_editor_default).performTextReplacement("Default text")
+            val submitted = f.sequenceDraft()
+            f.recreate()
+            assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertEquals(before, f.store.durableFacts())
+            val save = compose.onLazyNode(hasText(f.text(R.string.sequence_editor_done))).performScrollTo()
+            val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            save
+                .performSemanticsAction(SemanticsActions.RequestFocus)
+                .awaitKeyboardFocus()
+                .performKeyInput { pressKey(Key.Enter) }
+            f.await { f.host().sequenceTemplateEditorRouteSessions.activeSession == null }
+            f.libraryLanding()
+            compose.runOnIdle { retainedSave() }
+            assertSame(retainedLibrary, f.library)
+            val item =
+                f.store.library
+                    .getAll()
+                    .single()
+            val id = (item.id as LibraryTemplateId.Sequence).id
+            val canonical = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            val draft = canonical.toAuthoringDraft()
+            assertEquals(1L, canonical.sequence.revision)
+            assertEquals(submitted.settings, draft.settings)
+            assertEquals(submitted.noLiveTimeAccounting, draft.noLiveTimeAccounting)
+            assertEquals("Comment", draft.shortComment)
+            assertEquals(
+                listOf(CustomFieldType.NUMBER, CustomFieldType.CATEGORY, CustomFieldType.TEXT),
+                draft.fields.map {
+                    it.type
+                },
+            )
+            assertEquals(listOf(0, 1, 2), draft.fields.map { it.position })
+            assertEquals(0L, draft.fields[0].defaultNumberScaled)
+            assertEquals("kg", draft.fields[0].unit)
+            assertEquals(2, draft.fields[0].displayPrecision)
+            assertTrue(draft.fields[0].isMainValue)
+            assertEquals(draft.fields[1].categoryOptions[1].identity, draft.fields[1].defaultCategoryOption)
+            assertEquals(
+                2,
+                draft.fields[1]
+                    .categoryOptions
+                    .map { it.identity }
+                    .toSet()
+                    .size,
+            )
+            assertTrue(draft.fields.all { it.identity is DraftIdentity.Existing })
+            assertTrue(draft.fields[1].categoryOptions.all { it.identity is DraftIdentity.Existing })
+            assertEquals("Default text", draft.fields[2].defaultText)
+            f.reopenOrganization {
+                assertEquals(canonical, authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(listOf(item), library.search("Accessible Sequence"))
+                val originalSeriesIds = originalSeries.map { it.id }.toSet()
+                val reopenedSeries = statistics.seriesCatalog()
+                assertEquals(
+                    originalSeriesIds + canonical.sequence.statisticsSeriesId,
+                    reopenedSeries.map { it.id }.toSet(),
+                )
+                assertEquals(originalSeries, reopenedSeries.filter { it.id in originalSeriesIds })
+                assertEquals(0L to 0L, executionCounts())
+                assertEquals(emptyList<Any>(), durableFacts()["plan_entries"])
+            }
+        }
+
+    @Test
+    fun nativeExistingSequenceFieldsPreserveCompatibleIdentityAndFrozenStepsOnPhysicalReopen() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val id = (ids.last() as LibraryTemplateId.Sequence).id
+            val initial = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            f.store.authoring.saveSequenceTemplate(
+                id,
+                initial.sequence.revision,
+                initial.toAuthoringDraft().copy(
+                    fields =
+                        listOf(
+                            SequenceFieldDraft(
+                                DraftIdentity.New("number"),
+                                0,
+                                "Same",
+                                CustomFieldType.NUMBER,
+                                unit = "kg",
+                            ),
+                            SequenceFieldDraft(
+                                DraftIdentity.New("category"),
+                                1,
+                                "Same",
+                                CustomFieldType.CATEGORY,
+                                categoryOptions =
+                                    listOf(
+                                        SequenceCategoryOptionDraft(DraftIdentity.New("one"), 0, "Same"),
+                                        SequenceCategoryOptionDraft(DraftIdentity.New("two"), 1, "Same"),
+                                    ),
+                            ),
+                            SequenceFieldDraft(DraftIdentity.New("text"), 2, "Same", CustomFieldType.TEXT),
+                        ),
+                ),
+                f.seedTime.plusSeconds(1),
+            )
+            val seeded = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            val original = seeded.toAuthoringDraft()
+            val frozen = f.frozenFacts()
+            f.launch()
+            f.enterLibrary()
+            f
+                .templateAction(
+                    LibraryTemplateId.Sequence(id),
+                    R.string.library_open_template,
+                ).performScrollTo()
+                .performClick()
+            f.awaitSequenceEditor()
+            f.sequenceControl(0, R.string.sequence_editor_field_name).performTextReplacement("Renamed")
+            f.sequenceControl(0, R.string.activity_editor_default).performTextReplacement("-1.25")
+            f.sequenceControl(0, R.string.sequence_editor_main_value).performClick()
+            f.sequenceOptionControl(1, 0, R.string.sequence_editor_remove).performClick()
+            f.sequenceOptionControl(1, 0, R.string.activity_editor_option).performTextReplacement("Renamed option")
+            f.sequenceOptionControl(1, 0, R.string.activity_editor_default).performClick()
+            f.sequenceControl(2, R.string.activity_editor_default).performTextReplacement("Text")
+            compose
+                .onLazyNode(
+                    hasContentDescription(
+                        f.text(
+                            R.string.activity_editor_change_type_context,
+                            f.text(R.string.activity_editor_number),
+                            f.sequenceContext(2),
+                        ),
+                    ),
+                ).performScrollTo()
+                .performClick()
+            f.sequenceControl(2, R.string.activity_editor_unit).performTextReplacement("reps")
+            f.sequenceControl(2, R.string.activity_editor_default).performTextReplacement("5")
+            f.invoke(R.string.sequence_editor_settings)
+            compose
+                .onLazyNode(hasContentDescription(f.text(R.string.sequence_editor_keep_awake)))
+                .performScrollTo()
+                .performClick()
+            f.editorInput(R.string.sequence_editor_before_step_countdown).performTextReplacement("4")
+            val submitted = f.sequenceDraft()
+            f.invoke(R.string.sequence_editor_done)
+            f.await { f.host().sequenceTemplateEditorRouteSessions.activeSession == null }
+            f.libraryLanding()
+            val canonical = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            val draft = canonical.toAuthoringDraft()
+            assertEquals(seeded.sequence.revision + 1, canonical.sequence.revision)
+            assertEquals(seeded.sequence.statisticsSeriesId, canonical.sequence.statisticsSeriesId)
+            assertEquals(original.nodes, draft.nodes)
+            assertEquals(seeded.activitySnapshots, canonical.activitySnapshots)
+            assertEquals(original.fields[0].identity, draft.fields[0].identity)
+            assertEquals(original.fields[1].identity, draft.fields[1].identity)
+            assertEquals(
+                original.fields[1].categoryOptions[1].identity,
+                draft.fields[1]
+                    .categoryOptions
+                    .single()
+                    .identity,
+            )
+            assertEquals(
+                draft.fields[1]
+                    .categoryOptions
+                    .single()
+                    .identity,
+                draft.fields[1].defaultCategoryOption,
+            )
+            assertNotEquals(original.fields[2].identity, draft.fields[2].identity)
+            assertEquals(-1250L, draft.fields[0].defaultNumberScaled)
+            assertEquals(5000L, draft.fields[2].defaultNumberScaled)
+            assertEquals(listOf(0, 1, 2), draft.fields.map { it.position })
+            assertEquals(submitted.settings, draft.settings)
+            assertEquals(frozen, f.frozenFacts())
+            // A temporary unit edit restored before Done is a semantic no-op with compatible identity.
+            f
+                .templateAction(
+                    LibraryTemplateId.Sequence(id),
+                    R.string.library_open_template,
+                ).performScrollTo()
+                .performClick()
+            f.awaitSequenceEditor()
+            f.sequenceControl(0, R.string.activity_editor_unit).performTextReplacement("temporary")
+            f.sequenceControl(0, R.string.activity_editor_unit).performTextReplacement("kg")
+            f.invoke(R.string.sequence_editor_done)
+            f.await { f.host().sequenceTemplateEditorRouteSessions.activeSession == null }
+            f.libraryLanding()
+            assertEquals(canonical, f.store.authoring.getSequenceTemplateAuthoringState(id))
+            f.reopenOrganization {
+                assertEquals(canonical, authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(frozen, durableFacts().filterKeys { it in frozen })
+                assertEquals(0L to 0L, executionCounts())
+            }
+        }
+
+    @Test
+    fun productionSequenceConflictExplicitReloadAndDiscardLeaveNoPartialWriteOnReopen() =
+        journey { f ->
+            val ids = f.seedDuplicates()
+            val id = (ids.last() as LibraryTemplateId.Sequence).id
+            f.launch()
+            f.enterLibrary()
+            f
+                .templateAction(
+                    LibraryTemplateId.Sequence(id),
+                    R.string.library_open_template,
+                ).performScrollTo()
+                .performClick()
+            f.awaitSequenceEditor()
+            val session = f.host().sequenceTemplateEditorRouteSessions.activeSession!!
+            val canonical = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            f.store.authoring.saveSequenceTemplate(
+                id,
+                canonical.sequence.revision,
+                canonical.toAuthoringDraft().copy(name = "Concurrent"),
+                f.seedTime.plusSeconds(1),
+            )
+            val before = f.store.durableFacts()
+            f.editorInput(R.string.sequence_editor_name).performTextReplacement("Unsaved")
+            f.invoke(R.string.sequence_editor_done)
+            f.await { session.controller.state.value.save is SequenceTemplateEditorSave.Failure }
+            assertTrue((session.controller.state.value.save as SequenceTemplateEditorSave.Failure).isConflict)
+            assertEquals(before, f.store.durableFacts())
+            f.recreate()
+            assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertEquals("Unsaved", f.sequenceDraft().name)
+            f.invoke(R.string.activity_editor_reload)
+            f.awaitSequenceEditor()
+            assertEquals("Concurrent", f.sequenceDraft().name)
+            f.editorInput(R.string.sequence_editor_short_comment).performTextReplacement("Discard me")
+            f.invoke(R.string.sequence_editor_back)
+            compose.onNode(isDialog()).assertIsDisplayed()
+            assertTrue(session.controller.state.value.discardConfirmationVisible)
+            f.invoke(R.string.sequence_editor_continue)
+            assertFalse(session.controller.state.value.discardConfirmationVisible)
+            assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertEquals("Discard me", f.sequenceDraft().shortComment)
+            assertEquals(before, f.store.durableFacts())
+            f.invoke(R.string.sequence_editor_back)
+            compose.onNode(isDialog()).assertIsDisplayed()
+            f.invoke(R.string.sequence_editor_discard)
+            f.await { f.host().sequenceTemplateEditorRouteSessions.activeSession == null }
+            f.reopenUnchanged(before)
+        }
+
     private fun androidx.compose.ui.test.SemanticsNodeInteraction.awaitKeyboardFocus() =
         apply { keyboard.awaitFocus(this) }
 
@@ -1354,13 +1644,90 @@ class LibraryAccessibilityRouteTest {
                     ?.load is ActivityTemplateEditorLoad.Ready
             }
 
+        fun awaitSequenceEditor() =
+            await {
+                host()
+                    .sequenceTemplateEditorRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.load is SequenceTemplateEditorLoad.Ready
+            }
+
+        fun sequenceDraft() =
+            host()
+                .sequenceTemplateEditorRouteSessions.activeSession!!
+                .controller.state.value
+                .readyDraft()!!
+
+        fun sequenceContext(ordinal: Int): String {
+            val field = sequenceDraft().fields[ordinal]
+            val type =
+                when (field.type) {
+                    CustomFieldType.NUMBER -> R.string.activity_editor_number
+                    CustomFieldType.CATEGORY -> R.string.activity_editor_category
+                    CustomFieldType.TEXT -> R.string.activity_editor_text
+                }
+            return text(R.string.activity_editor_field_context, text(type), ordinal + 1, field.name)
+        }
+
+        fun addSequenceField(type: CustomFieldType) {
+            val label =
+                when (type) {
+                    CustomFieldType.NUMBER -> R.string.activity_editor_number
+                    CustomFieldType.CATEGORY -> R.string.activity_editor_category
+                    CustomFieldType.TEXT -> R.string.activity_editor_text
+                }
+            compose
+                .onLazyNode(hasContentDescription(text(R.string.activity_editor_add_field_context, text(label))))
+                .performSemanticsAction(SemanticsActions.OnClick)
+            compose.waitForIdle()
+        }
+
+        fun sequenceControl(
+            ordinal: Int,
+            operation: Int,
+        ) = compose
+            .onLazyNode(
+                hasContentDescription(
+                    text(R.string.activity_editor_control_context, text(operation), sequenceContext(ordinal)),
+                ),
+            ).performScrollTo()
+
+        fun sequenceOptionControl(
+            field: Int,
+            option: Int,
+            operation: Int,
+        ) = compose
+            .onLazyNode(
+                hasContentDescription(
+                    text(
+                        R.string.activity_editor_control_context,
+                        text(operation),
+                        text(
+                            R.string.activity_editor_option_context,
+                            sequenceContext(field),
+                            option + 1,
+                            sequenceDraft().fields[field].categoryOptions[option].label,
+                        ),
+                    ),
+                ),
+            ).performScrollTo()
+
         fun editorDraft() =
             host()
                 .activityTemplateEditorRouteSessions.activeSession!!
                 .controller.state.value
                 .readyDraft()!!
 
-        fun editorInput(id: Int) = compose.onNode(hasText(text(id)) and hasSetTextAction()).performScrollTo()
+        fun editorInput(id: Int): androidx.compose.ui.test.SemanticsNodeInteraction {
+            val matcher = hasText(text(id)) and hasSetTextAction()
+            return if (host().sequenceTemplateEditorRouteSessions.activeSession != null) {
+                compose.onLazyNode(matcher)
+            } else {
+                compose.onNode(matcher).performScrollTo()
+            }
+        }
 
         fun editorFieldContext(index: Int): String {
             val field = editorDraft().fields[index]
@@ -1491,12 +1858,21 @@ class LibraryAccessibilityRouteTest {
 
         fun invoke(id: Int) {
             val matcher = hasText(text(id)) and hasClickAction()
+            val sequenceEditorOpen = host().sequenceTemplateEditorRouteSessions.activeSession != null
+            val dialogOpen = compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()
             val node =
-                if (compose.onAllNodes(matcher).fetchSemanticsNodes().isNotEmpty()) {
-                    compose.onNode(matcher)
-                } else {
-                    compose.onLazyNode(matcher)
+                when {
+                    // A retained editor session also exists behind its native discard dialog.
+                    dialogOpen -> compose.onNode(matcher and hasAnyAncestor(isDialog()))
+                    sequenceEditorOpen -> compose.onLazyNode(matcher)
+                    compose.onAllNodes(matcher).fetchSemanticsNodes().isNotEmpty() -> compose.onNode(matcher)
+                    else -> compose.onLazyNode(matcher)
                 }
+            if (sequenceEditorOpen && !dialogOpen) {
+                // Transfer native ownership before scrolling away from an edited TextField.
+                node.performSemanticsAction(SemanticsActions.RequestFocus)
+                compose.waitForIdle()
+            }
             val ancestors = generateSequence(node.fetchSemanticsNode().parent) { it.parent }
             if (ancestors.any { it.config.contains(SemanticsActions.ScrollBy) }) node.performScrollTo()
             node.assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick)

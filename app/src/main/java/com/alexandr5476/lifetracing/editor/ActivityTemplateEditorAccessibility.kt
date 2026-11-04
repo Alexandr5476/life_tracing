@@ -16,6 +16,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -32,9 +33,28 @@ import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 internal val LocalEditorFocus = staticCompositionLocalOf<EditorFocus> { error("Editor focus missing") }
 internal val LocalEditorVisible = staticCompositionLocalOf { false }
 
+/** Lazy detachment alone does not mean a logically surviving control was removed. */
+internal val LocalEditorTargetExists = staticCompositionLocalOf<(() -> Boolean)?> { null }
+
 /** Native focus bookkeeping only; accessibility inspection and focus never author data. */
 internal class EditorFocus {
     val landing = FocusRequester()
+    var dialogOrigin: EditorFocusHandle? = null
+    private var dialogOpen = false
+
+    fun observeDialog(open: Boolean) {
+        if (open && !dialogOpen) dialogOrigin = owner
+        dialogOpen = open
+    }
+
+    var revealLanding: suspend () -> Unit = {}
+
+    suspend fun land(): Boolean {
+        revealLanding()
+        withFrameNanos { }
+        return landing.requestFocus()
+    }
+
     var owner: EditorFocusHandle? = null
     var removed by mutableStateOf(false)
     var hasFocus by mutableStateOf(false)
@@ -51,57 +71,77 @@ internal fun rememberEditorFocus(
     state: ActivityTemplateEditorState,
     visible: Boolean,
 ): EditorFocus {
-    val focus = remember { EditorFocus() }
-    val window = LocalWindowInfo.current
-    val inputMode = LocalInputModeManager.current.inputMode
     val phase =
         when (state.load) {
             ActivityTemplateEditorLoad.Loading -> 0
             is ActivityTemplateEditorLoad.Failure -> 1
             is ActivityTemplateEditorLoad.Ready -> 2
         }
-    val editable =
-        state.save !is ActivityTemplateEditorSave.Saving && state.save !is ActivityTemplateEditorSave.Committed
+    return rememberEditorFocus(
+        phase,
+        state.generation,
+        state.discardConfirmationVisible,
+        state.save !is ActivityTemplateEditorSave.Saving && state.save !is ActivityTemplateEditorSave.Committed,
+        visible,
+    )
+}
+
+@Composable
+@Suppress("LongParameterList") // Shared phase state and Sequence native-input admission remain explicit.
+internal fun rememberEditorFocus(
+    phase: Int,
+    generation: Long,
+    discardConfirmationVisible: Boolean,
+    editable: Boolean,
+    visible: Boolean,
+    keyboardOnly: Boolean = false,
+): EditorFocus {
+    val focus = remember { EditorFocus() }
+    focus.observeDialog(discardConfirmationVisible)
+    val window = LocalWindowInfo.current
+    val inputMode = LocalInputModeManager.current.inputMode
+    val admitsFocus = !keyboardOnly || inputMode == InputMode.Keyboard
+    val ownsFocus = visible && window.isWindowFocused && admitsFocus
     var dialogWasOpen by remember { mutableStateOf(false) }
     var landingPending by remember { mutableStateOf(true) }
-    LaunchedEffect(visible, phase, state.generation) { landingPending = visible }
-    LaunchedEffect(state.discardConfirmationVisible) {
-        if (state.discardConfirmationVisible) dialogWasOpen = true
+    LaunchedEffect(visible, phase, generation) { landingPending = visible }
+    LaunchedEffect(discardConfirmationVisible) {
+        if (discardConfirmationVisible) dialogWasOpen = true
     }
     LaunchedEffect(
         visible,
         phase,
-        state.generation,
-        state.discardConfirmationVisible,
+        generation,
+        discardConfirmationVisible,
         window.isWindowFocused,
         inputMode,
         editable,
         landingPending,
     ) {
-        if (visible && window.isWindowFocused && editable) {
-            if (state.discardConfirmationVisible) {
+        if (ownsFocus && editable) {
+            if (discardConfirmationVisible) {
                 dialogWasOpen = true
             } else {
                 withFrameNanos { }
                 if (dialogWasOpen) {
-                    val target = focus.owner
+                    val target = focus.dialogOrigin
                     val restored = target?.attached == true && target.requester.requestFocus()
-                    if (restored || focus.landing.requestFocus()) {
+                    if (restored || focus.land()) {
                         dialogWasOpen = false
                         landingPending = false
                     }
                 } else if (landingPending || !focus.hasFocus) {
-                    landingPending = !focus.landing.requestFocus()
+                    landingPending = !focus.land()
                 }
             }
         }
     }
-    val canRecover = visible && window.isWindowFocused && editable && !state.discardConfirmationVisible
+    val canRecover = ownsFocus && editable && !discardConfirmationVisible
     LaunchedEffect(canRecover, inputMode, focus.removed) {
         if (canRecover && focus.removed) {
             withFrameNanos { }
             // Detachment may assign framework fallback focus before this deferred recovery.
-            if (focus.removed && focus.landing.requestFocus()) focus.removed = false
+            if (focus.hasFocus || focus.land()) focus.removed = false
         }
     }
     return focus
@@ -127,10 +167,11 @@ internal fun editorInputFocusTarget(description: String? = null): Modifier {
 internal fun editorFocusTarget(description: String? = null): Modifier {
     val focus = LocalEditorFocus.current
     val handle = remember { EditorFocusHandle() }
+    val targetExists = LocalEditorTargetExists.current
     return Modifier
         .onFocusTargetAttachmentChanged { attached ->
             handle.attached = attached
-            if (!attached && focus.owner === handle) focus.removed = true
+            if (!attached && focus.owner === handle && targetExists?.invoke() != true) focus.removed = true
         }.focusRequester(handle.requester)
         .onFocusChanged {
             if (it.isFocused) {

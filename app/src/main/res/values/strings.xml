@@ -777,4 +777,9 @@
     <string name="activity_editor_committed">Activity Template saved.</string>
     <string name="activity_editor_pristine">No unsaved changes</string>
     <string name="activity_editor_modified">Unsaved changes</string>
+    <string name="sequence_editor_new_context">Create Sequence Template</string>
+    <string name="sequence_editor_existing_context">Edit Sequence Template</string>
+    <string name="sequence_editor_expanded">Expanded</string>
+    <string name="sequence_editor_collapsed">Collapsed</string>
+    <string name="sequence_editor_reload_failure">Saved. Unable to reload the Sequence. Retry to read the saved version.</string>
 </resources>
