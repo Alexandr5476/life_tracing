@@ -62,6 +62,7 @@ data class LibraryFolderDeletionOptions(
 data class LibraryFolderDeletion(
     val folder: Folder,
     val options: LibraryLoad<LibraryFolderDeletionOptions> = LibraryLoad.Loading,
+    val requestId: Long = 0,
 )
 
 data class LibraryPresentationState(
@@ -74,6 +75,8 @@ data class LibraryPresentationState(
     val folderDeletion: LibraryFolderDeletion? = null,
     val mutationFailure: String? = null,
     val isMutating: Boolean = false,
+    val mutationSuccessGeneration: Long = 0,
+    val browseRequestId: Long = 0,
 )
 
 sealed interface LibraryAction {
@@ -321,6 +324,7 @@ class LibraryController internal constructor(
     }
 
     private fun refresh() {
+        if (mutableState.value.folderDeletion != null) dismissFolderDeletion()
         val recoverMutationFailure = mutableState.value.mutationFailure != null
         mutableState.value.folderId?.let { loadFolder(it, recoverMutationFailure) }
             ?: loadRoot(recoverMutationFailure)
@@ -370,7 +374,7 @@ class LibraryController internal constructor(
         recoverMutationFailure: Boolean,
     ) {
         val generation = browseGeneration.incrementAndGet()
-        mutableState.update { it.copy(folderId = folderId, browse = LibraryLoad.Loading) }
+        mutableState.update { it.copy(folderId = folderId, browse = LibraryLoad.Loading, browseRequestId = generation) }
         scope.launch {
             try {
                 val browse =
@@ -421,7 +425,7 @@ class LibraryController internal constructor(
     private fun requestFolderDeletion(folder: Folder) {
         if (closed || mutableState.value.isMutating) return
         val generation = folderDeletionGeneration.incrementAndGet()
-        mutableState.update { it.copy(folderDeletion = LibraryFolderDeletion(folder)) }
+        mutableState.update { it.copy(folderDeletion = LibraryFolderDeletion(folder, requestId = generation)) }
         scope.launch {
             try {
                 val isEmpty = readFolderDeletionIsEmpty(folder.id)
@@ -436,21 +440,34 @@ class LibraryController internal constructor(
                         isEmpty,
                         folders.filterNot { it.id in forbidden },
                     )
-                if (!closed && generation == folderDeletionGeneration.get()) {
-                    mutableState.update {
-                        it.copy(folderDeletion = LibraryFolderDeletion(folder, LibraryLoad.Content(options)))
+                mutableState.update {
+                    if (closed ||
+                        generation != folderDeletionGeneration.get() ||
+                        it.folderDeletion?.requestId != generation
+                    ) {
+                        it
+                    } else {
+                        it.copy(
+                            folderDeletion = LibraryFolderDeletion(folder, LibraryLoad.Content(options), generation),
+                        )
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (!closed && generation == folderDeletionGeneration.get()) {
-                    mutableState.update {
+                mutableState.update {
+                    if (closed ||
+                        generation != folderDeletionGeneration.get() ||
+                        it.folderDeletion?.requestId != generation
+                    ) {
+                        it
+                    } else {
                         it.copy(
                             folderDeletion =
                                 LibraryFolderDeletion(
                                     folder,
                                     LibraryLoad.Failure(failure.message ?: "Unknown error"),
+                                    generation,
                                 ),
                         )
                     }
@@ -513,7 +530,10 @@ class LibraryController internal constructor(
                     }
                     return@launch
                 }
-                if (!closed) refresh()
+                if (!closed) {
+                    refresh()
+                    mutableState.update { it.copy(mutationSuccessGeneration = it.mutationSuccessGeneration + 1) }
+                }
             } finally {
                 mutationInFlight.set(false)
                 if (!closed) mutableState.update { it.copy(isMutating = false) }

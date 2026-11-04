@@ -326,3 +326,18 @@ complete Series Detail Room transaction. There is no schema, index, cache or dur
 change. Query count can scale with populated result Fields, never executions or samples.
 See docs/implementation/statistics_pr37_review_evidence.md for current evidence;
 docs/implementation/statistics_number_s3_evidence.md preserves earlier S3 evidence.
+
+## Authoring no-op comparison and materialization order (S4 decision, 2026-10-23)
+
+Opening an Activity Template and saving unchanged, or editing and restoring the saved
+values before Save, is a no-op: neither revision nor Template or Field modification
+timestamps change. Incidental in-memory ordering of Fields or Category options is not
+an authoring change. The shared Activity/Sequence authoring comparison matches these
+objects by stable identity and compares their persisted positions, semantic and
+presentation values, and archived/deleted lifecycle flags. Equal objects materialized
+in a different list order remain NO_OP. Changed persisted positions or actual value or
+lifecycle changes retain the existing semantic/presentation revision policy.
+
+This clarification does not change identity allocation, persisted ordering, writer
+transactions, optimistic concurrency, snapshot propagation, historical immutability,
+or StatisticsSeries provenance.

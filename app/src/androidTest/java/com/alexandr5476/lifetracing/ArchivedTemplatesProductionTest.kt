@@ -3,6 +3,12 @@
 package com.alexandr5476.lifetracing
 
 import android.content.Context
+import android.os.Looper
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -37,9 +43,14 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryLoad
+import com.alexandr5476.lifetracing.settings.ArchivedTemplatesController
 import com.alexandr5476.lifetracing.settings.archivedRowKey
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -54,9 +65,50 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicReference
 
+@OptIn(ExperimentalTestApi::class)
 class ArchivedTemplatesProductionTest {
+    // The default unconfined test dispatcher can resume archive IO and apply/layout on a worker.
+    // Queue composition continuations for the test clock to drain on the UI thread instead.
     @get:Rule
-    val compose = createEmptyComposeRule()
+    val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
+
+    @Test
+    fun archive_read_resumes_on_ui_thread_after_worker_completion() {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val resumedOnMain = AtomicReference<Boolean>()
+        try {
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        val scope = rememberCoroutineScope()
+                        remember<ArchivedTemplatesController>(scope) {
+                            ArchivedTemplatesController(
+                                readArchived = {
+                                    withContext(Dispatchers.IO) {
+                                        entered.complete(Unit)
+                                        release.await()
+                                    }
+                                    resumedOnMain.set(Looper.myLooper() == Looper.getMainLooper())
+                                    emptyList()
+                                },
+                                restoreTemplate = {},
+                                onRestored = {},
+                                scope = scope,
+                            )
+                        }
+                    }
+                }
+                compose.waitUntil(5_000) { entered.isCompleted }
+                // Resume from a real worker after the composition coroutine has suspended.
+                runBlocking(Dispatchers.IO) { release.complete(Unit) }
+                compose.waitUntil(5_000) { resumedOnMain.get() != null }
+                assertTrue("Archive reads must return to the UI dispatcher", resumedOnMain.get())
+            }
+        } finally {
+            release.complete(Unit)
+        }
+    }
 
     @Test
     fun production_restore_preserves_both_identities_and_frozen_facts_and_refreshes_retained_library(): Unit =

@@ -473,46 +473,58 @@ internal fun LifeTracingApp(
                             val activeLibraryController = libraryOwner.get(runtimeGraph::createLibraryController)
                             LibraryRoute(
                                 controller = activeLibraryController,
+                                isRouteVisible = backStack.lastOrNull() == LibraryRoot,
+                                currentRouteVisible = { backStack.lastOrNull() == LibraryRoot },
                                 onBack = backStack::removeLibrary,
                                 onCreateActivity = {
-                                    editorSessions.acquire(ActivityTemplateEditorTarget.New) {
-                                        runtimeGraph.createActivityTemplateEditorController(
-                                            ActivityTemplateEditorTarget.New,
-                                        )
-                                    }
-                                    backStack.openNewActivityTemplateEditor()
-                                },
-                                onCreateSequence = {
-                                    sequenceEditorSessions.acquire(SequenceTemplateEditorTarget.New) {
-                                        runtimeGraph.createSequenceTemplateEditorController(
-                                            SequenceTemplateEditorTarget.New,
-                                        )
-                                    }
-                                    backStack.openNewSequenceTemplateEditor()
-                                },
-                                onOpenActivity = { id ->
-                                    val target = ActivityTemplateEditorTarget.Existing(id)
-                                    editorSessions.acquire(target) {
-                                        runtimeGraph.createActivityTemplateEditorController(target)
-                                    }
-                                    backStack.openExistingActivityTemplateEditor(id.value)
-                                },
-                                onOpenSequence = { id ->
-                                    val target = SequenceTemplateEditorTarget.Existing(id)
-                                    sequenceEditorSessions.acquire(target) {
-                                        runtimeGraph.createSequenceTemplateEditorController(target)
-                                    }
-                                    backStack.openExistingSequenceTemplateEditor(id.value)
-                                },
-                                onQuickStart = { id ->
-                                    val session =
-                                        launcherSessions.acquire {
-                                            runtimeGraph.createStartActivityController(
-                                                libraryOwner::refreshIfInitialized,
+                                    if (backStack.lastOrNull() == LibraryRoot) {
+                                        editorSessions.acquire(ActivityTemplateEditorTarget.New) {
+                                            runtimeGraph.createActivityTemplateEditorController(
+                                                ActivityTemplateEditorTarget.New,
                                             )
                                         }
-                                    session.primeInitialSelection(id)
-                                    backStack.openStartActivity()
+                                        backStack.openNewActivityTemplateEditor()
+                                    }
+                                },
+                                onCreateSequence = {
+                                    if (backStack.lastOrNull() == LibraryRoot) {
+                                        sequenceEditorSessions.acquire(SequenceTemplateEditorTarget.New) {
+                                            runtimeGraph.createSequenceTemplateEditorController(
+                                                SequenceTemplateEditorTarget.New,
+                                            )
+                                        }
+                                        backStack.openNewSequenceTemplateEditor()
+                                    }
+                                },
+                                onOpenActivity = { id ->
+                                    if (backStack.lastOrNull() == LibraryRoot) {
+                                        val target = ActivityTemplateEditorTarget.Existing(id)
+                                        editorSessions.acquire(target) {
+                                            runtimeGraph.createActivityTemplateEditorController(target)
+                                        }
+                                        backStack.openExistingActivityTemplateEditor(id.value)
+                                    }
+                                },
+                                onOpenSequence = { id ->
+                                    if (backStack.lastOrNull() == LibraryRoot) {
+                                        val target = SequenceTemplateEditorTarget.Existing(id)
+                                        sequenceEditorSessions.acquire(target) {
+                                            runtimeGraph.createSequenceTemplateEditorController(target)
+                                        }
+                                        backStack.openExistingSequenceTemplateEditor(id.value)
+                                    }
+                                },
+                                onQuickStart = { id ->
+                                    if (backStack.lastOrNull() == LibraryRoot) {
+                                        val session =
+                                            launcherSessions.acquire {
+                                                runtimeGraph.createStartActivityController(
+                                                    libraryOwner::refreshIfInitialized,
+                                                )
+                                            }
+                                        session.primeInitialSelection(id)
+                                        backStack.openStartActivity()
+                                    }
                                 },
                             )
                         }
@@ -671,8 +683,11 @@ internal fun LifeTracingApp(
                             if (session == null) {
                                 LaunchedEffect(Unit) { backStack.normalizeRestoredPlanExecution() }
                             } else if (!route.matches(session)) {
-                                val command by session.controller.state.collectAsState()
-                                LaunchedEffect(command) {
+                                LaunchedEffect(
+                                    session.controller.state
+                                        .collectAsState()
+                                        .value,
+                                ) {
                                     normalizeMismatchedPlanExecution(session)
                                 }
                             } else {
@@ -692,6 +707,7 @@ internal fun LifeTracingApp(
                             } else {
                                 ActivityTemplateEditorRoute(
                                     session.controller,
+                                    isRouteVisible = backStack.lastOrNull() == NewActivityTemplateEditor,
                                     onBack = {
                                         editorSessions.release(session)
                                         backStack.removeActivityTemplateEditor()
@@ -717,6 +733,7 @@ internal fun LifeTracingApp(
                             } else {
                                 ActivityTemplateEditorRoute(
                                     session.controller,
+                                    isRouteVisible = backStack.lastOrNull() == route,
                                     onBack = {
                                         editorSessions.release(session)
                                         backStack.removeActivityTemplateEditor()

@@ -237,12 +237,17 @@ class DailyAccessibilityPersistenceTest {
         controller: DailyController,
         expected: ActiveSessionState,
     ) {
+        val action = if (expected == ActiveSessionState.PAUSED) R.string.daily_resume else R.string.daily_pause
         compose.waitUntil(10_000) {
             !controller.state.value.commandInFlight &&
                 ((controller.state.value.load as? DailyLoadState.Content)?.daily?.active as? DailyActive.Activity)
                     ?.runtime
                     ?.session
-                    ?.state == expected
+                    ?.state == expected &&
+                compose
+                    .onAllNodes(hasText(compose.activity.getString(action)) and hasClickAction())
+                    .fetchSemanticsNodes()
+                    .size == 1
         }
         assertTrue(controller.state.value.commandFailure == null)
     }

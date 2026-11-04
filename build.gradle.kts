@@ -42,6 +42,17 @@ subprojects {
 val compatibilityApiLevels = listOf(26, 31, 33, 35, 36)
 
 fun CommonExtension<*, *, *, *, *, *>.configureManagedDevices() {
+    providers.gradleProperty("lifetracing.compatibility.scaledRaster").orNull?.let { scaled ->
+        require(scaled == "true")
+        require(providers.gradleProperty("lifetracing.compatibility.expectedApi").orNull == "26")
+        require(providers.gradleProperty("lifetracing.compatibility.taskSnapshotsDisabled").orNull == "true")
+        defaultConfig.testInstrumentationRunnerArguments["compatibilityScaledRaster"] = scaled
+    }
+    providers.gradleProperty("lifetracing.compatibility.taskSnapshotsDisabled").orNull?.let { disabled ->
+        require(disabled == "true")
+        require(providers.gradleProperty("lifetracing.compatibility.expectedApi").orNull == "26")
+        defaultConfig.testInstrumentationRunnerArguments["compatibilityTaskSnapshotsDisabled"] = disabled
+    }
     providers.gradleProperty("lifetracing.compatibility.expectedApi").orNull?.let { expectedApi ->
         require(expectedApi.toInt() in compatibilityApiLevels)
         defaultConfig.testInstrumentationRunnerArguments["compatibilityExpectedApi"] = expectedApi

@@ -227,6 +227,7 @@ object TemplateAuthoringPolicy {
         proposed: ActivityConfigSnapshot,
     ): Boolean = activitySnapshotState(current) == activitySnapshotState(proposed)
 
+    // Persisted positions carry ordering; aggregate materialization order is incidental.
     private fun activitySemanticState(template: ActivityTemplate) =
         listOf(
             template.name,
@@ -234,11 +235,14 @@ object TemplateAuthoringPolicy {
             template.timeTrackingMode,
             template.timerTarget,
             template.settings,
-            template.fields.map(::activityFieldSemanticState),
+            template.fields.associate { it.id to activityFieldSemanticState(it) },
         )
 
     private fun activityPresentationState(template: ActivityTemplate) =
-        template.fields.map { field -> field.id to (field.name to field.categoryOptions.map { it.id to it.label }) }
+        template.fields.associate { field ->
+            field.id to
+                (field.name to field.categoryOptions.associate { it.id to it.label })
+        }
 
     private fun activityFieldSemanticState(field: ActivityTemplateField) =
         listOf(
@@ -252,7 +256,7 @@ object TemplateAuthoringPolicy {
             field.defaultText,
             field.isMainValue,
             field.deletedAt != null,
-            field.categoryOptions.map { listOf(it.id, it.position, it.isArchived) },
+            field.categoryOptions.associate { it.id to listOf(it.position, it.isArchived) },
         )
 
     private fun sequenceSemanticState(template: SequenceTemplate) =
@@ -261,12 +265,15 @@ object TemplateAuthoringPolicy {
             template.shortComment,
             template.noLiveTimeAccounting,
             template.settings,
-            template.fields.map(::sequenceFieldSemanticState),
+            template.fields.associate { it.id to sequenceFieldSemanticState(it) },
             template.nodes,
         )
 
     private fun sequencePresentationState(template: SequenceTemplate) =
-        template.fields.map { field -> field.id to (field.name to field.categoryOptions.map { it.id to it.label }) }
+        template.fields.associate { field ->
+            field.id to
+                (field.name to field.categoryOptions.associate { it.id to it.label })
+        }
 
     private fun sequenceFieldSemanticState(field: SequenceTemplateField) =
         listOf(
@@ -280,7 +287,7 @@ object TemplateAuthoringPolicy {
             field.defaultText,
             field.isMainValue,
             field.deletedAt != null,
-            field.categoryOptions.map { listOf(it.id, it.position, it.isArchived) },
+            field.categoryOptions.associate { it.id to listOf(it.position, it.isArchived) },
         )
 
     private fun activitySnapshotState(snapshot: ActivityConfigSnapshot) =

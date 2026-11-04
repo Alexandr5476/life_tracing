@@ -62,6 +62,7 @@ sealed interface ActivityTemplateEditorSave {
 }
 
 data class ActivityTemplateEditorState(
+    val generation: Long = 0,
     val load: ActivityTemplateEditorLoad = ActivityTemplateEditorLoad.Loading,
     val save: ActivityTemplateEditorSave = ActivityTemplateEditorSave.Idle,
     val discardConfirmationVisible: Boolean = false,
@@ -73,7 +74,7 @@ data class ActivityTemplateEditorState(
 
 class ActivityTemplateEditorController internal constructor(
     private val scope: CoroutineScope,
-    private val target: ActivityTemplateEditorTarget,
+    internal val target: ActivityTemplateEditorTarget,
     private val loadTemplate: suspend (ActivityTemplateId) -> ActivityTemplate?,
     private val createTemplate: suspend (ActivityTemplateDraft, TemplateLibraryPlacement, Instant) -> ActivityTemplate,
     private val saveTemplate: suspend (ActivityTemplateId, Long, ActivityTemplateDraft, Instant) -> ActivityTemplate,
@@ -83,6 +84,7 @@ class ActivityTemplateEditorController internal constructor(
     val state: StateFlow<ActivityTemplateEditorState> = mutableState
     private val saving = AtomicBoolean()
     private val newIdentity = AtomicLong()
+    private val loadGeneration = AtomicLong()
 
     @Volatile
     private var closed = false
@@ -93,10 +95,11 @@ class ActivityTemplateEditorController internal constructor(
 
     fun close() {
         closed = true
+        loadGeneration.incrementAndGet()
     }
 
     fun retry() {
-        if (!closed && !saving.get()) load()
+        if (canEdit()) load()
     }
 
     fun updateDraft(transform: (ActivityTemplateDraft) -> ActivityTemplateDraft) {
@@ -134,7 +137,7 @@ class ActivityTemplateEditorController internal constructor(
         }
 
     fun setTimerTargetSeconds(text: String) {
-        if (!canEdit()) return
+        if (!canEdit() || mutableState.value.readyDraft()?.timeTrackingMode != TimeTrackingMode.TIMER) return
         val seconds = text.toLongOrNull()?.takeIf { it > 0 }
         updateDraft { it.copy(timerTarget = seconds?.let(Duration::ofSeconds)) }
         mutableState.update { it.copy(timerTargetText = text, timerTargetError = seconds == null) }
@@ -146,8 +149,9 @@ class ActivityTemplateEditorController internal constructor(
         parse: (String, Int?) -> Long?,
     ) {
         if (!canEdit()) return
-        val key = field.identity.editorKey()
-        val number = parse(text, field.displayPrecision)
+        val current = currentNumber(field) ?: return
+        val key = current.identity.editorKey()
+        val number = parse(text, current.displayPrecision)
         if (text.isBlank() || number != null) {
             updateDraft { draft -> draft.withField(field.identity) { it.copy(defaultNumberScaled = number) } }
         }
@@ -171,12 +175,13 @@ class ActivityTemplateEditorController internal constructor(
         text: String,
     ) {
         if (!canEdit()) return
+        val current = currentNumber(field) ?: return
         val precision = text.toIntOrNull()?.takeIf { it in 0..3 }
         if (text.isNotBlank() && precision == null) return
         val key = field.identity.editorKey()
         val visibleText =
             mutableState.value.numberDefaultTexts[key]
-                ?: formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision)
+                ?: formatLauncherNumber(current.defaultNumberScaled, current.displayPrecision)
         val parsed = visibleText.takeUnless(String::isBlank)?.let { parseLauncherNumber(it, precision) }
         val valid = visibleText.isBlank() || parsed != null
         updateDraft { draft ->
@@ -196,9 +201,12 @@ class ActivityTemplateEditorController internal constructor(
     }
 
     fun requestBack(onExit: () -> Unit) {
-        if (saving.get()) return
+        if (closed || saving.get() || mutableState.value.save is ActivityTemplateEditorSave.Committed) return
         val ready = mutableState.value.load as? ActivityTemplateEditorLoad.Ready
-        val hasUnsavedInput = mutableState.value.invalidNumberFields.isNotEmpty()
+        val input = mutableState.value
+        val hasUnsavedInput =
+            input.invalidNumberFields.isNotEmpty() ||
+                (input.timerTargetError && input.timerTargetText.isNotEmpty())
         if (ready == null || (ready.draft == ready.original && !hasUnsavedInput)) {
             onExit()
         } else {
@@ -207,11 +215,12 @@ class ActivityTemplateEditorController internal constructor(
     }
 
     fun dismissDiscard() {
+        if (closed || saving.get()) return
         mutableState.update { it.copy(discardConfirmationVisible = false) }
     }
 
     fun discard(onExit: () -> Unit) {
-        if (saving.get()) return
+        if (closed || saving.get() || !mutableState.value.discardConfirmationVisible) return
         mutableState.update { it.copy(discardConfirmationVisible = false) }
         onExit()
     }
@@ -263,15 +272,28 @@ class ActivityTemplateEditorController internal constructor(
 
     private fun canStartSave(): Boolean =
         !closed &&
+            !mutableState.value.discardConfirmationVisible &&
             mutableState.value.save !is ActivityTemplateEditorSave.Committed &&
             !mutableState.value.timerTargetError &&
             mutableState.value.invalidNumberFields.isEmpty()
 
-    private fun canEdit(): Boolean = !closed && !saving.get()
+    internal fun ownsGeneration(generation: Long): Boolean = !closed && mutableState.value.generation == generation
+
+    private fun currentNumber(field: ActivityFieldDraft): ActivityFieldDraft? =
+        mutableState.value.readyDraft()?.fields?.firstOrNull {
+            it.identity == field.identity && it.type == CustomFieldType.NUMBER
+        }
+
+    private fun canEdit(): Boolean =
+        !closed &&
+            !saving.get() &&
+            !mutableState.value.discardConfirmationVisible &&
+            mutableState.value.save !is ActivityTemplateEditorSave.Committed
 
     private fun load() {
         if (closed) return
-        mutableState.value = ActivityTemplateEditorState()
+        val generation = loadGeneration.incrementAndGet()
+        mutableState.value = ActivityTemplateEditorState(generation = generation)
         scope.launch {
             try {
                 val template = (target as? ActivityTemplateEditorTarget.Existing)?.let { loadTemplate(it.id) }
@@ -280,9 +302,10 @@ class ActivityTemplateEditorController internal constructor(
                 ) { "Activity template is unavailable" }
                 val draft =
                     template?.toAuthoringDraft() ?: ActivityTemplateDraft("", null, TimeTrackingMode.STOPWATCH, null)
-                if (!closed) {
-                    mutableState.value =
+                mutableState.update { current ->
+                    if (!closed && current.generation == generation) {
                         ActivityTemplateEditorState(
+                            generation = generation,
                             load = ActivityTemplateEditorLoad.Ready(draft, template?.revision, draft),
                             timerTargetText =
                                 draft.timerTarget
@@ -292,18 +315,25 @@ class ActivityTemplateEditorController internal constructor(
                             timerTargetError =
                                 draft.timeTrackingMode == TimeTrackingMode.TIMER && draft.timerTarget == null,
                         )
+                    } else {
+                        current
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                if (!closed) {
-                    mutableState.value =
+                mutableState.update { current ->
+                    if (!closed && current.generation == generation) {
                         ActivityTemplateEditorState(
+                            generation = generation,
                             load =
                                 ActivityTemplateEditorLoad.Failure(
                                     failure.message ?: "Unknown error",
                                 ),
                         )
+                    } else {
+                        current
+                    }
                 }
             }
         }
@@ -384,11 +414,6 @@ internal fun DraftIdentity<*>.editorKey(): String =
         is DraftIdentity.Existing -> "existing-$id"
         is DraftIdentity.New -> "new-$key"
     }
-
-internal fun ActivityTemplateDraft.withFieldAt(
-    index: Int,
-    transform: (ActivityFieldDraft) -> ActivityFieldDraft,
-) = copy(fields = fields.mapIndexed { current, field -> if (current == index) transform(field) else field })
 
 internal fun ActivityTemplateEditorState.readyDraft(): ActivityTemplateDraft? =
     (load as? ActivityTemplateEditorLoad.Ready)?.draft

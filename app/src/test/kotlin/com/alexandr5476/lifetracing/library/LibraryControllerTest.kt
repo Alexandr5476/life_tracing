@@ -26,6 +26,155 @@ import java.time.Instant
 
 class LibraryControllerTest {
     @Test
+    fun refreshInvalidatesFolderInspectionAndRetryGetsANewRequestIdentity() =
+        runBlocking {
+            val source = folder("source", "Same")
+            val writes = mutableListOf<LibraryMutation>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(source), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source), emptyList()) },
+                    { writes += it },
+                    readFolderDeletionIsEmpty = { true },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            controller.awaitFolderDeletion()
+            val first =
+                controller.state.value.folderDeletion!!
+                    .requestId
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            controller.awaitFolderDeletion()
+            assertTrue(
+                controller.state.value.folderDeletion!!
+                    .requestId > first,
+            )
+            val browseRequest = controller.state.value.browseRequestId
+            controller.dispatch(LibraryAction.Refresh)
+            assertTrue(controller.state.value.browseRequestId > browseRequest)
+            assertNull(controller.state.value.folderDeletion)
+            controller.dispatch(LibraryAction.DeleteEmptyFolder(source.id))
+            assertTrue(writes.isEmpty())
+            controller.close()
+        }
+
+    @Test
+    fun supersedingRefreshRevokesAnInspectionStillReadingDurableOccupancy() =
+        runBlocking {
+            val source = folder("source", "Same")
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(listOf(source), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(listOf(source), emptyList()) },
+                    readFolderDeletionIsEmpty = {
+                        entered.complete(Unit)
+                        release.await()
+                        true
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.RequestFolderDeletion(source))
+            entered.await()
+            controller.dispatch(LibraryAction.Refresh)
+            assertNull(controller.state.value.folderDeletion)
+            release.complete(Unit)
+            // The released reader has no more suspension points on this single-thread test scope.
+            kotlinx.coroutines.yield()
+            assertNull(controller.state.value.folderDeletion)
+            controller.close()
+        }
+
+    @Test
+    fun organizationCompletionGenerationWaitsForWriterAndNeverAdvancesOnFailureOrRetry() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var fail = false
+            var writes = 0
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    {
+                        writes++
+                        if (fail) error("stale organization")
+                        entered.complete(Unit)
+                        release.await()
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.SetPinned(LibraryTemplateId.Activity(ActivityTemplateId("same")), true))
+            entered.await()
+            assertTrue(controller.state.value.isMutating)
+            assertEquals(0L, controller.state.value.mutationSuccessGeneration)
+            controller.dispatch(
+                LibraryAction.AssignTag(
+                    LibraryTemplateId.Sequence(SequenceTemplateId("same")),
+                    com.alexandr5476.lifetracing.domain
+                        .TagId("tag"),
+                ),
+            )
+            assertEquals(1, writes)
+            release.complete(Unit)
+            withTimeout(2_000) { controller.state.first { !it.isMutating && it.mutationSuccessGeneration == 1L } }
+            fail = true
+            controller.dispatch(LibraryAction.MoveFolder(FolderId("source"), FolderId("invalid")))
+            withTimeout(2_000) { controller.state.first { it.mutationFailure != null && !it.isMutating } }
+            assertEquals(1L, controller.state.value.mutationSuccessGeneration)
+            controller.dispatch(LibraryAction.Retry)
+            withTimeout(
+                2_000,
+            ) { controller.state.first { it.mutationFailure == null && it.browse is LibraryLoad.Content } }
+            assertEquals(2, writes)
+            assertEquals(1L, controller.state.value.mutationSuccessGeneration)
+            controller.close()
+        }
+
+    @Test
+    fun closingOrganizationControllerRevokesLateWriterAndReadPublication() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val controller =
+                LibraryController(
+                    this,
+                    { LibraryRoot(LibraryContents(emptyList(), emptyList(), emptyList()), emptyList()) },
+                    { error("unused") },
+                    { error("unused") },
+                    { _, _ -> emptyList() },
+                    { LibraryOrganization(emptyList(), emptyList()) },
+                    {
+                        entered.complete(Unit)
+                        release.await()
+                    },
+                )
+            controller.awaitBrowse()
+            controller.dispatch(LibraryAction.CreateFolder("Folder"))
+            entered.await()
+            controller.close()
+            val closedState = controller.state.value
+            release.complete(Unit)
+            kotlinx.coroutines.yield()
+            assertEquals(closedState, controller.state.value)
+            controller.dispatch(LibraryAction.CreateFolder("Late"))
+            assertEquals(closedState, controller.state.value)
+        }
+
+    @Test
     fun ownerBoundCatalogInvalidationRefreshesRetainedProjectionAfterCommitBeforeHostRecreation() =
         runBlocking {
             var catalog = listOf(activity("activity", "Before commit"))

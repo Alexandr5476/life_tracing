@@ -77,8 +77,9 @@ jobs:
             name: Managed-device instrumentation tests (API 33)
           - api: 36
             name: Managed-device instrumentation tests (API 36)
+            gradle_cache_excludes: caches/8.14.3/transforms
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.api == 26 && 120 || 60 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,10 +94,17 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-home-cache-excludes: ${{ matrix.gradle_cache_excludes || '' }}
       - name: Run complete suites and certify mandatory testcase inventory
         env:
           EXPECTED_TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 .github/scripts/run-instrumentation.py --api ${{ matrix.api }}
+        run: |
+          if [ "${{ matrix.api }}" = "26" ]; then
+            python3 .github/scripts/run-instrumentation.py --api 26 --trace-host-signals --profile-host-memory --api26-swangle --api26-disable-task-snapshots --api26-scaled-raster
+          else
+            python3 .github/scripts/run-instrumentation.py --api ${{ matrix.api }}
+          fi
       - name: Upload instrumentation reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

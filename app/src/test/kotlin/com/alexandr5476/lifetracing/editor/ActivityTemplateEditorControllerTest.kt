@@ -21,6 +21,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -640,6 +641,181 @@ class ActivityTemplateEditorControllerTest {
             controller.close()
         }
 
+    @Test
+    fun obsoleteRetryCannotReplaceANewerAcceptedDraft() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            var reads = 0
+            val controller =
+                existingController(load = {
+                    if (++reads == 1) {
+                        started.complete(Unit)
+                        release.await()
+                        finished.complete(Unit)
+                        error("obsolete read")
+                    }
+                    template(ActivityTemplateDraft("Current", null, TimeTrackingMode.STOPWATCH, null))
+                })
+            started.await()
+            controller.retry()
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Unsaved current draft") }
+            release.complete(Unit)
+            finished.await()
+            kotlinx.coroutines.yield()
+            assertEquals(
+                "Unsaved current draft",
+                controller.state.value
+                    .readyDraft()
+                    ?.name,
+            )
+            controller.close()
+        }
+
+    @Test
+    fun removedNumberCallbacksCannotPoisonSurvivingDraftOrUseCapturedPrecision() =
+        runBlocking {
+            val controller = existingController(load = { templateWithField(numberField()) })
+            controller.awaitReady()
+            val captured =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            controller.setDisplayPrecision(captured, "1")
+            controller.setNumberDefault(captured, "1.23", ::parseLauncherNumber)
+            assertTrue(captured.identity.editorKey() in controller.state.value.invalidNumberFields)
+            controller.updateDraft { it.copy(fields = emptyList()) }
+            val before = controller.state.value
+            controller.setNumberDefault(captured, "invalid", ::parseLauncherNumber)
+            controller.setDisplayPrecision(captured, "2")
+            assertEquals(before, controller.state.value)
+            controller.close()
+        }
+
+    @Test
+    fun dismissedDiscardAndClosedRouteCallbacksCannotExit() =
+        runBlocking {
+            val controller = controller()
+            controller.awaitReady()
+            controller.updateDraft { it.copy(name = "Unsaved") }
+            controller.requestBack { error("Dirty draft exited") }
+            controller.dismissDiscard()
+            var exits = 0
+            controller.discard { exits++ }
+            assertEquals(0, exits)
+            controller.close()
+            controller.requestBack { exits++ }
+            assertEquals(0, exits)
+        }
+
+    @Test
+    fun presentationLeasesRejectRemovedTypedFieldsObsoleteLoadsAndDisposedActions() =
+        runBlocking {
+            val controller = existingController(load = { templateWithField(numberField()) })
+            controller.awaitReady()
+            val field =
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+            val actions = ActivityTemplateEditorActions(controller, controller.state.value.generation)
+            controller.updateDraft { it.copy(fields = listOf(field.copy(type = CustomFieldType.TEXT))) }
+            val changedType = controller.state.value
+            actions.field(field) { it.copy(name = "Stale Number control") }
+            assertEquals(changedType, controller.state.value)
+            controller.updateDraft { it.copy(fields = emptyList()) }
+            val removed = controller.state.value
+            actions.field(field) { it.copy(name = "Wrong field") }
+            assertEquals(removed, controller.state.value)
+            controller.retry()
+            controller.awaitReady()
+            val reloaded = controller.state.value
+            actions.update { it.copy(name = "Obsolete draft") }
+            assertEquals(reloaded, controller.state.value)
+            val attached = ActivityTemplateEditorActions(controller, controller.state.value.generation)
+            attached.attached = false
+            attached.invoke(controller::save)
+            assertEquals(reloaded, controller.state.value)
+            controller.close()
+        }
+
+    @Test
+    fun timerInvalidInputCannotCommitAndInvalidPristinePersistedTimerRequiresDiscard() =
+        runBlocking {
+            var writes = 0
+            val original =
+                template(ActivityTemplateDraft("Invalid persisted timer", null, TimeTrackingMode.TIMER, null))
+            val controller =
+                existingController(load = { original }, save = {
+                    _,
+                    _,
+                    draft,
+                    _,
+                    ->
+                    writes++
+                    template(draft)
+                })
+            controller.awaitReady()
+            for (text in listOf("", "0", "-1", "bad", "9223372036854775808")) {
+                controller.setTimerTargetSeconds(text)
+                controller.save()
+                assertTrue(controller.state.value.timerTargetError)
+                assertNull(
+                    controller.state.value
+                        .readyDraft()!!
+                        .timerTarget,
+                )
+                assertEquals(0, writes)
+            }
+            controller.requestBack { error("Invalid Timer input was discarded") }
+            assertTrue(controller.state.value.discardConfirmationVisible)
+            controller.dismissDiscard()
+            controller.setTimerTargetSeconds("90")
+            controller.save()
+            controller.awaitCommitted()
+            assertEquals(1, writes)
+            controller.close()
+        }
+
+    @Test
+    fun obsoleteSuccessfulLoadAndClosedRouteCannotPublishReady() =
+        runBlocking {
+            for (close in listOf(false, true)) {
+                val entered = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val completed = CompletableDeferred<Unit>()
+                var reads = 0
+                val controller =
+                    existingController(load = {
+                        if (++reads == 1) {
+                            entered.complete(Unit)
+                            release.await()
+                            completed.complete(Unit)
+                            template(ActivityTemplateDraft("Obsolete", null, TimeTrackingMode.STOPWATCH, null))
+                        } else {
+                            template(ActivityTemplateDraft("Accepted", null, TimeTrackingMode.STOPWATCH, null))
+                        }
+                    })
+                entered.await()
+                if (close) {
+                    controller.close()
+                } else {
+                    controller.retry()
+                    controller.awaitReady()
+                    controller.updateDraft { it.copy(name = "Accepted unsaved") }
+                }
+                val before = controller.state.value
+                release.complete(Unit)
+                completed.await()
+                kotlinx.coroutines.yield()
+                assertEquals(before, controller.state.value)
+                controller.close()
+            }
+        }
+
     private fun CoroutineScope.controller(
         target: ActivityTemplateEditorTarget = ActivityTemplateEditorTarget.New,
         create: suspend (
@@ -673,7 +849,9 @@ class ActivityTemplateEditorControllerTest {
     )
 
     private suspend fun ActivityTemplateEditorController.awaitReady(
-        predicate: (ActivityTemplateEditorLoad.Ready) -> Boolean = { true },
+        predicate: (ActivityTemplateEditorLoad.Ready) -> Boolean = {
+            true
+        },
     ) = withTimeout(2_000) {
         state.first { (it.load as? ActivityTemplateEditorLoad.Ready)?.let(predicate) == true }
     }
