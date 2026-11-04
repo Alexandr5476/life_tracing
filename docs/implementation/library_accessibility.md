@@ -1,5 +1,66 @@
 # Library discovery accessibility (Slice S1)
 
+## W3: bounded callback ownership comparisons (2026-11-04)
+
+Library navigation, organization and destructive-confirmation leases now share a
+publication identity key. Its equality and hashing use the state object reference,
+so each rendered control performs constant key-comparison work instead of comparing
+the full catalog. Recreating the scope for the same publication preserves its lease;
+a superseding publication replaces it. Live admission also compares publication
+references before recomposition; route visibility, disposal and one-shot submission
+guards remain in place. The default screen state reader uses referential mutation
+policy to publish equal new objects consistently with these ownership checks.
+Typed row keys, focus handles and W1 operation-specific organization gates remain
+unchanged. No reader, writer, schema, domain or persistence behavior is changed.
+
+Three Jupiter cases in `LibraryPresentationKeyTest` verify reference ownership,
+same-publication scope recreation, equal new publications, and bounded equality and
+hashing. The operation-count case fully rematerializes catalogs of 16/32/64/128 rows
+and changes the last row. It first measures the former whole-state comparison:
+three controls per row require exactly `6 * N * N` element visits. The identity
+keys require `3 * N` comparisons and zero catalog-element visits. This uses counts,
+not timing thresholds.
+
+Three mandatory native cases were added to `LibraryActionAdmissionTest`:
+
+- `rematerializedCatalogCallbackKeysNeverTraverseCatalogElements`: composes the real
+  navigation/organization helpers for three controls per row at the same increasing
+  sizes; calibrates the structural probe, then requires zero key-related element reads.
+- `survivingRowsKeepFocusAndExactActionsAfterBrowseAndOrganizationPublication`:
+  retains native actions across rematerialized browse, organization and equal new
+  publications; rejects old callbacks before/after recomposition, preserves focus,
+  and admits current Open/Quick Start once through exact Activity/Sequence IDs.
+- `equalNewPublicationRetiresOldActionsAndDefaultReaderAdmitsCurrentActions`:
+  verifies the screen's default reader after an equal new publication.
+
+The existing retained-action case also covers organization Loading/Failure
+publication. W1/W2 tests, disposal/hidden-route cases, EN/RU scaling tests and all
+canonical persistence/reload cases remain in the mandatory inventory. No identity
+was removed: counts are now 528 app, 627 data and 2 independent startup cases.
+
+Local verification completed with **BUILD SUCCESSFUL**:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*LibraryPresentationKeyTest' --tests '*LibraryControllerTest' --tests '*MainActivityNavigationTest' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest --continue --console=plain
+```
+
+All 57 selected JVM tests passed (3 key, 28 controller, 26 navigation), with no
+failures/errors/skips. App ktlint and Detekt passed; AndroidTest compilation and
+APK assembly passed. Earlier formatting failures were corrected. The native
+regressions were compiled only; no red/green device execution is claimed.
+
+`python -m unittest discover -s .github/scripts -p 'test_run_instrumentation.py'`
+passed all 69 mocked host runner/inventory tests. The broader `test_*.py` invocation
+ran 82 tests and reported four subtest failures in
+`ProfileAdmissionTests.test_profile_failure_blocks_every_suite_and_preserves_shared_budget`:
+its timeout assertion saw `6600.000000000007 <= 6600`. Both that test and the runner
+have unchanged text relative to HEAD; this separate profile-budget failure remains
+unresolved by the Library patch. Printed device commands in host tests are mocked.
+
+Controller retains canonical full/static, API 26/31/33/35/36 and exact-head CI
+verification. No emulator/device command was launched. Manual TalkBack/Switch
+Access remains unverified. Changes are uncommitted for Controller review.
+
 Archive and Folder-deletion dialogs are extended by
 [Slice S3 lifecycle accessibility](library_destructive_accessibility.md).
 That record covers contextual confirmation, inspection/stage guards, focus and

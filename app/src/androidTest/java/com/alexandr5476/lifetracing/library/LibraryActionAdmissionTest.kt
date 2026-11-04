@@ -3,8 +3,10 @@
 package com.alexandr5476.lifetracing.library
 
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsEnabled
@@ -42,6 +44,184 @@ class LibraryActionAdmissionTest {
     private val sequence = item(LibraryTemplateId.Sequence(SequenceTemplateId("same-id")), 1)
     private val last = item(LibraryTemplateId.Activity(ActivityTemplateId("last")), 2)
     private val folder = Folder(FolderId("folder"), "Same", null, Instant.EPOCH, Instant.EPOCH)
+
+    @Test
+    fun rematerializedCatalogCallbackKeysNeverTraverseCatalogElements() {
+        val probes = CatalogProbes()
+
+        fun publication(
+            size: Int,
+            suffix: String,
+        ): LibraryPresentationState {
+            val rows =
+                CatalogList(
+                    List(size) { index ->
+                        item(LibraryTemplateId.Activity(ActivityTemplateId("item-$index")), index)
+                            .copy(name = if (index == size - 1) suffix else "Same")
+                    },
+                    probes,
+                )
+            return LibraryPresentationState(
+                browse =
+                    LibraryLoad.Content(
+                        LibraryBrowse(null, emptyList(), rows, LibraryContents(emptyList(), rows, emptyList())),
+                    ),
+                organization = LibraryLoad.Content(LibraryOrganization(emptyList(), emptyList())),
+            )
+        }
+        var state by mutableStateOf(publication(16, "before"), referentialEqualityPolicy())
+        var renderedControls = 0
+        compose.setContent {
+            val scope = LibraryOrganizationScope(state, { state }, { true }, "Root")
+            CompositionLocalProvider(LocalLibraryOrganization provides scope, LocalLibraryVisible provides true) {
+                val size = (state.browse as LibraryLoad.Content).value.pinned.size
+                repeat(size) {
+                    libraryPresentationCallback {}
+                    libraryPresentationCallback {}
+                    libraryOrganizationCallback(enabled = true) {}
+                }
+                renderedControls = size * 3
+            }
+        }
+        for (size in listOf(16, 32, 64, 128)) {
+            val before = publication(size, "before")
+            val after = publication(size, "after")
+            // Calibrate the probe: structural equality visits every newly materialized row.
+            probes.reads = 0
+            assertTrue(before != after)
+            assertEquals(size * 2, probes.reads)
+            compose.runOnIdle { state = before }
+            compose.runOnIdle {
+                probes.reads = 0
+                state = after
+            }
+            compose.runOnIdle {
+                assertEquals(size * 3, renderedControls)
+                assertEquals("Callback key work must be independent of catalog size $size", 0, probes.reads)
+            }
+        }
+    }
+
+    @Test
+    fun survivingRowsKeepFocusAndExactActionsAfterBrowseAndOrganizationPublication() {
+        val baseline = catalog(emptyList())
+        var state by mutableStateOf(baseline, referentialEqualityPolicy())
+        val opened = mutableListOf<LibraryTemplateId>()
+        val quick = mutableListOf<LibraryTemplateId>()
+        compose.setContent {
+            LifeTracingTheme {
+                LibraryScreen(
+                    state,
+                    {},
+                    onOpenActivity = { opened.add(LibraryTemplateId.Activity(it)) },
+                    onOpenSequence = { opened.add(LibraryTemplateId.Sequence(it)) },
+                    onQuickStart = quick::add,
+                    currentState = { state },
+                ) {}
+            }
+        }
+        keyboard.enter()
+        val replacements =
+            listOf(
+                baseline.copy(
+                    browse =
+                        LibraryLoad.Content(
+                            browse(emptyList()).copy(
+                                contents =
+                                    LibraryContents(
+                                        listOf(folder.copy()),
+                                        listOf(activity.copy()),
+                                        listOf(sequence.copy(name = "Changed last")),
+                                    ),
+                            ),
+                        ),
+                ),
+                baseline.copy(
+                    organization =
+                        LibraryLoad.Content(
+                            LibraryOrganization(listOf(folder.copy(name = "Changed")), emptyList()),
+                        ),
+                ),
+                baseline.copy(),
+            )
+        for (replacement in replacements) {
+            compose.runOnIdle { state = baseline }
+            val context = context(activity, R.string.library_all, 1)
+            val openDescription = text(R.string.library_open_template, context)
+            val openNode = compose.onNodeWithContentDescription(openDescription)
+            openNode.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(openNode)
+            val oldOpen = retained(openDescription)
+            val oldStart = retained(text(R.string.library_quick_start_template, context))
+            compose.runOnIdle {
+                state = replacement
+                oldOpen()
+                oldStart()
+                assertTrue(opened.isEmpty())
+                assertTrue(quick.isEmpty())
+            }
+            keyboard.awaitFocus(openNode)
+            compose.runOnIdle {
+                oldOpen()
+                oldStart()
+                assertTrue(opened.isEmpty())
+                assertTrue(quick.isEmpty())
+            }
+            val currentBrowse = (replacement.browse as LibraryLoad.Content).value
+            val currentSequence = currentBrowse.contents.sequences.single()
+            for ((index, item) in listOf(activity, currentSequence).withIndex()) {
+                val currentContext = context(item, R.string.library_all, index + 1)
+                val open = retained(text(R.string.library_open_template, currentContext))
+                val start = retained(text(R.string.library_quick_start_template, currentContext))
+                compose.runOnIdle {
+                    open()
+                    open()
+                    start()
+                    start()
+                }
+            }
+            compose.runOnIdle {
+                assertEquals(listOf(activity.id, sequence.id), opened)
+                assertEquals(listOf(activity.id, sequence.id), quick)
+                opened.clear()
+                quick.clear()
+            }
+        }
+    }
+
+    @Test
+    fun equalNewPublicationRetiresOldActionsAndDefaultReaderAdmitsCurrentActions() {
+        var state by mutableStateOf(catalog(emptyList()), referentialEqualityPolicy())
+        val opened = mutableListOf<ActivityTemplateId>()
+        val quick = mutableListOf<LibraryTemplateId>()
+        compose.setContent {
+            LifeTracingTheme {
+                LibraryScreen(state, {}, onOpenActivity = opened::add, onQuickStart = quick::add) {}
+            }
+        }
+        val context = context(activity, R.string.library_all, 1)
+        val openDescription = text(R.string.library_open_template, context)
+        val startDescription = text(R.string.library_quick_start_template, context)
+        val oldOpen = retained(openDescription)
+        val oldStart = retained(startDescription)
+        compose.runOnIdle { state = state.copy() }
+        compose.runOnIdle {
+            oldOpen()
+            oldStart()
+            assertTrue(opened.isEmpty())
+            assertTrue(quick.isEmpty())
+        }
+        val open = retained(openDescription)
+        val start = retained(startDescription)
+        compose.runOnIdle {
+            open()
+            open()
+            start()
+            start()
+            assertEquals(listOf((activity.id as LibraryTemplateId.Activity).id), opened)
+            assertEquals(listOf(activity.id), quick)
+        }
+    }
 
     @Test
     fun independentCommandsRemainKeyboardAndAccessibilityActionableWithoutOrganizationMetadata() {
@@ -291,6 +471,8 @@ class LibraryActionAdmissionTest {
                 baseline.copy(query = "other", search = LibraryLoad.Content(listOf(sequence))),
                 baseline.copy(browse = LibraryLoad.Loading),
                 baseline.copy(browse = LibraryLoad.Failure("browse")),
+                baseline.copy(organization = LibraryLoad.Loading),
+                baseline.copy(organization = LibraryLoad.Failure("organization")),
             )
         for (replacement in replacements) {
             compose.runOnIdle { state = baseline }
@@ -487,4 +669,20 @@ class LibraryActionAdmissionTest {
         id: LibraryTemplateId,
         rank: Int,
     ) = LibraryTrackable(id, "Same", null, null, emptySet(), rank, null, null)
+
+    private class CatalogProbes {
+        var reads = 0
+    }
+
+    private class CatalogList<T>(
+        private val rows: List<T>,
+        private val probes: CatalogProbes,
+    ) : AbstractList<T>() {
+        override val size: Int get() = rows.size
+
+        override fun get(index: Int): T {
+            probes.reads++
+            return rows[index]
+        }
+    }
 }

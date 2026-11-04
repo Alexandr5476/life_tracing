@@ -40,6 +40,7 @@ internal class LibraryOrganizationScope(
     val visible: () -> Boolean,
     val location: String,
 ) {
+    val presentationKey = LibraryPresentationKey(state)
     val enabled: Boolean get() = admits(requiresOrganization = true)
 
     fun admits(requiresOrganization: Boolean): Boolean =
@@ -65,12 +66,12 @@ internal fun libraryOrganizationCallback(
     block: () -> Unit,
 ): () -> Unit {
     val scope = LocalLibraryOrganization.current
-    val lease = remember(scope.state, draftKey) { OrganizationLease() }
+    val lease = remember(scope.presentationKey, draftKey) { OrganizationLease() }
     DisposableEffect(lease) { onDispose { lease.attached = false } }
     return {
         val current = scope.readCurrent()
         val attached = enabled && lease.attached && !lease.submitted && scope.visible()
-        val currentContext = scope.admits(requiresOrganization) && current == scope.state && !current.isMutating
+        val currentContext = scope.admits(requiresOrganization) && current === scope.state && !current.isMutating
         if (attached && currentContext) {
             lease.submitted = true
             block()

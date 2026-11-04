@@ -1013,6 +1013,9 @@
       "englishRussianLifecycleDialogsKeepIndependentTargetsAtCombinedScaleExtremes"
     ],
     "com.alexandr5476.lifetracing.library.LibraryActionAdmissionTest": [
+      "rematerializedCatalogCallbackKeysNeverTraverseCatalogElements",
+      "survivingRowsKeepFocusAndExactActionsAfterBrowseAndOrganizationPublication",
+      "equalNewPublicationRetiresOldActionsAndDefaultReaderAdmitsCurrentActions",
       "independentCommandsRemainKeyboardAndAccessibilityActionableWithoutOrganizationMetadata",
       "independentCommandsRejectInvalidBrowseHiddenMutationDisposedAndStaleContexts",
       "metadataDependentControlsRetireOnLoadingAndFailure",

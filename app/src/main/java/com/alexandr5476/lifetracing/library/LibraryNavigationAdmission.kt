@@ -27,6 +27,19 @@ internal fun Modifier.libraryActionSemantics(
         }
     }
 
+/**
+ * Compose remember keys use equals. Compare publication ownership by reference so each rendered
+ * control does constant work even when a canonical refresh rematerializes the entire catalog.
+ * Recreating a scope for the same publication keeps its leases; a new publication revokes them.
+ */
+internal class LibraryPresentationKey(
+    private val state: LibraryPresentationState,
+) {
+    override fun equals(other: Any?): Boolean = other is LibraryPresentationKey && state === other.state
+
+    override fun hashCode(): Int = System.identityHashCode(state)
+}
+
 private class LibraryPresentationLease {
     var attached = true
     var submitted = false
@@ -48,11 +61,11 @@ internal fun libraryPresentationCallback(
     val visible = LocalLibraryVisible.current
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
-    val lease = remember(scope.state, visible, configuration, density) { LibraryPresentationLease() }
+    val lease = remember(scope.presentationKey, visible, configuration, density) { LibraryPresentationLease() }
     DisposableEffect(lease) { onDispose { lease.attached = false } }
     return {
         val attached = enabled && visible && lease.attached && !lease.submitted
-        val currentContext = scope.visible() && scope.readCurrent() == scope.state
+        val currentContext = scope.visible() && scope.readCurrent() === scope.state
         if (attached && currentContext) {
             if (consume) lease.submitted = true
             block()

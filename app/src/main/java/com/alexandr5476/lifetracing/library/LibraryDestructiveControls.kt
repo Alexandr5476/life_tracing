@@ -91,7 +91,7 @@ private fun lifecycleCallback(
     block: () -> Unit,
 ): () -> Unit {
     val scope = LocalLibraryOrganization.current
-    val lease = remember(scope.state, owner) { LifecycleLease() }
+    val lease = remember(scope.presentationKey, owner) { LifecycleLease() }
     DisposableEffect(lease) { onDispose { lease.attached = false } }
     return {
         val current = scope.readCurrent()

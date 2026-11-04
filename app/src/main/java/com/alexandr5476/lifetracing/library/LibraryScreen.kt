@@ -27,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -104,7 +105,9 @@ internal fun LibraryScreen(
 ) {
     val focus = rememberLibraryFocusRecovery(isRouteVisible)
     val feedback = rememberLibraryRetryFeedback(state)
-    val latestState = rememberUpdatedState(state)
+    // Match callback publication ownership even when a caller supplies an equal new state object.
+    val latestState = remember { mutableStateOf(state, referentialEqualityPolicy()) }
+    latestState.value = state
     val latestVisible = rememberUpdatedState(isRouteVisible)
     val path = (state.browse as? LibraryLoad.Content)?.value?.path.orEmpty()
     val location = (listOf(stringResource(R.string.library_root)) + path.map(Folder::name)).joinToString(" / ")

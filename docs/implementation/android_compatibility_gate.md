@@ -1,5 +1,16 @@
 # Android compatibility release gate
 
+## Library callback ownership regression inventory (W3, 2026-11-04)
+
+The Library callback comparison fix adds three original-JUnit identities to
+`LibraryActionAdmissionTest`, with no removals. Current mandatory counts are
+**528 app, 627 data and 2 independent startup cases per API**. Details and exact
+case names are in [Library accessibility](library_accessibility.md#w3-bounded-callback-ownership-comparisons-2026-11-04).
+The native counting/focus/action regressions compiled and the AndroidTest APK
+assembled; no device execution is claimed by this correction. Controller-owned
+unfiltered API 26/31/33/35/36, exact-head CI and existing persistence/reload cases
+remain required. Manual TalkBack/Switch Access remains unverified.
+
 ## API26 native system crash evidence (2026-11-04)
 
 CI run `41762283141`, job `126352488365`, at head
