@@ -162,7 +162,7 @@ class ProfileAdmissionTests(unittest.TestCase):
                 commands = []
                 def gradle(command, directory, module, api, record, timeout, profile_memory):
                     commands.append((module, command))
-                    self.assertLessEqual(timeout, 3300)
+                    self.assertLessEqual(timeout, 6600)
                     self.assertTrue(profile_memory)
                     self.assertIn('-Plifetracing.compatibility.taskSnapshotsDisabled=true', command)
                     self.assertEqual('-Plifetracing.compatibility.scaledRaster=true' in command, scaled)

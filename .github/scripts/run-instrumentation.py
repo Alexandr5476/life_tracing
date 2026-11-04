@@ -20,6 +20,9 @@ import uuid
 import xml.etree.ElementTree as ET
 
 
+API26_ROW_TIMEOUT_SECONDS = 110 * 60
+
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -85,7 +88,7 @@ class HostSignalObserver:
         try:
             return self.process.wait(timeout=10) == 0
         except subprocess.TimeoutExpired:
-            # Root sidecar also exits on owner disappearance or its one-hour limit.
+            # Root sidecar also exits on owner disappearance or its bounded row allowance.
             print("::error::Host signal observer did not acknowledge cleanup", flush=True)
             return False
 
@@ -187,7 +190,8 @@ def observe_host_signals(directory, owner_pid, owner_start):
         temp = directory / "ready.tmp"
         temp.write_text(json.dumps(ready), encoding="utf-8")
         temp.replace(directory / "ready.json")
-        deadline = time.monotonic() + 3600
+        observer_timeout = API26_ROW_TIMEOUT_SECONDS + 300
+        deadline = time.monotonic() + observer_timeout
         while time.monotonic() < deadline:
             read_events(0.2)
             current = process_label(owner_pid)
@@ -203,7 +207,7 @@ def observe_host_signals(directory, owner_pid, owner_start):
                 result = 0
                 break
         else:
-            emit("deadline", seconds=3600)
+            emit("deadline", seconds=observer_timeout)
     except Exception as exc:
         emit("observer_error", error=f"{type(exc).__name__}: {exc}")
     finally:
@@ -890,9 +894,12 @@ def main():
                     event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={},
                     requested_renderer=renderer)
     failed = False
-    # A successful API26 row took 50:46 (data alone 30:29). Share the budget
-    # across suites, retaining five minutes inside the CI job for cleanup/uploads.
-    row_deadline = time.monotonic() + 3300
+    # API26 exhausted 55 minutes with data complete and app still running.
+    # Share 110 minutes across preparation/suites, leaving ten minutes in its
+    # 120-minute job for runner setup, cleanup and uploads. Other rows keep 55/60.
+    row_timeout = API26_ROW_TIMEOUT_SECONDS if args.api == 26 else 3300
+    evidence["row_timeout_seconds"] = row_timeout
+    row_deadline = time.monotonic() + row_timeout
     host_observer = None
     profile = None
     try:
@@ -927,7 +934,10 @@ def main():
                        # Both explicit modes avoid deprecated *_indirect CLI aliases.
                        f"-Pandroid.testoptions.manageddevices.emulator.gpu={renderer}",
                        "-Pandroid.experimental.testOptions.managedDevices.setupTimeoutMinutes=5",
-                       "--no-parallel", "--max-workers=2", "--no-daemon", "--no-configuration-cache",
+                       # API36 setup overlapped Kotlin/Dex work during the hosted
+                       # SystemUI startup ANR. Serialize Gradle workers on this row.
+                       "--no-parallel", f"--max-workers={1 if args.api == 36 else 2}",
+                       "--no-daemon", "--no-configuration-cache",
                        "--rerun-tasks", "--no-build-cache", "--console=plain", "--stacktrace"]
             if module == "startup":
                 command.append("-Plifetracing.compatibility.productionStartup=true")

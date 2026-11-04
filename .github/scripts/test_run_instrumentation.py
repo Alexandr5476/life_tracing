@@ -315,6 +315,8 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 for command in commands:
                     graphics = [arg for arg in command if arg.startswith("-Pandroid.testoptions.manageddevices.emulator.gpu=")]
                     self.assertEqual(graphics, ["-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader"])
+                    workers = [arg for arg in command if arg.startswith("--max-workers=")]
+                    self.assertEqual(workers, ["--max-workers=1" if api == 36 else "--max-workers=2"])
 
     def test_emulator_install_failure_is_observable_and_keeps_failed_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -455,6 +457,42 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertEqual(worker.call_count, 3)
             modules = json.loads((Path(temporary) / "ci-evidence/api26/evidence.json").read_text())["modules"]
             self.assertEqual([r["status"] for r in modules.values()], ["PASSED"] * 3)
+
+    def test_api26_extended_budget_is_shared_and_still_blocks_after_expiry(self):
+        # Regression for CI41493383857: preparation/data consume ~2055 s before app.
+        # The synthetic app/startup durations test the budget, not a CI timing prediction.
+        for app_seconds, expected_result in ((1800, 0), (5000, 1)):
+            with self.subTest(app_seconds=app_seconds), tempfile.TemporaryDirectory() as temporary:
+                root, clock, allowances = Path(temporary), [0.0], []
+                env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                def provision(*args, **kwargs):
+                    clock[0] += 150
+                def run(command, directory, module, api, record, *, timeout):
+                    allowances.append((module, timeout))
+                    duration = {"data": 1905, "app": app_seconds, "startup": 180}[module]
+                    record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                    if duration > timeout:
+                        record.update(exit_code=143, abort_reason="execution deadline exceeded")
+                    else:
+                        self.write_inventory(root, module, api)
+                    clock[0] += min(duration, timeout)
+                with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                        patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(ci.subprocess, "run", side_effect=provision), \
+                        patch.object(ci, "sdkmanager_command", return_value=["sdkmanager"]), \
+                        patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(ci, "run_gradle", side_effect=run), \
+                        patch("sys.argv", ["ci", "--api", "26"]), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ci.main(), expected_result)
+                self.assertEqual(allowances[:2], [("data", 6450), ("app", 4545)])
+                evidence = json.loads((root / "ci-evidence/api26/evidence.json").read_text())
+                if expected_result:
+                    self.assertEqual(len(allowances), 2)
+                    self.assertEqual(evidence["modules"]["startup"]["status"], "NOT_RUN")
+                else:
+                    self.assertEqual(allowances[2], ("startup", 2745))
+                    self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
 
     def test_expired_row_budget_never_launches_or_certifies_remaining_invocations(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1085,7 +1123,7 @@ class HostMemoryProfileTests(unittest.TestCase):
                 def gradle(command, directory, module, api, record, timeout, profile_memory):
                     self.assertTrue(profile_memory)
                     self.assertEqual(api, 26)
-                    self.assertEqual(timeout, 3300)
+                    self.assertEqual(timeout, 6600)
                     target = "app" if module == "startup" else module
                     expected = ["./gradlew", f":{target}:pixel2Api26DebugAndroidTest",
                                 "-Plifetracing.compatibility.expectedApi=26",

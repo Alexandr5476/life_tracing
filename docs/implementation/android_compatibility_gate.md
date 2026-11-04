@@ -1,5 +1,31 @@
 # Android compatibility release gate
 
+## CI execution budgets and API36 startup contention (2026-11-04)
+
+API26 now has a **110-minute shared execution budget inside a 120-minute job**.
+This supersedes the historical 55/60-minute limits below. Preparation, data, app
+and independent startup share one deadline; cleanup and report uploads have a
+ten-minute allowance. The existing signal observer remains bounded at 115 minutes
+and still exits on owner disappearance or normal cleanup. Other rows keep 55/60.
+[GitHub permits six-hour hosted jobs](https://docs.github.com/en/actions/reference/limits).
+CI41493383857 exhausted its 3300-second budget after all 627 mandatory data cases
+and 373 app cases passed. The latest scaled-raster profile peaked at 2,058,256 KiB
+QEMU RSS, with no memory guard crossing or observed OOM. Earlier OOM/8GiB failures
+used different profiles. Full API26 completion is still unproven; the 8GiB/1.5GiB
+memory guards, original inventory, raster checks and assertions remain required.
+
+API36 now uses `--max-workers=1` for all three invocations. Its retained job log
+shows GMD setup overlapping Kotlin/Dex tasks, including Dex work during the
+SystemUI ANR window (91% guest CPU; 40% SurfaceFlinger kernel CPU). SystemUI waited
+in `getGpuContextPriority` before any instrumentation case. Gradle's
+[worker limit](https://docs.gradle.org/current/javadoc/org/gradle/StartParameter.html#getMaxWorkerCount())
+serializes build workers, including device setup, to reduce startup contention.
+Resource starvation is a hypothesis, not an established root cause. Existing
+standalone and minimal-GMD controls passed with the same SwiftShader backend;
+there is no justification here for another renderer change or private boot loop.
+The real hosted run must establish whether this launch change resolves the ANR.
+All health checks, deadlines, complete suites and cache exclusions remain active.
+
 ## API26 scaled raster draft (2026-11-02)
 
 Run41389414006/head42db0045 used the task-snapshot profile successfully but still
