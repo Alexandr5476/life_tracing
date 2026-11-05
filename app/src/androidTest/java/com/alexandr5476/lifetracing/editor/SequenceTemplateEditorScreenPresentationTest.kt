@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -32,6 +34,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -141,9 +144,16 @@ class SequenceTemplateEditorScreenPresentationTest {
                     canonical = linkedAuthoring(stepId, ActivitySnapshotId("snapshot-3"), newSourceId, 1, 3)
                 },
             )
+        val session = SequenceTemplateEditorRouteSession(controller.target, controller)
+        val compositionGeneration = mutableStateOf(0)
         composeTestRule.setContent {
             LifeTracingTheme {
-                SequenceTemplateEditorRoute(controller, onApplied = { libraryRefreshes++ }) {}
+                key(compositionGeneration.value) {
+                    SequenceTemplateEditorRoute(
+                        controller,
+                        onApplied = { generation -> session.deliverApplied(generation) { libraryRefreshes++ } },
+                    ) {}
+                }
             }
         }
         awaitReady(controller)
@@ -174,6 +184,9 @@ class SequenceTemplateEditorScreenPresentationTest {
         assertSourceActionsVisible()
         assertEquals(4, sourceLoads)
         composeTestRule.waitUntil(5_000) { libraryRefreshes == 3 }
+        composeTestRule.runOnIdle { compositionGeneration.value++ }
+        composeTestRule.waitForIdle()
+        assertEquals(3, libraryRefreshes)
         controller.close()
     }
 
@@ -816,7 +829,19 @@ class SequenceTemplateEditorScreenPresentationTest {
                 },
                 Instant::now,
             )
-        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        val session = SequenceTemplateEditorRouteSession(controller.target, controller)
+        val compositionGeneration = mutableStateOf(0)
+        var deliveries = 0
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                key(compositionGeneration.value) {
+                    SequenceTemplateEditorRoute(
+                        controller,
+                        onApplied = { generation -> session.deliverApplied(generation) { deliveries++ } },
+                    ) {}
+                }
+            }
+        }
         awaitReady(controller)
         controller.enterManipulation(DraftIdentity.Existing(SequenceNodeId("a")))
         controller.moveManipulation(
@@ -830,6 +855,7 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.runOnIdle { retainedApply() }
         assertEquals("A retained Apply must not activate canonical-read Retry", 2, loads)
         assertTrue(controller.state.value.save is SequenceTemplateEditorSave.Failure)
+        assertEquals(0, deliveries)
 
         composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_retry))).assertIsDisplayed().performClick()
         composeTestRule.waitUntil {
@@ -838,6 +864,11 @@ class SequenceTemplateEditorScreenPresentationTest {
         }
         assertEquals(1, writes)
         assertEquals(3, loads)
+        composeTestRule.waitUntil { deliveries == 1 }
+        composeTestRule.runOnIdle { compositionGeneration.value++ }
+        composeTestRule.waitForIdle()
+        assertEquals(1, deliveries)
+        assertEquals(1, writes)
         sequenceInput(R.string.sequence_editor_name).performTextReplacement("After canonical recovery")
         val afterRecovery = controller.state.value
         composeTestRule.runOnIdle { retainedApply() }
@@ -1794,8 +1825,18 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.runOnIdle {
             stale(AnnotatedString("Hidden"))
             save()
-            controller.retry()
         }
+        assertEquals(before, controller.state.value)
+        composeTestRule.runOnIdle { visible.value = true }
+        sequenceInput(R.string.sequence_editor_name).apply { keyboard.awaitFocus(this) }
+        composeTestRule.runOnIdle {
+            stale(AnnotatedString("Must not revive after showing"))
+            save()
+        }
+        assertEquals(before, controller.state.value)
+        composeTestRule.runOnIdle { visible.value = false }
+        foreground.performSemanticsAction(SemanticsActions.RequestFocus).apply { keyboard.awaitFocus(this) }
+        composeTestRule.runOnIdle { controller.retry() }
         awaitReady(controller)
         foreground.apply { keyboard.awaitFocus(this) }
         composeTestRule.runOnIdle { visible.value = true }
@@ -1965,6 +2006,273 @@ class SequenceTemplateEditorScreenPresentationTest {
     @Test
     fun russianCombinedScalingKeepsNativeSequenceTargetsReachable() = sequenceScales(Locale.forLanguageTag("ru"))
 
+    @Test
+    fun retainedNormalFormAndDoneCannotActDuringOrAfterManipulation() {
+        var writes = 0
+        var exits = 0
+        val controller = controller(emptyList(), onWrite = { writes++ })
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) { exits++ } } }
+        awaitReady(controller)
+        val identity = DraftIdentity.New("step")
+        val activity = StepActivityDraft.Local(controller.newLocalActivityDraft().copy(name = "Step"))
+        composeTestRule.runOnIdle {
+            controller.updateDraft {
+                it.copy(
+                    name = "Sequence",
+                    fields = listOf(SequenceFieldDraft(DraftIdentity.New("field"), 0, "Field", CustomFieldType.TEXT)),
+                    nodes = listOf(step("step", 0, activity)),
+                )
+            }
+        }
+        val name =
+            sequenceInput(
+                R.string.sequence_editor_name,
+            ).fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+        val field =
+            sequenceControl(controller, 0, R.string.sequence_editor_field_name)
+                .fetchSemanticsNode()
+                .config[SemanticsActions.SetText]
+                .action!!
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_settings))).performClick()
+        val toggle =
+            composeTestRule
+                .onLazyNode(hasContentDescription(text(R.string.sequence_editor_auto_advance)))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val countdown =
+            sequenceInput(R.string.sequence_editor_start_countdown)
+                .fetchSemanticsNode()
+                .config[SemanticsActions.SetText]
+                .action!!
+        val done =
+            composeTestRule
+                .onLazyNode(hasText(text(R.string.sequence_editor_done)))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.runOnIdle { controller.enterManipulation(identity) }
+        val before = controller.state.value
+        composeTestRule.runOnIdle {
+            name(AnnotatedString("Obsolete name"))
+            field(AnnotatedString("Obsolete Field"))
+            toggle()
+            countdown(AnnotatedString("8"))
+            done()
+        }
+        assertEquals(before, controller.state.value)
+        assertFalse(
+            controller.state.value.manipulation!!
+                .canUndo,
+        )
+        assertEquals(0, writes)
+        assertEquals(0, exits)
+        composeTestRule.runOnIdle { controller.updateDraft { it.copy(shortComment = "Current controller edit") } }
+        assertEquals(
+            1,
+            controller.state.value.manipulation!!
+                .operationCount,
+        )
+        val undoMatcher = hasText(text(R.string.sequence_editor_undo)) and isEnabled()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_undo)))
+        composeTestRule.waitUntil(5_000) { composeTestRule.onAllNodes(undoMatcher).fetchSemanticsNodes().size == 1 }
+        // Match the retained-callback checks above: explicitly dispatch the current native command.
+        composeTestRule
+            .onNode(undoMatcher)
+            .assertIsEnabled()
+            .assertIsDisplayed()
+            .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+        assertEquals(before.readyDraft(), controller.state.value.readyDraft())
+        assertEquals(
+            0,
+            controller.state.value.manipulation!!
+                .operationCount,
+        )
+        assertTrue(
+            controller.state.value.manipulation!!
+                .canRedo,
+        )
+        composeTestRule.runOnIdle {
+            controller.discardManipulation()
+            name(AnnotatedString("Must not revive"))
+            done()
+        }
+        assertEquals(before.readyDraft(), controller.state.value.readyDraft())
+        assertEquals(0, writes)
+        assertEquals(0, exits)
+        controller.close()
+    }
+
+    @Test
+    fun retainedManipulationApplyCannotCommitAfterDiscardOrReentry() {
+        var writes = 0
+        var exits = 0
+        var canonical = pointerAuthoring(ActivityStep(SequenceNodeId("step"), 0, ActivitySnapshotId("snapshot-a")))
+        val controller =
+            SequenceTemplateEditorController(
+                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+                SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                { canonical },
+                { emptyList() },
+                { _, _, _ -> error("No create") },
+                { _, _, draft, _ ->
+                    writes++
+                    assertEquals("Pre-entry draft", draft.shortComment)
+                    canonical =
+                        canonical.copy(
+                            sequence =
+                                canonical.sequence.copy(
+                                    revision = canonical.sequence.revision + 1,
+                                    shortComment = draft.shortComment,
+                                ),
+                        )
+                    canonical.sequence
+                },
+                Instant::now,
+            )
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) { exits++ } } }
+        awaitReady(controller)
+        val identity = DraftIdentity.Existing(SequenceNodeId("step"))
+        composeTestRule.runOnIdle {
+            controller.updateDraft { it.copy(shortComment = "Pre-entry draft") }
+            controller.enterManipulation(identity)
+        }
+        val apply =
+            composeTestRule
+                .onLazyNode(hasText(text(R.string.sequence_editor_apply)))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.runOnIdle {
+            controller.updateDraft { it.copy(shortComment = "Manipulation draft") }
+            controller.discardManipulation()
+        }
+        val discarded = controller.state.value
+        composeTestRule.runOnIdle { apply() }
+        assertEquals(discarded, controller.state.value)
+        assertEquals("Pre-entry draft", discarded.readyDraft()?.shortComment)
+        assertEquals(0, writes)
+        composeTestRule.runOnIdle { controller.enterManipulation(identity) }
+        composeTestRule.runOnIdle { apply() }
+        assertEquals(0, writes)
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_apply))).performClick()
+        composeTestRule.waitUntil { controller.state.value.appliedGeneration == 1L }
+        assertEquals(1, writes)
+        assertEquals(0, exits)
+        assertEquals(
+            "Pre-entry draft",
+            controller.state.value
+                .readyDraft()
+                ?.shortComment,
+        )
+        controller.close()
+    }
+
+    @Test
+    fun settingsCollapseRevokesNativeCallbacksAndRecoversOnlyMissingFocus() {
+        var writes = 0
+        val controller = controller(emptyList(), onWrite = { writes++ })
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        keyboard.enter()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_settings))).performClick()
+        val disclosure =
+            composeTestRule
+                .onNode(
+                    hasText(text(R.string.sequence_editor_settings)) and
+                        SemanticsMatcher.keyIsDefined(SemanticsProperties.StateDescription),
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val toggle =
+            composeTestRule
+                .onLazyNode(hasContentDescription(text(R.string.sequence_editor_auto_advance)))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val input = sequenceInput(R.string.sequence_editor_start_countdown)
+        val countdown = input.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+        input.performTextReplacement("bad")
+        keyboard.enter(input)
+        input.performSemanticsAction(SemanticsActions.RequestFocus).apply { keyboard.awaitFocus(this) }
+        val before = controller.state.value
+        composeTestRule.runOnIdle { disclosure() }
+        composeTestRule.runOnIdle {
+            toggle()
+            countdown(AnnotatedString("9"))
+        }
+        assertEquals(before, controller.state.value)
+        assertEquals(0, writes)
+        composeTestRule.waitUntil { composeTestRule.onAllNodes(isFocused()).fetchSemanticsNodes().size == 1 }
+        val survivor = composeTestRule.onNode(isFocused())
+        val survivorId = survivor.fetchSemanticsNode().id
+        composeTestRule.runOnIdle { controller.updateDraft { it.copy(shortComment = "Unrelated") } }
+        composeTestRule.onNode(SemanticsMatcher("surviving owner") { it.id == survivorId }).assertIsFocused()
+        survivor.performKeyInput { pressKey(Key.Tab) }
+        composeTestRule.waitUntil {
+            composeTestRule
+                .onAllNodes(isFocused())
+                .fetchSemanticsNodes()
+                .singleOrNull()
+                ?.id
+                ?.let { it != survivorId } == true
+        }
+        composeTestRule.onNode(isFocused()).performKeyInput {
+            keyDown(Key.ShiftLeft)
+            pressKey(Key.Tab)
+            keyUp(Key.ShiftLeft)
+        }
+        assertEquals(survivorId, composeTestRule.onNode(isFocused()).fetchSemanticsNode().id)
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_settings))).performClick()
+        val reopened = controller.state.value
+        composeTestRule.runOnIdle {
+            toggle()
+            countdown(AnnotatedString("7"))
+        }
+        assertEquals(reopened, controller.state.value)
+        composeTestRule.onLazyNode(hasContentDescription(text(R.string.sequence_editor_auto_advance))).performClick()
+        sequenceInput(R.string.sequence_editor_start_countdown).performTextReplacement("4")
+        assertEquals(
+            Duration.ofSeconds(4),
+            controller.state.value
+                .readyDraft()!!
+                .settings.sequenceStartCountdown,
+        )
+        assertEquals(
+            !before.readyDraft()!!.settings.autoAdvance,
+            controller.state.value
+                .readyDraft()!!
+                .settings.autoAdvance,
+        )
+        assertEquals(0, writes)
+        controller.close()
+    }
+
+    @Test
+    fun expandedSettingsLazyDetachmentDoesNotRecoverOrRevokeItsLogicalControls() {
+        val controller = presentSequenceFields()
+        keyboard.enter()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_settings))).performClick()
+        val input = sequenceInput(R.string.sequence_editor_start_countdown)
+        val countdown = input.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+        keyboard.enter(input)
+        input.performSemanticsAction(SemanticsActions.RequestFocus).apply { keyboard.awaitFocus(this) }
+        composeTestRule.onNodeWithTag("sequence-editor-page").performScrollToKey("top-end")
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText(text(R.string.sequence_editor_add_step)).assertIsDisplayed()
+        val position = editorScrollPosition()
+        composeTestRule.runOnIdle { countdown(AnnotatedString("3")) }
+        assertEquals(
+            Duration.ofSeconds(3),
+            controller.state.value
+                .readyDraft()!!
+                .settings.sequenceStartCountdown,
+        )
+        composeTestRule.waitForIdle()
+        assertEquals(position, editorScrollPosition())
+        controller.close()
+    }
+
     private fun sequenceScales(locale: Locale) {
         val configuration =
             android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
@@ -2130,16 +2438,24 @@ class SequenceTemplateEditorScreenPresentationTest {
             ),
         ).performScrollTo()
 
-    private fun controller(choices: List<SequenceEditorActivityChoice>) =
-        SequenceTemplateEditorController(
-            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-            SequenceTemplateEditorTarget.New,
-            { null },
-            { choices },
-            { draft, _, at -> template(draft, at) },
-            { _, _, draft, at -> template(draft, at) },
-            Instant::now,
-        )
+    private fun controller(
+        choices: List<SequenceEditorActivityChoice>,
+        onWrite: () -> Unit = {},
+    ) = SequenceTemplateEditorController(
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        SequenceTemplateEditorTarget.New,
+        { null },
+        { choices },
+        { draft, _, at ->
+            onWrite()
+            template(draft, at)
+        },
+        { _, _, draft, at ->
+            onWrite()
+            template(draft, at)
+        },
+        Instant::now,
+    )
 
     private fun existingController(authoring: SequenceTemplateAuthoringState) =
         SequenceTemplateEditorController(
@@ -2275,7 +2591,9 @@ class SequenceTemplateEditorScreenPresentationTest {
     ) = "sequence-drop-$prefix:${DraftIdentity.Existing(SequenceNodeId(id)).editorKey()}"
 
     private fun awaitReady(controller: SequenceTemplateEditorController) {
-        composeTestRule.waitUntil { controller.state.value.load is SequenceTemplateEditorLoad.Ready }
+        composeTestRule.waitUntil(5_000) { controller.state.value.load !is SequenceTemplateEditorLoad.Loading }
+        val load = controller.state.value.load
+        assertTrue("Expected a Ready fixture, got $load", load is SequenceTemplateEditorLoad.Ready)
     }
 
     private fun choice(

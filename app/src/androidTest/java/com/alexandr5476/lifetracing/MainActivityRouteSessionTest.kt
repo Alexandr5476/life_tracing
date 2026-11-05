@@ -1878,14 +1878,44 @@ class MainActivityRouteSessionTest {
             second.controller.state.value.manipulation
                 ?.canRedo == true,
         )
+        val library = composeTestRule.activity.libraryControllerOwner.get { error("Library must already exist") }
+        composeTestRule.waitUntil(5_000) { library.state.value.browse is LibraryLoad.Content }
+        val beforeApply = library.state.value.browseRequestId
         composeTestRule
             .onLazyNode(hasText(composeTestRule.activity.getString(R.string.sequence_editor_apply)))
             .performClick()
         composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 1L }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 1, library.state.value.browseRequestId)
+        recreateActivity()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(beforeApply + 1, library.state.value.browseRequestId)
+        composeTestRule.runOnUiThread {
+            second.controller.updateDraft { it.copy(shortComment = "Second explicit Apply") }
+            val currentStep =
+                second.controller.state.value
+                    .readyDraft()!!
+                    .nodes
+                    .first()
+            second.controller.enterManipulation(currentStep.identity)
+        }
+        composeTestRule
+            .onLazyNode(hasText(composeTestRule.activity.getString(R.string.sequence_editor_apply)))
+            .performClick()
+        composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 2L }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
+        recreateActivity()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
         }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
         composeTestRule
             .onNode(
                 hasText(composeTestRule.activity.getString(R.string.library_search_hint)) and hasSetTextAction(),
@@ -1920,6 +1950,27 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
         }
+        composeTestRule.onNode(sequenceRow).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.load is SequenceTemplateEditorLoad.Ready
+        }
+        val beforeDone = library.state.value.browseRequestId
+        val done =
+            composeTestRule.onLazyNode(
+                hasText(composeTestRule.activity.getString(R.string.sequence_editor_done)),
+            )
+        val retainedDone = done.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        done.performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+        composeTestRule.runOnUiThread { retainedDone() }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeDone + 1, library.state.value.browseRequestId)
     }
 
     @Test

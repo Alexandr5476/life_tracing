@@ -93,7 +93,7 @@ import java.time.Duration
 fun SequenceTemplateEditorRoute(
     controller: SequenceTemplateEditorController,
     onCommitted: (() -> Unit)? = null,
-    onApplied: (() -> Unit)? = null,
+    onApplied: ((Long) -> Unit)? = null,
     isRouteVisible: Boolean = true,
     onBack: () -> Unit,
 ) {
@@ -106,7 +106,7 @@ fun SequenceTemplateEditorRoute(
         }
     }
     LaunchedEffect(state.appliedGeneration) {
-        if (state.appliedGeneration > 0) onApplied?.invoke()
+        if (state.appliedGeneration > 0) onApplied?.invoke(state.appliedGeneration)
     }
     BackHandler(enabled = isRouteVisible) { controller.requestBack(onBack) }
     SequenceTemplateEditorScreen(state, controller, onBack, isRouteVisible)
@@ -233,7 +233,20 @@ private fun SequenceEditorForm(
             !recoveryPending &&
             !state.discardConfirmationVisible
     val formEditable = editable && state.manipulation == null
-    var settingsExpanded by rememberSaveable { mutableStateOf(false) }
+    val settingsExpanded = rememberSaveable { mutableStateOf(false) }
+    var settingsPresentation by remember { mutableStateOf(0L) }
+    val formActions = rememberSequenceEditorActions(controller, state, normalModeOnly = true)
+    // This lifetime belongs to the disclosure, not to its lazy viewport attachment.
+    val settingsActions =
+        key(settingsPresentation) {
+            rememberSequenceEditorActions(
+                controller,
+                state,
+                normalModeOnly = true,
+                disclosure = settingsExpanded,
+            )
+        }
+    LaunchedEffect(settingsExpanded.value) { focus.observeLogicalTargets() }
     var pickerTarget by remember { mutableStateOf<SequencePickerTarget?>(null) }
     val choices = remember(state.availableActivities) { state.availableActivities.associateBy { it.id } }
     val rows = remember(draft.nodes) { draft.sequenceEditorRows() }
@@ -270,89 +283,121 @@ private fun SequenceEditorForm(
                 .onGloballyPositioned { dropState.viewport = it.boundsInRoot() },
     ) {
         item {
-            FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                val manipulation = state.manipulation
-                if (manipulation == null) {
-                    SequenceEditorHeading(title)
-                    SequenceEditorBack(controller, onBack, enabled = editable)
-                } else {
-                    val cancel = stringResource(R.string.sequence_editor_manipulation_cancel)
-                    TextButton(
-                        onClick = controller::discardManipulation,
-                        modifier = Modifier.semantics { contentDescription = cancel },
-                        enabled = editable,
-                    ) {
-                        Text("×")
-                    }
-                    TextButton(
-                        onClick = { controller.undoManipulation() },
-                        enabled = editable && manipulation.canUndo,
-                    ) {
-                        Text(stringResource(R.string.sequence_editor_undo))
-                    }
-                    TextButton(
-                        onClick = { controller.redoManipulation() },
-                        enabled = editable && manipulation.canRedo,
-                    ) {
-                        Text(stringResource(R.string.sequence_editor_redo))
-                    }
-                    key(recoveryPending) {
+            key(actions) {
+                FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    val manipulation = state.manipulation
+                    if (manipulation == null) {
+                        SequenceEditorHeading(title)
+                        CompositionLocalProvider(LocalSequenceEditorActions provides formActions) {
+                            SequenceEditorBack(controller, onBack, enabled = editable)
+                        }
+                    } else {
+                        val cancel = stringResource(R.string.sequence_editor_manipulation_cancel)
                         TextButton(
-                            onClick = {
-                                actions.invoke {
-                                    if (recoveryPending) controller.retry() else controller.applyManipulation()
-                                }
-                            },
-                            enabled = recoveryPending || editable && !state.hasInvalidInput(draft),
+                            onClick = { actions.invoke(controller::discardManipulation) },
+                            modifier = Modifier.semantics { contentDescription = cancel },
+                            enabled = editable,
                         ) {
-                            Text(
-                                stringResource(
-                                    if (recoveryPending) {
-                                        R.string.sequence_editor_retry
-                                    } else {
-                                        R.string.sequence_editor_apply
-                                    },
-                                ),
-                            )
+                            Text("×")
+                        }
+                        TextButton(
+                            onClick = { actions.invoke { controller.undoManipulation() } },
+                            enabled = editable && manipulation.canUndo,
+                        ) {
+                            Text(stringResource(R.string.sequence_editor_undo))
+                        }
+                        TextButton(
+                            onClick = { actions.invoke { controller.redoManipulation() } },
+                            enabled = editable && manipulation.canRedo,
+                        ) {
+                            Text(stringResource(R.string.sequence_editor_redo))
+                        }
+                        key(recoveryPending) {
+                            TextButton(
+                                onClick = {
+                                    actions.invoke {
+                                        if (recoveryPending) {
+                                            controller.retry()
+                                        } else if (controller.state.value.manipulation != null) {
+                                            controller.applyManipulation()
+                                        }
+                                    }
+                                },
+                                enabled = recoveryPending || editable && !state.hasInvalidInput(draft),
+                            ) {
+                                Text(
+                                    stringResource(
+                                        if (recoveryPending) {
+                                            R.string.sequence_editor_retry
+                                        } else {
+                                            R.string.sequence_editor_apply
+                                        },
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
             }
         }
         item {
-            LifeTracingOutlinedTextField(
-                value = draft.name,
-                onValueChange = { name -> actions.update { it.copy(name = name) } },
-                modifier =
-                    editorInputFocusTarget()
-                        .then(if (recoveryPending) Modifier else Modifier.focusRequester(focus.landing))
-                        .fillMaxWidth(),
-                label = { Text(stringResource(R.string.sequence_editor_name)) },
-                enabled = formEditable,
-            )
-            LifeTracingOutlinedTextField(
-                value = draft.shortComment.orEmpty(),
-                onValueChange = { value -> actions.update { it.copy(shortComment = value.ifBlank { null }) } },
-                modifier = editorInputFocusTarget().fillMaxWidth(),
-                label = {
-                    Text(stringResource(R.string.sequence_editor_short_comment))
-                },
-                enabled = formEditable,
-            )
+            key(formActions) {
+                LifeTracingOutlinedTextField(
+                    value = draft.name,
+                    onValueChange = { name -> formActions.update { it.copy(name = name) } },
+                    modifier =
+                        editorInputFocusTarget()
+                            .then(if (recoveryPending) Modifier else Modifier.focusRequester(focus.landing))
+                            .fillMaxWidth(),
+                    label = { Text(stringResource(R.string.sequence_editor_name)) },
+                    enabled = formEditable,
+                )
+                LifeTracingOutlinedTextField(
+                    value = draft.shortComment.orEmpty(),
+                    onValueChange = { value -> formActions.update { it.copy(shortComment = value.ifBlank { null }) } },
+                    modifier = editorInputFocusTarget().fillMaxWidth(),
+                    label = {
+                        Text(stringResource(R.string.sequence_editor_short_comment))
+                    },
+                    enabled = formEditable,
+                )
+            }
         }
         item {
-            val expanded =
-                stringResource(
-                    if (settingsExpanded) R.string.sequence_editor_expanded else R.string.sequence_editor_collapsed,
-                )
-            LifeTracingSecondaryButton(
-                onClick = { actions.invoke { settingsExpanded = !settingsExpanded } },
-                modifier = editorFocusTarget().semantics { stateDescription = expanded },
-                enabled = formEditable,
-            ) { Text(stringResource(R.string.sequence_editor_settings)) }
+            key(formActions) {
+                val expanded =
+                    stringResource(
+                        if (settingsExpanded.value) {
+                            R.string.sequence_editor_expanded
+                        } else {
+                            R.string.sequence_editor_collapsed
+                        },
+                    )
+                LifeTracingSecondaryButton(
+                    onClick = {
+                        formActions.invoke {
+                            settingsActions.attached = false
+                            focus.observeLogicalTargets()
+                            settingsPresentation++
+                            settingsExpanded.value = !settingsExpanded.value
+                        }
+                    },
+                    modifier = editorFocusTarget().semantics { stateDescription = expanded },
+                    enabled = formEditable,
+                ) { Text(stringResource(R.string.sequence_editor_settings)) }
+            }
         }
-        if (settingsExpanded) item { SequenceSettings(draft, state, controller, formEditable) }
-        item { SequenceFields(draft, controller, actions, formEditable) }
+        if (settingsExpanded.value) {
+            item {
+                key(settingsActions) {
+                    CompositionLocalProvider(
+                        LocalSequenceEditorActions provides settingsActions,
+                        LocalEditorTargetExists provides { settingsActions.attached && settingsExpanded.value },
+                    ) { SequenceSettings(draft, state, controller, formEditable) }
+                }
+            }
+        }
+        item { key(formActions) { SequenceFields(draft, controller, formActions, formEditable) } }
         item { Text(stringResource(R.string.sequence_editor_steps), style = MaterialTheme.typography.titleMedium) }
         items(rows, key = SequenceEditorRow::key) { row ->
             SequenceDropTarget(row, dropState) {
@@ -416,9 +461,17 @@ private fun SequenceEditorForm(
             if (state.save is SequenceTemplateEditorSave.Saving) SequenceEditorStatus(R.string.sequence_editor_saving)
             if (recoveryPending || state.manipulation == null) {
                 // Save and canonical-read Retry have different authority even in the same load generation.
-                key(recoveryPending) {
+                key(actions, recoveryPending) {
                     LifeTracingPrimaryButton(
-                        onClick = { actions.invoke { if (recoveryPending) controller.retry() else controller.save() } },
+                        onClick = {
+                            if (recoveryPending) {
+                                actions.invoke(
+                                    controller::retry,
+                                )
+                            } else {
+                                formActions.invoke(controller::save)
+                            }
+                        },
                         modifier =
                             editorFocusTarget()
                                 .then(if (recoveryPending) Modifier.focusRequester(focus.landing) else Modifier)

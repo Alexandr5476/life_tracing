@@ -101,6 +101,54 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
+    fun applyDeliveryGenerationSurvivesExplicitLoadFailureAndSuccess() =
+        runBlocking {
+            val canonical = authoringState()
+            var failRead = false
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    {
+                        if (failRead) error("Explicit reload failed")
+                        canonical
+                    },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ ->
+                        writes++
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            val session = SequenceTemplateEditorRouteSession(controller.target, controller)
+            var deliveries = 0
+            controller.updateDraft { it.copy(name = "First Apply") }
+            controller.applyManipulation()
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+            session.deliverApplied(controller.state.value.appliedGeneration) { deliveries++ }
+            failRead = true
+            controller.retry()
+            withTimeout(2_000) { controller.state.first { it.load is SequenceTemplateEditorLoad.Failure } }
+            assertEquals(1L, controller.state.value.appliedGeneration)
+            session.deliverApplied(controller.state.value.appliedGeneration) { error("Already acknowledged") }
+            failRead = false
+            controller.retry()
+            controller.awaitReady()
+            assertEquals(1L, controller.state.value.appliedGeneration)
+            session.deliverApplied(controller.state.value.appliedGeneration) { error("Already acknowledged") }
+            controller.updateDraft { it.copy(name = "Second Apply") }
+            controller.applyManipulation()
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 2L } }
+            session.deliverApplied(controller.state.value.appliedGeneration) { deliveries++ }
+            assertEquals(2, deliveries)
+            assertEquals(2, writes)
+            controller.close()
+        }
+
+    @Test
     fun pickerLoadsBoundedPagesOnlyWhenOpened() =
         runBlocking {
             var firstPageReads = 0
@@ -1101,6 +1149,101 @@ class SequenceTemplateEditorControllerTest {
                     .readyDraft()
                     ?.name,
             )
+        }
+
+    @Test
+    fun presentationActionsCannotCrossManipulationAdmissionOrExitButControllerEditsRemainSupported() =
+        runBlocking {
+            val canonical = authoringState()
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ ->
+                        writes++
+                        canonical.sequence
+                    },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.updateDraft { it.copy(shortComment = "Pre-entry draft") }
+            val normal = SequenceTemplateEditorActions(controller, controller.state.value.generation)
+            val step = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            controller.enterManipulation(step)
+            val entered = controller.state.value
+            normal.update { it.copy(name = "Obsolete form") }
+            normal.invoke(controller::save)
+            assertEquals(entered, controller.state.value)
+            assertEquals(0, writes)
+
+            val manipulation = SequenceTemplateEditorActions(controller, entered.generation)
+            controller.updateDraft { it.copy(shortComment = "Current manipulation edit") }
+            assertTrue(
+                controller.state.value.manipulation
+                    ?.canUndo == true,
+            )
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                "Pre-entry draft",
+                controller.state.value
+                    .readyDraft()
+                    ?.shortComment,
+            )
+            controller.discardManipulation()
+            val discarded = controller.state.value
+            manipulation.invoke(controller::applyManipulation)
+            normal.update { it.copy(name = "Must not revive") }
+            assertEquals(discarded, controller.state.value)
+            assertEquals(0, writes)
+            controller.enterManipulation(step)
+            manipulation.invoke(controller::applyManipulation)
+            assertEquals(0, writes)
+            val current = SequenceTemplateEditorActions(controller, controller.state.value.generation)
+            current.invoke(controller::applyManipulation)
+            withTimeout(2_000) { controller.state.first { it.appliedGeneration == 1L } }
+            assertEquals(1, writes)
+            controller.close()
+        }
+
+    @Test
+    fun currentManipulationActionsUndoAndRedoAnInitiallyMissingComment() =
+        runBlocking {
+            val canonical = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ -> error("No save") },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            val baseline = requireNotNull(controller.state.value.readyDraft())
+            assertEquals(null, baseline.shortComment)
+            controller.enterManipulation(DraftIdentity.Existing(SequenceNodeId("step-1")))
+            val actions = SequenceTemplateEditorActions(controller, controller.state.value.generation)
+            val edited = baseline.copy(shortComment = "Current controller edit")
+            controller.updateDraft { edited }
+
+            actions.invoke { controller.undoManipulation() }
+            assertEquals(baseline, controller.state.value.readyDraft())
+            assertTrue(
+                controller.state.value.manipulation!!
+                    .canRedo,
+            )
+            actions.invoke { controller.redoManipulation() }
+            assertEquals(edited, controller.state.value.readyDraft())
+            assertTrue(
+                controller.state.value.manipulation!!
+                    .canUndo,
+            )
+            controller.close()
         }
 
     @Test

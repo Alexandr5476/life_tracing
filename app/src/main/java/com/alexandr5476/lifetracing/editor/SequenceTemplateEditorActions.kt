@@ -9,12 +9,23 @@ internal class SequenceTemplateEditorActions(
     private val controller: SequenceTemplateEditorController,
     private val generation: Long,
     private val discardGeneration: Long? = null,
+    private val normalModeOnly: Boolean = false,
+    private val available: () -> Boolean = { true },
 ) {
+    private val modeGeneration = controller.presentationModeGeneration
     var attached = true
     var visible = true
 
     fun invoke(action: () -> Unit) {
-        if (attached && visible) controller.withPresentationGeneration(generation, discardGeneration, action)
+        if (attached && visible && available()) {
+            controller.withPresentationGeneration(generation, discardGeneration) {
+                if (controller.presentationModeGeneration == modeGeneration &&
+                    (!normalModeOnly || controller.state.value.manipulation == null)
+                ) {
+                    action()
+                }
+            }
+        }
     }
 
     fun update(transform: (SequenceTemplateDraft) -> SequenceTemplateDraft) =

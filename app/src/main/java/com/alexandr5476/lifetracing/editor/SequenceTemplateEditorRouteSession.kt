@@ -28,7 +28,19 @@ internal class SequenceTemplateEditorRouteSession(
     val target: SequenceTemplateEditorTarget,
     val controller: SequenceTemplateEditorController,
     val exitPolicy: SequenceTemplateEditorRouteExitPolicy = SequenceTemplateEditorRouteExitPolicy(),
-)
+) {
+    private var appliedGenerationDelivered = 0L
+
+    fun deliverApplied(
+        generation: Long,
+        action: () -> Unit,
+    ) {
+        if (generation > appliedGenerationDelivered) {
+            appliedGenerationDelivered = generation
+            action()
+        }
+    }
+}
 
 internal class SequenceTemplateEditorRouteExitPolicy {
     private var delivered = false

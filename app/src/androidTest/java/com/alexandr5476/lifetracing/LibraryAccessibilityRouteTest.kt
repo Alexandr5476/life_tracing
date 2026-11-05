@@ -22,6 +22,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.text.AnnotatedString
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -1339,6 +1340,32 @@ class LibraryAccessibilityRouteTest {
                 .performClick()
             f.editorInput(R.string.sequence_editor_start_countdown).performTextReplacement("3")
             f.editorInput(R.string.sequence_editor_before_step_countdown).performTextReplacement("2")
+            val settingsToggle =
+                compose
+                    .onLazyNode(hasContentDescription(f.text(R.string.sequence_editor_auto_advance)))
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val settingsCountdown =
+                f
+                    .editorInput(R.string.sequence_editor_start_countdown)
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.SetText]
+                    .action!!
+            val beforeCollapse = session.controller.state.value
+            f.invoke(R.string.sequence_editor_settings)
+            compose.runOnIdle {
+                settingsToggle()
+                settingsCountdown(AnnotatedString("99"))
+            }
+            assertEquals(beforeCollapse, session.controller.state.value)
+            assertEquals(before, f.store.durableFacts())
+            f.invoke(R.string.sequence_editor_settings)
+            compose.runOnIdle {
+                settingsToggle()
+                settingsCountdown(AnnotatedString("99"))
+            }
+            assertEquals(beforeCollapse, session.controller.state.value)
             f.addSequenceField(CustomFieldType.NUMBER)
             f.sequenceControl(0, R.string.sequence_editor_field_name).performTextReplacement("Same")
             f.sequenceControl(0, R.string.activity_editor_unit).performTextReplacement("kg")

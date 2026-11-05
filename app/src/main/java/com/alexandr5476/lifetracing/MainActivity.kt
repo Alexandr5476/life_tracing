@@ -760,8 +760,8 @@ internal fun LifeTracingApp(
                                         sequenceEditorSessions.release(session)
                                         backStack.removeSequenceTemplateEditor()
                                     },
-                                    onApplied = {
-                                        libraryOwner.refreshIfInitialized()
+                                    onApplied = { generation ->
+                                        session.deliverApplied(generation, libraryOwner::refreshIfInitialized)
                                     },
                                     onCommitted = {
                                         session.exitPolicy.deliverCommitted {
@@ -790,8 +790,8 @@ internal fun LifeTracingApp(
                                         sequenceEditorSessions.release(session)
                                         backStack.removeSequenceTemplateEditor()
                                     },
-                                    onApplied = {
-                                        libraryOwner.refreshIfInitialized()
+                                    onApplied = { generation ->
+                                        session.deliverApplied(generation, libraryOwner::refreshIfInitialized)
                                     },
                                     onCommitted = {
                                         session.exitPolicy.deliverCommitted {

@@ -55,6 +55,10 @@ internal class EditorFocus {
         return landing.requestFocus()
     }
 
+    fun observeLogicalTargets() {
+        if (owner?.logicallyExists?.invoke() == false) removed = true
+    }
+
     var owner: EditorFocusHandle? = null
     var removed by mutableStateOf(false)
     var hasFocus by mutableStateOf(false)
@@ -62,6 +66,7 @@ internal class EditorFocus {
 }
 
 internal class EditorFocusHandle {
+    var logicallyExists: (() -> Boolean)? = null
     val requester = FocusRequester()
     var attached = true
 }
@@ -168,6 +173,7 @@ internal fun editorFocusTarget(description: String? = null): Modifier {
     val focus = LocalEditorFocus.current
     val handle = remember { EditorFocusHandle() }
     val targetExists = LocalEditorTargetExists.current
+    handle.logicallyExists = targetExists
     return Modifier
         .onFocusTargetAttachmentChanged { attached ->
             handle.attached = attached

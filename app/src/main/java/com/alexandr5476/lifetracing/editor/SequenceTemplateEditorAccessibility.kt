@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -148,13 +149,25 @@ internal fun rememberSequenceEditorActions(
     controller: SequenceTemplateEditorController,
     state: SequenceTemplateEditorState,
     dialog: Boolean = false,
+    normalModeOnly: Boolean = false,
+    disclosure: State<Boolean>? = null,
 ): SequenceTemplateEditorActions {
     val discardGeneration = state.discardGeneration.takeIf { dialog }
+    val visible = LocalEditorVisible.current
     val actions =
-        remember(controller, state.generation, discardGeneration) {
-            SequenceTemplateEditorActions(controller, state.generation, discardGeneration)
+        remember(
+            controller,
+            state.generation,
+            discardGeneration,
+            controller.presentationModeGeneration,
+            disclosure?.value,
+            visible,
+        ) {
+            SequenceTemplateEditorActions(controller, state.generation, discardGeneration, normalModeOnly) {
+                disclosure?.value != false
+            }
         }
-    actions.visible = LocalEditorVisible.current
+    actions.visible = visible
     DisposableEffect(actions) { onDispose { actions.attached = false } }
     return actions
 }

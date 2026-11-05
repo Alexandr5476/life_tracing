@@ -162,6 +162,9 @@ class SequenceTemplateEditorController internal constructor(
         synchronized(commandLock) { closed = true }
     }
 
+    private var modeGeneration = 0L
+    internal val presentationModeGeneration get() = synchronized(commandLock) { modeGeneration }
+
     internal fun ownsGeneration(generation: Long): Boolean =
         synchronized(commandLock) { !closed && loadGeneration == generation }
 
@@ -368,6 +371,7 @@ class SequenceTemplateEditorController internal constructor(
             if (commandsBlocked()) return
             val session =
                 manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
+                    modeGeneration++
                     manipulationSession = it
                     manipulationTextInputsBaseline = mutableState.value.textInputs
                 }
@@ -557,7 +561,11 @@ class SequenceTemplateEditorController internal constructor(
                 if (commandsBlocked()) return
                 clearManipulationSession()
                 val generation = ++loadGeneration
-                mutableState.value = SequenceTemplateEditorState(generation = generation)
+                mutableState.value =
+                    SequenceTemplateEditorState(
+                        generation = generation,
+                        appliedGeneration = mutableState.value.appliedGeneration,
+                    )
                 durableTarget to generation
             }
         scope.launch {
@@ -577,6 +585,7 @@ class SequenceTemplateEditorController internal constructor(
                             stepSourceIds = authoring?.stepSourceIds().orEmpty(),
                             sourceStatuses = loaded.sourceStatuses,
                             generation = generation,
+                            appliedGeneration = mutableState.value.appliedGeneration,
                         )
                 }
             } catch (cancelled: CancellationException) {
@@ -588,6 +597,7 @@ class SequenceTemplateEditorController internal constructor(
                         SequenceTemplateEditorState(
                             load = SequenceTemplateEditorLoad.Failure(failure.message ?: "Unknown error"),
                             generation = generation,
+                            appliedGeneration = mutableState.value.appliedGeneration,
                         )
                 }
             }
@@ -803,6 +813,7 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     private fun clearManipulationSession() {
+        if (manipulationSession != null) modeGeneration++
         manipulationSession = null
         manipulationTextInputsBaseline = null
     }

@@ -308,7 +308,7 @@ private data class ValueChange<T>(
 private fun <T> change(
     before: T,
     after: T,
-): ValueChange<T>? = after.takeIf { it != before }?.let(::ValueChange)
+): ValueChange<T>? = if (before != after) ValueChange(after) else null
 
 private fun <K, V> changes(
     before: Map<K, V>,

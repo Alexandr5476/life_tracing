@@ -179,6 +179,30 @@ class SequenceManipulationTest {
         assertEquals(0, session.retainedHistoryStepCount())
     }
 
+    @Test
+    fun commentHistoryRestoresMissingValuesOnUndoAndRedo() {
+        val baseline = draft()
+        val selected = id("a")
+        val session = SequenceManipulationSession(baseline, selected)
+        val added = baseline.copy(shortComment = "Current controller edit")
+        session.record(snapshot(baseline, selected), snapshot(added, selected))
+
+        val undone = requireNotNull(session.undo(snapshot(added, selected)))
+        assertEquals(baseline, undone.draft)
+        assertFalse(session.uiState().canUndo)
+        assertTrue(session.uiState().canRedo)
+        val redone = requireNotNull(session.redo(undone))
+        assertEquals(added, redone.draft)
+
+        val cleared = added.copy(shortComment = null)
+        session.record(redone, snapshot(cleared, selected))
+        val restored = requireNotNull(session.undo(snapshot(cleared, selected)))
+        assertEquals(added, restored.draft)
+        assertEquals(cleared, session.redo(restored)?.draft)
+        assertEquals(2, session.uiState().operationCount)
+        assertFalse(session.uiState().canRedo)
+    }
+
     private fun draft() =
         SequenceTemplateDraft(
             "Workout",
