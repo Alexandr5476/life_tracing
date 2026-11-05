@@ -17,12 +17,13 @@ internal class SequenceTemplateEditorActions(
     var visible = true
 
     fun invoke(action: () -> Unit) {
-        if (attached && visible && available()) {
+        if (attached && visible) {
             controller.withPresentationGeneration(generation, discardGeneration) {
-                if (controller.presentationModeGeneration == modeGeneration &&
-                    (!normalModeOnly || controller.state.value.manipulation == null)
-                ) {
-                    action()
+                val ownsMode =
+                    controller.presentationModeGeneration == modeGeneration &&
+                        (!normalModeOnly || controller.state.value.manipulation == null)
+                if (ownsMode && attached && visible) {
+                    if (available()) action()
                 }
             }
         }

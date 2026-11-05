@@ -145,13 +145,16 @@ internal fun SequenceEditorDiscard(
 }
 
 @Composable
+@Suppress("LongParameterList") // Controller generation, mode and logical disclosure jointly own a presentation lease.
 internal fun rememberSequenceEditorActions(
     controller: SequenceTemplateEditorController,
     state: SequenceTemplateEditorState,
     dialog: Boolean = false,
     normalModeOnly: Boolean = false,
     disclosure: State<Boolean>? = null,
+    available: () -> Boolean = { true },
 ): SequenceTemplateEditorActions {
+    val currentAvailable = androidx.compose.runtime.rememberUpdatedState(available)
     val discardGeneration = state.discardGeneration.takeIf { dialog }
     val visible = LocalEditorVisible.current
     val actions =
@@ -164,7 +167,7 @@ internal fun rememberSequenceEditorActions(
             visible,
         ) {
             SequenceTemplateEditorActions(controller, state.generation, discardGeneration, normalModeOnly) {
-                disclosure?.value != false
+                disclosure?.value != false && currentAvailable.value()
             }
         }
     actions.visible = visible

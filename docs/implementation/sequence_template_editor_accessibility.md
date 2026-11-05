@@ -820,3 +820,121 @@ The native regression and repaired original journey have compiled but have not r
 in this continuation. The supplied native failure's stability obligation remains
 open for Controller rerun; local source/APK and JVM results do not establish native
 red/green, CI parity, or manual accessibility-service certification.
+
+## S3 — Add Step and local Step configuration
+
+The existing authoring models, append commands, semantic Save/Apply/Done boundary,
+repository transactions and snapshot/provenance rules remain unchanged. No schema,
+migration, propagation mode or durable status was added.
+
+Add Step uses a native, lazy dialog with a single-use insertion offer bound to the
+exact Repeat identity (or top-level append), editor generation and manipulation
+mode. Selection keeps FromTemplate and its exact Template ID, or creates a fresh
+local draft; it never materializes a snapshot. Cancellation, dismissal, disposal,
+hiding, obsolete generations and missing Repeat targets revoke selection and
+pagination. Reads remain first-page/continuation bounded; editor opening never
+reads the picker catalog. Native loading, empty, failure/retry, destination and
+choice metadata are localized. Dialog focus starts on Cancel in keyboard mode;
+return focus belongs to the surviving host and never replaces a valid owner.
+
+Step disclosure has a synchronous presentation epoch and stable identity-based
+expansion state. Native disclosure/content nodes are keyed to their leases so
+Material cannot rebind a retained semantic callback to a later disclosure. Lazy
+detachment remains separate from logical removal in focus bookkeeping. Current
+Step configuration resolves physical ownership across containers, with no captured
+parent or Field/option mutation indices. Field and option leases additionally
+check identity, type, membership and source provenance. Number parsing reads current
+precision. Name/label overrides, type/unit replacement, Missing/zero, defaults and
+Main Value ownership retain their domain rules. Clearing a nonselected Main Value
+Field leaves another Field's selection intact.
+
+Tracking, Timer, settings, defaults and override choices expose native selected,
+checked and error states, contextual focus targets and raw validation text. Timer
+and override controls have mode-specific lifetimes. Pending FromTemplate exposes
+its existing commit guidance; pending Duplicate stays noneditable. Null Boolean
+and countdown inheritance remain distinct from explicit false and zero. Overrides
+do not change Activity configuration or locallyModified.
+
+A native tracking-mode or countdown-inheritance action groups its raw-input cleanup
+and configuration edit into one existing manipulation delta. Nested raw-input
+admission restores the outer recording flag. Undo/Redo restore both values together;
+Discard retains the exact session-entry draft and raw-input baseline. This changes
+no writer or persistent command. The added Jupiter undo regression first failed
+with two operations instead of one. A Main Value regression first failed because
+clearing an unselected Field erased the selected Field.
+
+Evidence added: focused Jupiter action/lifetime/identity/default/history regressions;
+native picker, pagination, loading/failure, same-name targeting, movement, disclosure,
+focus, raw errors and EN/RU combined-scaling regressions; and a production MainActivity
+journey using a disposable physical database. The latter creates both Step kinds at
+both levels, edits local Number/Category/Text configuration and explicit overrides,
+recreates the Activity with an open picker, saves, checks an existing override-only
+commit, then replaces linked configuration while terminal history, a Plan and active
+runtime exist. Physical reopen compares canonical authoring and durable ownership.
+The original-JUnit inventory is extended without removing existing identities:
+567 app, 627 data and 2 startup identities. Eight new native presentation methods
+and one production physical-reopen method are mandatory. Configuration provenance
+is exposed on the native Step heading without increasing collapsed row height.
+
+Native device execution, full unfiltered gates, GitHub CI and manual TalkBack,
+Switch Access and physical-keyboard certification remain Controller-owned/unverified.
+Local JVM/static/APK results are recorded in the completion report; APK compilation
+is not native presentation or persistence runtime PASS.
+
+S3 final local verification passed:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceStepActionsTest' --tests '*SequenceTemplateEditor*' --tests '*SequenceManipulation*' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain --no-daemon --max-workers=2
+```
+
+The final run completed in 3m 53s: 59 JVM cases, zero failures/errors/skips
+(12 Step actions, 31 Sequence controller, 3 route-owner, 9 manipulation and
+4 destination cases). App ktlint, Detekt, lintDebug and AndroidTest APK assembly
+passed. The host inventory-acceptance regression passed, and comparison with HEAD
+found no lost mandatory identities. `git diff --check` passed. The native cases,
+physical-reopen journey and combined scaling compiled into the test APK but were
+not executed. No managed-device, full-suite, coverage, CI or manual certification
+PASS is inferred. All requested edits remain uncommitted for Controller verification.
+
+## S3 canonical API 35 repair — explicit zero and compact Repeat insertion
+
+The Controller run S3-238423581dc947e39620e36faf3dfa18 reached real tests and
+reported four app failures. Two expose the same null/zero presentation defect:
+the inherited Step countdown was rendered as `0`, so native replacement with the
+same text did not produce a Compose value-change callback. The draft therefore
+retained inherited null, including after physical commit. Two original Sequence
+presentation tests could no longer discover the compact Repeat insertion label
+because S3 had rendered the full structural context as visible button text.
+
+Decision recorded before the repair: an unentered inherited Step countdown has
+blank input and retains the existing Inherit indicator. Native entry of `0` is
+then a real edit that stores explicit Duration.ZERO. Choosing Inherit clears raw
+input and restores blank presentation; focus, inspection and untouched blank
+presentation never write. Invalid entered blank/text still follows the existing
+raw-input validation boundary. Other duration controls retain their existing
+numeric defaults. This corrects presentation of the frozen null/zero distinction;
+it introduces no new override state, command or persistence rule.
+
+Repeat insertion restores the compact visible Add step to Repeat ×N label. Its
+localized accessibility description carries the current Repeat position/context,
+while insertion continues to use the exact draft Repeat identity. Original compact
+label and laziness regressions are preserved. S3 native/physical fixtures select
+contextual Repeat controls by their accessibility description. Native countdown
+assertions now check unentered and restored inheritance as well as explicit zero;
+the physical journey checks zero both before submission and after the override-only
+canonical reload. The supplied four native failures remain open until the repair
+probe reruns the corrected candidate.
+
+Repair verification: the same focused JVM/static/lint/AndroidTest APK command above
+passed in 3m 12s, with 59 JVM cases and zero failures/errors/skips. All three affected
+native classes retain their mandatory method inventories; no original testcase or
+assertion was removed. `git diff --check` passed.
+
+The authorized repair probe was invoked with a justified class scope: all eight
+SequenceStepAccessibilityTest cases, the failing production physical-reopen journey,
+and both original failing Repeat-label cases. It was refused before Gradle/device/
+test startup with `No active repair-probe lease. This workflow state is not an
+authorized focused-device repair session.` No raw device command or lease workaround
+was attempted. The four supplied native failures remain OPEN pending Controller
+runtime verification. Local compilation/JVM success is not a repaired native PASS,
+unfiltered stability PASS, CI parity or manual accessibility certification.

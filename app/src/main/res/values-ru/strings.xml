@@ -807,4 +807,14 @@
     <string name="sequence_manipulation_new">Новый элемент черновика</string>
     <string name="sequence_manipulation_selection_unavailable">Выбранный элемент недоступен. Выберите существующий элемент.</string>
     <string name="sequence_manipulation_destinations_heading">Места назначения</string>
+    <string name="sequence_step_top_destination">Добавить в конец основного списка шагов</string>
+    <string name="sequence_step_picker_choice">Дело из шаблона %1$d: %2$s. %3$s. Назначение: %4$s</string>
+    <string name="sequence_step_picker_loading">Загрузка дел…</string>
+    <string name="sequence_step_picker_empty">Нет дел из шаблонов. Можно создать локальный шаг.</string>
+    <string name="sequence_step_picker_failure">Не удалось загрузить дела. Повторите попытку.</string>
+    <string name="sequence_step_local">Локальная конфигурация дела</string>
+    <string name="sequence_step_linked">Конфигурация связанного дела</string>
+    <string name="sequence_step_pending">Конфигурация шаблона фиксируется при применении или сохранении</string>
+    <string name="sequence_step_override_timer_behavior">Переопределение поведения таймера шага при нуле</string>
+    <string name="sequence_step_repeat_guidance">Введите целое число от 1 до 2147483647.</string>
 </resources>

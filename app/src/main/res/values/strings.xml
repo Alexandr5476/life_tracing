@@ -807,4 +807,14 @@
     <string name="sequence_manipulation_new">New draft item</string>
     <string name="sequence_manipulation_selection_unavailable">Selection unavailable. Select a current item.</string>
     <string name="sequence_manipulation_destinations_heading">Destinations</string>
+    <string name="sequence_step_top_destination">Append to the top-level Step list</string>
+    <string name="sequence_step_picker_choice">Template Activity %1$d: %2$s. %3$s. Destination: %4$s</string>
+    <string name="sequence_step_picker_loading">Loading Activities…</string>
+    <string name="sequence_step_picker_empty">No reusable Activities. You can create a local Step.</string>
+    <string name="sequence_step_picker_failure">Activities could not be loaded. Try again.</string>
+    <string name="sequence_step_local">Local Activity configuration</string>
+    <string name="sequence_step_linked">Linked Activity configuration</string>
+    <string name="sequence_step_pending">Template configuration is frozen on Apply or Done</string>
+    <string name="sequence_step_override_timer_behavior">Step Timer zero behavior override</string>
+    <string name="sequence_step_repeat_guidance">Enter a whole number from 1 to 2147483647.</string>
 </resources>

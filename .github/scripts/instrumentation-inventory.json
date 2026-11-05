@@ -760,7 +760,8 @@
       "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
       "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
       "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
-      "nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce"
+      "nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce",
+      "nativeStepAuthoringAndOverrideOnlyEditsPhysicallyReopenWithoutRewritingFrozenOwnership"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
@@ -1370,6 +1371,16 @@
     ],
     "com.alexandr5476.lifetracing.editor.SequenceManipulationAccessibilityPersistenceTest": [
       "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceStepAccessibilityTest": [
+      "nativePickerCreatesIndependentLocalAndSameNameTemplateStepsInExactContainers",
+      "nativePickerKeepsBoundedPagesAndRevokesHiddenRecreatedAndRemovedTargetActions",
+      "nativePickerReportsLoadingFailureEmptyAndCancellationWithoutWrites",
+      "nativeLocalTrackingSettingsOverridesAndRepeatExposeSelectedCheckedAndRawErrors",
+      "nativeSnapshotFieldAndOptionCallbacksResolveIdentityAfterRemovalPrecisionTypeMovementAndCollapse",
+      "pendingTemplateDisclosureHasNativeGuidanceAndRetiredDisclosureCannotReopenOrCloseCurrentContent",
+      "nativeSnapshotInputFocusSurvivesUnrelatedRemovalAndInsertion",
+      "stepConfigurationAndPickerReflowAtEnglishAndRussianCombinedScalingExtremes"
     ]
   },
   "startup": {
