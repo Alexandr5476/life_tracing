@@ -516,19 +516,26 @@ private fun SequenceEditorForm(
         item {
             if (state.save is SequenceTemplateEditorSave.Failure) {
                 val message =
-                    if (state.save.isConflict) {
-                        R.string.sequence_editor_conflict
-                    } else {
-                        R.string.sequence_editor_save_failure
+                    when {
+                        state.sourceAttempt != null -> sourceFailureMessage(state.save)
+                        state.save.isConflict -> R.string.sequence_editor_conflict
+                        else -> R.string.sequence_editor_save_failure
                     }
                 SequenceEditorStatus(
                     if (recoveryPending) R.string.sequence_editor_reload_failure else message,
                 )
-                if (state.save.isConflict) {
-                    LifeTracingSecondaryButton(
-                        onClick = { actions.invoke(controller::retry) },
-                        modifier = editorFocusTarget(),
-                    ) { Text(stringResource(R.string.activity_editor_reload)) }
+                if (!recoveryPending && (state.save.isConflict || state.sourceAttempt != null)) {
+                    key(state.save, state.sourceActionEpoch) {
+                        val reloadActions =
+                            rememberSequenceEditorActions(controller, state, available = {
+                                controller.state.value.save === state.save &&
+                                    controller.state.value.sourceActionEpoch == state.sourceActionEpoch
+                            })
+                        LifeTracingSecondaryButton(
+                            onClick = { reloadActions.invoke(controller::retry) },
+                            modifier = editorFocusTarget(),
+                        ) { Text(stringResource(R.string.activity_editor_reload)) }
+                    }
                 }
             }
             if (state.save is SequenceTemplateEditorSave.Committed) {
@@ -979,12 +986,10 @@ private fun StepCard(
                     )
                 }
                 val committedStepId = (step.identity as? DraftIdentity.Existing)?.id
-                val sourceId = committedStepId?.let(state.stepSourceIds::get)
                 if (committedStepId != null) {
                     StepSourceActions(
                         committedStepId,
-                        sourceId?.let(state.sourceStatuses::get),
-                        state.sourceActionsAllowed(),
+                        state,
                         controller,
                     )
                 }
@@ -1091,38 +1096,6 @@ private fun StepCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun StepSourceActions(
-    stepId: com.alexandr5476.lifetracing.domain.SequenceNodeId,
-    source: SequenceEditorStepSource?,
-    enabled: Boolean,
-    controller: SequenceTemplateEditorController,
-) {
-    val actions = LocalSequenceEditorActions.current
-    if (!enabled) {
-        Text(
-            stringResource(R.string.sequence_editor_source_actions_require_apply),
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        if (source is SequenceEditorStepSource.Active) {
-            LifeTracingSecondaryButton(
-                onClick = { if (enabled) actions.invoke { controller.updateStepFromSource(stepId) } },
-                enabled = enabled,
-            ) { Text(stringResource(R.string.sequence_editor_update_from_source)) }
-            LifeTracingSecondaryButton(
-                onClick = { if (enabled) actions.invoke { controller.updateSourceTemplate(stepId) } },
-                enabled = enabled,
-            ) { Text(stringResource(R.string.sequence_editor_update_source)) }
-        }
-        LifeTracingSecondaryButton(
-            onClick = { if (enabled) actions.invoke { controller.saveStepAsNewTemplate(stepId) } },
-            enabled = enabled,
-        ) { Text(stringResource(R.string.sequence_editor_save_as_new_template)) }
     }
 }
 

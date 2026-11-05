@@ -817,4 +817,20 @@
     <string name="sequence_step_pending">Template configuration is frozen on Apply or Done</string>
     <string name="sequence_step_override_timer_behavior">Step Timer zero behavior override</string>
     <string name="sequence_step_repeat_guidance">Enter a whole number from 1 to 2147483647.</string>
+    <string name="sequence_source_unlinked">No source Template linked. Save as New is available after committing the Step.</string>
+    <string name="sequence_source_active">Linked source Template is active, revision %1$d.</string>
+    <string name="sequence_source_archived">Linked source Template is archived, revision %1$d. Source updates are unavailable; Save as New remains available.</string>
+    <string name="sequence_source_missing">Linked source Template is missing or unavailable. Source updates are unavailable; Save as New remains available.</string>
+    <string name="sequence_source_loading">Linked source Template status is loading.</string>
+    <string name="sequence_source_frozen_revision">Step source revision %1$d.</string>
+    <string name="sequence_source_context">%1$s. %2$s %3$s</string>
+    <string name="sequence_source_available">Available</string>
+    <string name="sequence_source_completed">Completed. Canonical Step and source status reloaded.</string>
+    <string name="sequence_source_discard_pending">Close the discard confirmation before using source actions.</string>
+    <string name="sequence_source_manipulation_pending">Finish or cancel manipulation before using source actions.</string>
+    <string name="sequence_source_invalid_input">Correct invalid inputs and commit the Sequence before using source actions.</string>
+    <string name="sequence_source_conflict">The source Activity Template changed elsewhere. Reload before updating it.</string>
+    <string name="sequence_source_archived_failure">The source Activity Template is archived. Reload its status or save this Step as a new Template.</string>
+    <string name="sequence_source_missing_failure">The source Activity Template is missing or unavailable. Reload its status or save this Step as a new Template.</string>
+    <string name="sequence_source_failure">The source action failed. The committed Step is unchanged. Retry the action explicitly or reload.</string>
 </resources>

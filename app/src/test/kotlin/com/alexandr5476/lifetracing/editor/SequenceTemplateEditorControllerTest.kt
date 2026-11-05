@@ -78,6 +78,69 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
+    fun archivedSourceRetainsItsKnownRevisionInsteadOfBecomingMissing() =
+        runBlocking {
+            val source = ActivityTemplateId("archived")
+            val canonical = authoringState().withLinkedSource(source)
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { error("No picker read") },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ -> error("No save") },
+                    { Instant.EPOCH },
+                    loadSourceStatuses = { mapOf(source to ActivityTemplateSourceStatus(source, 12, true)) },
+                )
+            controller.awaitReady()
+            assertFalse(controller.state.value.sourceStatuses[source] == SequenceEditorStepSource.Unavailable)
+            controller.close()
+        }
+
+    @Test
+    fun invalidOrForeignSourceStatusNeverAuthorizesSourceWriters() =
+        runBlocking {
+            val source = ActivityTemplateId("source")
+            for (status in listOf(
+                ActivityTemplateSourceStatus(source, 0, false),
+                ActivityTemplateSourceStatus(source, -1, false),
+                ActivityTemplateSourceStatus(ActivityTemplateId("foreign"), 1, false),
+            )) {
+                val canonical = authoringState().withLinkedSource(source)
+                var writes = 0
+                val controller =
+                    SequenceTemplateEditorController(
+                        this,
+                        SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                        { canonical },
+                        { error("No picker") },
+                        { _, _, _ -> error("No create") },
+                        { _, _, _, _ -> error("No save") },
+                        { Instant.EPOCH },
+                        loadSourceStatuses = { mapOf(source to status) },
+                        updateFromSource = { _, _, _, _ -> writes++ },
+                        updateSource = { _, _, _, _, _ -> writes++ },
+                    )
+                controller.awaitReady()
+                val actions =
+                    SequenceStepSourceActions(
+                        controller,
+                        SequenceTemplateEditorActions(controller, controller.state.value.generation),
+                        SequenceNodeId("step-1"),
+                    )
+                assertFalse(actions.available(SequenceStepSourceOperation.UpdateFromSource))
+                assertFalse(actions.available(SequenceStepSourceOperation.UpdateSource))
+                assertTrue(actions.available(SequenceStepSourceOperation.SaveAsNew))
+                controller.updateStepFromSource(SequenceNodeId("step-1"))
+                controller.updateSourceTemplate(SequenceNodeId("step-1"))
+                assertEquals(0, writes)
+                assertEquals(SequenceEditorStepSource.Unavailable, controller.state.value.sourceStatuses[source])
+                controller.close()
+            }
+        }
+
+    @Test
     fun canonicalEditorLoadsNeverReadThePickerCatalog() =
         runBlocking {
             var pickerReads = 0

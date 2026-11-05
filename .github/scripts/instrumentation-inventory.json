@@ -761,6 +761,11 @@
       "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
       "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
       "nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce",
+      "nativeStepSourceCommandsPreserveIdentityProvenanceAndFrozenFactsThroughPhysicalReopen",
+      "productionUpdateFromSourceRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "productionUpdateSourceRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "productionSaveAsNewRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "nativeSourceArchiveAfterInitialReadRejectsBothUpdateDirectionsAtomicallyAndStillAllowsSaveAsNew",
       "nativeStepAuthoringAndOverrideOnlyEditsPhysicallyReopenWithoutRewritingFrozenOwnership"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
@@ -1371,6 +1376,16 @@
     ],
     "com.alexandr5476.lifetracing.editor.SequenceManipulationAccessibilityPersistenceTest": [
       "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceStepSourceAccessibilityTest": [
+      "updateFromSourceNativeRecoveryReadsWithoutReplayingWriter",
+      "updateSourceNativeRecoveryReadsWithoutReplayingWriter",
+      "saveAsNewNativeRecoveryReadsWithoutReplayingWriter",
+      "nativeSourceAvailabilityDistinguishesActiveArchivedMissingAndUnlinkedWithoutPickerReads",
+      "retainedNativeSourceCallbacksCannotReviveAfterDisclosureModeCanonicalPublicationHiddenOrDetachedRoute",
+      "nativeOrdinaryFailureAndSourceConflictPreserveSessionAndRequireExplicitAction",
+      "sourceButtonsRemainContextualKeyboardReachableAndSizedAtEnglishRussianCombinedScaleExtremes",
+      "equalNameStepsInDifferentContainersExposeExactSourceAndNeverRebindRetainedOperations"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceStepAccessibilityTest": [
       "nativePickerCreatesIndependentLocalAndSameNameTemplateStepsInExactContainers",

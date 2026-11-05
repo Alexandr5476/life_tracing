@@ -938,3 +938,165 @@ authorized focused-device repair session.` No raw device command or lease workar
 was attempted. The four supplied native failures remain OPEN pending Controller
 runtime verification. Local compilation/JVM success is not a repaired native PASS,
 unfiltered stability PASS, CI parity or manual accessibility certification.
+
+
+## S4 — Accessible committed Step source actions
+
+The expanded committed Step retains its existing three repository-backed commands.
+Native source buttons now use the shared editor focus targets, contextual EN/RU
+operation descriptions and real enabled state. Descriptions identify the current
+Step by physical placement (including Repeat ordinal), linkage, current source
+availability/revision, frozen source revision and admission/recovery reason.
+Archived status retains its known revision instead of collapsing into missing.
+A projection with a foreign source ID or revision below the existing domain
+`ActivityTemplateRevisionPolicy.INITIAL_REVISION` is unavailable for source updates;
+Save as New retains its existing eligibility. Writer revision contracts are unchanged.
+The established archived/missing/unlinked presentation still offers only Save as
+New, with explicit prose explaining why source updates are unavailable. Collapsed
+rows, pending Step behavior, S3 countdown null/zero intent and the lazy list remain.
+
+Each source callback retains a scalar Step/snapshot/source/status token and the
+existing disclosure/route/load/mode lease. Admission resolves current committed
+ownership under the controller command lock. Draft/raw-input changes and admitted
+Save/source commands revoke old source tokens synchronously. Native controls are
+keyed separately by operation and token, so retained Material OnClick actions
+cannot be rebound to another operation. Disabled presentations cannot later become
+enabled callbacks. No presentation inspection allocates identity, edits a draft,
+loads a catalog or dispatches a writer.
+
+Writer adapters and transaction/revision rules are unchanged. Update from Source
+uses the current source through the existing writer; Update Source preserves the
+Step snapshot and does not propagate; Save as New uses the existing independent
+identity and relink writer. Progress, failure and successful canonical publication
+identify the operation and current Step in a scoped polite live region. Source
+revision conflicts, archived/missing sources and ordinary writer failures have
+distinct localized feedback; source conflicts never claim that the Sequence itself
+changed. Ordinary source failures expose explicit read-only Reload through the
+existing reader path, without retrying a writer. Its presentation lease binds to
+the particular failure and source-command epoch; an earlier Reload cannot discard
+or recover a later attempt. Existing
+canonical-read Retry remains separate from source writers and Done. Recovery locks
+editing and Back; the retained route session still delivers appliedGeneration once.
+Focus uses shared removal/landing policy when a source control retires, without
+claiming focus from a surviving editor control.
+
+The loader remains one canonical graph read plus one shared distinct-source
+publication. Sequence nodes are queried by one owner ID; snapshot IDs are deduped
+and read in chunks of 900. Snapshot Fields/options are joined by snapshot IDs, so
+Field/option fan-out does not create an unbounded derived bind list. Distinct source
+Template IDs are independently chunked at 900 by the existing source-status reader;
+no full Activity aggregates, picker catalog or history scan supplies source labels.
+Existing data regressions `sourceStatusProjectionDeduplicatesChunksAndDoesNotHydrateActivityAggregates`
+and `canonicalAuthoringReadHydratesSnapshotsByBindChunksRatherThanSteps` pin those
+query boundaries. The new JVM fan-out case uses 1,102 Steps / 1,001 distinct sources
+and verifies one shared publication and no additional reads or state changes during
+300 source-action availability inspections. No new repository writer, schema,
+migration, propagation mode or retained duplicate authoring graph is introduced.
+
+New executable evidence includes scalar-token admission, archived/missing/unlinked
+availability, pending/local/duplicate/removed rejection, reverted structural/raw
+changes, mode/load/source relink/route retirement, all three gated writers, ordinary
+failure/source conflict/archive rejection and fresh explicit retry. New Compose
+cases cover native source controls, exact same-name Step/Repeat context, retained
+OnClick revocation, three committed-read recoveries, Tab/Shift+Tab and EN/RU combined
+scale extremes with 200% system font scale and native target bounds.
+
+Production MainActivity journeys exercise all three commands, Activity recreation
+and exactly-once Library delivery. The physical-reopen journey seeds two linked
+same-name Steps, Number/Category/Text Fields/options, Main Value, missing/zero
+defaults, explicit false/zero overrides, a historical Sequence Execution/snapshot,
+a Plan, an unrelated same-name ActivityTemplate and an active runtime. It checks
+local semantic commit, Update Source snapshot preservation, full source refresh,
+independent Save as New identities/provenance, non-target preservation and frozen
+facts after closing the Activity, runtime graph and Room database and reopening the
+same file. Three additional production recovery cases gate actual repository
+writers, fail the subsequent canonical read, recreate the Activity during recovery,
+retry only the read and recreate again after one applied-generation delivery. A real
+archive-between-read-and-dispatch journey rejects both update directions atomically
+and then saves as a new independent source. All new Android test identities are
+pinned in the mandatory instrumentation inventory; original identities/assertions
+remain intact.
+
+### S4 local verification results
+
+Both fail-first probes reproduced the intended assertion failure before production
+fixes: archived source revision loss and invalid/foreign source-status admission.
+The final focused app JVM run passed **66 tests**, zero failures/errors/skips:
+33 Sequence controller, 5 source-action, 12 Step-action, 9 manipulation, 4 destination
+and 3 retained Sequence route-session cases. All original JUnit identities remain.
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceTemplateEditorControllerTest' --tests '*SequenceStep*Test' --tests '*SequenceManipulation*Test' --tests '*SequenceTemplateEditorRouteSessionOwnerTest' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest :app:lintDebug --continue --console=plain
+.\gradlew.bat :app:ktlintCheck --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The last combined run passed all 66 JVM cases, app Detekt/lint and both AndroidTest
+APK tasks; its sole failure was ktlint multiline-expression wrapping on the new
+Reload lease. That whitespace-only correction passed the subsequent ktlint command
+(exit zero, 58 seconds). Earlier complete combined runs also passed. No test was
+removed, disabled or weakened to resolve a check.
+
+The host instrumentation runner passed **69 mocked tests**; its simulated device
+commands are not device executions. Inventory/source checks preserve the original
+methods and add **13 app identities** (8 source-accessibility and 5 production-route
+journeys), yielding **580 app / 627 data / 2 startup** mandatory cases per API. All
+13 added methods are present in the final AndroidTest APK DEX files. The 1,102-Step /
+1,001-source JVM case passed, including one shared source-reader call and no extra
+reader calls/state mutation across 300 availability inspections. SQL chunk/join
+bounds were inspected in the existing production readers; no new SQL timing or
+physical-query execution result is claimed.
+
+The physical-persistence journeys and actual historical-value preservation
+assertions compiled into the APK but were not executed locally. The physical fixture
+stores a historical Number result of 7 against a zero default and checks that source
+creation retains the zero default, historical actuals, Field/option provenance and
+frozen History detail after reopening. Controller must execute those assertions.
+Device execution (including the physical reopen assertions), full / gmd-full
+Controller gates and independent GitHub managed-device CI remain required.
+AndroidTest APK compilation alone is not device execution. Manual TalkBack,
+Switch Access and physical hardware-keyboard certification are not claimed.
+S4 does not complete the Parent: its full repository-closure audit remains next.
+
+
+### S4 canonical API 35 repair, attempt 1
+
+Controller run `S4-ab54b19f950244eeae8ed3f75a12b741/attempt-1` reached the actual
+app/data instrumentation suites and reported two app assertion failures. This is
+not an infrastructure-only result. The physical source journey reached Update
+Source and Activity recreation, then searched for Edit Step even though production
+uses `rememberSaveable(controller)` for expanded Step identities. The fixture now
+asserts the surviving native Close Step disclosure without activating it, then
+continues Update from Source and Save as New. Its identity, provenance, exact-once,
+historical/runtime and physical-reopen assertions remain unchanged.
+
+The source scaling case measured `boundsInRoot` against the 48 dp native target
+minimum. Production uses Material Button plus LifeTracingAccessibleTargets, which
+reserves touch space beyond the compact visual surface. The test now uses
+`touchBoundsInRoot` for the unchanged physical minimum, matching existing Sequence
+editor scaling regressions, while retaining visual viewport-boundary assertions.
+Bounds failures now report language, interface/text scale, operation, visual/touch
+rectangles and physical minimum. Sibling inspection found no other new source-target
+minimum using visual bounds and no other source-journey recreation followed by an
+incorrect Edit Step activation. Original JUnit identities/inventory entries remain.
+
+The exact authorized repair-probe command was attempted and refused before device
+or testcase startup: “No active repair-probe lease. This workflow state is not an
+authorized focused-device repair session.” No raw managed-device command, emulator
+launch or Controller-state workaround was attempted. The two original failures
+remain pending Controller runtime verification; local APK compilation is not a
+runtime PASS.
+
+Repair local verification passed (exit zero, 2m 22s):
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:lintDebug --continue --console=plain
+git diff --check
+```
+
+Both failing JUnit method identities remain pinned in the unchanged mandatory
+inventory. The repaired test sources and APK compiled successfully; the canonical
+two-case runtime rerun, full Controller gates and independent GitHub managed-device
+CI remain outstanding. This repair changes test fixture expectations and diagnostics
+only; no source writer, persistence or production disclosure/target policy changed.
