@@ -566,3 +566,257 @@ git diff --check
 
 All original session/controller/presentation test identities remain. The same 35
 Sequence presentation identities and pinned instrumentation inventory are unchanged.
+
+## Accessible structural manipulation (S2)
+
+S2 adds a native alternative for the existing Step and Repeat manipulation commands.
+Each lazy row has a separate Material Manipulate/Select button. Its description
+includes the localized node kind, name, sibling position and parent Repeat position;
+equal names and Repeat counts remain distinct. Selected and Existing/New draft state
+are native semantics. Passive Step content retains pointer tap/long press without
+advertising a no-op parent OnClick or merging the row's independent native actions.
+
+The manipulation toolbar exposes mode, current selection, exact session modified/
+unchanged state, Move, eligible Duplicate-and-Move, Undo, Redo, Apply and session
+Discard. A missing selection is described as unavailable and cannot authorize an
+operation. Existing/new, pending source, pending duplicate and Repeat admission uses
+DraftIdentity and original snapshot ownership, never a displayed label or ordinal.
+Discard restores the session-entry draft and raw-input map, including pre-entry
+edits; it does not discard the editor. Only existing Apply can persist changes.
+
+SequenceManipulationDestinations builds the final insertion slots in one traversal
+of the current bounded draft. Move filters the source from its sibling container
+before enumerating positions; Duplicate keeps it. Steps receive every top-level
+and Repeat-child slot, including empty, first, between and last slots. Repeats receive
+only top-level slots. A native AlertDialog presents the choices with a LazyColumn;
+labels describe container, final insertion position and both neighboring identities'
+localized contexts. Native focus/Tab can reach offscreen slots. Callbacks carry the
+actual container identity and structural position without parsing their labels.
+
+The controller issues one single-use offer at a time. It retains identity/position/
+node-kind topology, not an Activity configuration graph. Choosing checks that exact
+offer, selected source, current topology and offered choice under the existing command
+lock, then invokes moveManipulation or duplicateManipulation. Structural operations,
+structural Undo/Redo, changed selection, dismissal, Apply admission, Discard, canonical
+reload and close retire the offer. Structure changes followed by Undo cannot revive
+it. Text/configuration edits with the same topology do not invalidate insertion slots.
+UI leases additionally retire native callbacks on modal disposal, hiding, route disposal,
+generation or mode change. Dialogs are keyed by their offer, preserving S1C1's protection
+against Material rebinding a retained native callback to a later operation.
+
+The shared session now rejects a foreign/replaced existing snapshot as a duplicate
+source. Its history recorder also ignores selection-only snapshots: a no-op move
+selecting another row creates no Undo entry and preserves Redo. Both strengthen the
+required admission/history boundary without introducing a structural operation or
+durable identity rule. The S1C1 explicit-null Short Comment delta remains unchanged.
+The existing repository still allocates independent duplicate node, snapshot, Field
+and option identities only at Apply and copies frozen configuration/provenance.
+
+Keyboard landing in manipulation uses Move; canonical-read recovery uses Retry.
+Dismissal restores an attached origin or a surviving relevant control without taking
+focus from an existing foreground owner. Logical row membership uses a shared current
+identity map: removal can recover focus while lazy detachment of a surviving Step
+does not reveal it again. Selection, Undo/Redo, Apply and Discard reuse the established
+mode/generation and retained-session machinery. Pointer handles and their test tags
+remain; a handle reads the current draft when dragging after a native operation so
+its same-container adjustment cannot retain the old source container. Row action groups
+wrap at larger scales and share existing control rows at baseline size, keeping
+Sequence spacing and Repeat drop interiors compact for pointer users. Existing drag
+destination semantics, cancellation and edge-scroll policy are unchanged. No motion
+or custom interactive surface was introduced. EN/RU resources cover all added prose.
+
+### Evidence and changed boundaries
+
+Changed production files: SequenceTemplateEditorScreen.kt,
+SequenceTemplateEditorController.kt, SequenceManipulation.kt, the new
+SequenceManipulationAccessibility.kt and SequenceManipulationDestinations.kt, and
+values/strings.xml plus values-ru/strings.xml. The accepted action lease, route owner,
+MainActivity production route, domain models and TemplateAuthoringRepository writer
+are reused. No database schema, migration, durable command or historical/runtime
+mutation code changes.
+
+Jupiter evidence in the new SequenceManipulationDestinationsTest enumerates every
+source/operation/slot combination against SequenceManipulationSession and checks
+exact hierarchy, all sibling positions, neighbors and Undo/Redo. It covers all six
+movement shapes, same-container Move/Duplicate differences and empty Repeat slots.
+Rejected invalid positions, removed containers, nested Repeat, missing/foreign/stale
+sources and pending FromTemplate copies leave history untouched. Controller additions
+cover missing selection admission, forged/dismissed/stale/old-session offers,
+selection changes, canonical removal/reload, frozen duplicate eligibility, duplicate
+selection through Undo/Redo, pre-entry edits, valid/invalid raw input and null comments.
+All original history, performance, failure/retry and committed-read recovery cases
+remain. SequenceManipulationTest adds the selection-only no-op/Redo regression.
+
+Seven additional SequenceTemplateEditorScreenPresentationTest identities use native
+semantics/keyboard input for entry from Step/Repeat, contextual selection, all movement
+shapes, Duplicate, Undo/Redo, session Discard, retired destination callbacks, lazy
+offscreen Tab traversal, mixed native/pointer movement and EN/RU combined scaling
+(system font 200%, app 90%/90% and 120%/130%, minimum target sizes). The original
+committed-reload regression now enters, moves, Applies and retries through native
+keyboard actions and checks recovery focus, preserving its one-writer/delivery and
+retained-callback assertions. Original pointer/cancellation/edge-scroll identities
+remain pinned and unchanged.
+
+SequenceManipulationAccessibilityPersistenceTest adds a native real-repository journey
+with two equal-count Repeats, top/child Steps, frozen Number/Category schema, source
+linkage/revision, StatisticsSeries, locallyModified and explicit overrides, followed
+by different mutable source defaults. Move and Duplicate remain uncommitted until
+one native Apply. It counts one writer and one retained-session Apply delivery, rejects
+retired destination/disabled duplicate callbacks without durable changes, closes and
+physically reopens the database, and verifies exact order and independent fresh
+duplicate ownership. It compares original snapshot rows, unrelated durable tables,
+historical Sequence snapshots/Executions, a Plan and active runtime before/after.
+LibraryAccessibilityRouteTest adds native manipulation across actual MainActivity
+recreation, one Apply/Library refresh, native Back and physical canonical reopen.
+
+The mandatory original-JUnit inventory gains nine app identities: 548 → 557 app,
+627 data and two startup cases per API. No original identity is removed or weakened.
+Inventory/source comparison matches all 42 Sequence presentation, 20 Library route
+and one new native persistence methods, without an unpinned or absent method.
+
+### Verification and limits
+
+Fail-first runs reproduced both controller missing-selection admission and the
+session no-op-selection history bug before their production fixes. The latter
+failed its canUndo assertion; it also requires Redo to survive. After correction the final
+focused verification passed all 47 Jupiter cases (31 controller, nine manipulation,
+four destination and three route-owner cases), app ktlint, Detekt, lintDebug and
+AndroidTest APK assembly:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceManipulation*' --tests '*SequenceTemplateEditor*' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:lintDebug --continue --console=plain --no-parallel --max-workers=2
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The host runner suite passed 69 mocked tests; its printed device commands are
+fixtures, not emulator executions. Earlier local iterations caught and corrected
+test fixture/cast errors, formatting/length findings and Compose resource-access
+lint. AndroidTest compilation/assembly proves source/APK compatibility only. None
+of the new or extended Android testcases has run on a device in this turn.
+
+Destination enumeration and context indexing take O(N + slots) time/storage for the
+bounded current draft. Context/liveness lookup during row traversal is O(1); no
+per-row Sequence scan or repository read is introduced. Ordinary scalar text edits
+reuse node references; offer invalidation compares structure when relevant nodes
+change. Admission/choice and Undo/Redo checks scan topology per command.
+Lazy rows and destinations stay lazy, manipulation history stays delta-based, and
+no destination/focus state is persisted or retained per history operation.
+
+Controller-owned unfiltered checks, coverage and managed-device gates, plus independent
+GitHub device CI, remain mandatory and unperformed here. Manual TalkBack, Switch
+Access and physical hardware-keyboard service certification remain unverified.
+
+
+## S2 canonical API 35 repair (2026-11-05)
+
+Controller execution `S2-0741c5a9875346ebbfc444631623ef5d`, attempt 1,
+reached 558 app testcases and reported two failures. These are repository test/
+layout failures, not an infrastructure-only result. The archived XML was inspected;
+the original canonical stability obligation remains OPEN until a fresh device run.
+
+The native physical-persistence fixture configured its reusable source as Stopwatch
+while every Step explicitly overrode Timer zero behavior to OVERTIME. The established
+writer correctly rejected that invalid combination during initial Sequence creation,
+before any native manipulation ran. The fixture now seeds a five-minute Timer and
+explicitly checks its frozen mode, target and Step overrides before the journey.
+All override, frozen source/provenance, independent duplicate ownership, physical
+reopen, one writer/delivery and historical/runtime preservation assertions remain.
+No validator, persistence rule or production execution behavior was relaxed.
+
+The destination dialog placed the complete operation and structural source context
+in its fixed title slot. Long Russian text at the combined maximum scale could leave
+the choices without usable space. The shared Move/Duplicate dialog now uses a short
+localized heading and puts the full untruncated context in the scrolling lazy body.
+The fixed heading also exposes that full context as its native description. Keyboard
+admission scrolls to the first actual choice before requesting its focus, so a long
+context item cannot leave the FocusRequester unattached or keep the choice offscreen.
+Destination identities, insertion semantics and single-use authority are unchanged.
+
+Both EN/RU scaling regressions now exercise Repeat Move and eligible child-Step
+Duplicate at both 90%/90% and 120%/130%, with system font 200%. They retain the
+native Button role, first/last destination reachability, minimum target-size and
+Cancel checks, and additionally require a usable lazy viewport and contextual heading.
+The first choice is explicitly revealed by its native lazy-list key after the scrolling
+context item. Failure diagnostics record locale, scales and destination bounds.
+All original JUnit method identities and mandatory inventory entries remain intact.
+
+The exact authorized `D:\controller\.runtime\agent-tools\repair-probe.cmd` was
+attempted after correcting the invalid fixture and adding layout diagnostics. It was
+refused before Gradle/device/test startup: `No active repair-probe lease.` The response
+also said the workflow was not an authorized focused-device repair session. No raw
+device task, emulator, Controller-state edit or workaround was attempted. The lease
+refusal does not reclassify or close the supplied two canonical testcase failures;
+neither repaired native case has been rerun in this continuation.
+
+Local verification passed all 47 focused Jupiter cases (zero failures/errors/skips),
+app ktlint, Detekt, lintDebug and AndroidTest APK assembly. After strengthening the
+shared scaling regression, the final static/lint/APK command also passed:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceManipulation*' --tests '*SequenceTemplateEditor*' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:lintDebug --continue --console=plain --no-parallel --max-workers=2
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:lintDebug --continue --console=plain --no-parallel --max-workers=2
+git diff --check
+```
+
+These checks prove local JVM and Android source/APK compatibility, not runtime
+red/green or CI parity. Controller must renew the native repair verification and
+then its unfiltered managed-device and independent GitHub gates. Manual TalkBack,
+Switch Access and physical hardware-keyboard certification remain unverified.
+
+## S2 canonical journey refresh repair (2026-11-05)
+
+The second supplied API 35 execution (`S2-a6d5fbc3df004843a01f1ae441618fde`,
+attempt-1 artifacts, tree `caab833a10b72700cf9429c20ef9d2a5d8b025ec27da33df1b17c2285e6745d6`)
+passed both previously failing S2 cases: frozen duplicate persistence and Russian
+combined scaling. Its app XML records 558 cases and one failure; data records 632
+cases and no failures. The remaining failure is the original
+`PrimaryExecutionJourneyTest.launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen`:
+Expand disappeared between its reachability assertion and native OnClick lookup
+after returning from the paused expanded route.
+
+Daily's date header and focus remain available while its async refresh replaces
+the active card with Loading. The fixture's header/focus wait therefore did not
+establish active-card readiness after Back. Expand now waits for the existing
+runtime-ready predicate. The fixture's shared native-action helper additionally
+reacquires a removed control within the existing bounded wait. It retries only
+before OnClick starts, and only if the initially matched semantics identity has
+disappeared. A still-present control's assertion failure, ambiguous matches, rejected
+OnClick or any exception after dispatch still fails immediately. No dispatched
+command is replayed. The adjacent Sequence overflow, Plan and History action
+helpers use this same guard because they had the same wait/scroll/click gap.
+Production runtime, refresh, navigation, controller and persistence code is unchanged.
+The original journey's focus, frozen identities, occurrence hierarchy, physical
+reopen and execution-count assertions remain intact.
+
+The new native regression
+`nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure`
+deterministically removes a native Button between reachability and action lookup,
+checks that no callback ran, restores a replacement and clicks it once. It also
+requires a still-present acquisition failure to propagate and a dispatched callback
+that removes itself and throws to propagate without replay. Synchronization uses
+Compose's UI/idle boundaries, with no sleeps. The mandatory inventory retains all
+original identities and adds this one case (558 app identities; 16 Primary journeys).
+
+Local verification passed app ktlint and Detekt plus AndroidTest APK assembly.
+The Gradle AndroidTest ktlint source-set tasks report NO-SOURCE in this repository,
+so the changed journey source was also checked/formatted in scratch with the
+resolved ktlint CLI and repository editor configuration. After that final change,
+APK assembly and all 39 focused JVM tests passed (21 DailyController and 18
+ExpandedLiveSequenceController; no failures, errors or skips). The 69 mocked host
+instrumentation-runner tests, source/inventory comparison and `git diff --check`
+also passed. Commands:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest --continue --console=plain --no-parallel --max-workers=2
+.\gradlew.bat :app:assembleDebugAndroidTest :app:testDebugUnitTest --tests '*Daily*' --tests '*ExpandedLiveSequence*' --console=plain --no-parallel --max-workers=2
+python -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+```
+
+Both the exact authorized repair probe and the justified PrimaryExecutionJourneyTest
+class scope were refused before Gradle/device/test startup with
+`No active repair-probe lease.` No direct device task or workaround was attempted.
+The native regression and repaired original journey have compiled but have not run
+in this continuation. The supplied native failure's stability obligation remains
+open for Controller rerun; local source/APK and JVM results do not establish native
+red/green, CI parity, or manual accessibility-service certification.

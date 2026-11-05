@@ -843,21 +843,27 @@ class SequenceTemplateEditorScreenPresentationTest {
             }
         }
         awaitReady(controller)
-        controller.enterManipulation(DraftIdentity.Existing(SequenceNodeId("a")))
-        controller.moveManipulation(
-            DraftIdentity.Existing(SequenceNodeId("a")),
-            SequenceDropDestination(position = 1),
-        )
+        keyboard.enter()
+        val entry =
+            text(
+                R.string.activity_editor_control_context,
+                text(R.string.sequence_manipulation_enter),
+                text(R.string.sequence_manipulation_top_step, "Top A", 1),
+            )
+        activateNative(composeTestRule.onLazyNode(hasContentDescription(entry)))
+        nativeMove(null, 1)
         val apply = composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_apply)))
         val retainedApply = apply.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
-        apply.performClick()
+        activateNative(apply)
         composeTestRule.waitUntil { controller.state.value.save is SequenceTemplateEditorSave.Failure }
         composeTestRule.runOnIdle { retainedApply() }
         assertEquals("A retained Apply must not activate canonical-read Retry", 2, loads)
         assertTrue(controller.state.value.save is SequenceTemplateEditorSave.Failure)
         assertEquals(0, deliveries)
 
-        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_retry))).assertIsDisplayed().performClick()
+        val focusedRetry = hasText(text(R.string.sequence_editor_retry)) and isFocused()
+        composeTestRule.waitUntil(5_000) { composeTestRule.onAllNodes(focusedRetry).fetchSemanticsNodes().size == 1 }
+        activateNative(composeTestRule.onNode(focusedRetry).assertIsDisplayed())
         composeTestRule.waitUntil {
             controller.state.value.save is SequenceTemplateEditorSave.Idle &&
                 controller.state.value.manipulation == null
@@ -2271,6 +2277,486 @@ class SequenceTemplateEditorScreenPresentationTest {
         composeTestRule.waitForIdle()
         assertEquals(position, editorScrollPosition())
         controller.close()
+    }
+
+    @Test
+    fun nativeManipulationMovesEveryContainerShapeDuplicatesAndDiscardsToPreEntryEdits() {
+        val controller = existingController(manipulationAuthoring())
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        keyboard.enter()
+        sequenceInput(R.string.sequence_editor_name).performTextReplacement("Before manipulation")
+        val baseline = controller.state.value.readyDraft()!!
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodes(
+                    isFocused() and
+                        SemanticsMatcher.expectValue(
+                            SemanticsProperties.Role,
+                            androidx.compose.ui.semantics.Role.Button,
+                        ),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        nativeManipulationNode(controller, "a").assertIsSelected()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_undo))).assertIsNotEnabled()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_redo))).assertIsNotEnabled()
+        nativeMove("r2", 0)
+        assertManipulationHierarchy(controller, listOf("r1", "r2"), listOf("b", "c"), listOf("a"))
+        activateNative(nativeManipulationNode(controller, "b"))
+        nativeMove(null, 0)
+        assertManipulationHierarchy(controller, listOf("b", "r1", "r2"), listOf("c"), listOf("a"))
+        activateNative(nativeManipulationNode(controller, "c"))
+        nativeMove("r2", 1)
+        assertManipulationHierarchy(controller, listOf("b", "r1", "r2"), emptyList(), listOf("a", "c"))
+        activateNative(nativeManipulationNode(controller, "a"))
+        nativeMove("r2", 1)
+        assertManipulationHierarchy(controller, listOf("b", "r1", "r2"), emptyList(), listOf("c", "a"))
+        activateNative(nativeManipulationNode(controller, "r2"))
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_duplicate))).assertIsNotEnabled()
+        nativeMove(null, 0)
+        assertManipulationHierarchy(controller, listOf("r2", "b", "r1"), emptyList(), listOf("c", "a"))
+        activateNative(nativeManipulationNode(controller, "b"))
+        nativeMove(null, 2)
+        assertManipulationHierarchy(controller, listOf("r2", "r1", "b"), emptyList(), listOf("c", "a"))
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_duplicate))))
+        chooseNativeDestination("r1", 0)
+        val duplicated = controller.state.value.readyDraft()!!
+        val duplicate =
+            controller.state.value.manipulation!!
+                .selected
+        assertTrue(duplicate is DraftIdentity.New)
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_duplicate))).assertIsNotEnabled()
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_undo))))
+        assertEquals(
+            DraftIdentity.Existing(SequenceNodeId("b")),
+            controller.state.value.manipulation!!
+                .selected,
+        )
+        activateNative(nativeManipulationNode(controller, "r1"))
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_redo))).assertIsEnabled()
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_redo))))
+        assertEquals(duplicated, controller.state.value.readyDraft())
+        assertEquals(
+            duplicate,
+            controller.state.value.manipulation!!
+                .selected,
+        )
+        activateNative(
+            composeTestRule.onLazyNode(hasContentDescription(text(R.string.sequence_editor_manipulation_cancel))),
+        )
+        assertNull(controller.state.value.manipulation)
+        assertEquals(baseline, controller.state.value.readyDraft())
+        sequenceInput(R.string.sequence_editor_name).assertIsEnabled()
+        assertEquals(0L, controller.state.value.appliedGeneration)
+        controller.close()
+    }
+
+    @Test
+    fun nativeMoveThenPointerDragUsesTheCurrentSourceContainer() {
+        val controller = existingController(manipulationAuthoring())
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        keyboard.enter()
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+        nativeMove("r2", 0)
+        // The preserved lazy row now belongs to r2; its drag scope must use that container.
+        showEditorRows(repeatDropTag("r2"))
+        drag(moveTag("a"), dropTarget("sequence-drop-top-end"), 0.9f)
+        assertManipulationHierarchy(controller, listOf("r1", "r2", "a"), listOf("b", "c"), emptyList())
+        assertEquals(
+            2,
+            controller.state.value.manipulation!!
+                .operationCount,
+        )
+        controller.close()
+    }
+
+    @Test
+    fun nativeRepeatEntryHasOnlyTopLevelSlotsAndDismissalRestoresAnExistingControl() {
+        val controller = existingController(manipulationAuthoring())
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        keyboard.enter()
+        activateNative(nativeManipulationNode(controller, "r1", enter = true))
+        nativeManipulationNode(controller, "r1").assertIsSelected()
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_duplicate))).assertIsNotEnabled()
+        val move = composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_move)))
+        activateNative(move)
+        composeTestRule.onNodeWithTag("sequence-destination-top-0").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-destination-top-2").assertExists()
+        composeTestRule
+            .onNodeWithTag(
+                sequenceDestinationKey(SequenceDropDestination(DraftIdentity.Existing(SequenceNodeId("r2")), 0)),
+            ).assertDoesNotExist()
+        val cancel = composeTestRule.onNodeWithText(text(R.string.sequence_manipulation_cancel_destination))
+        activateNative(cancel)
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodes(
+                    isFocused() and
+                        SemanticsMatcher.expectValue(
+                            SemanticsProperties.Role,
+                            androidx.compose.ui.semantics.Role.Button,
+                        ),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        assertEquals(
+            0,
+            controller.state.value.manipulation!!
+                .operationCount,
+        )
+        nativeMove(null, 2)
+        assertManipulationHierarchy(controller, listOf("a", "r2", "r1"), listOf("b", "c"), emptyList())
+        controller.close()
+    }
+
+    @Test
+    fun retainedNativeDestinationsRejectDismissalStructureDiscardHiddenAndCanonicalGenerations() {
+        val controller = existingController(manipulationAuthoring())
+        val visible = mutableStateOf(true)
+        val shown = mutableStateOf(true)
+        composeTestRule.setContent {
+            LifeTracingTheme {
+                if (shown.value) {
+                    SequenceTemplateEditorRoute(
+                        controller,
+                        isRouteVisible = visible.value,
+                    ) {}
+                }
+            }
+        }
+        awaitReady(controller)
+        keyboard.enter()
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+
+        fun open(): () -> Boolean {
+            activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_move))))
+            return composeTestRule
+                .onNodeWithTag(
+                    "sequence-destination-top-0",
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        }
+
+        fun rejected(action: () -> Boolean) {
+            val before = controller.state.value
+            composeTestRule.runOnIdle { action() }
+            assertEquals(before, controller.state.value)
+        }
+        val dismissed = open()
+        activateNative(composeTestRule.onNodeWithText(text(R.string.sequence_manipulation_cancel_destination)))
+        rejected(dismissed)
+        val completed = open()
+        chooseNativeDestination("r2", 0)
+        rejected(completed)
+        val mutated = open()
+        composeTestRule.runOnIdle {
+            controller.moveManipulation(
+                DraftIdentity.Existing(SequenceNodeId("b")),
+                SequenceDropDestination(position = 0),
+            )
+        }
+        val beforeRejection = controller.state.value.readyDraft()
+        composeTestRule.runOnIdle { mutated() }
+        assertEquals(beforeRejection, controller.state.value.readyDraft())
+        val discard =
+            composeTestRule
+                .onLazyNode(hasContentDescription(text(R.string.sequence_editor_manipulation_cancel)))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val discarded = open()
+        composeTestRule.runOnIdle { discard() }
+        composeTestRule.waitForIdle()
+        rejected(discarded)
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+        val hidden = open()
+        composeTestRule.runOnIdle { visible.value = false }
+        composeTestRule.waitForIdle()
+        rejected(hidden)
+        composeTestRule.onNodeWithTag("sequence-destinations").assertDoesNotExist()
+        composeTestRule.runOnIdle { visible.value = true }
+        composeTestRule.waitForIdle()
+        rejected(hidden)
+        val canonical = open()
+        composeTestRule.runOnIdle { controller.retry() }
+        awaitReady(controller)
+        rejected(canonical)
+        assertNull(controller.state.value.manipulation)
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+        val disposed = open()
+        composeTestRule.runOnIdle { shown.value = false }
+        composeTestRule.waitForIdle()
+        rejected(disposed)
+        controller.close()
+    }
+
+    @Test
+    fun keyboardTraversalReachesOffscreenDestinationWithoutDragging() {
+        val count = 24
+        val base = manipulationAuthoring()
+        val initial =
+            base.sequence.nodes
+                .filterIsInstance<ActivityStep>()
+                .single()
+        val nodes = List(count) { index -> initial.copy(id = SequenceNodeId("row-$index"), position = index) }
+        val authoring = base.copy(sequence = base.sequence.copy(nodes = nodes))
+        val controller = existingController(authoring)
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        keyboard.enter()
+        activateNative(nativeManipulationNode(controller, "row-0", enter = true))
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_move))))
+        val first = composeTestRule.onNodeWithTag("sequence-destination-top-0")
+        keyboard.awaitFocus(first)
+        for (index in 0 until count - 1) {
+            val current = composeTestRule.onNodeWithTag("sequence-destination-top-$index")
+            keyboard.sendKey(current, android.view.KeyEvent.KEYCODE_TAB)
+            keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-destination-top-${index + 1}"))
+        }
+        val last = composeTestRule.onNodeWithTag("sequence-destination-top-${count - 1}")
+        last.assertIsDisplayed()
+        keyboard.sendKey(last, android.view.KeyEvent.KEYCODE_ENTER)
+        composeTestRule.waitForIdle()
+        assertEquals(
+            nodes.drop(1).map {
+                it.id
+            } + initial.copy(id = SequenceNodeId("row-0")).id,
+            controller.state.value.readyDraft()!!.nodes.map {
+                (it.identity as DraftIdentity.Existing).id
+            },
+        )
+        assertEquals(
+            1,
+            controller.state.value.manipulation!!
+                .operationCount,
+        )
+        controller.close()
+    }
+
+    @Test
+    fun englishManipulationNativeTargetsSupportCombinedScaling() = manipulationScales(Locale.ENGLISH)
+
+    @Test
+    fun russianManipulationNativeTargetsSupportCombinedScaling() = manipulationScales(Locale.forLanguageTag("ru"))
+
+    private fun manipulationScales(locale: Locale) {
+        val configuration =
+            android.content.res.Configuration(composeTestRule.activity.resources.configuration).apply {
+                setLocale(locale)
+                fontScale =
+                    2f
+            }
+        val context = composeTestRule.activity.createConfigurationContext(configuration)
+        val appearance = mutableStateOf(AppearancePreferences(interfaceScalePercent = 90, textScalePercent = 90))
+        val controller = existingController(manipulationAuthoring())
+        composeTestRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalContext provides context,
+                LocalConfiguration provides configuration,
+                LocalDensity provides Density(density.density, 2f),
+            ) {
+                LifeTracingAppearance(appearance.value) { SequenceTemplateEditorRoute(controller) {} }
+            }
+        }
+        awaitReady(controller)
+        val entry =
+            context.getString(
+                R.string.activity_editor_control_context,
+                context.getString(R.string.sequence_manipulation_enter),
+                context.getString(R.string.sequence_manipulation_repeat, 2, 2),
+            )
+        composeTestRule.onLazyNode(hasContentDescription(entry)).performSemanticsAction(SemanticsActions.OnClick)
+        val repeatContext = context.getString(R.string.sequence_manipulation_repeat, 2, 2)
+        val childContext = context.getString(R.string.sequence_manipulation_child, "Same", 1, repeatContext)
+        for ((interfaceScale, textScale) in listOf(90 to 90, 120 to 130)) {
+            composeTestRule.runOnIdle {
+                appearance.value =
+                    AppearancePreferences(interfaceScalePercent = interfaceScale, textScalePercent = textScale)
+            }
+            val operations =
+                listOf(
+                    R.string.sequence_manipulation_move to repeatContext,
+                    R.string.sequence_manipulation_duplicate to childContext,
+                )
+            for ((operation, nodeContext) in operations) {
+                val select =
+                    context.getString(
+                        R.string.activity_editor_control_context,
+                        context.getString(R.string.sequence_manipulation_select),
+                        nodeContext,
+                    )
+                composeTestRule
+                    .onLazyNode(
+                        hasContentDescription(select),
+                    ).performSemanticsAction(SemanticsActions.OnClick)
+                val action = composeTestRule.onLazyNode(hasText(context.getString(operation)))
+                val minimum = 48 * context.resources.displayMetrics.density
+                val bounds = action.fetchSemanticsNode().touchBoundsInRoot
+                assertTrue(bounds.width >= minimum - 1)
+                assertTrue(bounds.height >= minimum - 1)
+                action.assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick)
+                val sourceContext =
+                    context.getString(
+                        R.string.sequence_manipulation_destination_title,
+                        context.getString(operation),
+                        nodeContext,
+                    )
+                composeTestRule.onNode(hasContentDescription(sourceContext)).assert(
+                    SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+                )
+                val destinations = composeTestRule.onNodeWithTag("sequence-destinations")
+                assertTrue(
+                    "Destinations retain a usable viewport",
+                    destinations.fetchSemanticsNode().boundsInRoot.height >= minimum - 1,
+                )
+                destinations.performScrollToKey("sequence-destination-top-0")
+                val first = composeTestRule.onNodeWithTag("sequence-destination-top-0")
+                try {
+                    first.assertIsDisplayed().assert(
+                        SemanticsMatcher.expectValue(
+                            SemanticsProperties.Role,
+                            androidx.compose.ui.semantics.Role.Button,
+                        ),
+                    )
+                } catch (failure: AssertionError) {
+                    throw AssertionError(
+                        "Destination layout locale=$locale scales=$interfaceScale/$textScale operation=$operation: " +
+                            "list=${destinations.fetchSemanticsNode().boundsInRoot} first=${first.fetchSemanticsNode().boundsInRoot}",
+                        failure,
+                    )
+                }
+                val firstBounds = first.fetchSemanticsNode().touchBoundsInRoot
+                assertTrue(firstBounds.width >= minimum - 1)
+                assertTrue(firstBounds.height >= minimum - 1)
+                val lastKey =
+                    if (operation == R.string.sequence_manipulation_duplicate) {
+                        sequenceDestinationKey(
+                            SequenceDropDestination(DraftIdentity.Existing(SequenceNodeId("r2")), 0),
+                        )
+                    } else {
+                        "sequence-destination-top-2"
+                    }
+                destinations.performScrollToKey(lastKey)
+                composeTestRule.onNodeWithTag(lastKey).assertIsDisplayed()
+                composeTestRule
+                    .onNodeWithText(context.getString(R.string.sequence_manipulation_cancel_destination))
+                    .performSemanticsAction(SemanticsActions.OnClick)
+            }
+        }
+        controller.close()
+    }
+
+    private fun manipulationAuthoring(): SequenceTemplateAuthoringState =
+        pointerAuthoring(
+            ActivityStep(SequenceNodeId("a"), 0, ActivitySnapshotId("snapshot-a")),
+            SequenceRepeatBlock(
+                SequenceNodeId("r1"),
+                1,
+                2,
+                listOf(
+                    ActivityStep(SequenceNodeId("b"), 0, ActivitySnapshotId("snapshot-b")),
+                    ActivityStep(SequenceNodeId("c"), 1, ActivitySnapshotId("snapshot-c")),
+                ),
+            ),
+            SequenceRepeatBlock(SequenceNodeId("r2"), 2, 2, emptyList()),
+        ).let {
+            it.copy(
+                activitySnapshots =
+                    it.activitySnapshots.mapValues { (_, snapshot) ->
+                        snapshot.copy(name = "Same")
+                    },
+            )
+        }
+
+    private fun nativeManipulationNode(
+        controller: SequenceTemplateEditorController,
+        id: String,
+        enter: Boolean = false,
+    ): SemanticsNodeInteraction {
+        val draft = controller.state.value.readyDraft()!!
+        val identity = DraftIdentity.Existing(SequenceNodeId(id))
+        var label: String? = null
+        draft.nodes.forEach { node ->
+            when (node) {
+                is SequenceNodeDraft.Step ->
+                    if (node.identity ==
+                        identity
+                    ) {
+                        label = text(R.string.sequence_manipulation_top_step, "Same", node.position + 1)
+                    }
+                is SequenceNodeDraft.Repeat -> {
+                    val parent = text(R.string.sequence_manipulation_repeat, node.value.repeatCount, node.position + 1)
+                    if (node.identity == identity) label = parent
+                    node.value.children.forEach { child ->
+                        if (child.identity ==
+                            identity
+                        ) {
+                            label = text(R.string.sequence_manipulation_child, "Same", child.position + 1, parent)
+                        }
+                    }
+                }
+            }
+        }
+        return composeTestRule.onLazyNode(
+            hasContentDescription(
+                text(
+                    R.string.activity_editor_control_context,
+                    text(if (enter) R.string.sequence_manipulation_enter else R.string.sequence_manipulation_select),
+                    requireNotNull(label),
+                ),
+            ),
+        )
+    }
+
+    private fun nativeMove(
+        repeat: String?,
+        position: Int,
+    ) {
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_manipulation_move))))
+        chooseNativeDestination(repeat, position)
+    }
+
+    private fun chooseNativeDestination(
+        repeat: String?,
+        position: Int,
+    ) {
+        val destination = SequenceDropDestination(repeat?.let { DraftIdentity.Existing(SequenceNodeId(it)) }, position)
+        val key = sequenceDestinationKey(destination)
+        composeTestRule.onNodeWithTag("sequence-destinations").performScrollToKey(key)
+        activateNative(composeTestRule.onNodeWithTag(key))
+    }
+
+    private fun activateNative(node: SemanticsNodeInteraction) {
+        node.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(node)
+        keyboard.sendKey(node, android.view.KeyEvent.KEYCODE_ENTER)
+        composeTestRule.waitForIdle()
+    }
+
+    private fun assertManipulationHierarchy(
+        controller: SequenceTemplateEditorController,
+        top: List<String>,
+        first: List<String>,
+        second: List<String>,
+    ) {
+        val draft = controller.state.value.readyDraft()!!
+        assertEquals(top, draft.nodes.map { it.identity.existingValue() })
+        assertEquals(draft.nodes.indices.toList(), draft.nodes.map { it.position })
+        val repeats =
+            draft.nodes.filterIsInstance<SequenceNodeDraft.Repeat>().associateBy {
+                it.identity.existingValue()
+            }
+        for ((id, expected) in listOf("r1" to first, "r2" to second)) {
+            val children = repeats.getValue(id).value.children
+            assertEquals(expected, children.map { it.identity.existingValue() })
+            assertEquals(children.indices.toList(), children.map { it.position })
+        }
     }
 
     private fun sequenceScales(locale: Locale) {

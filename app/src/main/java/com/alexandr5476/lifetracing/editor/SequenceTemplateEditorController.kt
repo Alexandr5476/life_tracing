@@ -149,6 +149,7 @@ class SequenceTemplateEditorController internal constructor(
     private var manipulationSession: SequenceManipulationSession? = null
     private var manipulationTextInputsBaseline: Map<String, SequenceEditorTextInput>? = null
     private var recordingManipulationInput = false
+    private var destinationOffer: SequenceDestinationOffer? = null
     private var committedAwaitingReload: CommittedReload? = null
     private var sourceActionAwaitingReload: SequenceTemplateId? = null
 
@@ -159,7 +160,10 @@ class SequenceTemplateEditorController internal constructor(
     }
 
     fun close() {
-        synchronized(commandLock) { closed = true }
+        synchronized(commandLock) {
+            closed = true
+            destinationOffer = null
+        }
     }
 
     private var modeGeneration = 0L
@@ -230,6 +234,12 @@ class SequenceTemplateEditorController internal constructor(
             val before = manipulationSnapshot(ready)
             val updated = transform(ready.draft)
             if (updated == ready.draft) return
+            if (destinationOffer != null &&
+                updated.nodes !== ready.draft.nodes &&
+                updated.manipulationStructure() != ready.draft.manipulationStructure()
+            ) {
+                destinationOffer = null
+            }
             mutableState.update {
                 it.copy(load = ready.copy(draft = updated), save = SequenceTemplateEditorSave.Idle)
             }
@@ -368,13 +378,14 @@ class SequenceTemplateEditorController internal constructor(
     fun enterManipulation(identity: DraftIdentity<SequenceNodeId>) {
         synchronized(commandLock) {
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
-            if (commandsBlocked()) return
+            if (commandsBlocked() || !ready.draft.manipulationContains(identity)) return
             val session =
                 manipulationSession ?: SequenceManipulationSession(ready.draft, identity, ready.original).also {
                     modeGeneration++
                     manipulationSession = it
                     manipulationTextInputsBaseline = mutableState.value.textInputs
                 }
+            if (session.selected != identity) destinationOffer = null
             session.select(identity)
             publishManipulation(session)
         }
@@ -383,7 +394,10 @@ class SequenceTemplateEditorController internal constructor(
     fun selectManipulation(identity: DraftIdentity<SequenceNodeId>) {
         synchronized(commandLock) {
             if (commandsBlocked()) return
+            val draft = mutableState.value.readyDraft() ?: return
+            if (!draft.manipulationContains(identity)) return
             manipulationSession?.let {
+                if (it.selected != identity) destinationOffer = null
                 it.select(identity)
                 publishManipulation(it)
             }
@@ -400,7 +414,64 @@ class SequenceTemplateEditorController internal constructor(
         destination: SequenceDropDestination,
     ): Boolean =
         changeManipulation { session, draft ->
-            session.duplicate(draft, identity, newKey("duplicate"), destination)
+            val original = (mutableState.value.load as? SequenceTemplateEditorLoad.Ready)?.original
+            if (original == null || !draft.canDuplicateManipulation(identity, original)) {
+                null
+            } else {
+                session.duplicate(draft, identity, newKey("duplicate"), destination)
+            }
+        }
+
+    internal val manipulationModified: Boolean
+        get() =
+            synchronized(commandLock) {
+                val session = manipulationSession ?: return false
+                mutableState.value.readyDraft() != session.baseline ||
+                    mutableState.value.textInputs != manipulationTextInputsBaseline
+            }
+
+    internal fun offerManipulationDestinations(operation: SequenceDestinationOperation): SequenceDestinationOffer? =
+        synchronized(commandLock) {
+            destinationOffer = null
+            if (commandsBlocked()) return null
+            val session = manipulationSession ?: return null
+            val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return null
+            val source = session.selected
+            if (!ready.draft.manipulationContains(source)) return null
+            if (operation == SequenceDestinationOperation.Duplicate &&
+                !ready.draft.canDuplicateManipulation(source, ready.original)
+            ) {
+                return null
+            }
+            val choices = sequenceManipulationDestinations(ready.draft, source, operation)
+            if (choices.isEmpty()) return null
+            SequenceDestinationOffer(source, operation, ready.draft.manipulationStructure(), choices).also {
+                destinationOffer = it
+            }
+        }
+
+    internal fun dismissManipulationDestinations(offer: SequenceDestinationOffer) {
+        synchronized(commandLock) { if (destinationOffer === offer) destinationOffer = null }
+    }
+
+    internal fun chooseManipulationDestination(
+        offer: SequenceDestinationOffer,
+        choice: SequenceDestinationChoice,
+    ): Boolean =
+        synchronized(commandLock) {
+            if (commandsBlocked() || destinationOffer !== offer) return false
+            destinationOffer = null
+            val draft = mutableState.value.readyDraft() ?: return false
+            if (manipulationSession?.selected != offer.source ||
+                draft.manipulationStructure() != offer.structure ||
+                choice !in offer.choices
+            ) {
+                return false
+            }
+            when (offer.operation) {
+                SequenceDestinationOperation.Move -> moveManipulation(offer.source, choice.destination)
+                SequenceDestinationOperation.Duplicate -> duplicateManipulation(offer.source, choice.destination)
+            }
         }
 
     fun undoManipulation(): Boolean = restoreManipulation { session, current -> session.undo(current) }
@@ -476,6 +547,7 @@ class SequenceTemplateEditorController internal constructor(
             synchronized(commandLock) {
                 val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
                 if (commandsBlocked()) return
+                destinationOffer = null
                 saving = true
                 if (mutableState.value.hasInvalidInput(ready.draft)) {
                     saving = false
@@ -765,6 +837,7 @@ class SequenceTemplateEditorController internal constructor(
             if (commandsBlocked()) return false
             val before = requireNotNull(manipulationSnapshot(ready))
             val changed = change(session, ready.draft) ?: return false
+            destinationOffer = null
             mutableState.update {
                 it.copy(
                     load = ready.copy(draft = changed),
@@ -783,7 +856,13 @@ class SequenceTemplateEditorController internal constructor(
             val session = manipulationSession ?: return false
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return false
             if (commandsBlocked()) return false
+            val selectedBefore = session.selected
             val restored = restore(session, requireNotNull(manipulationSnapshot(ready))) ?: return false
+            if (restored.draft.manipulationStructure() != ready.draft.manipulationStructure() ||
+                restored.selected != selectedBefore
+            ) {
+                destinationOffer = null
+            }
             mutableState.update {
                 it.copy(
                     load = ready.copy(draft = restored.draft),
@@ -815,6 +894,7 @@ class SequenceTemplateEditorController internal constructor(
     private fun clearManipulationSession() {
         if (manipulationSession != null) modeGeneration++
         manipulationSession = null
+        destinationOffer = null
         manipulationTextInputsBaseline = null
     }
 

@@ -50,6 +50,34 @@ class SequenceTemplateEditorControllerTest {
         }
 
     @Test
+    fun missingManipulationSelectionCannotEnterOrReplaceCurrentSelection() =
+        runBlocking {
+            val canonical = authoringState()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { emptyList() },
+                    { _, _, _ -> error("No write") },
+                    { _, _, _, _ -> error("No write") },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            val missing = DraftIdentity.Existing(SequenceNodeId("missing"))
+            val first = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            controller.enterManipulation(missing)
+            assertEquals(null, controller.state.value.manipulation)
+            controller.enterManipulation(first)
+            val selected = controller.state.value.manipulation
+            controller.selectManipulation(missing)
+            controller.enterManipulation(missing)
+            assertEquals(selected, controller.state.value.manipulation)
+            controller.discardManipulation()
+            controller.close()
+        }
+
+    @Test
     fun canonicalEditorLoadsNeverReadThePickerCatalog() =
         runBlocking {
             var pickerReads = 0
@@ -1420,6 +1448,222 @@ class SequenceTemplateEditorControllerTest {
             kotlinx.coroutines.yield()
             assertEquals(closed, controller.state.value)
         }
+
+    @Test
+    fun destinationAuthorityRejectsDismissedStaleForgedAndPreviousSessionChoices() =
+        runBlocking {
+            var canonical = authoringState()
+            val controller = destinationController(this) { canonical }
+            controller.awaitReady()
+            val first = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            val repeat = DraftIdentity.Existing(SequenceNodeId("repeat"))
+            controller.enterManipulation(first)
+
+            fun offer() = requireNotNull(controller.offerManipulationDestinations(SequenceDestinationOperation.Move))
+
+            fun baseline() = controller.state.value.readyDraft()!!
+
+            fun reject(
+                current: SequenceDestinationOffer,
+                choice: SequenceDestinationChoice = current.choices.last(),
+            ) {
+                val before = controller.state.value
+                assertFalse(controller.chooseManipulationDestination(current, choice))
+                assertEquals(before, controller.state.value)
+            }
+            val dismissed = offer()
+            controller.dismissManipulationDestinations(dismissed)
+            reject(dismissed)
+            val forged = offer()
+            reject(forged, forged.choices.first().copy(destination = SequenceDropDestination(repeat, 99)))
+            val invalidContainer = offer()
+            reject(
+                invalidContainer,
+                invalidContainer.choices.first().copy(destination = SequenceDropDestination(first, 0)),
+            )
+            assertFalse(
+                controller.state.value.manipulation!!
+                    .canUndo,
+            )
+            val stale = offer()
+            assertTrue(controller.moveManipulation(first, SequenceDropDestination(repeat, 0)))
+            reject(stale)
+            assertTrue(controller.undoManipulation())
+            reject(stale)
+            assertTrue(
+                controller.state.value.manipulation!!
+                    .canRedo,
+            )
+            val selected = offer()
+            controller.selectManipulation(repeat)
+            reject(selected)
+            assertTrue(
+                controller.state.value.manipulation!!
+                    .canRedo,
+            )
+            controller.selectManipulation(first)
+            val discarded = offer()
+            controller.discardManipulation()
+            controller.enterManipulation(first)
+            reject(discarded)
+            val removed = offer()
+            canonical = canonical.copy(sequence = canonical.sequence.copy(nodes = emptyList()))
+            controller.retry()
+            controller.awaitReady()
+            reject(removed)
+            controller.enterManipulation(first)
+            assertEquals(null, controller.state.value.manipulation)
+            canonical = authoringState()
+            controller.retry()
+            controller.awaitReady()
+            assertEquals(authoringState().toAuthoringDraft(), baseline())
+            controller.close()
+        }
+
+    @Test
+    @Suppress("LongMethod") // Mixed draft, raw-input and structural deltas must share one session baseline.
+    fun nativeDestinationOperationPreservesDirtyRawInputHistoryAndExactDiscardBaseline() =
+        runBlocking {
+            val controller = destinationController(this)
+            controller.awaitReady()
+            val first = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            val repeat = DraftIdentity.Existing(SequenceNodeId("repeat"))
+            controller.updateDraft { it.copy(name = "Before entry", shortComment = "Pre-entry") }
+            controller.updateNumberInput("raw", "bad-before", 0, 0) { error("Invalid") }
+            val baseline = controller.state.value
+            controller.enterManipulation(first)
+            val offered = requireNotNull(controller.offerManipulationDestinations(SequenceDestinationOperation.Move))
+            controller.updateDraft { it.copy(shortComment = null) }
+            controller.updateNumberInput("raw", "13", 0, 0) { }
+            val choice = offered.choices.single { it.destination == SequenceDropDestination(repeat, 1) }
+            assertTrue(controller.chooseManipulationDestination(offered, choice))
+            assertFalse(controller.chooseManipulationDestination(offered, choice))
+            val moved = controller.state.value.readyDraft()!!
+            assertEquals(listOf(repeat), moved.nodes.map { it.identity })
+            assertEquals(
+                listOf(
+                    DraftIdentity.Existing(SequenceNodeId("step-2")),
+                    first,
+                ),
+                (moved.nodes.single() as SequenceNodeDraft.Repeat).value.children.map {
+                    it.identity
+                },
+            )
+            controller.updateNumberInput("raw", "bad-after", 0, 0) { error("Invalid") }
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                "13",
+                controller.state.value.textInputs["raw"]
+                    ?.text,
+            )
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                baseline.readyDraft()!!.nodes,
+                controller.state.value
+                    .readyDraft()!!
+                    .nodes,
+            )
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                "bad-before",
+                controller.state.value.textInputs["raw"]
+                    ?.text,
+            )
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                "Pre-entry",
+                controller.state.value
+                    .readyDraft()!!
+                    .shortComment,
+            )
+            assertTrue(controller.redoManipulation())
+            assertEquals(
+                null,
+                controller.state.value
+                    .readyDraft()!!
+                    .shortComment,
+            )
+            controller.discardManipulation()
+            assertEquals(baseline.readyDraft(), controller.state.value.readyDraft())
+            assertEquals(baseline.textInputs, controller.state.value.textInputs)
+            controller.close()
+        }
+
+    @Test
+    fun duplicateOfferRequiresOwnedExistingSnapshotAndRedoRestoresSameTransientSelection() =
+        runBlocking {
+            val controller = destinationController(this)
+            controller.awaitReady()
+            val first = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            controller.enterManipulation(first)
+            val offered =
+                requireNotNull(controller.offerManipulationDestinations(SequenceDestinationOperation.Duplicate))
+            assertTrue(controller.chooseManipulationDestination(offered, offered.choices.last()))
+            val duplicate =
+                controller.state.value.manipulation!!
+                    .selected
+            assertTrue(duplicate is DraftIdentity.New)
+            assertEquals(null, controller.offerManipulationDestinations(SequenceDestinationOperation.Duplicate))
+            assertTrue(controller.undoManipulation())
+            assertEquals(
+                first,
+                controller.state.value.manipulation!!
+                    .selected,
+            )
+            assertTrue(controller.redoManipulation())
+            assertEquals(
+                duplicate,
+                controller.state.value.manipulation!!
+                    .selected,
+            )
+            controller.discardManipulation()
+            controller.updateDraft { it.copy(nodes = it.nodes + SequenceNodeDraft.Step(localStep("new", 2))) }
+            controller.enterManipulation(DraftIdentity.New("new"))
+            assertEquals(null, controller.offerManipulationDestinations(SequenceDestinationOperation.Duplicate))
+            controller.discardManipulation()
+            controller.enterManipulation(DraftIdentity.Existing(SequenceNodeId("repeat")))
+            assertEquals(null, controller.offerManipulationDestinations(SequenceDestinationOperation.Duplicate))
+            controller.discardManipulation()
+            controller.updateDraft { draft ->
+                draft.copy(
+                    nodes =
+                        draft.nodes.map { node ->
+                            if (node is SequenceNodeDraft.Step && node.value.activity is StepActivityDraft.Existing) {
+                                SequenceNodeDraft.Step(
+                                    node.value.copy(
+                                        activity =
+                                            (node.value.activity as StepActivityDraft.Existing).copy(
+                                                snapshotId = ActivitySnapshotId("foreign"),
+                                            ),
+                                    ),
+                                )
+                            } else {
+                                node
+                            }
+                        },
+                )
+            }
+            controller.enterManipulation(first)
+            val before = controller.state.value
+            assertEquals(null, controller.offerManipulationDestinations(SequenceDestinationOperation.Duplicate))
+            assertFalse(controller.duplicateManipulation(first, SequenceDropDestination(position = 0)))
+            assertEquals(before, controller.state.value)
+            controller.close()
+        }
+
+    private fun destinationController(
+        scope: kotlinx.coroutines.CoroutineScope,
+        read: () -> SequenceTemplateAuthoringState = ::authoringState,
+    ): SequenceTemplateEditorController =
+        SequenceTemplateEditorController(
+            scope,
+            SequenceTemplateEditorTarget.Existing(read().sequence.id),
+            { read() },
+            { emptyList() },
+            { _, _, _ -> error("No write") },
+            { _, _, _, _ -> error("No write") },
+            { Instant.EPOCH },
+        )
 
     private suspend fun SequenceTemplateEditorController.awaitReady() {
         withTimeout(2_000) { state.first { it.load is SequenceTemplateEditorLoad.Ready } }

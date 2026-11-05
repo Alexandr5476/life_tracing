@@ -64,6 +64,7 @@ internal class SequenceManipulationSession(
         duplicateIdentity: DraftIdentity.New,
         destination: SequenceDropDestination,
     ): SequenceTemplateDraft? {
+        if (!draft.canDuplicateManipulation(sourceIdentity, duplicateSources)) return null
         val source = draft.step(sourceIdentity) ?: return null
         val sourceId = (source.identity as? DraftIdentity.Existing)?.id ?: return null
         val sourceActivity = source.activity as? StepActivityDraft.Existing ?: return null
@@ -93,7 +94,7 @@ internal class SequenceManipulationSession(
         before: SequenceManipulationSnapshot,
         after: SequenceManipulationSnapshot,
     ) {
-        if (before == after) return
+        if (before.draft == after.draft && before.textInputs == after.textInputs) return
         val structure = pendingStructures.removeFirstOrNull()
         undo.addLast(SequenceManipulationHistoryEntry.create(before, after, structure))
         redo.clear()

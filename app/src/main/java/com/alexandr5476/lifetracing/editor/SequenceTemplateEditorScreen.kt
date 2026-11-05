@@ -12,8 +12,8 @@ package com.alexandr5476.lifetracing.editor
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,17 +43,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -134,7 +139,7 @@ internal fun SequenceTemplateEditorScreen(
             phase,
             state.generation,
             state.discardConfirmationVisible,
-            editable && state.manipulation == null,
+            editable,
             isRouteVisible,
             keyboardOnly = true,
         )
@@ -233,6 +238,16 @@ private fun SequenceEditorForm(
             !recoveryPending &&
             !state.discardConfirmationVisible
     val formEditable = editable && state.manipulation == null
+    val manipulating = state.manipulation != null
+    val visible = LocalEditorVisible.current
+    val window = LocalWindowInfo.current
+    val inputMode = LocalInputModeManager.current
+    // Mode leases replace native controls. Recover only if that replacement lost the owner.
+    LaunchedEffect(manipulating, visible, window.isWindowFocused, inputMode.inputMode, editable) {
+        withFrameNanos { }
+        val ownsWindow = visible && window.isWindowFocused && inputMode.inputMode == InputMode.Keyboard
+        if (editable && ownsWindow && !focus.hasFocus) focus.land()
+    }
     val settingsExpanded = rememberSaveable { mutableStateOf(false) }
     var settingsPresentation by remember { mutableStateOf(0L) }
     val formActions = rememberSequenceEditorActions(controller, state, normalModeOnly = true)
@@ -250,6 +265,8 @@ private fun SequenceEditorForm(
     var pickerTarget by remember { mutableStateOf<SequencePickerTarget?>(null) }
     val choices = remember(state.availableActivities) { state.availableActivities.associateBy { it.id } }
     val rows = remember(draft.nodes) { draft.sequenceEditorRows() }
+    val nodeContexts = sequenceManipulationContexts(draft, choices)
+    val currentNodeContexts = rememberUpdatedState(nodeContexts)
     LaunchedEffect(rows) {
         val surviving = rows.filterIsInstance<SequenceEditorRow.Step>().map { it.step.identity.editorKey() }.toSet()
         expandedSteps.value = expandedSteps.value.intersect(surviving)
@@ -257,9 +274,14 @@ private fun SequenceEditorForm(
     val topEnd = remember(draft.nodes.size) { SequenceEditorRow.TopEnd(draft.nodes.size) }
     val dropState = remember { SequenceEditorDropState() }
     val listState = rememberLazyListState()
-    DisposableEffect(focus, listState, recoveryPending) {
+    DisposableEffect(focus, listState, recoveryPending, manipulating) {
         focus.revealLanding = {
-            val index = if (recoveryPending) (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0) else 1
+            val index =
+                when {
+                    recoveryPending -> (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                    manipulating -> 0
+                    else -> 1
+                }
             listState.scrollToItem(index)
         }
         onDispose { focus.revealLanding = {} }
@@ -295,19 +317,21 @@ private fun SequenceEditorForm(
                         val cancel = stringResource(R.string.sequence_editor_manipulation_cancel)
                         TextButton(
                             onClick = { actions.invoke(controller::discardManipulation) },
-                            modifier = Modifier.semantics { contentDescription = cancel },
+                            modifier = editorFocusTarget().semantics { contentDescription = cancel },
                             enabled = editable,
                         ) {
                             Text("×")
                         }
                         TextButton(
                             onClick = { actions.invoke { controller.undoManipulation() } },
+                            modifier = editorFocusTarget(),
                             enabled = editable && manipulation.canUndo,
                         ) {
                             Text(stringResource(R.string.sequence_editor_undo))
                         }
                         TextButton(
                             onClick = { actions.invoke { controller.redoManipulation() } },
+                            modifier = editorFocusTarget(),
                             enabled = editable && manipulation.canRedo,
                         ) {
                             Text(stringResource(R.string.sequence_editor_redo))
@@ -323,6 +347,7 @@ private fun SequenceEditorForm(
                                         }
                                     }
                                 },
+                                modifier = editorFocusTarget(),
                                 enabled = recoveryPending || editable && !state.hasInvalidInput(draft),
                             ) {
                                 Text(
@@ -336,6 +361,7 @@ private fun SequenceEditorForm(
                                 )
                             }
                         }
+                        SequenceManipulationControls(state, controller, nodeContexts, editable)
                     }
                 }
             }
@@ -400,30 +426,51 @@ private fun SequenceEditorForm(
         item { key(formActions) { SequenceFields(draft, controller, formActions, formEditable) } }
         item { Text(stringResource(R.string.sequence_editor_steps), style = MaterialTheme.typography.titleMedium) }
         items(rows, key = SequenceEditorRow::key) { row ->
-            SequenceDropTarget(row, dropState) {
+            val identity =
                 when (row) {
-                    is SequenceEditorRow.Step ->
-                        StepCard(
-                            row.step,
-                            expandedSteps,
-                            state,
-                            controller,
-                            row.repeat,
-                            row.repeatCount,
-                            choices[row.templateId],
-                            editable,
-                            draft,
-                            dropState,
-                            autoScroll,
-                        )
-                    is SequenceEditorRow.RepeatHeader ->
-                        RepeatHeader(row.repeat, state, controller, editable, draft, dropState, autoScroll)
-                    is SequenceEditorRow.RepeatAdd ->
-                        AddStepAction(row.repeat.repeatCount, formEditable) {
-                            controller.loadActivityPicker()
-                            pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
-                        }
-                    is SequenceEditorRow.TopEnd -> Unit
+                    is SequenceEditorRow.Step -> row.step.identity
+                    is SequenceEditorRow.RepeatHeader -> row.repeat.identity
+                    is SequenceEditorRow.RepeatAdd -> row.repeat.identity
+                    is SequenceEditorRow.TopEnd -> null
+                }
+            CompositionLocalProvider(
+                LocalEditorTargetExists provides { identity == null || identity in currentNodeContexts.value },
+            ) {
+                SequenceDropTarget(row, dropState) {
+                    when (row) {
+                        is SequenceEditorRow.Step ->
+                            StepCard(
+                                row.step,
+                                nodeContexts.getValue(row.step.identity),
+                                expandedSteps,
+                                state,
+                                controller,
+                                row.repeat,
+                                row.repeatCount,
+                                choices[row.templateId],
+                                editable,
+                                draft,
+                                dropState,
+                                autoScroll,
+                            )
+                        is SequenceEditorRow.RepeatHeader ->
+                            RepeatHeader(
+                                row.repeat,
+                                nodeContexts.getValue(row.repeat.identity),
+                                state,
+                                controller,
+                                editable,
+                                draft,
+                                dropState,
+                                autoScroll,
+                            )
+                        is SequenceEditorRow.RepeatAdd ->
+                            AddStepAction(row.repeat.repeatCount, formEditable) {
+                                controller.loadActivityPicker()
+                                pickerTarget = SequencePickerTarget.Repeat(row.repeat.identity)
+                            }
+                        is SequenceEditorRow.TopEnd -> Unit
+                    }
                 }
             }
         }
@@ -613,27 +660,31 @@ private fun AddTopLevel(
 @Composable
 private fun RepeatHeader(
     repeat: SequenceRepeatBlockDraft,
+    context: String,
     state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
     editable: Boolean,
     draft: SequenceTemplateDraft,
     dropState: SequenceEditorDropState,
     autoScroll: (Float, Float, Long) -> Unit,
-) = SequenceCard {
+) = SequenceCard(selected = state.manipulation?.selected == repeat.identity) {
     Text(
         stringResource(R.string.sequence_editor_repeat_label, repeat.repeatCount),
         style = MaterialTheme.typography.titleSmall,
     )
-    if (state.manipulation != null) {
-        ManipulationHandle(
-            R.string.sequence_editor_move_repeat,
-            repeat.identity,
-            editable,
-            controller::selectManipulation,
-            draft,
-            dropState,
-            autoScroll,
-        ) { destination -> controller.moveManipulation(repeat.identity, destination) }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        if (state.manipulation != null) {
+            ManipulationHandle(
+                R.string.sequence_editor_move_repeat,
+                repeat.identity,
+                editable,
+                controller::selectManipulation,
+                draft,
+                dropState,
+                autoScroll,
+            ) { destination -> controller.moveManipulation(repeat.identity, destination) }
+        }
+        SequenceNodeManipulationAction(repeat.identity, context, state, controller, editable)
     }
     DurationField(
         R.string.sequence_editor_repeat_count,
@@ -734,6 +785,7 @@ private fun AddStepPicker(
 @Suppress("CyclomaticComplexMethod") // One expanded Step surface keeps all controls on the same draft boundary.
 private fun StepCard(
     step: ActivityStepDraft,
+    context: String,
     expandedSteps: MutableState<Set<String>>,
     state: SequenceTemplateEditorState,
     controller: SequenceTemplateEditorController,
@@ -752,11 +804,18 @@ private fun StepCard(
     val modifier =
         (if (repeat == null) Modifier else Modifier.padding(start = 16.dp))
             .clip(shape)
-            .combinedClickable(
-                enabled = editable,
-                onClick = { if (manipulation != null) controller.selectManipulation(step.identity) },
-                onLongClick = { controller.enterManipulation(step.identity) },
-            ).semantics { this.selected = selected }
+            .pointerInput(step.identity, editable, actions, manipulation != null) {
+                detectTapGestures(
+                    onTap = {
+                        if (editable &&
+                            manipulation != null
+                        ) {
+                            actions.invoke { controller.selectManipulation(step.identity) }
+                        }
+                    },
+                    onLongPress = { if (editable) actions.invoke { controller.enterManipulation(step.identity) } },
+                )
+            }.semantics { this.selected = selected }
     SequenceCard(modifier = modifier, selected = selected) {
         val stepKey = step.identity.editorKey()
         val expanded = stepKey in expandedSteps.value
@@ -781,6 +840,7 @@ private fun StepCard(
         }
         Text(
             local?.name ?: choice?.name ?: stringResource(R.string.sequence_editor_unavailable_activity),
+            modifier = Modifier.semantics { this.selected = selected },
             style = MaterialTheme.typography.titleSmall,
         )
         Text(local?.compactFact() ?: choice?.compactFact().orEmpty(), style = MaterialTheme.typography.bodySmall)
@@ -810,22 +870,27 @@ private fun StepCard(
             }
         }
         if (pendingDuplicate) {
+            SequenceNodeManipulationAction(step.identity, context, state, controller, editable)
             Text(stringResource(R.string.sequence_editor_pending_duplicate), style = MaterialTheme.typography.bodySmall)
             return@SequenceCard
         }
-        LifeTracingSecondaryButton(
-            onClick = {
-                actions.invoke {
-                    expandedSteps.value = if (expanded) expandedSteps.value - stepKey else expandedSteps.value + stepKey
-                }
-            },
-            enabled = editable,
-        ) {
-            Text(
-                stringResource(
-                    if (expanded) R.string.sequence_editor_close_step else R.string.sequence_editor_edit_step,
-                ),
-            )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            SequenceNodeManipulationAction(step.identity, context, state, controller, editable)
+            LifeTracingSecondaryButton(
+                onClick = {
+                    actions.invoke {
+                        expandedSteps.value =
+                            if (expanded) expandedSteps.value - stepKey else expandedSteps.value + stepKey
+                    }
+                },
+                enabled = editable,
+            ) {
+                Text(
+                    stringResource(
+                        if (expanded) R.string.sequence_editor_close_step else R.string.sequence_editor_edit_step,
+                    ),
+                )
+            }
         }
         if (!expanded) return@SequenceCard
         if (local != null) {
@@ -976,6 +1041,7 @@ private fun ManipulationHandle(
     commit: (SequenceDropDestination) -> Unit,
 ) {
     val label = stringResource(description)
+    val currentDraft by rememberUpdatedState(draft)
     var coordinates by remember(identity, duplicate) { mutableStateOf<LayoutCoordinates?>(null) }
     Text(
         if (duplicate) "⧉↕" else "↕",
@@ -990,7 +1056,7 @@ private fun ManipulationHandle(
                         onDragStart = { position ->
                             if (enabled) {
                                 select(identity)
-                                dropState.start(draft, identity, duplicate)
+                                dropState.start(currentDraft, identity, duplicate)
                                 coordinates?.localToRoot(position)?.y?.let {
                                     pointerY = it
                                     dropState.update(it)

@@ -14,10 +14,12 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
@@ -1619,6 +1621,99 @@ class LibraryAccessibilityRouteTest {
             f.invoke(R.string.sequence_editor_discard)
             f.await { f.host().sequenceTemplateEditorRouteSessions.activeSession == null }
             f.reopenUnchanged(before)
+        }
+
+    @Test
+    fun nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce() =
+        journey { f ->
+            val id = (f.seedDuplicates().last() as LibraryTemplateId.Sequence).id
+            val initial = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            f.store.authoring.saveSequenceTemplate(
+                id,
+                initial.sequence.revision,
+                initial.toAuthoringDraft().copy(
+                    nodes =
+                        initial.toAuthoringDraft().nodes +
+                            listOf(
+                                SequenceNodeDraft.Repeat(
+                                    com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft(
+                                        DraftIdentity.New("one"),
+                                        1,
+                                        2,
+                                        emptyList(),
+                                    ),
+                                ),
+                                SequenceNodeDraft.Repeat(
+                                    com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft(
+                                        DraftIdentity.New("two"),
+                                        2,
+                                        2,
+                                        emptyList(),
+                                    ),
+                                ),
+                            ),
+                ),
+                f.seedTime.plusSeconds(1),
+            )
+            val seeded = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            val top = seeded.sequence.nodes.first() as com.alexandr5476.lifetracing.domain.ActivityStep
+            val repeat = seeded.sequence.nodes.last() as com.alexandr5476.lifetracing.domain.SequenceRepeatBlock
+            f.launch()
+            f.enterLibrary()
+            f
+                .templateAction(
+                    LibraryTemplateId.Sequence(id),
+                    R.string.library_open_template,
+                ).performScrollTo()
+                .performClick()
+            f.awaitSequenceEditor()
+            keyboard.enter()
+            val session = f.host().sequenceTemplateEditorRouteSessions.activeSession!!
+            val entry =
+                f.text(
+                    R.string.activity_editor_control_context,
+                    f.text(R.string.sequence_manipulation_enter),
+                    f.text(R.string.sequence_manipulation_top_step, "Shared name", 1),
+                )
+            val button = compose.onLazyNode(hasContentDescription(entry))
+            button.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+            keyboard.sendKey(button, KeyEvent.KEYCODE_ENTER)
+            compose.waitForIdle()
+            val selected = session.controller.state.value.manipulation
+            assertEquals(DraftIdentity.Existing(top.id), selected!!.selected)
+            f.recreate()
+            assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertEquals(selected, session.controller.state.value.manipulation)
+            val beforeApply = f.library.state.value.browseRequestId
+            f.invoke(R.string.sequence_manipulation_move)
+            val destination =
+                com.alexandr5476.lifetracing.editor.sequenceDestinationKey(
+                    com.alexandr5476.lifetracing.editor
+                        .SequenceDropDestination(DraftIdentity.Existing(repeat.id), 0),
+                )
+            compose.onNodeWithTag("sequence-destinations").performScrollToKey(destination)
+            compose.onNodeWithTag(destination).performSemanticsAction(SemanticsActions.OnClick)
+            f.invoke(R.string.sequence_editor_apply)
+            f.await { session.controller.state.value.appliedGeneration == 1L }
+            f.await { f.library.state.value.browseRequestId == beforeApply + 1 }
+            val canonical = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
+            assertEquals(seeded.sequence.revision + 1, canonical.sequence.revision)
+            assertEquals(seeded.activitySnapshots, canonical.activitySnapshots)
+            assertEquals(
+                listOf(
+                    top.id,
+                ),
+                (canonical.sequence.nodes.last() as com.alexandr5476.lifetracing.domain.SequenceRepeatBlock)
+                    .children
+                    .map {
+                        it.id
+                    },
+            )
+            f.recreate()
+            assertEquals(beforeApply + 1, f.library.state.value.browseRequestId)
+            f.invoke(R.string.sequence_editor_back)
+            f.libraryLanding()
+            f.reopenOrganization { assertEquals(canonical, authoring.getSequenceTemplateAuthoringState(id)) }
         }
 
     private fun androidx.compose.ui.test.SemanticsNodeInteraction.awaitKeyboardFocus() =

@@ -203,6 +203,23 @@ class SequenceManipulationTest {
         assertFalse(session.uiState().canRedo)
     }
 
+    @Test
+    fun noOpMoveOfAnotherSelectionDoesNotCreateHistoryOrClearRedo() {
+        val original = draft()
+        val session = SequenceManipulationSession(original, id("a"))
+        val moved = requireNotNull(session.move(original, id("a"), SequenceDropDestination(position = 1)))
+        session.record(snapshot(original, id("a")), snapshot(moved, id("a")))
+        val undone = requireNotNull(session.undo(snapshot(moved, id("a"))))
+        assertTrue(session.uiState().canRedo)
+        val noOp = requireNotNull(session.move(undone.draft, id("b"), SequenceDropDestination(id("r1"), 0)))
+        session.record(undone, snapshot(noOp, session.selected))
+        assertEquals(id("b"), session.selected)
+        assertEquals(original, noOp)
+        assertFalse(session.uiState().canUndo)
+        assertEquals(0, session.uiState().operationCount)
+        assertTrue(session.uiState().canRedo)
+    }
+
     private fun draft() =
         SequenceTemplateDraft(
             "Workout",

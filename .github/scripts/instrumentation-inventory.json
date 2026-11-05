@@ -759,7 +759,8 @@
       "productionSequenceConflictExplicitReloadAndDiscardLeaveNoPartialWriteOnReopen",
       "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
       "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
-      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState"
+      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
+      "nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
@@ -957,7 +958,14 @@
       "settingsExposeDisclosureCheckedStatesAndRawCountdownErrors",
       "sourceActionsRemainVisibleAcrossCanonicalReloadsAndNewSourceRelink",
       "survivingFieldFocusAndRemovedTargetRecoveryRespectNativeOwnership",
-      "topLevelAndRepeatAddStepShareTheBoundedPicker"
+      "topLevelAndRepeatAddStepShareTheBoundedPicker",
+      "englishManipulationNativeTargetsSupportCombinedScaling",
+      "keyboardTraversalReachesOffscreenDestinationWithoutDragging",
+      "nativeManipulationMovesEveryContainerShapeDuplicatesAndDiscardsToPreEntryEdits",
+      "nativeRepeatEntryHasOnlyTopLevelSlotsAndDismissalRestoresAnExistingControl",
+      "retainedNativeDestinationsRejectDismissalStructureDiscardHiddenAndCanonicalGenerations",
+      "russianManipulationNativeTargetsSupportCombinedScaling",
+      "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
     "com.alexandr5476.lifetracing.history.HistoryScreenPresentationTest": [
       "activityDetailUsesHistoricalZoneAndPreservesFrozenConfigurationAndValues",
@@ -1330,6 +1338,7 @@
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure",
       "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
       "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
       "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",
@@ -1358,6 +1367,9 @@
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
       "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceManipulationAccessibilityPersistenceTest": [
+      "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership"
     ]
   },
   "startup": {
