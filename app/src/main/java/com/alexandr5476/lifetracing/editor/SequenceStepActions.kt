@@ -13,7 +13,6 @@ import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
-import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
 
 /** Resolves current physical ownership at an action boundary; never retains a draft graph. */
 internal class SequenceStepActions(
@@ -21,19 +20,21 @@ internal class SequenceStepActions(
     private val lease: SequenceTemplateEditorActions,
     private val identity: DraftIdentity<SequenceNodeId>,
 ) {
-    fun available(): Boolean {
-        var admitted = false
-        invoke { admitted = true }
-        return admitted
-    }
+    fun available(): Boolean =
+        lease.isAvailable &&
+            controller.presentationEditable() &&
+            controller.state.value.presentation()?.steps?.get(identity)?.let {
+                it.activity !is StepActivityDraft.Duplicate
+            } == true
 
     fun scoped(lease: SequenceTemplateEditorActions) = SequenceStepActions(controller, lease, identity)
 
     fun trackingMode(): TimeTrackingMode? {
         val current =
             controller.state.value
-                .readyDraft()
-                ?.findStep(identity) ?: return null
+                .presentation()
+                ?.steps
+                ?.get(identity) ?: return null
         val pending = current.activity as? StepActivityDraft.FromTemplate
         return current.configuration()?.timeTrackingMode ?: pending?.let { source ->
             controller.state.value.availableActivities
@@ -44,13 +45,15 @@ internal class SequenceStepActions(
 
     fun exists(): Boolean =
         controller.state.value
-            .readyDraft()
-            ?.findStep(identity) != null
+            .presentation()
+            ?.steps
+            ?.containsKey(identity) == true
 
     fun configuration(): ActivitySnapshotDraft? =
         controller.state.value
-            .readyDraft()
-            ?.findStep(identity)
+            .presentation()
+            ?.steps
+            ?.get(identity)
             ?.configuration()
 
     fun fieldExists(captured: ActivitySnapshotFieldDraft): Boolean =
@@ -130,19 +133,24 @@ internal class SequenceStepActions(
             )
         }
 
+    fun numberDefaultKey(field: ActivitySnapshotFieldDraft): String = SequenceNumberInputKey.default(field, identity)
+
+    fun numberPrecisionKey(field: ActivitySnapshotFieldDraft): String =
+        SequenceNumberInputKey.precision(field, identity)
+
     fun numberDefault(
         captured: ActivitySnapshotFieldDraft,
         text: String,
     ): Boolean {
         var accepted = false
-        if (captured.type != CustomFieldType.NUMBER) return false
-        field(captured) { current ->
-            val number = text.takeUnless(String::isBlank)?.let { parseLauncherNumber(it, current.displayPrecision) }
-            accepted = text.isBlank() || number != null
-            if (accepted) current.copy(defaultNumberScaled = number) else current
-        }
+        invoke { accepted = controller.setStepFieldNumber(identity, captured, text) }
         return accepted
     }
+
+    fun numberPrecision(
+        captured: ActivitySnapshotFieldDraft,
+        text: String,
+    ) = invoke { controller.setStepFieldNumber(identity, captured, text, precision = true) }
 
     fun mainValue(
         captured: ActivitySnapshotFieldDraft,
@@ -165,8 +173,11 @@ internal class SequenceStepActions(
     }
 }
 
-private fun ActivitySnapshotFieldDraft.matches(captured: ActivitySnapshotFieldDraft): Boolean =
-    identity == captured.identity && type == captured.type && sourceFieldId == captured.sourceFieldId
+internal fun ActivitySnapshotFieldDraft.matches(captured: ActivitySnapshotFieldDraft): Boolean =
+    identity == captured.identity &&
+        type == captured.type &&
+        sourceFieldId == captured.sourceFieldId &&
+        unit == captured.unit
 
 internal fun ActivityStepDraft.configuration(): ActivitySnapshotDraft? =
     when (val activity = activity) {

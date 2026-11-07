@@ -1,8 +1,10 @@
 package com.alexandr5476.lifetracing.editor
 
+import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.SequenceFieldDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 
 /** Ephemeral presentation authority; the controller remains the command boundary. */
 internal class SequenceTemplateEditorActions(
@@ -15,6 +17,41 @@ internal class SequenceTemplateEditorActions(
     private val modeGeneration = controller.presentationModeGeneration
     var attached = true
     var visible = true
+
+    fun forSequenceFields(
+        epoch: Long,
+        identity: DraftIdentity<SequenceTemplateFieldId>? = null,
+    ): SequenceTemplateEditorActions =
+        SequenceTemplateEditorActions(controller, generation, discardGeneration, normalModeOnly) {
+            val state = controller.state.value
+            val currentEpoch =
+                if (identity ==
+                    null
+                ) {
+                    state.sequenceFieldEpoch
+                } else {
+                    state.sequenceFieldEpochs[identity] ?: 0
+                }
+            val ownsIdentity = identity == null || state.presentation()?.fields?.containsKey(identity) == true
+            isAvailable && ownsIdentity && currentEpoch == epoch
+        }
+
+    val isAvailable: Boolean
+        get() {
+            var admitted = false
+            invoke { admitted = true }
+            return admitted
+        }
+
+    fun numberDefault(
+        captured: SequenceFieldDraft,
+        text: String,
+    ) = invoke { controller.setSequenceFieldNumber(captured, text) }
+
+    fun numberPrecision(
+        captured: SequenceFieldDraft,
+        text: String,
+    ) = invoke { controller.setSequenceFieldNumber(captured, text, precision = true) }
 
     fun invoke(action: () -> Unit) {
         if (attached && visible) {
@@ -38,8 +75,8 @@ internal class SequenceTemplateEditorActions(
         captured: SequenceFieldDraft,
         requireType: Boolean = false,
     ): Boolean =
-        controller.state.value.readyDraft()?.fields?.any {
-            it.identity == captured.identity && (!requireType || it.type == captured.type)
+        controller.state.value.presentation()?.fields?.get(captured.identity)?.let {
+            !requireType || it.type == captured.type
         } == true
 
     fun optionExists(
@@ -47,11 +84,11 @@ internal class SequenceTemplateEditorActions(
         option: SequenceCategoryOptionDraft,
     ): Boolean =
         controller.state.value
-            .readyDraft()
+            .presentation()
             ?.fields
-            ?.firstOrNull {
-                it.identity == captured.identity && it.type == captured.type
-            }?.categoryOptions
+            ?.get(captured.identity)
+            ?.takeIf { it.type == captured.type }
+            ?.categoryOptions
             ?.any { it.identity == option.identity } == true
 
     fun removeField(captured: SequenceFieldDraft) =

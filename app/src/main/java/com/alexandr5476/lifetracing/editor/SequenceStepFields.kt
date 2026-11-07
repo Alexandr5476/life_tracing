@@ -14,9 +14,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.res.stringResource
 import com.alexandr5476.lifetracing.R
@@ -184,32 +182,32 @@ private fun SnapshotNumberField(
     editable: Boolean,
 ) {
     val actions = LocalSequenceStepActions.current
-    var precisionRejected by remember { mutableStateOf(false) }
-    var numberRejected by remember { mutableStateOf(false) }
+    val state by controller.state.collectAsState()
+    val defaultKey = actions.numberDefaultKey(field)
+    val precisionKey = actions.numberPrecisionKey(field)
+    val numberRejected = state.inputIsInvalid(defaultKey)
+    val precisionRejected = state.inputIsInvalid(precisionKey)
     SnapshotInput(field.unit.orEmpty(), R.string.activity_editor_unit, editable) { unit ->
         actions.field(field) {
             it.withCompatibleUnitReplacement(unit.ifBlank { null }, controller.newKey("local-field-replacement"))
         }
     }
     SnapshotInput(
-        field.displayPrecision?.toString().orEmpty(),
+        state.inputText(precisionKey, field.displayPrecision?.toString().orEmpty()),
         R.string.activity_editor_precision,
         editable,
         precisionRejected,
         R.string.activity_editor_precision_guidance,
     ) { text ->
-        actions.field(field) { current ->
-            precisionRejected = text.isNotBlank() && text.toIntOrNull() !in 0..MAX_SNAPSHOT_NUMBER_PRECISION
-            if (precisionRejected) current else current.copy(displayPrecision = text.toIntOrNull())
-        }
+        actions.numberPrecision(field, text)
     }
     SnapshotInput(
-        formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision),
+        state.inputText(defaultKey, formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision)),
         R.string.activity_editor_default,
         editable,
         numberRejected,
         R.string.activity_editor_number_invalid.takeIf { numberRejected },
-    ) { text -> numberRejected = !actions.numberDefault(field, text) }
+    ) { text -> actions.numberDefault(field, text) }
     FlowRow {
         Checkbox(
             checked = field.isMainValue,
@@ -368,5 +366,3 @@ private fun ActivitySnapshotFieldDraft.normalized() =
                 isMainValue = false,
             )
     }
-
-private const val MAX_SNAPSHOT_NUMBER_PRECISION = 3

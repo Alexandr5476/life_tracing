@@ -799,8 +799,9 @@ private fun StepCard(
                 controller.presentationEditable() &&
                     disclosureEpoch.value == epoch &&
                     controller.state.value
-                        .readyDraft()
-                        ?.findStep(step.identity) != null
+                        .presentation()
+                        ?.steps
+                        ?.containsKey(step.identity) == true
             })
         }
     val actions = LocalSequenceEditorActions.current
@@ -810,8 +811,9 @@ private fun StepCard(
                 disclosureEpoch.value == epoch &&
                     stepKey in expandedSteps.value &&
                     controller.state.value
-                        .readyDraft()
-                        ?.findStep(step.identity) != null
+                        .presentation()
+                        ?.steps
+                        ?.containsKey(step.identity) == true
             })
         }
     val stepActions =

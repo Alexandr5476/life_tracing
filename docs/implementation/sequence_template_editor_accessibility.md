@@ -1100,3 +1100,165 @@ inventory. The repaired test sources and APK compiled successfully; the canonica
 two-case runtime rerun, full Controller gates and independent GitHub managed-device
 CI remain outstanding. This repair changes test fixture expectations and diagnostics
 only; no source writer, persistence or production disclosure/target policy changed.
+
+## S4C1 — Number input authority and bounded presentation lookup
+
+The supplied S4 head was `7e1da5ba7643b071ea8a54d95b2c9eb8c469f292`.
+The fail-first Jupiter case
+`SequenceStepSourceActionsTest.rejectedNumberDefaultBlocksCleanCommittedSourceAndSaveAdmission`
+was added before production changes. Against that head, it reached an otherwise
+eligible committed linked Step, rejected `-1.234` at precision 2, retained the same
+semantic draft, then failed the controller `hasInvalidInput` assertion. It was an
+actual assertion failure (one test executed), not an inferred visual error. The
+existing native Sequence precision regression was extended before the fix to require
+the original `-1.25` literal and error after switching precision to zero; native
+execution remains Controller-owned.
+
+Both Sequence-level and Step Number controls now render controller-owned raw text
+and validity. Default/precision controls share exact fixed-scale parsing and the
+Activity editor precision policy. Rejected literals retain last valid values; valid
+precision changes revalidate visible default text without rounding. Generic draft
+transforms also revalidate changed precision at the controller boundary, using a
+command-local canonical identity map. Its dedicated fail-first Jupiter regression
+reproduced stale validity before this normalization was added; the fixed regression
+exercises both surfaces. Scoped keys
+include owner/Field identity, provenance and unit; length-prefixed components avoid
+ambiguous concatenation. Removal/type/unit changes retire obsolete numeric Field
+keys while preserving the established inactive countdown-input policy. Owner-scoped
+Sequence Field schema epochs retire each changed owner's old native leases even
+after a type/unit round-trip; surviving owners keep their native composition and
+focus. The existing Save-time replacement/no-op identity policy is preserved.
+Canonical reload clears editor raw text as before. Source epochs retire prior offers on raw
+input transitions and correction. All persistence remains at semantic command
+boundaries, with no repository/schema changes.
+
+Raw and semantic edits use the existing grouped manipulation entry point and
+existing delta history. The new matrix covers both surfaces, missing/zero, signs,
+fractions, precision null/0–3, malformed/excess-precision/overflow input including
+Long limits, exact retained text, correction, precision revalidation, command
+rejection, movement, removal/replacement, Undo/Redo and the pre-entry invalid Discard
+baseline. Original S1–S4 tests and nullable comment deltas remain intact.
+
+`SequenceDraftPresentation` belongs to an immutable Ready draft. Step lookup is a
+map access; Field/option inspection touches only the directly owned collection.
+Sequence Field lookup uses a separate identity map. The shared active numeric key
+set and per-state validity/dirty facts prevent source controls from repeating global
+validation/equality scans. Raw-only state changes reuse the same presentation view.
+Actual mutations retain canonical graph/Field/provenance resolution under the
+controller lock. No picker, reader, writer, history query or pagination contract
+changed. The structural Jupiter probe uses 1,200 same-name Steps split between
+top-level and Repeat children, with Number/Category Fields and six same-label
+options. Counting lists require zero graph accesses across repeated control
+inspections and raw-only changes, then positive accesses during actual mutation;
+movement/removal/Undo verify the current index identities. No wall-clock threshold
+serves as performance evidence.
+
+Native source-admission regressions additionally retain callbacks, reject all source
+writers and direct Save, check dirty Back, reattach the retained controller, correct
+input and execute a fresh writer once. The existing production physical journey
+now rejects raw Number/precision edits without durable changes or Library refresh,
+recreates MainActivity with the same controller, corrects/reverts input and continues
+all original source/provenance/History/Plan/runtime assertions. A new disposable
+production-database case checks zero writes for rejection, one corrected commit,
+signed fractional defaults on both surfaces, missing versus zero, snapshot replacement,
+non-target Step preservation, source Field/option provenance and physical reopen.
+
+Mandatory inventory adds three app identities: two native input-admission methods
+and one physical persistence method. Totals are **583 app / 627 data / 2 startup**
+per API. All original identities remain pinned for APIs 26, 31, 33, 35 and 36.
+
+Local verification results are recorded in the S4C1 completion report. Instrumentation
+APK compilation is not native execution. Controller `full` and `gmd-full`, full S4
+acceptance and the Parent-wide closure audit remain required; independent GitHub
+managed-device CI remains a final gate. Manual accessibility-service certification
+remains unverified. This corrective slice does not declare Parent completion.
+
+### S4C1 final local verification
+
+The final combined command passed in 2m 44s:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceStep*Test' --tests '*SequenceNumber*Test' --tests '*SequenceDraftPresentationTest' --tests '*SequenceTemplateEditor*Test' --tests '*SequenceManipulation*Test' --tests '*ActivityTemplateEditor*Test' --tests '*LauncherNumberFormatTest' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest :app:lintDebug --continue --console=plain
+```
+
+JUnit XML records **101 tests, zero failures/errors/skips**, including both fail-first
+regressions and the 1,200-Step counting-list probe. App ktlint, Detekt and lintDebug
+passed; app/data AndroidTest APKs assembled. The host instrumentation runner passed
+**69 mocked tests**. Inventory/source comparison preserved all original identities
+and pinned all three additions; `git diff --check` passed. No original test was
+removed, suppressed or weakened. Earlier intermediate failures were corrected in
+production code or in the new tests' explicit prerequisites; their results are not
+claimed as passing verification.
+
+The actual native matrices, MainActivity recreation, physical reopen assertions,
+combined scaling and keyboard traversal were compiled, not executed here. Controller
+`full` / `gmd-full`, the full S4 acceptance repeat and Parent-wide repository-closure
+audit, independent GitHub managed-device CI and manual accessibility-service
+certification remain outstanding. All intended repository changes are uncommitted.
+
+## S4C1 canonical API 35 repair (2026-11-07)
+
+Controller execution `S4C1-a8c825e36dda430d92eafdb1e49aab55/attempt-1`
+reached 584 app cases and reported three actual testcase failures. Both Number
+admission journeys reached dirty Back confirmation, then used the page-only lazy
+lookup helper to find the dialog's Keep editing action. The helper scrolled the
+editor page and could not find a node that belongs to the separate dialog root.
+The shared journey now selects the native button beneath `isDialog()` and retains
+all rejection, raw-text, correction, writer-count and delivery assertions.
+
+The existing surviving-Field focus regression failed after removing a different
+same-name Field. S4C1 had used a global schema epoch as every Field row's Compose
+key, so deleting the first row recreated the focused second row. Native diagnostics
+reported an attached, interactive, focused Activity window in keyboard mode; this
+was a repository focus regression, not an emulator startup failure.
+
+Sequence Field rows and their leases now use owner-specific epochs. A monotonic
+schema-command clock assigns fresh tokens to changed/new owners, while a bounded
+map retains unchanged owners' tokens and prunes removed owners. Presentation lookup
+remains indexed. Removing another Field or changing its schema preserves the
+surviving native node, even when its spoken ordinal changes. Type/unit replacement,
+removal/re-addition, Undo/Redo and Discard still retire obsolete callbacks. Canonical
+reload resets the presentation map alongside raw input; writer and snapshot rules
+are unchanged. The native focus regression additionally requires the survivor's
+semantics-node identity to remain the same. New Jupiter cases exercise usable
+survivor callbacks, rejected removed/replaced callbacks, raw-input restoration and
+lifetime retirement through Undo/Redo/Discard.
+
+All original instrumentation identities remain pinned; the mandatory five-API
+inventory is unchanged at 583 app / 627 data / 2 startup cases. Local checks and
+scoped repair-probe results are recorded below; a diagnostic probe is not a fresh
+full/gmd-full, independent CI or manual accessibility certification PASS.
+
+### Canonical repair verification
+
+The local command passed in 4m 34s:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceStep*Test' --tests '*SequenceNumber*Test' --tests '*SequenceDraftPresentationTest' --tests '*SequenceTemplateEditor*Test' --tests '*SequenceManipulation*Test' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:lintDebug --continue --console=plain
+```
+
+JUnit XML contains **77 tests, zero failures/errors/skips**. App ktlint, Detekt,
+lintDebug and AndroidTest APK assembly passed. This includes the two new owner-scope
+admission/history regressions; no original test assertion was weakened.
+
+The authorized command `D:\controller\.runtime\agent-tools\repair-probe.cmd`
+then ran the three original failing methods on real API 35 instrumentation and
+reported **PASS**, 144.7 seconds. The scoped XML records **3 tests, zero
+failures/errors/skips**:
+
+- `SequenceStepSourceAccessibilityTest.rejectedNumberDefaultRetainsNativeTextAndBlocksEveryCommandUntilCorrection`
+- `SequenceStepSourceAccessibilityTest.rejectedPrecisionRetainsNativeTextAndBlocksEveryCommandUntilCorrection`
+- `SequenceTemplateEditorScreenPresentationTest.survivingFieldFocusAndRemovedTargetRecoveryRespectNativeOwnership`
+
+The report is under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/84256e44be2847ff86d0f0c541fbc3d3/tree-1/attempt-1/reports/app/build/outputs/androidTest-results/managedDevice/debug/pixel2Api35/TEST-pixel2Api35-_app-.xml`.
+The Number journeys completed their downstream retained-input, correction,
+exactly-once writer and applied-generation assertions. The focus journey completed
+survivor-node identity, removed-owner recovery and subsequent keyboard traversal.
+
+Inventory/source checks retain every original mandatory identity and the 583 / 627 /
+2 counts; `git diff --check` passed. The repair probe is diagnostic evidence for
+these three failures, not a replacement for a fresh unfiltered Controller full /
+gmd-full run, the five-API gates, independent GitHub CI or manual certification.
+The original canonical full-run failure remains recorded above. The patch remains
+uncommitted, and Parent completion is not declared.

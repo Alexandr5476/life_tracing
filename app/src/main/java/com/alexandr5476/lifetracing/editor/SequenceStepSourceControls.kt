@@ -32,7 +32,12 @@ internal fun StepSourceActions(
     val context = LocalSequenceStepContext.current
     val sourceId = state.stepSourceIds[stepId]
     val source = sourceId?.let(state.sourceStatuses::get)
-    val step = state.readyDraft()?.findStep(DraftIdentity.Existing(stepId))?.activity as? StepActivityDraft.Existing
+    val step =
+        state
+            .presentation()
+            ?.steps
+            ?.get(DraftIdentity.Existing(stepId))
+            ?.activity as? StepActivityDraft.Existing
     val actions =
         remember(
             controller,

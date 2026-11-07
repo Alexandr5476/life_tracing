@@ -5,6 +5,9 @@ package com.alexandr5476.lifetracing
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
@@ -58,7 +61,9 @@ import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorSave
 import com.alexandr5476.lifetracing.editor.SequenceTemplateEditorTarget
 import com.alexandr5476.lifetracing.editor.configuration
 import com.alexandr5476.lifetracing.editor.findStep
+import com.alexandr5476.lifetracing.editor.hasInvalidInput
 import com.alexandr5476.lifetracing.editor.readyDraft
+import com.alexandr5476.lifetracing.editor.sourceActionsAllowed
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.LauncherLoad
 import com.alexandr5476.lifetracing.library.LibraryAction
@@ -2281,6 +2286,59 @@ class LibraryAccessibilityRouteTest {
             openEditor()
             val identity = DraftIdentity.Existing(first.id)
             f.stepControl(identity, R.string.sequence_editor_edit_step).performSemanticsAction(SemanticsActions.OnClick)
+            val numericSession = f.host().sequenceTemplateEditorRouteSessions.activeSession!!
+            val numericRefresh = f.library.state.value.browseRequestId
+            val beforeRejectedInput = f.store.durableFacts()
+            val sourceCallbacks =
+                listOf(
+                    R.string.sequence_editor_update_from_source,
+                    R.string.sequence_editor_update_source,
+                    R.string.sequence_editor_save_as_new_template,
+                ).map { operation ->
+                    compose
+                        .onLazyNode(hasText(f.text(operation)) and hasClickAction())
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                }
+            f.stepFieldControl(identity, 0, R.string.activity_editor_default).performTextReplacement("-1.234")
+            compose.runOnIdle {
+                sourceCallbacks.forEach { it() }
+                numericSession.controller.updateStepFromSource(first.id)
+                numericSession.controller.updateSourceTemplate(first.id)
+                numericSession.controller.saveStepAsNewTemplate(first.id)
+                numericSession.controller.save()
+            }
+            assertTrue(
+                numericSession.controller.state.value.hasInvalidInput(
+                    numericSession.controller.state.value
+                        .readyDraft()!!,
+                ),
+            )
+            assertEquals(beforeRejectedInput, f.store.durableFacts())
+            assertEquals(numericRefresh, f.library.state.value.browseRequestId)
+            f.recreate()
+            assertSame(numericSession, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+            assertEquals(
+                "-1.234",
+                numericSession.controller.state.value.textInputs.values
+                    .single()
+                    .text,
+            )
+            f
+                .stepFieldControl(identity, 0, R.string.activity_editor_default)
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+            f.stepFieldControl(identity, 0, R.string.activity_editor_default).performTextReplacement("0")
+            f.stepFieldControl(identity, 0, R.string.activity_editor_precision).performTextReplacement("9")
+            compose.runOnIdle { numericSession.controller.save() }
+            assertEquals(beforeRejectedInput, f.store.durableFacts())
+            f.stepFieldControl(identity, 0, R.string.activity_editor_precision).performTextReplacement("2")
+            assertTrue(
+                numericSession.controller.state.value
+                    .sourceActionsAllowed(),
+            )
+            compose.runOnIdle { sourceCallbacks.forEach { it() } }
+            assertEquals(beforeRejectedInput, f.store.durableFacts())
             f
                 .stepControl(
                     identity,

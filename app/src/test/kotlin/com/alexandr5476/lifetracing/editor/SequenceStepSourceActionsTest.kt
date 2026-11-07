@@ -27,6 +27,148 @@ import java.time.Instant
 
 class SequenceStepSourceActionsTest {
     @Test
+    @Suppress("LongMethod")
+    fun rejectedNumberDefaultBlocksCleanCommittedSourceAndSaveAdmission() =
+        runBlocking {
+            val initial =
+                canonical(true).let { state ->
+                    state.copy(
+                        activitySnapshots =
+                            state.activitySnapshots.mapValues { (_, snapshot) ->
+                                snapshot.copy(
+                                    fields =
+                                        listOf(
+                                            com.alexandr5476.lifetracing.domain.ActivitySnapshotField(
+                                                com.alexandr5476.lifetracing.domain
+                                                    .ActivitySnapshotFieldId("number"),
+                                                null,
+                                                0,
+                                                "Same",
+                                                type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                                displayPrecision = 2,
+                                                defaultNumberScaled = -1250,
+                                            ),
+                                        ),
+                                )
+                            },
+                    )
+                }
+            val fixture = Fixture(this, initial = initial)
+            fixture.ready()
+            val editor = fixture.editor
+            val before = editor.state.value.readyDraft()!!
+            val owner = before.findStep(DraftIdentity.Existing(STEP))!!
+            val field = owner.configuration()!!.fields.single()
+            val source = fixture.actions()
+            assertTrue(source.available(SequenceStepSourceOperation.UpdateSource))
+            val actions =
+                SequenceStepActions(
+                    editor,
+                    SequenceTemplateEditorActions(editor, editor.state.value.generation),
+                    owner.identity,
+                )
+            assertFalse(actions.numberDefault(field, "-1.234"))
+            assertEquals(before, editor.state.value.readyDraft())
+            assertTrue(editor.state.value.hasInvalidInput(before))
+            assertFalse(editor.state.value.sourceActionsAllowed())
+            SequenceStepSourceOperation.entries.forEach { assertFalse(source.available(it)) }
+            SequenceStepSourceOperation.entries.forEach(source::invoke)
+            editor.updateStepFromSource(STEP)
+            editor.updateSourceTemplate(STEP)
+            editor.saveStepAsNewTemplate(STEP)
+            editor.save()
+            assertEquals(0, fixture.attempts)
+            assertEquals(0, fixture.saves)
+            var exited = false
+            editor.requestBack { exited = true }
+            assertFalse(exited)
+            assertTrue(editor.state.value.discardConfirmationVisible)
+            editor.dismissDiscard()
+            actions.numberDefault(field, "-1.25")
+            assertTrue(editor.state.value.sourceActionsAllowed())
+            SequenceStepSourceOperation.entries.forEach { assertFalse(source.available(it)) }
+            fixture.release.complete(Unit)
+            val current = fixture.actions()
+            current.invoke(SequenceStepSourceOperation.UpdateSource)
+            current.invoke(SequenceStepSourceOperation.UpdateSource)
+            withTimeout(2000) { editor.state.first { it.appliedGeneration == 1L } }
+            assertEquals(1, fixture.attempts)
+            assertEquals(1, fixture.commits)
+            editor.close()
+        }
+
+    @Test
+    @Suppress("LongMethod")
+    fun rejectedPrecisionBlocksCleanCommittedSourceAndSaveAdmission() =
+        runBlocking {
+            val initial =
+                canonical(true).let { state ->
+                    state.copy(
+                        activitySnapshots =
+                            state.activitySnapshots.mapValues { (_, snapshot) ->
+                                snapshot.copy(
+                                    fields =
+                                        listOf(
+                                            com.alexandr5476.lifetracing.domain.ActivitySnapshotField(
+                                                com.alexandr5476.lifetracing.domain
+                                                    .ActivitySnapshotFieldId("number"),
+                                                null,
+                                                0,
+                                                "Same",
+                                                type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                                displayPrecision = 2,
+                                                defaultNumberScaled = -1250,
+                                            ),
+                                        ),
+                                )
+                            },
+                    )
+                }
+            val fixture = Fixture(this, initial = initial)
+            fixture.ready()
+            val editor = fixture.editor
+            val before = editor.state.value.readyDraft()!!
+            val owner = before.findStep(DraftIdentity.Existing(STEP))!!
+            val field = owner.configuration()!!.fields.single()
+            val source = fixture.actions()
+            assertTrue(source.available(SequenceStepSourceOperation.UpdateSource))
+            val actions =
+                SequenceStepActions(
+                    editor,
+                    SequenceTemplateEditorActions(editor, editor.state.value.generation),
+                    owner.identity,
+                )
+            actions.numberPrecision(field, "9")
+            assertEquals(before, editor.state.value.readyDraft())
+            assertTrue(editor.state.value.hasInvalidInput(before))
+            assertFalse(editor.state.value.sourceActionsAllowed())
+            SequenceStepSourceOperation.entries.forEach { assertFalse(source.available(it)) }
+            SequenceStepSourceOperation.entries.forEach(source::invoke)
+            editor.updateStepFromSource(STEP)
+            editor.updateSourceTemplate(STEP)
+            editor.saveStepAsNewTemplate(STEP)
+            editor.save()
+            assertEquals(0, fixture.attempts)
+            assertEquals(0, fixture.saves)
+            var exited = false
+            editor.requestBack { exited = true }
+            assertFalse(exited)
+            assertTrue(editor.state.value.discardConfirmationVisible)
+            editor.dismissDiscard()
+            actions.numberPrecision(field, "2")
+            assertTrue(editor.state.value.sourceActionsAllowed())
+            SequenceStepSourceOperation.entries.forEach { assertFalse(source.available(it)) }
+            fixture.release.complete(Unit)
+            val current = fixture.actions()
+            current.invoke(SequenceStepSourceOperation.UpdateSource)
+            current.invoke(SequenceStepSourceOperation.UpdateSource)
+            withTimeout(2000) { editor.state.first { it.appliedGeneration == 1L } }
+            assertEquals(1, fixture.attempts)
+            assertEquals(1, fixture.commits)
+            editor.close()
+        }
+
+    @Test
     fun activeArchivedMissingAndUnlinkedAvailabilityUsesCurrentCommittedIdentity() =
         runBlocking {
             for (status in listOf("active", "archived", "missing", "unlinked")) {
@@ -286,6 +428,7 @@ class SequenceStepSourceActionsTest {
         var requestedSources: List<ActivityTemplateId> = emptyList()
         var attempts = 0
         var commits = 0
+        var saves = 0
         val targets = mutableListOf<SequenceNodeId>()
         var failure: String? = null
         val started = CompletableDeferred<Unit>()
@@ -297,7 +440,10 @@ class SequenceStepSourceActionsTest {
                 { canonical },
                 { error("No picker catalog read") },
                 { _, _, _ -> error("No create") },
-                { _, _, _, _ -> error("No save") },
+                { _, _, _, _ ->
+                    saves++
+                    error("No save")
+                },
                 { Instant.EPOCH.plusSeconds(10) },
                 loadSourceStatuses = { ids ->
                     sourceReads++

@@ -927,7 +927,8 @@
       "manipulationApplyCommitsSeveralMovesAndFrozenCrossContainerDuplicateOnce",
       "manipulationApplyPersistenceFailureKeepsDurableGraphAndDraftHistory",
       "newApplyPromotesStepsThenDoneUpdatesTheSameSingleDurableSequence",
-      "productionSourceActionBoundaryReloadsEachCommittedRepositoryShape"
+      "productionSourceActionBoundaryReloadsEachCommittedRepositoryShape",
+      "rejectedFieldNumbersWriteNothingAndCorrectedExactDefaultsCommitOnceAcrossPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorScreenPresentationTest": [
       "cancelledDragAddsNoOperationAndRepeatHasMoveOnly",
@@ -1385,7 +1386,9 @@
       "retainedNativeSourceCallbacksCannotReviveAfterDisclosureModeCanonicalPublicationHiddenOrDetachedRoute",
       "nativeOrdinaryFailureAndSourceConflictPreserveSessionAndRequireExplicitAction",
       "sourceButtonsRemainContextualKeyboardReachableAndSizedAtEnglishRussianCombinedScaleExtremes",
-      "equalNameStepsInDifferentContainersExposeExactSourceAndNeverRebindRetainedOperations"
+      "equalNameStepsInDifferentContainersExposeExactSourceAndNeverRebindRetainedOperations",
+      "rejectedNumberDefaultRetainsNativeTextAndBlocksEveryCommandUntilCorrection",
+      "rejectedPrecisionRetainsNativeTextAndBlocksEveryCommandUntilCorrection"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceStepAccessibilityTest": [
       "nativePickerCreatesIndependentLocalAndSameNameTemplateStepsInExactContainers",

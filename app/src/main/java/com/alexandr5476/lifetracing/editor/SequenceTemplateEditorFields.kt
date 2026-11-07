@@ -12,11 +12,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -26,7 +26,6 @@ import com.alexandr5476.lifetracing.domain.SequenceCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.SequenceFieldDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
-import com.alexandr5476.lifetracing.launcher.parseLauncherNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
@@ -36,12 +35,16 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 internal fun SequenceFields(
     draft: SequenceTemplateDraft,
     controller: SequenceTemplateEditorController,
-    actions: SequenceTemplateEditorActions,
+    parentActions: SequenceTemplateEditorActions,
     editable: Boolean,
 ) = Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    val state by controller.state.collectAsState()
     SequenceEditorHeading(stringResource(R.string.sequence_editor_fields))
     draft.fields.forEachIndexed { ordinal, field ->
-        key(field.identity) {
+        val epoch = state.sequenceFieldEpochs[field.identity] ?: 0
+        key(field.identity, epoch) {
+            val actions = remember(parentActions, epoch) { parentActions.forSequenceFields(epoch, field.identity) }
+            DisposableEffect(actions) { onDispose { actions.attached = false } }
             CompositionLocalProvider(LocalEditorTargetExists provides { actions.fieldExists(field) }) {
                 val context =
                     stringResource(
@@ -80,7 +83,7 @@ internal fun SequenceFields(
                         LocalEditorTargetExists provides { actions.fieldExists(field, requireType = true) },
                     ) {
                         when (field.type) {
-                            CustomFieldType.NUMBER -> SequenceNumberField(field, context, actions, editable)
+                            CustomFieldType.NUMBER -> SequenceNumberField(field, context, controller, actions, editable)
                             CustomFieldType.CATEGORY ->
                                 SequenceCategoryField(
                                     field,
@@ -106,7 +109,7 @@ internal fun SequenceFields(
         CustomFieldType.entries.forEach { type ->
             LifeTracingSecondaryButton(
                 onClick = {
-                    actions.update { current ->
+                    parentActions.update { current ->
                         current.copy(
                             fields =
                                 current.fields +
@@ -136,40 +139,37 @@ internal fun SequenceFields(
 private fun SequenceNumberField(
     field: SequenceFieldDraft,
     context: String,
+    controller: SequenceTemplateEditorController,
     actions: SequenceTemplateEditorActions,
     editable: Boolean,
 ) {
-    var precisionRejected by remember { mutableStateOf(false) }
-    var numberRejected by remember { mutableStateOf(false) }
+    val state by controller.state.collectAsState()
+    val defaultKey = SequenceNumberInputKey.default(field)
+    val precisionKey = SequenceNumberInputKey.precision(field)
+    val numberRejected = state.inputIsInvalid(defaultKey)
+    val precisionRejected = state.inputIsInvalid(precisionKey)
     SequenceFieldInput(field.unit.orEmpty(), R.string.activity_editor_unit, context, editable) { unit ->
         actions.field(field) { it.copy(unit = unit.ifBlank { null }) }
     }
     SequenceFieldInput(
-        field.displayPrecision?.toString().orEmpty(),
+        state.inputText(precisionKey, field.displayPrecision?.toString().orEmpty()),
         R.string.activity_editor_precision,
         context,
         editable,
         precisionRejected,
         R.string.activity_editor_precision_guidance,
     ) { text ->
-        actions.field(field) { current ->
-            precisionRejected = text.isNotBlank() && text.toIntOrNull() !in 0..MAX_NUMBER_PRECISION
-            if (precisionRejected) current else current.copy(displayPrecision = text.toIntOrNull())
-        }
+        actions.numberPrecision(field, text)
     }
     SequenceFieldInput(
-        formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision),
+        state.inputText(defaultKey, formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision)),
         R.string.activity_editor_default,
         context,
         editable,
         numberRejected,
         R.string.activity_editor_number_invalid.takeIf { numberRejected },
     ) { text ->
-        actions.field(field) { current ->
-            val number = text.takeUnless(String::isBlank)?.let { parseLauncherNumber(it, current.displayPrecision) }
-            numberRejected = text.isNotBlank() && number == null
-            if (numberRejected) current else current.copy(defaultNumberScaled = number)
-        }
+        actions.numberDefault(field, text)
     }
     FlowRow {
         Checkbox(
@@ -327,5 +327,3 @@ private fun SequenceFieldDraft.normalized() =
                 isMainValue = false,
             )
     }
-
-private const val MAX_NUMBER_PRECISION = 3

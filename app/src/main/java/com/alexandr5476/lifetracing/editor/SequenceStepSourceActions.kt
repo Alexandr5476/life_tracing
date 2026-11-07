@@ -29,8 +29,9 @@ internal class SequenceStepSourceActions(
 
     private fun currentStep(): StepActivityDraft.Existing? =
         controller.state.value
-            .readyDraft()
-            ?.findStep(DraftIdentity.Existing(stepId))
+            .presentation()
+            ?.steps
+            ?.get(DraftIdentity.Existing(stepId))
             ?.activity
             as? StepActivityDraft.Existing
 
@@ -38,6 +39,7 @@ internal class SequenceStepSourceActions(
         val state = controller.state.value
         val step = currentStep() ?: return false
         return initiallyEnabled &&
+            lease.isAvailable &&
             controller.presentationEditable() &&
             state.sourceActionsAllowed() &&
             state.sourceActionEpoch == epoch &&

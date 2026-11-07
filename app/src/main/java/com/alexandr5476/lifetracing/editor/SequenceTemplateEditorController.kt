@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.SequenceNodeId
 import com.alexandr5476.lifetracing.domain.SequenceTemplate
 import com.alexandr5476.lifetracing.domain.SequenceTemplateAuthoringState
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
+import com.alexandr5476.lifetracing.domain.SequenceTemplateFieldId
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TemplateAuthoringDraftValidator
@@ -53,7 +54,9 @@ sealed interface SequenceTemplateEditorLoad {
         val draft: SequenceTemplateDraft,
         val expectedRevision: Long?,
         val original: SequenceTemplateDraft,
-    ) : SequenceTemplateEditorLoad
+    ) : SequenceTemplateEditorLoad {
+        internal val presentation by lazy { SequenceDraftPresentation(draft) }
+    }
 
     data class Failure(
         val message: String,
@@ -90,8 +93,25 @@ data class SequenceTemplateEditorState(
     val generation: Long = 0,
     val discardGeneration: Long = 0,
     val sourceActionEpoch: Long = 0,
+    val sequenceFieldEpoch: Long = 0,
+    val sequenceFieldEpochs: Map<DraftIdentity<SequenceTemplateFieldId>, Long> = emptyMap(),
     val sourceAttempt: SequenceStepSourceAttempt? = null,
-)
+) {
+    internal val invalidInput by lazy {
+        val ready = load as? SequenceTemplateEditorLoad.Ready
+        ready != null && ready.presentation.numberInputKeys.any { textInputs[it]?.isValid == false }
+    }
+    internal val dirtyInput by lazy {
+        val ready = load as? SequenceTemplateEditorLoad.Ready
+        ready != null &&
+            (
+                ready.draft != ready.original ||
+                    ready.presentation.numberInputKeys.any { key ->
+                        textInputs[key]?.let { it.text != it.originalText } == true
+                    }
+            )
+    }
+}
 
 sealed interface SequenceEditorStepSource {
     data object Loading : SequenceEditorStepSource
@@ -245,8 +265,10 @@ class SequenceTemplateEditorController internal constructor(
             val ready = mutableState.value.load as? SequenceTemplateEditorLoad.Ready ?: return
             if (commandsBlocked()) return
             val before = manipulationSnapshot(ready)
-            val updated = transform(ready.draft)
-            if (updated == ready.draft) return
+            val proposed = transform(ready.draft)
+            if (proposed == ready.draft) return
+            val revalidated = revalidateSequenceNumberPrecision(ready.draft, proposed, mutableState.value.textInputs)
+            val updated = revalidated.draft
             if (destinationOffer != null &&
                 updated.nodes !== ready.draft.nodes &&
                 updated.manipulationStructure() != ready.draft.manipulationStructure()
@@ -256,6 +278,10 @@ class SequenceTemplateEditorController internal constructor(
             mutableState.update {
                 it.copy(
                     load = ready.copy(draft = updated),
+                    textInputs = revalidated.inputs.retireFieldInputs(updated),
+                    sequenceFieldEpoch =
+                        it.sequenceFieldEpoch + if (ready.draft.sameSequenceFieldSchema(updated)) 0 else 1,
+                    sequenceFieldEpochs = it.sequenceFieldEpochsAfter(ready.draft, updated),
                     save = SequenceTemplateEditorSave.Idle,
                     sourceActionEpoch = it.sourceActionEpoch + 1,
                     sourceAttempt = null,
@@ -263,6 +289,138 @@ class SequenceTemplateEditorController internal constructor(
             }
             if (!recordingManipulationInput) recordManipulation(before)
         }
+    }
+
+    internal fun setStepFieldNumber(
+        step: DraftIdentity<SequenceNodeId>,
+        captured: ActivitySnapshotFieldDraft,
+        text: String,
+        precision: Boolean = false,
+    ): Boolean {
+        var valid = false
+        editStepInput {
+            val current =
+                mutableState.value
+                    .readyDraft()
+                    ?.findStep(step)
+                    ?.configuration()
+                    ?.fields
+                    ?.firstOrNull { it.matches(captured) } ?: return@editStepInput
+            if (current.type != CustomFieldType.NUMBER) return@editStepInput
+            val value =
+                fieldNumberInput(
+                    SequenceNumberInputKey.default(current, step),
+                    SequenceNumberInputKey.precision(current, step),
+                    current.defaultNumberScaled,
+                    current.displayPrecision,
+                    text,
+                    precision,
+                )
+            valid = value.valid
+            updateDraft { draft ->
+                draft.updateStep(step) { owner ->
+                    fun ActivitySnapshotDraft.changed() =
+                        copy(
+                            fields =
+                                fields.map {
+                                    if (it.matches(current)) {
+                                        it.copy(
+                                            defaultNumberScaled = value.number,
+                                            displayPrecision = value.precision,
+                                        )
+                                    } else {
+                                        it
+                                    }
+                                },
+                        )
+                    owner.copy(
+                        activity =
+                            when (val activity = owner.activity) {
+                                is StepActivityDraft.Local ->
+                                    activity.copy(
+                                        configuration = activity.configuration.changed(),
+                                    )
+                                is StepActivityDraft.Existing ->
+                                    activity.copy(
+                                        configuration = activity.configuration.changed(),
+                                    )
+                                else -> activity
+                            },
+                    )
+                }
+            }
+        }
+        return valid
+    }
+
+    internal fun setSequenceFieldNumber(
+        captured: com.alexandr5476.lifetracing.domain.SequenceFieldDraft,
+        text: String,
+        precision: Boolean = false,
+    ): Boolean {
+        var valid = false
+        editStepInput {
+            val current =
+                mutableState.value.readyDraft()?.fields?.firstOrNull {
+                    it.identity == captured.identity && it.type == captured.type && it.unit == captured.unit
+                } ?: return@editStepInput
+            if (current.type != CustomFieldType.NUMBER) return@editStepInput
+            val value =
+                fieldNumberInput(
+                    SequenceNumberInputKey.default(current),
+                    SequenceNumberInputKey.precision(current),
+                    current.defaultNumberScaled,
+                    current.displayPrecision,
+                    text,
+                    precision,
+                )
+            valid = value.valid
+            updateDraft { draft ->
+                draft.copy(
+                    fields =
+                        draft.fields.map {
+                            if (it.identity == current.identity) {
+                                it.copy(
+                                    defaultNumberScaled = value.number,
+                                    displayPrecision = value.precision,
+                                )
+                            } else {
+                                it
+                            }
+                        },
+                )
+            }
+        }
+        return valid
+    }
+
+    private fun fieldNumberInput(
+        defaultKey: String,
+        precisionKey: String,
+        number: Long?,
+        currentPrecision: Int?,
+        text: String,
+        editingPrecision: Boolean,
+    ): SequenceNumberFieldValue {
+        val edit =
+            sequenceNumberFieldEdit(
+                mutableState.value.textInputs,
+                defaultKey,
+                precisionKey,
+                number,
+                currentPrecision,
+                text,
+                editingPrecision,
+            )
+        mutableState.update {
+            it.copy(
+                textInputs = it.textInputs + edit.inputs,
+                sourceActionEpoch = it.sourceActionEpoch + 1,
+                sourceAttempt = null,
+                save = SequenceTemplateEditorSave.Idle,
+            )
+        }
+        return edit.value
     }
 
     fun updateNumberInput(
@@ -615,6 +773,9 @@ class SequenceTemplateEditorController internal constructor(
                 it.copy(
                     load = ready.copy(draft = session.baseline),
                     textInputs = textInputs,
+                    sequenceFieldEpoch =
+                        it.sequenceFieldEpoch + if (ready.draft.sameSequenceFieldSchema(session.baseline)) 0 else 1,
+                    sequenceFieldEpochs = it.sequenceFieldEpochsAfter(ready.draft, session.baseline),
                     manipulation = null,
                     save = SequenceTemplateEditorSave.Idle,
                 )
@@ -844,6 +1005,7 @@ class SequenceTemplateEditorController internal constructor(
                             },
                         manipulation = null,
                         textInputs = emptyMap(),
+                        sequenceFieldEpochs = emptyMap(),
                         generation = generation,
                         stepSourceIds = canonical.stepSourceIds(),
                         sourceStatuses = loaded.sourceStatuses,
@@ -923,6 +1085,7 @@ class SequenceTemplateEditorController internal constructor(
                             save = SequenceTemplateEditorSave.Idle,
                             manipulation = null,
                             textInputs = emptyMap(),
+                            sequenceFieldEpochs = emptyMap(),
                             generation = generation,
                             stepSourceIds = canonical.stepSourceIds(),
                             sourceStatuses = loaded.sourceStatuses,
@@ -983,6 +1146,7 @@ class SequenceTemplateEditorController internal constructor(
             mutableState.update {
                 it.copy(
                     load = ready.copy(draft = changed),
+                    textInputs = it.textInputs.retireFieldInputs(changed),
                     save = SequenceTemplateEditorSave.Idle,
                     manipulation = session.uiState(),
                 )
@@ -1009,6 +1173,9 @@ class SequenceTemplateEditorController internal constructor(
                 it.copy(
                     load = ready.copy(draft = restored.draft),
                     textInputs = restored.textInputs,
+                    sequenceFieldEpoch =
+                        it.sequenceFieldEpoch + if (ready.draft.sameSequenceFieldSchema(restored.draft)) 0 else 1,
+                    sequenceFieldEpochs = it.sequenceFieldEpochsAfter(ready.draft, restored.draft),
                     save = SequenceTemplateEditorSave.Idle,
                     manipulation = session.uiState(),
                 )
@@ -1096,13 +1263,20 @@ internal fun SequenceTemplateEditorState.inputText(
 internal fun SequenceTemplateEditorState.inputIsInvalid(key: String): Boolean = textInputs[key]?.isValid == false
 
 internal fun SequenceTemplateEditorState.hasInvalidInput(draft: SequenceTemplateDraft): Boolean =
-    draft.activeNumberInputKeys().any { textInputs[it]?.isValid == false }
+    if (draft === readyDraft()) invalidInput else draft.activeNumberInputKeys().any { textInputs[it]?.isValid == false }
 
 internal fun SequenceTemplateEditorState.isDirty(ready: SequenceTemplateEditorLoad.Ready): Boolean =
-    ready.draft != ready.original ||
-        ready.draft.activeNumberInputKeys().any { key ->
-            textInputs[key]?.let { it.text != it.originalText } == true
-        }
+    if (ready === load) {
+        dirtyInput
+    } else {
+        ready.draft != ready.original ||
+            ready.draft.activeNumberInputKeys().any { key ->
+                textInputs[key]?.let { it.text != it.originalText } == true
+            }
+    }
+
+internal fun SequenceTemplateEditorState.presentation(): SequenceDraftPresentation? =
+    (load as? SequenceTemplateEditorLoad.Ready)?.presentation
 
 internal fun SequenceTemplateEditorState.sourceActionsAllowed(): Boolean {
     val ready = load as? SequenceTemplateEditorLoad.Ready ?: return false
@@ -1162,6 +1336,10 @@ internal fun SequenceTemplateDraft.activeNumberInputKeys(): Set<String> =
     buildSet {
         add(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN)
         add(SequenceEditorInputKey.BEFORE_STEP_COUNTDOWN)
+        fields.filter { it.type == CustomFieldType.NUMBER }.forEach {
+            add(SequenceNumberInputKey.default(it))
+            add(SequenceNumberInputKey.precision(it))
+        }
         nodes.forEach { node ->
             when (node) {
                 is SequenceNodeDraft.Step -> addStep(node.value)
@@ -1181,6 +1359,10 @@ private fun MutableSet<String>.addStep(step: com.alexandr5476.lifetracing.domain
             is StepActivityDraft.Local -> value.configuration
             else -> null
         } ?: return
+    activity.fields.filter { it.type == CustomFieldType.NUMBER }.forEach {
+        add(SequenceNumberInputKey.default(it, step.identity))
+        add(SequenceNumberInputKey.precision(it, step.identity))
+    }
     add(SequenceEditorInputKey.activityCountdown(step.identity))
     if (activity.timeTrackingMode == TimeTrackingMode.TIMER) {
         add(SequenceEditorInputKey.timerTarget(step.identity))

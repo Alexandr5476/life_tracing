@@ -21,13 +21,18 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import com.alexandr5476.lifetracing.R
@@ -102,6 +107,112 @@ class SequenceStepSourceAccessibilityTest {
         recovery(
             R.string.sequence_editor_save_as_new_template,
         )
+
+    @Test
+    fun rejectedNumberDefaultRetainsNativeTextAndBlocksEveryCommandUntilCorrection() = numberAdmission(false)
+
+    @Test
+    fun rejectedPrecisionRetainsNativeTextAndBlocksEveryCommandUntilCorrection() = numberAdmission(true)
+
+    private fun numberAdmission(precision: Boolean) {
+        canonical =
+            canonical.copy(
+                activitySnapshots =
+                    canonical.activitySnapshots.mapValues { (_, snapshot) ->
+                        snapshot.copy(
+                            fields =
+                                listOf(
+                                    com.alexandr5476.lifetracing.domain.ActivitySnapshotField(
+                                        com.alexandr5476.lifetracing.domain
+                                            .ActivitySnapshotFieldId("number-${snapshot.id.value}"),
+                                        com.alexandr5476.lifetracing.domain
+                                            .ActivityTemplateFieldId("source-number"),
+                                        0,
+                                        "Same",
+                                        type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
+                                        displayPrecision = 2,
+                                        defaultNumberScaled = -1250,
+                                    ),
+                                ),
+                        )
+                    },
+            )
+        val controller = present()
+        open()
+
+        fun defaultInput() = compose.onLazyNode(hasSetTextAction() and hasText(text(R.string.activity_editor_default)))
+        for ((literal, scaled) in listOf(
+            "" to null,
+            "0" to 0L,
+            "+12" to 12000L,
+            "-12" to -12000L,
+            "+1.25" to 1250L,
+            "-1.25" to -1250L,
+        )) {
+            defaultInput().performTextReplacement(literal)
+            defaultInput().assertTextContains(literal)
+            assertEquals(
+                scaled,
+                controller.state.value
+                    .readyDraft()!!
+                    .findStep(
+                        DraftIdentity.Existing(STEP),
+                    )!!
+                    .configuration()!!
+                    .fields
+                    .single()
+                    .defaultNumberScaled,
+            )
+            assertFalse(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
+        }
+        for (literal in listOf("1.234", "--1", "bad", "9223372036854775.808")) {
+            defaultInput().performTextReplacement(literal)
+            defaultInput().assertTextContains(literal).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+            assertTrue(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
+        }
+        defaultInput().performTextReplacement("-1.25")
+        val retained = operations.map { click(native(it)) }
+        val label = if (precision) R.string.activity_editor_precision else R.string.activity_editor_default
+
+        fun input() = compose.onLazyNode(hasSetTextAction() and hasText(text(label)))
+        val rejected = if (precision) "9" else "-1.234"
+        input().performTextReplacement(rejected)
+        input().assertTextContains(rejected).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        operations.forEach { native(it).assertIsNotEnabled() }
+        native(R.string.sequence_editor_done).assertIsNotEnabled()
+        compose.runOnIdle {
+            retained.forEach { it() }
+            controller.updateStepFromSource(STEP)
+            controller.updateSourceTemplate(STEP)
+            controller.saveStepAsNewTemplate(STEP)
+            controller.save()
+        }
+        assertEquals(0, writes)
+        assertEquals(0, deliveries)
+        activate(native(R.string.sequence_editor_back))
+        assertTrue(controller.state.value.discardConfirmationVisible)
+        activate(
+            compose.onNode(
+                hasText(text(R.string.sequence_editor_continue)) and hasClickAction() and hasAnyAncestor(isDialog()),
+            ),
+        )
+        compose.runOnIdle { attachment.value++ }
+        open()
+        input().assertTextContains(rejected).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        input().performTextReplacement(if (precision) "2" else "-1.25")
+        native(R.string.sequence_editor_update_source).assertIsEnabled()
+        compose.runOnIdle { retained.forEach { it() } }
+        assertEquals(0, writes)
+        activate(native(R.string.sequence_editor_update_source))
+        compose.waitUntil(5_000) { started.isCompleted }
+        compose.runOnIdle { release.complete(Unit) }
+        compose.waitUntil(5_000) { deliveries == 1 }
+        assertEquals(1, writes)
+        assertTrue(
+            controller.state.value.textInputs
+                .isEmpty(),
+        )
+    }
 
     private fun recovery(operation: Int) {
         val controller = present()

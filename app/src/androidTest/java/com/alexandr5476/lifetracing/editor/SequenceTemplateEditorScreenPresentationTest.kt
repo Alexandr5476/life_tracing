@@ -30,6 +30,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
@@ -1602,6 +1603,43 @@ class SequenceTemplateEditorScreenPresentationTest {
                 .fields[0]
                 .defaultNumberScaled,
         )
+        val literals =
+            listOf(
+                "" to null,
+                "0" to 0L,
+                "+12" to 12000L,
+                "-12" to -12000L,
+                "+1.25" to 1250L,
+                "-1.25" to -1250L,
+            )
+        for ((literal, scaled) in literals) {
+            sequenceControl(controller, 0, R.string.activity_editor_default).performTextReplacement(literal)
+            sequenceControl(controller, 0, R.string.activity_editor_default).assertTextContains(literal)
+            assertEquals(
+                scaled,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .first()
+                    .defaultNumberScaled,
+            )
+            assertFalse(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
+        }
+        for (literal in listOf("1.2345", "--1", "bad", "9223372036854775.808")) {
+            sequenceControl(controller, 0, R.string.activity_editor_default).performTextReplacement(literal)
+            sequenceControl(controller, 0, R.string.activity_editor_default)
+                .assertTextContains(literal)
+                .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+            assertEquals(
+                -1250L,
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .first()
+                    .defaultNumberScaled,
+            )
+            assertTrue(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
+        }
         sequenceControl(controller, 0, R.string.activity_editor_default).performTextReplacement("0")
         assertEquals(
             0L,
@@ -1635,6 +1673,10 @@ class SequenceTemplateEditorScreenPresentationTest {
                 .config[SemanticsActions.SetText]
                 .action!!
         sequenceControl(controller, 1, R.string.activity_editor_precision).performTextReplacement("0")
+        sequenceControl(controller, 1, R.string.activity_editor_default).assertTextContains("-1.25")
+        sequenceControl(controller, 1, R.string.activity_editor_default)
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        assertTrue(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
         composeTestRule.runOnIdle { capturedPrecision(AnnotatedString("-2.25")) }
         assertEquals(
             -1250L,
@@ -1655,7 +1697,9 @@ class SequenceTemplateEditorScreenPresentationTest {
         )
         sequenceControl(controller, 1, R.string.activity_editor_precision)
             .apply { performTextReplacement("9") }
+            .assertTextContains("9")
             .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        assertTrue(controller.state.value.hasInvalidInput(controller.state.value.readyDraft()!!))
         val staleMainValue =
             sequenceControl(controller, 0, R.string.sequence_editor_main_value)
                 .fetchSemanticsNode()
@@ -1704,8 +1748,11 @@ class SequenceTemplateEditorScreenPresentationTest {
             R.string.activity_editor_default,
         ).performSemanticsAction(SemanticsActions.RequestFocus)
             .apply { keyboard.awaitFocus(this) }
+        val survivorId = sequenceControl(controller, 1, R.string.activity_editor_default).fetchSemanticsNode().id
         composeTestRule.runOnIdle { controller.updateDraft { it.copy(fields = it.fields.drop(1)) } }
-        sequenceControl(controller, 0, R.string.activity_editor_default).apply { keyboard.awaitFocus(this) }
+        sequenceControl(controller, 0, R.string.activity_editor_default)
+            .apply { keyboard.awaitFocus(this) }
+            .apply { assertEquals(survivorId, fetchSemanticsNode().id) }
         composeTestRule.runOnIdle { controller.updateDraft { it.copy(fields = emptyList()) } }
         // Native fallback may already own a surviving editor control (Settings on API 35).
         // Recovery must preserve that owner rather than force the landing Name input.
