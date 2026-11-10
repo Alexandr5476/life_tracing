@@ -494,10 +494,12 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     self.assertEqual(allowances[2], ("startup", 2745))
                     self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
 
-    def test_api35_and_api36_full_inventory_share_extended_bounded_budget(self):
-        # CI42726834230 exhausted 3300 s after data + 410/584 (API35) or 401/584
-        # (API36) app cases. Synthetic durations cross that bound and leave startup room.
-        for api in (35, 36):
+    def test_all_modern_rows_share_extended_bounded_budget(self):
+        # CI42726834230 exhausted 3300 s on API35/API36; CI42776221469 reached
+        # 574/586 app cases on API31 before the same deadline, without failures.
+        # All rows run the full inventory, including API33. Synthetic durations
+        # cross the old bound and leave startup room, while enforcing final expiry.
+        for api in (31, 33, 35, 36):
             for app_seconds, result in ((3600, 0), (6000, 1)):
                 with self.subTest(api=api, app_seconds=app_seconds), tempfile.TemporaryDirectory() as temporary:
                     root, clock, allowances = Path(temporary), [0.0], []
@@ -535,9 +537,9 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                         self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
                         self.assertEqual([r["status"] for r in evidence["modules"].values()], ["PASSED"] * 3)
 
-    def test_workflow_extended_rows_keep_ten_minutes_for_setup_cleanup_and_upload(self):
+    def test_workflow_all_rows_keep_ten_minutes_for_setup_cleanup_and_upload(self):
         workflow = Path(__file__).parents[1] / "workflows/ci.yml"
-        self.assertIn("timeout-minutes: ${{ (matrix.api == 26 || matrix.api == 35 || matrix.api == 36) && 120 || 60 }}",
+        self.assertIn("timeout-minutes: 120",
                       workflow.read_text(encoding="utf-8"))
 
     def test_expired_row_budget_never_launches_or_certifies_remaining_invocations(self):

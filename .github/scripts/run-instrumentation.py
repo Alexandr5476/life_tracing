@@ -912,8 +912,8 @@ def main():
     # API26 and CI42726834230's API35/36 rows exhausted 55 minutes after data
     # completed but before the full app suite. Share 110 minutes across preparation,
     # data, app and startup, leaving ten minutes in their 120-minute jobs for
-    # runner setup, cleanup and uploads. API31/33 retain the existing 55/60 policy.
-    row_timeout = EXTENDED_ROW_TIMEOUT_SECONDS if args.api in (26, 35, 36) else 3300
+    # runner setup, cleanup and uploads. Apply the same budget to every API row.
+    row_timeout = EXTENDED_ROW_TIMEOUT_SECONDS
     evidence["row_timeout_seconds"] = row_timeout
     row_deadline = time.monotonic() + row_timeout
     host_observer = None

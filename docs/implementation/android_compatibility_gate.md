@@ -102,9 +102,17 @@ complete data inventory, app `abort_reason=execution deadline exceeded`, and sta
 zero reported failures. This is an execution-budget stop after testcase progress,
 not evidence of the older pre-test API36 startup ANR or of suite success.
 
-API35/API36 now share API26's **110-minute execution / 120-minute job** policy.
+All five API rows now share the **110-minute execution / 120-minute job** policy.
 Preparation, data, app and independent startup share one bounded deadline, with
-10 minutes reserved for setup, cleanup and uploads. API31/API33 keep 55/60 minutes.
+10 minutes reserved for setup, cleanup and uploads.
+
+Follow-up CI42776221469 on `ce18f86e54cda2349163ec54fa4ec63fd6801fdd` passed
+five jobs; API31 exhausted its remaining 3300-second budget after complete data
+inventory and **574/586** app cases with zero reported failures. Its retained
+evidence records `execution deadline exceeded` and startup `NOT_RUN`. API31
+and API33 now receive the same bounded allowance as the other full-suite rows;
+API33 passed that run and is included for a consistent matrix-wide budget.
+This incomplete API31 run remains a failure pending fresh verification.
 API26's bounded signal observer, memory guards and profile are unchanged; API36
 keeps one Gradle worker. Full unfiltered suites, inventory validation, independent
 startup, cleanup and report retention remain mandatory. Host regressions exercise
@@ -180,7 +188,7 @@ This supersedes the historical 55/60-minute limits below. Preparation, data, app
 and independent startup share one deadline; cleanup and report uploads have a
 ten-minute allowance. The existing signal observer remains bounded at 115 minutes
 and still exits on owner disappearance or normal cleanup. The 2026-11-10 repair
-extends this policy to API35/API36; API31/API33 keep 55/60.
+extends this policy to every API row after the later API31 deadline stop.
 [GitHub permits six-hour hosted jobs](https://docs.github.com/en/actions/reference/limits).
 CI41493383857 exhausted its 3300-second budget after all 627 mandatory data cases
 and 373 app cases passed. The latest scaled-raster profile peaked at 2,058,256 KiB

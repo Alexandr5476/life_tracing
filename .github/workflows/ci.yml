@@ -79,7 +79,7 @@ jobs:
             name: Managed-device instrumentation tests (API 36)
             gradle_cache_excludes: caches/8.14.3/transforms
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ (matrix.api == 26 || matrix.api == 35 || matrix.api == 36) && 120 || 60 }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
