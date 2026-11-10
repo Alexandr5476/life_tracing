@@ -1,5 +1,64 @@
 # Android compatibility release gate
 
+## PR40 CI repair: native fixture ordering and suite deadlines (2026-11-10)
+
+Original run `42726834230`, head `b4876085a7734adb1b3198844fb099b5a97f4ba5`,
+reports eight failed app cases across API31/API33. The original JUnit XML and all
+six named native-window diagnostic files were read from the retained reports;
+no emulator internals or replacement CI artifacts were used.
+
+- API31 `LibraryAccessibilityRouteTest.nativeStepAuthoringAndOverrideOnlyEditsPhysicallyReopenWithoutRewritingFrozenOwnership`
+  fails in the fixture's OnClick on a detached, formerly focused **Done** button.
+  The fixture used a previously exposed lazy action while focus/IME viewport
+  changes could still detach it. It now closes the IME through the stable editor
+  root after transferring focus, reveals the current action after native dismissal
+  completes, and performs one semantic OnClick. No action retry or
+  retained-callback admission rule changes. The adjacent revision, snapshot,
+  override, Plan, live-runtime and physical-reopen assertions remain intact.
+- API33 `MainActivityRouteSessionTest.planOriginDeliversLiveToDailyAndNoLiveBackToRefreshedPlan`
+  reaches the final heading assertion after no-live fulfillment and row removal.
+  Plan retains the scroll used to reach the action; an existing heading need not
+  be in that viewport. The fixture scrolls the heading into view before its original
+  display/count assertions. Routing, fulfillment and execution-count checks remain.
+- The six API33 focus failures are in the Sequence manipulation presentation and
+  persistence fixtures. Each diagnostic reports an interactive, unlocked device,
+  attached focused app window and keyboard mode; the chooser's first destination
+  is focused while the requested Cancel or other destination is unfocused. The
+  chooser intentionally suspends its initial landing for scroll/layout and window
+  admission. The fixtures previously requested the next target after idle alone,
+  racing that landing. Both native activation helpers and the sibling Library
+  route invocation helper now observe production focus on the first destination
+  after opening the chooser, before the next request or destination scroll.
+  RequestFocus, focus assertions, native Enter/Tab, stale destination rejection,
+  Undo/Redo/Discard, Apply/reload recovery and persistence assertions remain.
+  No focus assertion retry, synthetic click replacement or production focus change.
+
+The API35/API36 retained `evidence.json` records a 3300-second row budget, passing
+complete data inventory, app `abort_reason=execution deadline exceeded`, and startup
+`NOT_RUN`. Their app logs end at **410/584** and **401/584** respectively, each with
+zero reported failures. This is an execution-budget stop after testcase progress,
+not evidence of the older pre-test API36 startup ANR or of suite success.
+
+API35/API36 now share API26's **110-minute execution / 120-minute job** policy.
+Preparation, data, app and independent startup share one bounded deadline, with
+10 minutes reserved for setup, cleanup and uploads. API31/API33 keep 55/60 minutes.
+API26's bounded signal observer, memory guards and profile are unchanged; API36
+keeps one Gradle worker. Full unfiltered suites, inventory validation, independent
+startup, cleanup and report retention remain mandatory. Host regressions exercise
+complete inventories beyond the old bound, decreasing per-invocation allowances,
+expiry blocking startup, and the workflow's cleanup/upload allowance.
+
+The eight original CI failures and API35/API36 incomplete suites require fresh
+Controller verification and independent CI. Local checks or a focused probe do
+not supersede that evidence or close the remote stability obligation.
+
+Local repair validation: all 84 host-policy tests pass; the new deadline tests
+failed against the old budgets before the runner/workflow fix. App ktlint, Detekt,
+JVM tests and `:app:assembleDebugAndroidTest` pass. The authorized
+`D:/controller/.runtime/agent-tools/repair-probe.cmd` declined execution with
+"No active repair-probe lease"; no device testcase ran and no corrected device
+PASS is claimed. No full Managed Device or remote CI check was launched.
+
 ## Library callback ownership regression inventory (W3, 2026-11-04)
 
 The Library callback comparison fix adds three original-JUnit identities to
@@ -57,7 +116,8 @@ API26 now has a **110-minute shared execution budget inside a 120-minute job**.
 This supersedes the historical 55/60-minute limits below. Preparation, data, app
 and independent startup share one deadline; cleanup and report uploads have a
 ten-minute allowance. The existing signal observer remains bounded at 115 minutes
-and still exits on owner disappearance or normal cleanup. Other rows keep 55/60.
+and still exits on owner disappearance or normal cleanup. The 2026-11-10 repair
+extends this policy to API35/API36; API31/API33 keep 55/60.
 [GitHub permits six-hour hosted jobs](https://docs.github.com/en/actions/reference/limits).
 CI41493383857 exhausted its 3300-second budget after all 627 mandatory data cases
 and 373 app cases passed. The latest scaled-raster profile peaked at 2,058,256 KiB

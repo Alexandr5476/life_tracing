@@ -1393,6 +1393,9 @@ class MainActivityRouteSessionTest {
                 .isEmpty()
         }
 
+        // The returned Plan retains the scroll used to reach the no-live action. Model completion
+        // and removal of that row do not put the heading back in the viewport.
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.plan_title)).performScrollTo()
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.plan_title)).assertIsDisplayed()
         composeTestRule.onAllNodesWithText(composeTestRule.activity.getString(R.string.plan_title)).assertCountEquals(1)
         composeTestRule.onNodeWithTag("plan-plan-action-${noLivePlan.id.value}").assertDoesNotExist()

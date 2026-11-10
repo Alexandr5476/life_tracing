@@ -167,7 +167,9 @@ class ProfileAdmissionTests(unittest.TestCase):
                     self.assertIn('-Plifetracing.compatibility.taskSnapshotsDisabled=true', command)
                     self.assertEqual('-Plifetracing.compatibility.scaledRaster=true' in command, scaled)
                     record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                # Orchestration is synthetic: use an exact clock, not host uptime rounding.
                 with patch.object(runner.Path, 'cwd', return_value=root), patch.dict(os.environ, env), \
+                        patch.object(runner.time, 'monotonic', return_value=0), \
                         patch.object(runner.sys, 'platform', 'linux'), \
                         patch.object(runner.subprocess, 'check_output', return_value='a'*40), \
                         patch.object(runner.subprocess, 'run') as install, \

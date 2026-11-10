@@ -3240,14 +3240,22 @@ class LibraryAccessibilityRouteTest {
                     else -> compose.onLazyNode(matcher)
                 }
             if (sequenceEditorOpen && !dialogOpen) {
-                // Transfer native ownership before scrolling away from an edited TextField.
+                // Finish the edited TextField's focus/IME viewport change before the final lookup.
                 node.performSemanticsAction(SemanticsActions.RequestFocus)
-                compose.waitForIdle()
+                keyboard.closeKeyboard(compose.onNodeWithTag("sequence-editor-page"))
             }
-            val ancestors = generateSequence(node.fetchSemanticsNode().parent) { it.parent }
-            if (ancestors.any { it.config.contains(SemanticsActions.ScrollBy) }) node.performScrollTo()
-            node.assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick)
+            // Lazy items may detach during that viewport change; reveal the action again
+            // after native IME dismissal has completed, then invoke it exactly once.
+            val scopedMatcher = if (dialogOpen) matcher and hasAnyAncestor(isDialog()) else matcher
+            val current =
+                if (sequenceEditorOpen && !dialogOpen) compose.onLazyNode(matcher) else compose.onNode(scopedMatcher)
+            val ancestors = generateSequence(current.fetchSemanticsNode().parent) { it.parent }
+            if (ancestors.any { it.config.contains(SemanticsActions.ScrollBy) }) current.performScrollTo()
+            current.assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick)
             compose.waitForIdle()
+            if (id == R.string.sequence_manipulation_move || id == R.string.sequence_manipulation_duplicate) {
+                keyboard.awaitFocus(compose.onNodeWithTag("sequence-destination-top-0"))
+            }
         }
 
         fun templateAction(

@@ -20,7 +20,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 
-API26_ROW_TIMEOUT_SECONDS = 110 * 60
+EXTENDED_ROW_TIMEOUT_SECONDS = 110 * 60
 
 
 def timestamp():
@@ -190,7 +190,7 @@ def observe_host_signals(directory, owner_pid, owner_start):
         temp = directory / "ready.tmp"
         temp.write_text(json.dumps(ready), encoding="utf-8")
         temp.replace(directory / "ready.json")
-        observer_timeout = API26_ROW_TIMEOUT_SECONDS + 300
+        observer_timeout = EXTENDED_ROW_TIMEOUT_SECONDS + 300
         deadline = time.monotonic() + observer_timeout
         while time.monotonic() < deadline:
             read_events(0.2)
@@ -909,10 +909,11 @@ def main():
                     event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={},
                     requested_renderer=renderer)
     failed = False
-    # API26 exhausted 55 minutes with data complete and app still running.
-    # Share 110 minutes across preparation/suites, leaving ten minutes in its
-    # 120-minute job for runner setup, cleanup and uploads. Other rows keep 55/60.
-    row_timeout = API26_ROW_TIMEOUT_SECONDS if args.api == 26 else 3300
+    # API26 and CI42726834230's API35/36 rows exhausted 55 minutes after data
+    # completed but before the full app suite. Share 110 minutes across preparation,
+    # data, app and startup, leaving ten minutes in their 120-minute jobs for
+    # runner setup, cleanup and uploads. API31/33 retain the existing 55/60 policy.
+    row_timeout = EXTENDED_ROW_TIMEOUT_SECONDS if args.api in (26, 35, 36) else 3300
     evidence["row_timeout_seconds"] = row_timeout
     row_deadline = time.monotonic() + row_timeout
     host_observer = None

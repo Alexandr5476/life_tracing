@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -382,6 +383,10 @@ class SequenceManipulationAccessibilityPersistenceTest {
         keyboard.awaitFocus(node)
         keyboard.sendKey(node, android.view.KeyEvent.KEYCODE_ENTER)
         compose.waitForIdle()
+        if (compose.onAllNodes(hasTestTag("sequence-destinations")).fetchSemanticsNodes().isNotEmpty()) {
+            // Observe the deferred production landing before requesting a destination or Cancel's focus.
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-destination-top-0"))
+        }
     }
 
     private fun text(

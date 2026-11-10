@@ -494,6 +494,52 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     self.assertEqual(allowances[2], ("startup", 2745))
                     self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
 
+    def test_api35_and_api36_full_inventory_share_extended_bounded_budget(self):
+        # CI42726834230 exhausted 3300 s after data + 410/584 (API35) or 401/584
+        # (API36) app cases. Synthetic durations cross that bound and leave startup room.
+        for api in (35, 36):
+            for app_seconds, result in ((3600, 0), (6000, 1)):
+                with self.subTest(api=api, app_seconds=app_seconds), tempfile.TemporaryDirectory() as temporary:
+                    root, clock, allowances = Path(temporary), [0.0], []
+                    env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                               GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                    def run(command, directory, module, actual_api, record, *, timeout):
+                        self.assertEqual(actual_api, api)
+                        self.assertIn(f"--max-workers={1 if api == 36 else 2}", command)
+                        self.assertFalse(any("class=" in arg for arg in command))
+                        self.assertEqual("-Plifetracing.compatibility.productionStartup=true" in command,
+                                         module == "startup")
+                        allowances.append((module, timeout))
+                        duration = {"data": 1000, "app": app_seconds, "startup": 180}[module]
+                        record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                        if duration > timeout:
+                            record.update(exit_code=143, abort_reason="execution deadline exceeded")
+                        else:
+                            self.write_inventory(root, module, api)
+                        clock[0] += min(duration, timeout)
+                    with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                            patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                            patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]), \
+                            patch.object(ci, "run_gradle", side_effect=run), \
+                            patch("sys.argv", ["ci", "--api", str(api)]), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ci.main(), result)
+                    self.assertEqual(allowances[:2], [("data", 6600), ("app", 5600)])
+                    evidence = json.loads((root / f"ci-evidence/api{api}/evidence.json").read_text())
+                    self.assertEqual(evidence["row_timeout_seconds"], 6600)
+                    if result:
+                        self.assertEqual(len(allowances), 2)
+                        self.assertEqual(evidence["modules"]["app"]["abort_reason"], "execution deadline exceeded")
+                        self.assertEqual(evidence["modules"]["startup"]["status"], "NOT_RUN")
+                    else:
+                        self.assertEqual(allowances[2], ("startup", 2000))
+                        self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
+                        self.assertEqual([r["status"] for r in evidence["modules"].values()], ["PASSED"] * 3)
+
+    def test_workflow_extended_rows_keep_ten_minutes_for_setup_cleanup_and_upload(self):
+        workflow = Path(__file__).parents[1] / "workflows/ci.yml"
+        self.assertIn("timeout-minutes: ${{ (matrix.api == 26 || matrix.api == 35 || matrix.api == 36) && 120 || 60 }}",
+                      workflow.read_text(encoding="utf-8"))
+
     def test_expired_row_budget_never_launches_or_certifies_remaining_invocations(self):
         with tempfile.TemporaryDirectory() as temporary:
             env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
@@ -501,7 +547,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
                     patch.object(ci.subprocess, "Popen") as worker, \
-                    patch.object(ci.time, "monotonic", side_effect=[0, 3301]), \
+                    patch.object(ci.time, "monotonic", side_effect=[0, 6601]), \
                     patch("sys.argv", ["ci", "--api", "36"]):
                 self.assertEqual(ci.main(), 1)
             worker.assert_not_called()

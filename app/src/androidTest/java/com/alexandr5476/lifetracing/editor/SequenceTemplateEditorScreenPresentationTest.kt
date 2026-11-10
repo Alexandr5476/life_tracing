@@ -33,6 +33,7 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.isEnabled
@@ -2784,6 +2785,10 @@ class SequenceTemplateEditorScreenPresentationTest {
         keyboard.awaitFocus(node)
         keyboard.sendKey(node, android.view.KeyEvent.KEYCODE_ENTER)
         composeTestRule.waitForIdle()
+        if (composeTestRule.onAllNodes(hasTestTag("sequence-destinations")).fetchSemanticsNodes().isNotEmpty()) {
+            // Observe the deferred production landing before requesting a destination or Cancel's focus.
+            keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-destination-top-0"))
+        }
     }
 
     private fun assertManipulationHierarchy(
