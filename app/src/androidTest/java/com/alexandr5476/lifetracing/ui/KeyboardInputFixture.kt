@@ -14,6 +14,8 @@ import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.printToString
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.closeSoftKeyboard
 import androidx.test.espresso.action.ViewActions.pressKey
@@ -144,6 +146,15 @@ class KeyboardInputFixture(
 
     /** Hides the IME in this control's window, including when a dialog owns native focus. */
     fun closeKeyboard(target: SemanticsNodeInteraction) {
+        val attached = attachedView(target)
+        // A semantic edit can focus a TextField without showing the native IME. There
+        // is nothing to dismiss when insets explicitly report it hidden; unknown state
+        // still uses native admission, just like a visible keyboard.
+        val hidden =
+            compose.runOnIdle {
+                ViewCompat.getRootWindowInsets(attached)?.isVisible(WindowInsetsCompat.Type.ime()) == false
+            }
+        if (hidden) return
         val view = keyboardView(target)
         onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(closeSoftKeyboard())
     }

@@ -8,7 +8,9 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -1517,6 +1519,15 @@ class LibraryAccessibilityRouteTest {
                     .action!!
             f.recreate()
             f.awaitSequenceEditor()
+            // Recreation retires the picker; the surviving editor may restore text focus.
+            compose.onAllNodes(isDialog()).assertCountEquals(0)
+            // Exercise semantic Done with explicit text focus, independent of native restoration.
+            compose
+                .onLazyNode(
+                    hasText(f.text(R.string.sequence_editor_name)) and
+                        hasText("Step authoring") and hasSetTextAction(),
+                ).performSemanticsAction(SemanticsActions.RequestFocus)
+                .assertIsFocused()
             compose.runOnIdle { oldPicker() }
             assertEquals(submitted, f.sequenceDraft())
             f.invoke(R.string.sequence_editor_done)

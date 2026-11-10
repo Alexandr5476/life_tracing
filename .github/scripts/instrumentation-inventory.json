@@ -1372,6 +1372,10 @@
       "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
       "unacknowledgedTransportKeepsTheArtifactAndOriginalFailure"
     ],
+    "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
+      "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
+      "visibleImeCloseStillDismissesThroughItsFocusedWindow"
+    ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
       "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
     ],

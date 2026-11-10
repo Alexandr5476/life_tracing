@@ -1,5 +1,68 @@
 # Android compatibility release gate
 
+## Hidden-IME fixture admission repair (PR40 follow-up, 2026-11-10)
+
+Run `42750399074`, head `7ccaf04f66de709d81e38a0f2cf9975353451d85`, fails the
+same Step-authoring Library journey on API26/API33 in `Fixture.invoke`'s new
+IME-closing call after Activity recreation. Both original XML failures were read.
+API26's complete diagnostic was recovered from all 80 acknowledged logcat frames:
+81,689 bytes, SHA-256 `54074a09850d042f3063b30e86f9b3ab29ce9408e657f31495e67d551197f2eb`.
+API33's retained diagnostic is 165,025 bytes, SHA-256
+`faa38114216b4b3f1276b6162c404d5e0e63da06d56b5000c9fe46ae1e23a56c`.
+Both show a hidden IME and no focused input window; neither records a SystemUI ANR.
+These observations are not classified as an infrastructure retry.
+
+The repository fixture imposed native keyboard-root admission even when the IME
+was already hidden. The original journey uses semantic Done/SetText at that
+boundary. A focused TextField is not sufficient evidence of a visible IME:
+restricting the call by text focus passed recreation but failed later on the
+override-only edit, with the same root-admission failure. That partial approach
+was removed. `KeyboardInputFixture.closeKeyboard` now returns only when attached
+root insets explicitly report the IME hidden. Visible or unavailable insets retain
+the original native-window admission and Espresso dismissal. Native Enter/Back/Tab
+and production-focus assertions retain their original admission requirements.
+There is no retry, timeout increase, synthetic keyboard action or production change.
+
+The original regression explicitly establishes that recreation retired its picker.
+It then focuses the surviving Sequence Name input before invoking the retained
+picker callback and semantic Done. The input matches both its label and fixture
+value to distinguish expanded Step Name controls. Every original assertion and
+persistence/reopen scenario remains.
+Two additive mandatory fixture cases cover closing a hidden IME on an unfocused
+background window while a real dialog owns native focus, and closing a visible
+IME in its focused window without changing text. Current mandatory app inventory
+is 585 named testcase identities; no original identity was removed.
+
+Authorized exact-test probes reproduce both original failures on the unchanged
+tree, advance to the later override failure with the discarded text-focus guard,
+and pass both complete original journeys with the insets guard (206.2 seconds).
+A separate explicit sibling scope passes native Enter Save, native manipulation
+across recreation, the original journey and both new fixture cases on both APIs:
+10 cases, zero failures/skips, 246.8 seconds. Reports are retained under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/4e0f80b4b15f4bb3bea019861bf32a06/tree-4/attempt-1/`.
+All 84 host-policy tests also pass with the additive inventory. Diagnostic probe
+results do not supersede the original CI evidence; Controller's canonical checks
+and fresh CI remain required. The underlying platform focus-transfer behavior
+is unchanged.
+
+Canonical local `gmd-full` attempt 1 subsequently exposed an invalid added
+prerequisite: no editable text could be focused after recreation. Android had
+legitimately focused the surviving Sequence Name input (`Step authoring`), while
+the picker was already closed. The regression now explicitly establishes that
+focused-input state instead of depending on platform focus restoration or prior
+test input mode. No production focus behavior or IME admission policy changes.
+
+The authorized API35 exact-test probe passes (136.4 seconds), including the later
+override-only edits and physical database reopen. A sibling scope passes all five
+cases without failures or skips: the original journey, native Enter Save,
+manipulation across recreation, and both IME fixture cases (157.4 seconds).
+Reports are retained under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/fb897e47f479429888a69f25e6958113/tree-3/attempt-1/`.
+These scoped results do not replace Controller's unfiltered local and independent
+CI gates, including fresh API26/API33 evidence for the original failures.
+Local app ktlint passes; Detekt, JVM tests and AndroidTest APK packaging complete
+successfully with up-to-date outputs. All 84 host-policy tests pass again.
+
 ## PR40 CI repair: native fixture ordering and suite deadlines (2026-11-10)
 
 Original run `42726834230`, head `b4876085a7734adb1b3198844fb099b5a97f4ba5`,
