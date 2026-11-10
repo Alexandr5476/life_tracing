@@ -1,5 +1,39 @@
 # Android compatibility release gate
 
+## API26 native-exit evidence repair (PR40 follow-up, 2026-11-10)
+
+Run `42803170467`, job `129785590584`, head
+`0e1e1554841db3940ea10c7cd5d0cdde58094f21`, records an empty JUnit failure for
+`StatisticsRepositoryTest.signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen`.
+The retained `data/.../pixel2Api26/emulator.1.fail.txt` ends with `EXIT CODE: 139`;
+the emulator crash handler reports `no stack mapping`. The testcase log has no
+assertion or application exception, and the data suite is incomplete. This does
+not establish whether repository workload, the fixture, or the host emulator
+triggered the native fault.
+
+The existing host observer discarded SIGSEGV twice: its tracefs filter and event
+parser both admitted only SIGKILL/SIGTERM. Its otherwise calibrated, nontruncated
+signal log therefore cannot exclude a native emulator fault. Both boundaries now
+share the observed Linux signal set, including SIGILL, SIGABRT, SIGBUS, SIGFPE and
+SIGSEGV. Ready evidence records that set and the effective target scope. With
+calibrated host PIDs, native fault records resolve the receiver's thread group:
+known non-emulator targets are excluded so handled JVM faults cannot exhaust the
+log; renamed emulator threads and already-exited/unresolved targets are retained.
+Unmapped PID namespaces retain the kernel records without process attribution.
+Events preserve the signal code and task identities, but a recorded signal alone
+does not prove an unhandled fault or an upstream cause. Existing SIGTERM
+calibration, bounded buffers/output, cleanup, command admission, failure
+classification and test inventories remain unchanged.
+
+The added fault-record regression fails for all five native fault signals before
+the repair. Thread-group filtering and missing metadata also have regression
+coverage. All 87 host-policy tests pass afterward. This is an evidence repair;
+the original CI failure and stability obligation remain open pending fresh
+Controller verification and independent CI. No production Statistics code or
+instrumentation assertion is changed.
+The host regressions use synthetic kernel records and process metadata; live
+Linux tracefs fault capture remains unverified by the Windows repair probe.
+
 ## Hidden-IME fixture admission repair (PR40 follow-up, 2026-11-10)
 
 Run `42750399074`, head `7ccaf04f66de709d81e38a0f2cf9975353451d85`, fails the

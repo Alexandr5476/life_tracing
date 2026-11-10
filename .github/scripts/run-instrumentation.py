@@ -21,6 +21,8 @@ import xml.etree.ElementTree as ET
 
 
 EXTENDED_ROW_TIMEOUT_SECONDS = 110 * 60
+# Linux signal numbers: native emulator faults plus explicit process termination.
+OBSERVED_HOST_SIGNALS = (4, 6, 7, 8, 9, 11, 15)
 
 
 def timestamp():
@@ -40,13 +42,39 @@ def process_label(pid):
 
 def signal_event(line):
     match = re.search(r"^\s*(.+)-(\d+)\s+\[\d+\].*?\s(\d+\.\d+):\s+signal_generate: "
-                      r"sig=(9|15) errno=(-?\d+) code=(-?\d+) comm=(.*?) pid=(\d+) grp=(\d+) res=(\d+)", line)
+                      r"sig=(\d+) errno=(-?\d+) code=(-?\d+) comm=(.*?) pid=(\d+) grp=(\d+) res=(\d+)", line)
     if match is None:
         return None
     sender, tid, trace_time, sig, error, code, target, pid, group, result = match.groups()
+    if int(sig) not in OBSERVED_HOST_SIGNALS:
+        return None
     return dict(sender_comm=sender.strip(), sender_tid=int(tid), trace_seconds=trace_time,
                 signal=int(sig), errno=int(error), code=int(code),
                 target_comm=target, target_pid=int(pid), group=int(group), result=int(result))
+
+
+def observed_signal_event(line, direct_proc_ids):
+    event = signal_event(line)
+    if event is None or not direct_proc_ids:
+        return event
+    event["sender_identity"] = process_label(event["sender_tid"])
+    event["target_identity"] = process_label(event["target_pid"])
+    if event["signal"] not in (9, 15):
+        # JVMs routinely handle hardware faults. Keep them out of the bounded log,
+        # but resolve thread groups so renamed emulator threads are still observed.
+        leader = None
+        try:
+            status = Path(f"/proc/{event['target_pid']}/status").read_text()
+            tgid = next(line.split()[1] for line in status.splitlines() if line.startswith("Tgid:"))
+            leader = process_label(int(tgid))
+        except (OSError, ValueError, IndexError, StopIteration):
+            pass
+        event["target_process_identity"] = leader
+        if leader is not None and not leader["comm"].startswith(("qemu-system", "emulator")):
+            return None
+        # An exited target may no longer have /proc metadata. Retain its kernel
+        # record with a null process identity rather than discard the crash evidence.
+    return event
 
 
 class HostSignalObserver:
@@ -140,11 +168,8 @@ def observe_host_signals(directory, owner_pid, owner_start):
             pending = lines.pop()[-4096:]
             for raw in lines:
                 line = raw.decode("utf-8", "replace")
-                event = signal_event(line)
+                event = observed_signal_event(line, direct_pids)
                 if event is not None:
-                    if direct_pids:
-                        event["sender_identity"] = process_label(event["sender_tid"])
-                        event["target_identity"] = process_label(event["target_pid"])
                     events.append(event)
                     emit("signal", **event)
                 elif "mark_victim:" in line:
@@ -159,7 +184,8 @@ def observe_host_signals(directory, owner_pid, owner_start):
             raise RuntimeError("Signal observer owner is absent or changed")
         instance.mkdir()  # Never change another instance or the global tracer.
         (instance / "buffer_size_kb").write_text("128")
-        (instance / "events/signal/signal_generate/filter").write_text("sig == 9 || sig == 15")
+        (instance / "events/signal/signal_generate/filter").write_text(
+            " || ".join(f"sig == {number}" for number in OBSERVED_HOST_SIGNALS))
         (instance / "events/signal/signal_generate/enable").write_text("1")
         oom = instance / "events/oom/mark_victim/enable"
         if oom.exists():
@@ -185,7 +211,9 @@ def observe_host_signals(directory, owner_pid, owner_start):
         if not calibrated:
             raise RuntimeError("Known SIGTERM was not observed")
         ready = dict(calibrated=True, direct_proc_ids=direct_pids, owner=owner,
-                     observer=process_label(os.getpid()), instance=instance.name, oom_enabled=oom.exists())
+                     observer=process_label(os.getpid()), instance=instance.name, oom_enabled=oom.exists(),
+                     observed_signals=list(OBSERVED_HOST_SIGNALS),
+                     native_fault_scope="emulator-or-unresolved" if direct_pids else "all-targets-unmapped-pids")
         emit("ready", **ready)
         temp = directory / "ready.tmp"
         temp.write_text(json.dumps(ready), encoding="utf-8")

@@ -1424,6 +1424,53 @@ class HostMemoryProfileTests(unittest.TestCase):
 
 
 class HostSignalObserverTests(unittest.TestCase):
+    def test_native_emulator_faults_retain_kernel_signal_details(self):
+        for number in (4, 6, 7, 8, 11):  # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV on Linux.
+            with self.subTest(signal=number):
+                line = ("  qemu-system-x86-4329 [003] d..1. 803.125001: signal_generate: "
+                        f"sig={number} errno=0 code=1 comm=qemu-system-x86 pid=4327 grp=0 res=0")
+                event = ci.signal_event(line)
+                self.assertIsNotNone(event)
+                self.assertEqual(event["signal"], number)
+                self.assertEqual((event["sender_comm"], event["sender_tid"]), ("qemu-system-x86", 4329))
+                self.assertEqual((event["target_comm"], event["target_pid"]), ("qemu-system-x86", 4327))
+                self.assertEqual((event["code"], event["group"], event["result"]), (1, 0, 0))
+                self.assertNotIn("initiator", event)
+
+    def test_fault_observation_resolves_emulator_threads_and_excludes_live_foreign_faults(self):
+        line = ("  RenderThread-4329 [003] d..1. 803.125001: signal_generate: "
+                "sig=11 errno=0 code=1 comm=RenderThread pid=4329 grp=0 res=0")
+        for comm in ("qemu-system-x86", "emulator", "java", "unrelated"):
+            with self.subTest(comm=comm), \
+                    patch.object(ci.Path, "read_text", return_value="Name:\tRenderThread\nTgid:\t4327\n"), \
+                    patch.object(ci, "process_label", side_effect=lambda pid: dict(
+                        pid=pid, comm=comm if pid == 4327 else "RenderThread", start="100")):
+                event = ci.observed_signal_event(line, True)
+                if comm in ("java", "unrelated"):
+                    self.assertIsNone(event)
+                else:
+                    self.assertEqual(event["target_process_identity"]["pid"], 4327)
+                    self.assertEqual(event["target_identity"]["pid"], 4329)
+                    self.assertEqual(event["code"], 1)
+                # Explicit termination remains visible even for non-emulator targets.
+                self.assertIsNotNone(ci.observed_signal_event(line.replace("sig=11", "sig=15"), True))
+
+    def test_fault_observation_preserves_exited_or_unmapped_targets(self):
+        line = ("  RenderThread-4329 [003] d..1. 803.125001: signal_generate: "
+                "sig=11 errno=0 code=1 comm=RenderThread pid=4329 grp=0 res=0")
+        for status in (FileNotFoundError(), "Name:\tRenderThread\n", "Tgid:\tbad\n", "Tgid:\t4327\n"):
+            with self.subTest(status=status), patch.object(ci, "process_label", return_value=None), \
+                    patch.object(ci.Path, "read_text", **(
+                        dict(side_effect=status) if isinstance(status, Exception) else dict(return_value=status))):
+                event = ci.observed_signal_event(line, True)
+                self.assertEqual(event["target_pid"], 4329)
+                self.assertIsNone(event["target_process_identity"])
+        with patch.object(ci, "process_label") as label, patch.object(ci.Path, "read_text") as read:
+            self.assertEqual(ci.observed_signal_event(line, False), ci.signal_event(line))
+            self.assertIsNone(ci.observed_signal_event("unrelated diagnostic message", True))
+            label.assert_not_called()
+            read.assert_not_called()
+
     def test_signal_record_identifies_sender_and_receiver_without_claiming_external_initiator(self):
         line = ("  Runner.Worker-1370 [007] d..1. 303.735156: signal_generate: "
                 "sig=15 errno=0 code=0 comm=java pid=1376 grp=1 res=0")
