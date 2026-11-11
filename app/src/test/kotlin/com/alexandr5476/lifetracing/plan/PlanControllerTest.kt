@@ -382,8 +382,8 @@ class PlanControllerTest {
                 controller.dispatch(
                     PlanAction.SelectCatalogItem(source, requireNotNull(controller.state.value.catalog).context),
                 )
-                controller.dispatch(PlanAction.SubmitForm)
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 withTimeout(2_000) { controller.state.first { !it.isMutating && mutations.isNotEmpty() } }
 
                 assertEquals(1, mutations.size)
@@ -421,20 +421,20 @@ class PlanControllerTest {
             try {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.Reschedule(oldRow))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 withTimeout(2_000) { recoveryEntered.await() }
 
                 assertTrue(controller.state.value.isMutating)
                 assertNull(controller.state.value.form)
                 assertEquals(PlanMessage.ACTION_UNAVAILABLE, controller.state.value.mutationFailure)
                 controller.dispatch(PlanAction.Reschedule(oldRow))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 assertEquals(1, mutations.size)
 
                 releaseRecovery.complete(Unit)
                 withTimeout(2_000) { controller.state.first { !it.isMutating } }
                 controller.dispatch(PlanAction.Reschedule(freshRow))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
                 assertEquals(
                     freshRow.plan.updatedAt,
@@ -471,7 +471,7 @@ class PlanControllerTest {
             try {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.Reschedule(oldRow))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 withTimeout(2_000) {
                     controller.state.first {
                         it.week is PlanLoad.Failure && it.recoveryFailure == PlanMessage.LOAD_FAILED
@@ -483,7 +483,7 @@ class PlanControllerTest {
                 controller.dispatch(PlanAction.Refresh)
                 withTimeout(2_000) { controller.state.first { !it.isMutating } }
                 controller.dispatch(PlanAction.Reschedule(freshRow))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
                 assertEquals(
                     freshRow.plan.updatedAt,
@@ -1228,6 +1228,55 @@ class PlanControllerTest {
                 assertNull(controller.state.value.catalog)
                 assertTrue(mutations.isEmpty())
             } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun dismissedPendingSaveCommitsOnceAndCanonicalRetryNeverReplaysItsWriter() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val mutations = mutableListOf<PlanMutation>()
+            var rejectRead = false
+            val controller =
+                controller(
+                    readWeek = {
+                        if (rejectRead) error("canonical read failed after commit")
+                        week(it)
+                    },
+                    commit = {
+                        mutations += it
+                        entered.complete(Unit)
+                        release.await()
+                    },
+                )
+            try {
+                withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                controller.dispatch(PlanAction.Reschedule(row("pending", 1)))
+                val form = requireNotNull(controller.state.value.form)
+                val save = PlanAction.SubmitForm(form.formId, form.inputRevision)
+                controller.dispatch(save)
+                withTimeout(2_000) { entered.await() }
+                controller.dispatch(save)
+                controller.dispatch(PlanAction.DismissForm(form.formId))
+                assertNull(controller.state.value.form)
+                controller.dispatch(save)
+                controller.dispatch(PlanAction.Reschedule(row("replacement", 1)))
+                assertNull(controller.state.value.form)
+                rejectRead = true
+                release.complete(Unit)
+                withTimeout(2_000) { controller.state.first { it.recoveryFailure == PlanMessage.LOAD_FAILED } }
+                assertEquals(1, mutations.size)
+                assertTrue(controller.state.value.isMutating)
+                rejectRead = false
+                controller.dispatch(PlanAction.Refresh)
+                withTimeout(2_000) { controller.state.first { !it.isMutating } }
+                controller.dispatch(save)
+                assertNull(controller.state.value.form)
+                assertEquals(1, mutations.size)
+            } finally {
+                release.complete(Unit)
                 controller.close()
             }
         }

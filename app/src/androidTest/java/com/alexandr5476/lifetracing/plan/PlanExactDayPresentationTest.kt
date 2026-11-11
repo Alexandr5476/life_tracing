@@ -144,13 +144,29 @@ class PlanExactDayPresentationTest {
     @Test
     fun unsupportedFractionsShowARecoverableLocalizedError() {
         withForm { _, commands ->
-            compose.onNodeWithText(context.getString(R.string.plan_date)).performTextReplacement("2026-10-26")
-            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("10:00:00.123456789")
-            compose.onNodeWithText(context.getString(R.string.plan_unsupported_time_precision)).assertIsDisplayed()
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_date),
+                ).performScrollTo()
+                .performTextReplacement("2026-10-26")
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_time),
+                ).performScrollTo()
+                .performTextReplacement("10:00:00.123456789")
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_unsupported_time_precision),
+                ).performScrollTo()
+                .assertIsDisplayed()
             compose.onNodeWithTag("plan-schedule-form").assertIsDisplayed()
             compose.onNodeWithText(context.getString(R.string.plan_save)).assertIsNotEnabled()
             compose.runOnIdle { assertTrue(commands.isEmpty()) }
-            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("10:00:00.123")
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_time),
+                ).performScrollTo()
+                .performTextReplacement("10:00:00.123")
             compose.onNodeWithText(context.getString(R.string.plan_save)).performClick()
             compose.waitUntil { commands.size == 1 }
         }
@@ -178,15 +194,35 @@ class PlanExactDayPresentationTest {
                 ).performScrollTo()
                 .assertIsDisplayed()
             compose.onNodeWithText(context.getString(R.string.plan_save)).assertIsNotEnabled()
-            compose.onNodeWithText(context.getString(R.string.plan_date)).performTextReplacement("2026-03-29")
-            compose.onNodeWithText(context.getString(R.string.plan_nonexistent_time)).assertIsDisplayed()
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_date),
+                ).performScrollTo()
+                .performTextReplacement("2026-03-29")
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_nonexistent_time),
+                ).performScrollTo()
+                .assertIsDisplayed()
             compose.onNodeWithTag("plan-schedule-form").assertIsDisplayed()
             compose.onNodeWithText(context.getString(R.string.plan_save)).assertIsNotEnabled()
-            compose.onNodeWithText(context.getString(R.string.plan_date)).performTextReplacement("not-date")
-            compose.onNodeWithText(context.getString(R.string.plan_invalid_date)).assertIsDisplayed()
-            compose.onNodeWithText(context.getString(R.string.plan_date)).performTextReplacement("2026-03-29")
-            compose.onNodeWithText(context.getString(R.string.plan_time)).performTextReplacement("bad-time")
-            compose.onNodeWithText(context.getString(R.string.plan_invalid_time)).assertIsDisplayed()
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_date),
+                ).performScrollTo()
+                .performTextReplacement("not-date")
+            compose.onNodeWithText(context.getString(R.string.plan_invalid_date)).performScrollTo().assertIsDisplayed()
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_date),
+                ).performScrollTo()
+                .performTextReplacement("2026-03-29")
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.plan_time),
+                ).performScrollTo()
+                .performTextReplacement("bad-time")
+            compose.onNodeWithText(context.getString(R.string.plan_invalid_time)).performScrollTo().assertIsDisplayed()
             compose.runOnIdle { assertTrue(commands.isEmpty()) }
         }
     }
@@ -229,7 +265,7 @@ class PlanExactDayPresentationTest {
         withForm(zoneId = { zone }) { controller, commands ->
             compose.runOnIdle {
                 zone = ZoneId.of("Pacific/Auckland")
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
             }
             compose.onNodeWithText(context.getString(R.string.plan_zone_changed)).performScrollTo().assertIsDisplayed()
             compose.onNodeWithText(context.getString(R.string.plan_save)).assertIsNotEnabled()
@@ -289,9 +325,9 @@ class PlanExactDayPresentationTest {
             compose.runOnIdle {
                 val catalog = requireNotNull(controller.state.value.catalog)
                 controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.single(), catalog.context))
-                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
-                controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-25"))
-                controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))
+                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY, controller.formId))
+                controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-25", controller.formId))
+                controller.dispatch(PlanAction.ChangeScheduleTime("02:30", controller.formId))
             }
             compose.setContent {
                 val state by controller.state.collectAsState()

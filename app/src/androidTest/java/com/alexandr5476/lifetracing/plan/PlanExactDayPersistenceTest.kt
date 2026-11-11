@@ -62,15 +62,19 @@ class PlanExactDayPersistenceTest(
                     val original = if (existing) fixture.seed("2026-10-25T02:30:27.123", 1) else null
                     val before = fixture.store.durableFacts()
                     if (original != null) fixture.open(original) else fixture.newExact()
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26"))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26", fixture.controller.formId))
                     for (fraction in listOf("123456789", "123001", "000000001")) {
-                        fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.$fraction"))
+                        fixture.controller.dispatch(
+                            PlanAction.ChangeScheduleTime("10:00:00.$fraction", fixture.controller.formId),
+                        )
                         fixture.submit()
                         assertEquals(PlanMessage.UNSUPPORTED_TIME_PRECISION, fixture.form.error)
                         assertTrue(fixture.commands.isEmpty())
                         assertEquals(before, fixture.store.durableFacts())
                     }
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00:00.123"))
+                    fixture.controller.dispatch(
+                        PlanAction.ChangeScheduleTime("10:00:00.123", fixture.controller.formId),
+                    )
                     fixture.clock = fixture.clock.plusSeconds(1)
                     fixture.submit()
                     fixture.reopen()
@@ -101,8 +105,8 @@ class PlanExactDayPersistenceTest(
                     assertEquals(error, fixture.form.error)
                     assertTrue(fixture.commands.isEmpty())
                     assertEquals(before, fixture.store.durableFacts())
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26"))
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00"))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26", fixture.controller.formId))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00", fixture.controller.formId))
                     fixture.submit()
                     fixture.reopen()
                     fixture.assertExact(fixture.onlyPlan("2026-10-26"), "2026-10-26T09:00:00Z")
@@ -143,7 +147,7 @@ class PlanExactDayPersistenceTest(
                 val before = fixture.store.durableFacts()
                 fixture.store.forbidPlanUpdates()
                 fixture.open(original)
-                fixture.controller.dispatch(PlanAction.DismissForm)
+                fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId))
                 assertTrue(fixture.commands.isEmpty())
                 fixture.open(original)
                 assertTrue(fixture.form.offsetChoices.isEmpty())
@@ -193,9 +197,9 @@ class PlanExactDayPersistenceTest(
                             .getFocusedAction(original.id)
                             .snapshot
                     fixture.open(original)
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31"))
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate(date))
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime(time))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate(date, fixture.controller.formId))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime(time, fixture.controller.formId))
                     if (offset != null) fixture.choose(offset)
                     fixture.clock = fixture.clock.plusSeconds(1)
                     fixture.submit()
@@ -231,8 +235,8 @@ class PlanExactDayPersistenceTest(
                 val before = fixture.store.durableFacts()
                 fixture.store.forbidPlanUpdates()
                 fixture.open(original)
-                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31"))
-                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))
+                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
+                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:30", fixture.controller.formId))
                 fixture.choose(ZoneOffset.ofHours(1))
                 fixture.clock = fixture.clock.plusSeconds(1)
                 fixture.submit()
@@ -256,7 +260,7 @@ class PlanExactDayPersistenceTest(
                 fixture.ready()
                 val original = fixture.seed("2026-10-25T02:30", 1)
                 fixture.open(original)
-                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31"))
+                fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
                 fixture.choose(ZoneOffset.ofHours(1))
                 val before = fixture.store.durableFacts()
                 fixture.zone = ZoneId.of("Pacific/Auckland")
@@ -264,7 +268,9 @@ class PlanExactDayPersistenceTest(
                 assertEquals(PlanMessage.ZONE_CHANGED, fixture.form.error)
                 assertTrue(fixture.commands.isEmpty())
                 assertEquals(before, fixture.store.durableFacts())
-                fixture.controller.dispatch(PlanAction.RevalidateScheduleZone)
+                fixture.controller.dispatch(
+                    PlanAction.RevalidateScheduleZone(fixture.controller.formId, fixture.controller.formRevision),
+                )
                 fixture.clock = fixture.clock.plusSeconds(1)
                 fixture.submit()
                 fixture.reopen()
@@ -352,15 +358,15 @@ class PlanExactDayPersistenceTest(
                             .snapshot
                     val before = fixture.store.durableFacts()
                     fixture.open(original)
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate(date))
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate(date, fixture.controller.formId))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:30", fixture.controller.formId))
                     if (offset != null) fixture.choose(offset)
                     fixture.submit()
                     assertEquals(error, fixture.form.error)
                     assertTrue(fixture.commands.isEmpty())
                     assertEquals(before, fixture.store.durableFacts())
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26"))
-                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00"))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-26", fixture.controller.formId))
+                    fixture.controller.dispatch(PlanAction.ChangeScheduleTime("10:00", fixture.controller.formId))
                     fixture.clock = fixture.clock.plusSeconds(1)
                     fixture.submit()
                     fixture.reopen()
@@ -469,9 +475,9 @@ class PlanExactDayPersistenceTest(
             controller.dispatch(PlanAction.OpenCatalog)
             val catalog = withTimeout(5_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
             controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.single(), catalog.context))
-            controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
-            controller.dispatch(PlanAction.ChangeScheduleDate(date))
-            controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))
+            controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY, controller.formId))
+            controller.dispatch(PlanAction.ChangeScheduleDate(date, controller.formId))
+            controller.dispatch(PlanAction.ChangeScheduleTime("02:30", controller.formId))
         }
 
         fun choose(offset: ZoneOffset) =
@@ -487,7 +493,7 @@ class PlanExactDayPersistenceTest(
             )
 
         suspend fun submit(expectedFailure: PlanMessage? = null) {
-            controller.dispatch(PlanAction.SubmitForm)
+            controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
             withTimeout(5_000) { controller.state.first { !it.isMutating } }
             assertEquals(expectedFailure, controller.state.value.mutationFailure)
         }

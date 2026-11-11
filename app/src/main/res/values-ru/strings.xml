@@ -852,4 +852,11 @@
     <string name="plan_catalog_append_failed">Не удалось загрузить новые результаты. Загруженные результаты доступны. Повторите загрузку.</string>
     <string name="plan_catalog_empty">Подходящих шаблонов нет</string>
     <string name="plan_catalog_results">Загружено результатов: %1$d</string>
+    <string name="plan_schedule_create_context">Новый план: %1$s · %2$s</string>
+    <string name="plan_schedule_reschedule_context">Перенос плана: %1$s · %2$s</string>
+    <string name="plan_schedule_original">Исходное расписание: %1$s</string>
+    <string name="plan_schedule_precision">Точность расписания: %1$s</string>
+    <string name="plan_schedule_untouched">Расписание не изменено. Сохранение оставит исходный срок.</string>
+    <string name="plan_schedule_edited">Расписание изменено. При сохранении новые данные будут проверены.</string>
+    <string name="plan_schedule_new">Новое расписание. Сохранение создаст план.</string>
 </resources>

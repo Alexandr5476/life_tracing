@@ -1487,3 +1487,52 @@ packaging does not execute instrumented keyboard/focus assertions or certify man
 TalkBack/Switch Access operation. See [catalog evidence](plan_catalog_accessibility.md)
 for exact ownership, typed-source, failure/pagination, localization/scaling coverage
 and the remaining device/manual verification boundary.
+
+
+## S3 scheduling form accessibility boundary
+
+The app inventory adds seven original JUnit4 identities in
+`PlanScheduleAccessibilityTest`. Prior S1/S2 calendar/catalog, strict ExactDay,
+physical persistence, focused execution, MainActivity route-session, repository and
+migration identities remain mandatory. New cases combine native keyboard/semantics
+with production controller/repository writes and physical database reopen/canonical
+reads, plus EN/RU and interface/text/system-font extremes. See
+[scheduling evidence](plan_schedule_accessibility.md) for admission, preservation,
+focus, temporal/failure coverage and the device/manual verification boundary.
+Controller owns ci-fast, gmd-app and independent exact-head compatibility execution.
+Host compilation/APK packaging grants no device PASS or manual TalkBack/Switch
+Access certification.
+
+
+S3 host verification (2026-11-11): the final direct CMD Gradle invocation exited 0;
+70 focused Plan JVM cases have zero failures/errors/skips, app ktlint/Detekt/
+lintDebug passed, and AndroidTest APK assembly passed. Every prior inventory
+identity remains; the seven new methods match their registrations. EN/RU XML and
+diff checks passed. These results are host evidence only; native EN/RU scaling,
+physical reopen and accessibility action assertions still require Controller device
+execution, and no manual TalkBack/Switch Access certification is claimed.
+
+
+S3 API35 repair (2026-11-11): Controller attempt 1 completed 615 cases with four
+failures, all at the shared scheduling test's reschedule-entry wait. The fixture
+selected an out-of-week date without first navigating from October 19 to October
+26. Its helper now uses native week/day navigation before the unchanged exact-row
+Reschedule action and downstream assertions. All seven scheduling identities remain.
+AndroidTest APK assembly, app ktlint and Detekt passed locally; inventory and diff
+checks passed. The authorized containing-class probe returned "No active
+repair-probe lease" before device/testcase admission. Original device failures
+remain pending Controller runtime revalidation; no new device/CI PASS is claimed.
+See [repair evidence](plan_schedule_accessibility.md) for the causal fixture details.
+
+
+S3 causal visibility repair (2026-11-11): the four-case API35 rerun passed the
+three reschedule/preservation/Close cases but failed Russian creation-context
+visibility in the scale matrix. The fixture now establishes the current native
+window/keyboard owner, moves focus out of editable fields and dismisses the IME
+before its unchanged passive-text visibility assertions. Failure diagnostics retain
+locale/scale, bounds, scrolling and native/Compose focus through the existing
+acknowledged transport. Production behavior and all seven identities are unchanged.
+AndroidTest compilation/APK assembly and app ktlint/Detekt passed. The authorized
+probe again reported no active lease before device admission. The original Russian
+visibility failure remains unverified, and focus/IME relocation is an assessment
+rather than a confirmed runtime cause. Controller device/CI gates remain required.

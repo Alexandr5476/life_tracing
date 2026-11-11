@@ -41,7 +41,7 @@ internal fun rememberPlanCalendarFocus(
     val hasDialog = state.hasCalendarDialog()
     val interactive = isVisible && !hasDialog
     var landingPending by remember { mutableStateOf(isVisible) }
-    restoreCatalogEntryFocus(state, isVisible, interactive, focus.add)
+    restoreDialogEntryFocus(state, isVisible, interactive, focus)
     LaunchedEffect(isVisible) {
         focus.owner = null
         focus.removed = null
@@ -84,26 +84,50 @@ internal fun rememberPlanCalendarFocus(
 }
 
 @Composable
-private fun restoreCatalogEntryFocus(
+private fun restoreDialogEntryFocus(
     state: PlanPresentationState,
     isVisible: Boolean,
     interactive: Boolean,
-    add: FocusRequester,
+    focus: PlanCalendarFocus,
 ) {
     val window = LocalWindowInfo.current
     val mode = LocalInputModeManager.current.inputMode
     var hadCatalog by remember { mutableStateOf(false) }
+    var priorForm by remember { mutableStateOf<PlanScheduleForm?>(null) }
     var pending by remember { mutableStateOf(false) }
-    LaunchedEffect(state.catalog != null, state.form != null, state.cancelledOpen, isVisible) {
-        if (hadCatalog && state.catalog == null) pending = interactive
+    var returnToAdd by remember { mutableStateOf(true) }
+    LaunchedEffect(state.catalog != null, state.form?.formId, state.cancelledOpen, isVisible) {
+        if (hadCatalog && state.catalog == null && interactive) {
+            pending = true
+            returnToAdd = true
+        }
+        if (priorForm != null && state.form == null && interactive) {
+            pending = true
+            returnToAdd = priorForm?.identity == null
+        }
         hadCatalog = state.catalog != null
-        if (!isVisible || state.form != null || state.cancelledOpen) pending = false
+        priorForm = state.form
+        if (!interactive) pending = false
     }
-    LaunchedEffect(pending, interactive, window.isWindowFocused, mode) {
+    LaunchedEffect(pending, interactive, window.isWindowFocused, mode, state.isMutating, state.week) {
         if (pending && interactive && window.isWindowFocused) {
             withFrameNanos { }
-            pending = !add.requestFocus()
+            val target = state.dialogReturnTarget(focus, returnToAdd)
+            pending = !target.requestFocus()
         }
+    }
+}
+
+private fun PlanPresentationState.dialogReturnTarget(
+    focus: PlanCalendarFocus,
+    returnToAdd: Boolean,
+): FocusRequester {
+    val hasDay = (week as? PlanLoad.Content)?.value?.dayPresence?.any { it.date == selectedDate } == true
+    return when {
+        returnToAdd && !isMutating -> focus.add
+        week is PlanLoad.Failure -> focus.retry
+        hasDay -> focus.selectedDay
+        else -> focus.today
     }
 }
 

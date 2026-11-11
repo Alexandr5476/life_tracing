@@ -1427,6 +1427,15 @@
       "pendingTemplateDisclosureHasNativeGuidanceAndRetiredDisclosureCannotReopenOrCloseCurrentContent",
       "nativeSnapshotInputFocusSurvivesUnrelatedRemovalAndInsertion",
       "stepConfigurationAndPickerReflowAtEnglishAndRussianCombinedScalingExtremes"
+    ],
+    "com.alexandr5476.lifetracing.plan.PlanScheduleAccessibilityTest": [
+      "nativeChangedRescheduleKeepsPlanSnapshotSourceAndStatisticsProvenanceAfterReopen",
+      "nativeCloseAndHiddenRouteInvalidateOldSaveAndRestoreOnlySurvivingPlanFocus",
+      "nativeControlsRetainLocalizedErrorsSelectionsAndKeyboardReachabilityAtScaleExtremes",
+      "nativeCreationRetainsTypedSourcesAndAllThreeTargetsSurvivePhysicalReopen",
+      "nativeGapPrecisionAndOverlapChoicesPersistOnlyExplicitDistinctOccurrences",
+      "nativePendingSaveDisablesEditingAndRepeatedActivationWhileCloseRetainsAcceptedWriter",
+      "nativeUntouchedReschedulePreservesExactTargetTimestampsAndSnapshotAfterZoneTravel"
     ]
   },
   "startup": {

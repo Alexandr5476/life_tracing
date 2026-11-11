@@ -28,6 +28,9 @@ data class PlanScheduleForm(
     val error: PlanMessage? = null,
     val inputRevision: Long = 0,
     val formId: UUID,
+    // Frozen display context only. The original action identity remains the command authority.
+    val existingTitle: String? = null,
+    val existingKind: com.alexandr5476.lifetracing.domain.PlanTrackableKind? = null,
 ) {
     val preservesExistingSchedule: Boolean get() = identity != null && !scheduleEdited
 }

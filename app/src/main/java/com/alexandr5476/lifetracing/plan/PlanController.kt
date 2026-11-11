@@ -145,14 +145,17 @@ sealed interface PlanAction {
 
     data class ChangeScheduleKind(
         val kind: PlanScheduleKind,
+        val formId: UUID,
     ) : PlanAction
 
     data class ChangeScheduleDate(
         val value: String,
+        val formId: UUID,
     ) : PlanAction
 
     data class ChangeScheduleTime(
         val value: String,
+        val formId: UUID,
     ) : PlanAction
 
     data class SelectScheduleOffset(
@@ -164,11 +167,19 @@ sealed interface PlanAction {
         val formId: UUID,
     ) : PlanAction
 
-    data object RevalidateScheduleZone : PlanAction
+    data class RevalidateScheduleZone(
+        val formId: UUID,
+        val inputRevision: Long,
+    ) : PlanAction
 
-    data object DismissForm : PlanAction
+    data class DismissForm(
+        val formId: UUID,
+    ) : PlanAction
 
-    data object SubmitForm : PlanAction
+    data class SubmitForm(
+        val formId: UUID,
+        val inputRevision: Long,
+    ) : PlanAction
 
     data class Cancel(
         val row: PlanReadRow,
@@ -314,7 +325,7 @@ class PlanController internal constructor(
                     }
                 is PlanAction.Reschedule -> openReschedule(action.row)
                 is PlanAction.ChangeScheduleKind ->
-                    updateForm { form ->
+                    updateForm(action.formId) { form ->
                         if (form.kind == action.kind) {
                             form
                         } else {
@@ -332,16 +343,16 @@ class PlanController internal constructor(
                         }
                     }
                 is PlanAction.ChangeScheduleDate ->
-                    updateForm { form ->
+                    updateForm(action.formId) { form ->
                         if (form.date == action.value) form else form.edited().copy(date = action.value)
                     }
                 is PlanAction.ChangeScheduleTime ->
-                    updateForm { form ->
+                    updateForm(action.formId) { form ->
                         if (form.time == action.value) form else form.edited().copy(time = action.value)
                     }
                 is PlanAction.SelectScheduleOffset -> selectOffset(action)
-                PlanAction.RevalidateScheduleZone ->
-                    updateForm {
+                is PlanAction.RevalidateScheduleZone ->
+                    updateForm(action.formId, action.inputRevision) {
                         it.copy(
                             schedulingZoneId = zoneId(),
                             selectedOffset = null,
@@ -351,8 +362,10 @@ class PlanController internal constructor(
                                 it.inputRevision + 1,
                         )
                     }
-                PlanAction.DismissForm -> mutableState.update { it.copy(form = null) }
-                PlanAction.SubmitForm -> submitForm()
+                is PlanAction.DismissForm ->
+                    if (ownsForm(action.formId)) mutableState.update { it.copy(form = null) }
+                is PlanAction.SubmitForm ->
+                    if (ownsForm(action.formId, action.inputRevision)) submitForm()
                 is PlanAction.Cancel -> mutate(PlanMutation.Cancel(action.row.plan.actionIdentity(), now()))
                 is PlanAction.UpdateFromTemplate -> mutate(PlanMutation.Update(action.row.plan.actionIdentity(), now()))
                 PlanAction.OpenCancelled -> {
@@ -622,6 +635,7 @@ class PlanController internal constructor(
     }
 
     private fun openReschedule(row: PlanReadRow) {
+        if (closed || !visible) return
         if (mutableState.value.isMutating || !row.isMutable()) return
         dismissCatalog()
         val zone = zoneId()
@@ -637,6 +651,8 @@ class PlanController internal constructor(
                         time,
                         zone,
                         formId = UUID.randomUUID(),
+                        existingTitle = row.title,
+                        existingKind = row.plan.kind,
                     ),
             )
         }
@@ -651,8 +667,23 @@ class PlanController internal constructor(
                 inputRevision + 1,
         )
 
-    private fun updateForm(transform: (PlanScheduleForm) -> PlanScheduleForm) {
-        if (closed || mutationInFlight.get()) return
+    private fun ownsForm(
+        formId: UUID,
+        inputRevision: Long? = null,
+    ): Boolean {
+        val form = mutableState.value.form
+        return !closed &&
+            visible &&
+            form?.formId == formId &&
+            (inputRevision == null || form.inputRevision == inputRevision)
+    }
+
+    private fun updateForm(
+        formId: UUID,
+        inputRevision: Long? = null,
+        transform: (PlanScheduleForm) -> PlanScheduleForm,
+    ) {
+        if (!ownsForm(formId, inputRevision) || mutationInFlight.get()) return
         mutableState.update { state ->
             state.form?.let {
                 state.copy(form = PlanScheduleInput.evaluate(PlanScheduleInput.checkZone(transform(it), zoneId())))
@@ -667,7 +698,7 @@ class PlanController internal constructor(
     }
 
     private fun selectOffset(action: PlanAction.SelectScheduleOffset) {
-        if (closed || mutationInFlight.get()) return
+        if (!ownsForm(action.formId) || mutationInFlight.get()) return
         mutableState.update { state ->
             val form = state.form ?: return@update state
             if (form.formId != action.formId) return@update state

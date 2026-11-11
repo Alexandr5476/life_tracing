@@ -163,7 +163,7 @@ class PlanCatalogPresentationTest {
         assertEquals(ZoneId.of("Europe/Moscow"), firstForm.schedulingZoneId)
         // Background roots can retain local Focused=true while the dialog owns native input.
         keyboard.awaitWindowFocus(compose.onNodeWithTag("plan-schedule-form"))
-        compose.runOnIdle { fixture.controller.dispatch(PlanAction.DismissForm) }
+        compose.runOnIdle { fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId)) }
         open()
         focus(catalogResultTag(activity.id))
         keyboard.sendKey(compose.onNodeWithTag(catalogResultTag(activity.id)), KeyEvent.KEYCODE_ENTER)
