@@ -90,6 +90,12 @@ data class PlanCatalogState(
     val retrying: Boolean = false,
 )
 
+/** Dialog lifetime and published collection authority are independent of read generations. */
+data class PlanCancelledContext(
+    val dialogId: UUID = UUID.randomUUID(),
+    val collectionId: UUID = UUID.randomUUID(),
+)
+
 data class PlanPresentationState(
     val weekStart: LocalDate,
     val selectedDate: LocalDate,
@@ -97,6 +103,10 @@ data class PlanPresentationState(
     val catalog: PlanCatalogState? = null,
     val form: PlanScheduleForm? = null,
     val cancelledOpen: Boolean = false,
+    val cancelledContext: PlanCancelledContext? = null,
+    val cancelledOffset: Int = 0,
+    val cancelledAppending: Boolean = false,
+    val cancelledRetrying: Boolean = false,
     val cancelled: PlanLoad<CancelledPlanPage>? = null,
     val cancelledItems: List<PlanReadRow> = emptyList(),
     val cancelledHasNextPage: Boolean = false,
@@ -191,12 +201,23 @@ sealed interface PlanAction {
 
     data object OpenCancelled : PlanAction
 
-    data object DismissCancelled : PlanAction
+    data class DismissCancelled(
+        val context: PlanCancelledContext,
+    ) : PlanAction
 
-    data object LoadMoreCancelled : PlanAction
+    data class LoadMoreCancelled(
+        val context: PlanCancelledContext,
+        val offset: Int,
+    ) : PlanAction
+
+    data class RetryCancelled(
+        val context: PlanCancelledContext,
+        val offset: Int,
+    ) : PlanAction
 
     data class Restore(
         val row: PlanReadRow,
+        val context: PlanCancelledContext,
     ) : PlanAction
 }
 
@@ -366,27 +387,30 @@ class PlanController internal constructor(
                     if (ownsForm(action.formId)) mutableState.update { it.copy(form = null) }
                 is PlanAction.SubmitForm ->
                     if (ownsForm(action.formId, action.inputRevision)) submitForm()
-                is PlanAction.Cancel -> mutate(PlanMutation.Cancel(action.row.plan.actionIdentity(), now()))
-                is PlanAction.UpdateFromTemplate -> mutate(PlanMutation.Update(action.row.plan.actionIdentity(), now()))
-                PlanAction.OpenCancelled -> {
-                    dismissCatalog()
-                    mutableState.update { it.copy(cancelledOpen = true) }
-                    loadCancelled(false)
-                }
-                PlanAction.DismissCancelled -> {
-                    cancelledGeneration.incrementAndGet()
-                    mutableState.update {
-                        it.copy(
-                            cancelledOpen = false,
-                            cancelled = null,
-                            cancelledItems = emptyList(),
-                            cancelledHasNextPage = false,
-                        )
+                is PlanAction.Cancel ->
+                    if (ownsActiveRow(action.row)) mutate(PlanMutation.Cancel(action.row.rowIdentity(), now()))
+                is PlanAction.UpdateFromTemplate ->
+                    if (ownsActiveRow(action.row) &&
+                        action.row.sourceState ==
+                        com.alexandr5476.lifetracing.domain.PlanSourceState.CHANGED
+                    ) {
+                        mutate(PlanMutation.Update(action.row.rowIdentity(), now()))
                     }
-                    if (recovery?.needsCancelled == true) loadCancelled(false)
-                }
-                PlanAction.LoadMoreCancelled -> if (mutableState.value.cancelledHasNextPage) loadCancelled(true)
-                is PlanAction.Restore -> mutate(PlanMutation.Restore(action.row.plan.actionIdentity(), now()))
+                PlanAction.OpenCancelled -> openCancelled()
+                is PlanAction.DismissCancelled -> if (ownsCancelledDialog(action.context)) dismissCancelled()
+                is PlanAction.LoadMoreCancelled ->
+                    if (canAppendCancelled(action)) loadCancelled(true)
+                is PlanAction.RetryCancelled ->
+                    if (canRetryCancelled(action)) {
+                        if (recovery != null) retryRecovery() else loadCancelled(mutableState.value.cancelledAppending)
+                    }
+                is PlanAction.Restore ->
+                    if (ownsCancelled(action.context) &&
+                        mutableState.value.cancelledItems.any { it === action.row } &&
+                        action.row.plan.status == PlanEntryStatus.CANCELLED
+                    ) {
+                        mutate(PlanMutation.Restore(action.row.rowIdentity(), now()))
+                    }
             }
         }
 
@@ -421,6 +445,7 @@ class PlanController internal constructor(
                     catalog = null,
                     form = null,
                     cancelledOpen = false,
+                    cancelledContext = null,
                     cancelled = null,
                     cancelledItems = emptyList(),
                     cancelledHasNextPage = false,
@@ -541,8 +566,9 @@ class PlanController internal constructor(
     }
 
     private fun openCatalog() {
-        if (closed || !visible || mutationInFlight.get()) return
-        mutableState.update { it.copy(catalog = PlanCatalogState(), form = null, cancelledOpen = false) }
+        val unavailable = closed || !visible || mutationInFlight.get()
+        if (unavailable || mutableState.value.cancelledOpen) return
+        mutableState.update { it.copy(catalog = PlanCatalogState(), form = null) }
         loadCatalog("", null, false)
     }
 
@@ -635,7 +661,7 @@ class PlanController internal constructor(
     }
 
     private fun openReschedule(row: PlanReadRow) {
-        if (closed || !visible) return
+        if (closed || !visible || mutableState.value.cancelledOpen) return
         if (mutableState.value.isMutating || !row.isMutable()) return
         dismissCatalog()
         val zone = zoneId()
@@ -819,9 +845,15 @@ class PlanController internal constructor(
 
     private fun retryRecovery() {
         synchronized(recoveryLock) {
+            val pending = recovery
+            // Invalidate both surfaces before either reader can publish synchronously.
+            pending?.let {
+                it.weekPublished = false
+                if (it.needsCancelled) it.cancelledPublished = false
+            }
             mutableState.update { it.copy(recoveryFailure = null) }
             loadWeek()
-            if (recovery?.needsCancelled == true) loadCancelled(false)
+            if (pending?.needsCancelled == true) loadCancelled(false)
         }
     }
 
@@ -874,19 +906,93 @@ class PlanController internal constructor(
         }
     }
 
+    private fun canRetryCancelled(action: PlanAction.RetryCancelled): Boolean {
+        val state = mutableState.value
+        val failed = state.cancelled is PlanLoad.Failure || state.recoveryFailure != null
+        return failed && ownsCancelled(action.context) && action.offset == state.cancelledOffset
+    }
+
+    private fun canAppendCancelled(action: PlanAction.LoadMoreCancelled): Boolean {
+        val state = mutableState.value
+        val ready = state.cancelled is PlanLoad.Content && state.cancelledHasNextPage && !mutationInFlight.get()
+        return ready && ownsCancelled(action.context) && action.offset == state.cancelledOffset
+    }
+
+    private fun ownsCalendar(): Boolean =
+        !closed && visible && mutableState.value.let { it.catalog == null && it.form == null && !it.cancelledOpen }
+
+    private fun ownsActiveRow(row: PlanReadRow): Boolean {
+        val read = (mutableState.value.week as? PlanLoad.Content)?.value ?: return false
+        return ownsCalendar() &&
+            row.isMutable() &&
+            (read.selectedDayPlans.any { it === row } || read.weekPlans.any { it === row })
+    }
+
+    private fun PlanReadRow.rowIdentity() = plan.actionIdentity()
+
+    private fun ownsCancelledDialog(context: PlanCancelledContext): Boolean =
+        !closed &&
+            visible &&
+            mutableState.value.let {
+                it.cancelledOpen &&
+                    it.catalog == null &&
+                    it.form == null &&
+                    it.cancelledContext?.dialogId == context.dialogId
+            }
+
+    private fun ownsCancelled(context: PlanCancelledContext): Boolean =
+        ownsCancelledDialog(context) && mutableState.value.cancelledContext == context
+
+    private fun openCancelled() {
+        if (!ownsCalendar()) return
+        mutableState.update { it.copy(cancelledOpen = true, cancelledContext = PlanCancelledContext()) }
+        // Recovery remains internal and is never authorized by a dialog context.
+        if (recovery != null) retryRecovery() else loadCancelled(false)
+    }
+
+    private fun dismissCancelled() {
+        cancelledGeneration.incrementAndGet()
+        mutableState.update {
+            it.copy(
+                cancelledOpen = false,
+                cancelledContext = null,
+                cancelled = null,
+                cancelledItems = emptyList(),
+                cancelledHasNextPage = false,
+            )
+        }
+        if (recovery?.needsCancelled == true) loadCancelled(false)
+    }
+
     private fun loadCancelled(append: Boolean): Unit =
         synchronized(recoveryLock) {
             val generation = cancelledGeneration.incrementAndGet()
             if (!append) {
-                synchronized(recoveryLock) {
-                    recovery?.let {
-                        it.cancelledGeneration = generation
-                        it.cancelledPublished = false
-                    }
+                recovery?.let {
+                    it.cancelledGeneration = generation
+                    it.cancelledPublished = false
                 }
             }
-            val offset = if (append) mutableState.value.cancelledItems.size else 0
-            if (!publishIfOwned(cancelledGeneration, generation) { it.copy(cancelled = PlanLoad.Loading) }) return
+            val offset = if (append) mutableState.value.cancelledOffset else 0
+            if (!publishIfOwned(cancelledGeneration, generation) {
+                    it.copy(
+                        cancelled = PlanLoad.Loading,
+                        cancelledItems = if (append) it.cancelledItems else emptyList(),
+                        cancelledHasNextPage = append && it.cancelledHasNextPage,
+                        cancelledOffset = offset,
+                        cancelledAppending = append,
+                        cancelledRetrying = it.cancelled is PlanLoad.Failure,
+                        cancelledContext =
+                            if (append) {
+                                it.cancelledContext
+                            } else {
+                                it.cancelledContext?.copy(collectionId = UUID.randomUUID())
+                            },
+                    )
+                }
+            ) {
+                return
+            }
             scope.launch {
                 try {
                     val page = readCancelled(CancelledPlanPageQuery(offset, CANCELLED_PAGE_SIZE))
@@ -894,8 +1000,10 @@ class PlanController internal constructor(
                             val items = if (append) state.cancelledItems + page.items else page.items
                             state.copy(
                                 cancelled = PlanLoad.Content(page),
-                                cancelledItems = items,
+                                cancelledItems = items.distinctBy { it.plan.id },
                                 cancelledHasNextPage = page.hasNextPage,
+                                cancelledOffset = offset + page.items.size,
+                                cancelledRetrying = false,
                             )
                         }
                     ) {
@@ -905,7 +1013,7 @@ class PlanController internal constructor(
                     throw cancelled
                 } catch (_: Exception) {
                     if (publishIfOwned(cancelledGeneration, generation) {
-                            it.copy(cancelled = PlanLoad.Failure(PlanMessage.LOAD_FAILED))
+                            it.copy(cancelled = PlanLoad.Failure(PlanMessage.LOAD_FAILED), cancelledRetrying = false)
                         }
                     ) {
                         if (!append) canonicalFailed(CanonicalSurface.CANCELLED, generation)

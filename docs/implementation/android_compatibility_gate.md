@@ -1536,3 +1536,14 @@ AndroidTest compilation/APK assembly and app ktlint/Detekt passed. The authorize
 probe again reported no active lease before device admission. The original Russian
 visibility failure remains unverified, and focus/IME relocation is an assessment
 rather than a confirmed runtime cause. Controller device/CI gates remain required.
+
+
+## S4 Plan lifecycle and restoration accessibility boundary
+
+The mandatory inventory adds ten PlanLifecycleAccessibilityTest identities and two
+PlanCommandRepositoryTest transaction identities, retaining every prior case.
+See [lifecycle accessibility evidence](plan_lifecycle_accessibility.md) for native
+identity/focus/scaling, bounded pagination, stale-dialog admission, canonical
+recovery and physical reopen coverage. Controller owns ci-fast, gmd-app and
+independent exact-head compatibility execution. Host compilation/APK assembly is
+not device execution or manual TalkBack/Switch Access certification.

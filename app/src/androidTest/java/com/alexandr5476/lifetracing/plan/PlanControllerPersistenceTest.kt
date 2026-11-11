@@ -231,11 +231,15 @@ class PlanControllerPersistenceTest {
                             it.plan.id ==
                                 retained.id
                         },
+                        requireNotNull(controller.state.value.cancelledContext),
                     ),
                 )
                 row = controller.awaitIdleRow(template.name, inWeek = false)
                 assertEquals(retained.target, row.plan.target)
                 assertEquals(retained.activitySnapshotId, row.plan.activitySnapshotId)
+                controller.dispatch(
+                    PlanAction.DismissCancelled(requireNotNull(controller.state.value.cancelledContext)),
+                )
 
                 clock = clock.plusSeconds(1)
                 val changed =

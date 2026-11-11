@@ -19,6 +19,7 @@ import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 internal class PlanCalendarFocus {
     val back = FocusRequester()
     val add = FocusRequester()
+    val cancelled = FocusRequester()
     val today = FocusRequester()
     val selectedDay = FocusRequester()
     val retry = FocusRequester()
@@ -84,6 +85,7 @@ internal fun rememberPlanCalendarFocus(
 }
 
 @Composable
+@Suppress("CyclomaticComplexMethod") // Three existing modal return paths share one native window owner.
 private fun restoreDialogEntryFocus(
     state: PlanPresentationState,
     isVisible: Boolean,
@@ -93,10 +95,18 @@ private fun restoreDialogEntryFocus(
     val window = LocalWindowInfo.current
     val mode = LocalInputModeManager.current.inputMode
     var hadCatalog by remember { mutableStateOf(false) }
+    var hadCancelled by remember { mutableStateOf(false) }
+    var returnToCancelled by remember { mutableStateOf(false) }
     var priorForm by remember { mutableStateOf<PlanScheduleForm?>(null) }
     var pending by remember { mutableStateOf(false) }
     var returnToAdd by remember { mutableStateOf(true) }
     LaunchedEffect(state.catalog != null, state.form?.formId, state.cancelledOpen, isVisible) {
+        returnToCancelled = false
+        if (hadCancelled && !state.cancelledOpen && interactive) {
+            pending = true
+            returnToCancelled = true
+        }
+        hadCancelled = state.cancelledOpen
         if (hadCatalog && state.catalog == null && interactive) {
             pending = true
             returnToAdd = true
@@ -112,7 +122,7 @@ private fun restoreDialogEntryFocus(
     LaunchedEffect(pending, interactive, window.isWindowFocused, mode, state.isMutating, state.week) {
         if (pending && interactive && window.isWindowFocused) {
             withFrameNanos { }
-            val target = state.dialogReturnTarget(focus, returnToAdd)
+            val target = if (returnToCancelled) focus.cancelled else state.dialogReturnTarget(focus, returnToAdd)
             pending = !target.requestFocus()
         }
     }

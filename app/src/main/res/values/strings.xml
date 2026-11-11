@@ -859,4 +859,13 @@
     <string name="plan_schedule_untouched">Schedule unchanged. Save preserves the original target.</string>
     <string name="plan_schedule_edited">Schedule edited. Save validates this proposal.</string>
     <string name="plan_schedule_new">New schedule. Save creates a Plan.</string>
+    <string name="plan_cancelled_context">Cancelled plans keep their original schedule and frozen configuration. Restore returns the selected plan to Planned.</string>
+    <string name="plan_cancelled_action">%1$s: %2$s. %3$s. %4$s. %5$s. %6$s. %7$s</string>
+    <string name="plan_cancelled_loading">Loading cancelled plans</string>
+    <string name="plan_cancelled_appending">Loading more cancelled plans. Loaded entries remain available.</string>
+    <string name="plan_cancelled_failed">Could not load cancelled plans. Retry to read the collection.</string>
+    <string name="plan_cancelled_append_failed">Could not load more cancelled plans. Loaded entries remain available. Retry loading more.</string>
+    <string name="plan_cancelled_empty">No cancelled plans</string>
+    <string name="plan_cancelled_results">Cancelled plans loaded: %1$d</string>
+    <string name="plan_lifecycle_pending">Applying plan change and reloading. Plan actions are temporarily unavailable.</string>
 </resources>

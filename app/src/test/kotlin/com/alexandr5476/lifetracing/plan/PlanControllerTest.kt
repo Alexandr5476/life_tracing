@@ -522,17 +522,17 @@ class PlanControllerTest {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { controller.state.first { it.cancelledItems == listOf(oldRow) } }
-                controller.dispatch(PlanAction.Restore(oldRow))
+                controller.dispatch(PlanAction.Restore(oldRow, controller.cancelledContext))
                 withTimeout(2_000) { recoveryEntered.await() }
 
                 assertTrue(controller.state.value.isMutating)
-                controller.dispatch(PlanAction.Restore(oldRow))
+                controller.dispatch(PlanAction.Restore(oldRow, controller.cancelledContext))
                 assertEquals(1, mutations.size)
 
                 releaseRecovery.complete(Unit)
                 withTimeout(2_000) { controller.state.first { !it.isMutating } }
                 assertEquals(listOf(freshRow), controller.state.value.cancelledItems)
-                controller.dispatch(PlanAction.Restore(freshRow))
+                controller.dispatch(PlanAction.Restore(freshRow, controller.cancelledContext))
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
                 assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Restore).identity.updatedAt)
             } finally {
@@ -602,20 +602,20 @@ class PlanControllerTest {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { controller.state.first { it.cancelledItems == listOf(oldRow) } }
-                controller.dispatch(PlanAction.Restore(oldRow))
+                controller.dispatch(PlanAction.Restore(oldRow, controller.cancelledContext))
                 withTimeout(2_000) {
                     controller.state.first {
                         it.cancelled is PlanLoad.Failure && it.recoveryFailure == PlanMessage.LOAD_FAILED
                     }
                 }
 
-                controller.dispatch(PlanAction.Restore(oldRow))
+                controller.dispatch(PlanAction.Restore(oldRow, controller.cancelledContext))
                 assertEquals(1, mutations.size)
-                controller.dispatch(PlanAction.OpenCancelled)
+                controller.dispatch(PlanAction.RetryCancelled(controller.cancelledContext, 0))
                 withTimeout(2_000) { controller.state.first { !it.isMutating } }
                 assertEquals(listOf(freshRow), controller.state.value.cancelledItems)
 
-                controller.dispatch(PlanAction.Restore(freshRow))
+                controller.dispatch(PlanAction.Restore(freshRow, controller.cancelledContext))
                 withTimeout(2_000) { controller.state.first { mutations.size == 2 } }
                 assertEquals(freshRow.plan.updatedAt, (mutations.last() as PlanMutation.Restore).identity.updatedAt)
             } finally {
@@ -639,6 +639,8 @@ class PlanControllerTest {
                 controller.dispatch(
                     PlanAction.SelectCatalogItem(source, requireNotNull(controller.state.value.catalog).context),
                 )
+                controller.state.value.form
+                    ?.let { controller.dispatch(PlanAction.DismissForm(it.formId)) }
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { controller.state.first { it.cancelled is PlanLoad.Content } }
 
@@ -750,7 +752,7 @@ class PlanControllerTest {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { controller.state.first { it.cancelledItems == listOf(cancelled) } }
-                controller.dispatch(PlanAction.Restore(cancelled))
+                controller.dispatch(PlanAction.Restore(cancelled, controller.cancelledContext))
                 withTimeout(2_000) { commitEntered.await() }
 
                 controller.onRouteExited()
@@ -832,9 +834,10 @@ class PlanControllerTest {
                         ?.items,
                 )
 
+                controller.dispatch(PlanAction.DismissCatalog(requireNotNull(controller.state.value.catalog).context))
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { cancelledEntered.await() }
-                controller.dispatch(PlanAction.DismissCancelled)
+                controller.dispatch(PlanAction.DismissCancelled(controller.cancelledContext))
                 releaseCancelled.complete(Unit)
                 withTimeout(2_000) { cancelledFinished.await() }
                 assertFalse(controller.state.value.cancelledOpen)
@@ -1280,6 +1283,8 @@ class PlanControllerTest {
                 controller.close()
             }
         }
+
+    private val PlanController.cancelledContext get() = requireNotNull(state.value.cancelledContext)
 
     private fun kotlinx.coroutines.CoroutineScope.controller(
         readWeek: suspend (WeekPlanQuery) -> WeekPlanRead = ::week,

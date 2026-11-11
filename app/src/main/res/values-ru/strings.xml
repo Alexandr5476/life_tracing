@@ -859,4 +859,13 @@
     <string name="plan_schedule_untouched">Расписание не изменено. Сохранение оставит исходный срок.</string>
     <string name="plan_schedule_edited">Расписание изменено. При сохранении новые данные будут проверены.</string>
     <string name="plan_schedule_new">Новое расписание. Сохранение создаст план.</string>
+    <string name="plan_cancelled_context">Отменённые планы сохраняют исходное расписание и зафиксированную конфигурацию. Восстановление возвращает выбранный план в запланированные.</string>
+    <string name="plan_cancelled_action">%1$s: %2$s. %3$s. %4$s. %5$s. %6$s. %7$s</string>
+    <string name="plan_cancelled_loading">Загрузка отменённых планов</string>
+    <string name="plan_cancelled_appending">Загрузка следующих отменённых планов. Загруженные записи доступны.</string>
+    <string name="plan_cancelled_failed">Не удалось загрузить отменённые планы. Повторите чтение списка.</string>
+    <string name="plan_cancelled_append_failed">Не удалось загрузить следующие отменённые планы. Загруженные записи доступны. Повторите загрузку.</string>
+    <string name="plan_cancelled_empty">Нет отменённых планов</string>
+    <string name="plan_cancelled_results">Загружено отменённых планов: %1$d</string>
+    <string name="plan_lifecycle_pending">Применение изменения плана и обновление данных. Действия с планами временно недоступны.</string>
 </resources>

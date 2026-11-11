@@ -280,6 +280,7 @@ class PlanScreenPresentationTest {
                 selected,
                 week = PlanLoad.Failure(PlanMessage.LOAD_FAILED),
                 cancelledOpen = true,
+                cancelledContext = PlanCancelledContext(),
                 cancelled = PlanLoad.Content(CancelledPlanPage(emptyList(), false)),
                 isMutating = true,
                 recoveryFailure = PlanMessage.LOAD_FAILED,

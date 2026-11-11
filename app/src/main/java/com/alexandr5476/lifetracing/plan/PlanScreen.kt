@@ -7,13 +7,11 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -60,6 +58,7 @@ fun PlanRoute(
 }
 
 @Composable
+@Suppress("CyclomaticComplexMethod") // Canonical load, lifecycle feedback and the existing modal owners.
 fun PlanScreen(
     state: PlanPresentationState,
     onAction: (PlanAction) -> Unit,
@@ -113,6 +112,7 @@ fun PlanScreen(
                     }
                     is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction, onExecute)
                 }
+                if (state.isMutating) Text(stringResource(R.string.plan_lifecycle_pending), Modifier.planFeedback())
                 state.mutationFailure?.let {
                     Text(
                         it.label(),
@@ -135,9 +135,15 @@ fun PlanScreen(
                     modifier = planCalendarFocusTarget().focusRequester(focus.add).semantics { testTag = "plan-add" },
                     onClick = { onAction(PlanAction.OpenCatalog) },
                 ) { Text(stringResource(R.string.plan_add)) }
-                TextButton(onClick = {
-                    onAction(PlanAction.OpenCancelled)
-                }, modifier = planCalendarFocusTarget()) { Text(stringResource(R.string.plan_cancelled)) }
+                TextButton(
+                    onClick = {
+                        onAction(PlanAction.OpenCancelled)
+                    },
+                    modifier =
+                        planCalendarFocusTarget().focusRequester(focus.cancelled).semantics {
+                            testTag = "plan-cancelled-entry"
+                        },
+                ) { Text(stringResource(R.string.plan_cancelled)) }
             }
         }
     }
@@ -145,7 +151,9 @@ fun PlanScreen(
         state.catalog?.let { key(it.context.dialogId) { PlanCatalogDialog(it, onAction) } }
         state.form?.let { key(it.formId) { PlanScheduleDialog(it, state.isMutating, onAction) } }
     }
-    if (state.cancelledOpen) CancelledDialog(state, onAction)
+    if (isRouteVisible && state.cancelledOpen) {
+        state.cancelledContext?.let { key(it.dialogId) { PlanCancelledDialog(state, onAction) } }
+    }
 }
 
 @Composable
@@ -435,60 +443,6 @@ private fun PlanRow(
     }
 }
 
-@Composable
-private fun CancelledDialog(
-    state: PlanPresentationState,
-    onAction: (PlanAction) -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = { onAction(PlanAction.DismissCancelled) },
-        title = { Text(stringResource(R.string.plan_cancelled)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                state.recoveryFailure?.let {
-                    Text(it.label())
-                    TextButton(onClick = { onAction(PlanAction.Refresh) }) {
-                        Text(stringResource(R.string.plan_retry))
-                    }
-                }
-                when (val load = state.cancelled) {
-                    PlanLoad.Loading -> Text(stringResource(R.string.plan_loading))
-                    is PlanLoad.Failure ->
-                        if (state.recoveryFailure == null) {
-                            Text(load.message.label())
-                            TextButton(onClick = { onAction(PlanAction.OpenCancelled) }) {
-                                Text(stringResource(R.string.plan_retry))
-                            }
-                        }
-                    is PlanLoad.Content ->
-                        state.cancelledItems.forEach { row ->
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(row.title)
-                                TextButton(enabled = !state.isMutating, onClick = {
-                                    onAction(PlanAction.Restore(row))
-                                }) { Text(stringResource(R.string.plan_restore)) }
-                            }
-                        }
-                    null -> Unit
-                }
-                if (state.cancelledHasNextPage) {
-                    TextButton(enabled = !state.isMutating, onClick = {
-                        onAction(PlanAction.LoadMoreCancelled)
-                    }) { Text(stringResource(R.string.plan_load_more)) }
-                }
-            }
-        },
-        confirmButton = {
-        },
-        dismissButton = {
-            TextButton(
-                enabled = !state.isMutating,
-                onClick = { onAction(PlanAction.DismissCancelled) },
-            ) { Text(stringResource(R.string.plan_close)) }
-        },
-    )
-}
-
 @Composable internal fun PlanScheduleKind.label() =
     when (this) {
         PlanScheduleKind.FLOATING_DAY -> stringResource(R.string.plan_floating_day)
@@ -547,7 +501,7 @@ private fun CancelledDialog(
         else -> stringResource(R.string.plan_planned)
     }
 
-@Composable private fun PlanReadRow.sourceLabel() =
+@Composable internal fun PlanReadRow.sourceLabel() =
     when (sourceState) {
         PlanSourceState.CURRENT -> stringResource(R.string.plan_source_current)
         PlanSourceState.CHANGED -> stringResource(R.string.plan_source_changed)

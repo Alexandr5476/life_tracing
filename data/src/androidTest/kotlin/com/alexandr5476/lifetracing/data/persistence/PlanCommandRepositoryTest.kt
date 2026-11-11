@@ -659,6 +659,92 @@ class PlanCommandRepositoryTest {
         assertNull(database.activitySnapshotDao().getById("rollback-snapshot-$activitySnapshotId"))
     }
 
+    @Test
+    fun lifecycleCommandsRejectNonadvancingPersistedMillisecondWithoutAnyPartialFacts() {
+        val activity = createActivityPlan()
+        val sequence =
+            plans.createSequencePlanFromTemplate(
+                SequenceTemplateId(SEQUENCE_TEMPLATE),
+                PlanSchedule.Week(LocalDate.parse("2026-08-17")),
+                instant(1),
+            )
+        for (plan in listOf(activity, sequence)) {
+            val identity = reads.getFocusedAction(plan.id).identity
+            val beforeSnapshots = count("activity_snapshots") to count("sequence_snapshots")
+            for (at in listOf(instant(0), instant(1), instant(1).plusNanos(1))) {
+                assertThrows(IllegalArgumentException::class.java) { plans.cancelPlan(identity, at) }
+                assertThrows(IllegalArgumentException::class.java) { plans.updatePlanFromTemplate(identity, at) }
+                assertEquals(identity, reads.getFocusedAction(plan.id).identity)
+                assertEquals(beforeSnapshots, count("activity_snapshots") to count("sequence_snapshots"))
+            }
+            plans.cancelPlan(identity, instant(2))
+            val cancelled = reads.getFocusedAction(plan.id).identity
+            assertTrue(cancelled.updatedAt > identity.updatedAt)
+            assertThrows(IllegalArgumentException::class.java) {
+                plans.restoreCancelledPlan(cancelled, instant(2).plusNanos(1))
+            }
+            assertEquals(cancelled, reads.getFocusedAction(plan.id).identity)
+            val restored = plans.restoreCancelledPlan(cancelled, instant(3))
+            assertEquals(plan.copy(updatedAt = instant(3)), restored)
+        }
+        assertNull(database.activityTemplateDao().getUserState(ACTIVITY_TEMPLATE)!!.lastUsedAtMs)
+        assertNull(database.sequenceTemplateDao().getUserState(SEQUENCE_TEMPLATE)!!.lastUsedAtMs)
+    }
+
+    @Test
+    fun conflictingCancelAndUpdateAdmitOneWriterAndRejectTheOtherOptimisticIdentityAtomically() {
+        val plan = createActivityPlan()
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE activity_templates SET revision = 2, name = 'New frozen title' WHERE id = '$ACTIVITY_TEMPLATE'",
+        )
+        val identity = reads.getFocusedAction(plan.id).identity
+        val snapshots = count("activity_snapshots")
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool =
+            java.util.concurrent.Executors
+                .newFixedThreadPool(2)
+        try {
+            val results =
+                listOf<(PlanRepository) -> Unit>(
+                    { it.cancelPlan(identity, instant(3)) },
+                    { it.updatePlanFromTemplate(identity, instant(3)) },
+                ).map { command ->
+                    pool.submit(
+                        java.util.concurrent.Callable {
+                            ready.countDown()
+                            check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                            runCatching { command(plans) }
+                        },
+                    )
+                }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            val outcomes = results.map { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(1, outcomes.count { it.isSuccess })
+            assertTrue(outcomes.single { it.isFailure }.exceptionOrNull() is IllegalArgumentException)
+            val canonical = reads.getFocusedAction(plan.id)
+            assertEquals(instant(3), canonical.identity.updatedAt)
+            assertEquals(plan.target, canonical.identity.target)
+            assertEquals(plan.id, canonical.identity.planEntryId)
+            if (canonical.identity.status == PlanEntryStatus.CANCELLED) {
+                assertEquals(plan.activitySnapshotId, canonical.identity.activitySnapshotId)
+                assertEquals(1L, canonical.identity.sourceRevision)
+                assertEquals(PlanSourceState.CHANGED, canonical.sourceState)
+            } else {
+                assertEquals(PlanEntryStatus.PLANNED, canonical.identity.status)
+                assertNotEquals(plan.activitySnapshotId, canonical.identity.activitySnapshotId)
+                assertEquals(2L, canonical.identity.sourceRevision)
+                assertEquals(PlanSourceState.CURRENT, canonical.sourceState)
+            }
+            assertEquals(snapshots, count("activity_snapshots"))
+            assertNull(database.activityTemplateDao().getUserState(ACTIVITY_TEMPLATE)!!.lastUsedAtMs)
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
     private fun createActivityPlan() =
         plans.createActivityPlanFromTemplate(
             ActivityTemplateId(ACTIVITY_TEMPLATE),
