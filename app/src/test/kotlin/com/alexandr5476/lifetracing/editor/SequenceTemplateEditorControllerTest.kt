@@ -41,6 +41,85 @@ import kotlin.coroutines.CoroutineContext
 
 @Suppress("LargeClass") // Editor boundary scenarios share one focused controller harness.
 class SequenceTemplateEditorControllerTest {
+    @Test
+    fun pristineNewDoneCreatesExactlyOnce() =
+        runBlocking {
+            var creates = 0
+            var canonical: SequenceTemplateAuthoringState? = null
+            val gate = CompletableDeferred<Unit>()
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.New,
+                    { canonical },
+                    { error("No picker") },
+                    { draft, _, _ ->
+                        creates++
+                        gate.await()
+                        draft.toFakeAuthoring(SequenceTemplateId("created"), 1).also { canonical = it }.sequence
+                    },
+                    { _, _, _, _ -> error("No save") },
+                    { Instant.EPOCH },
+                )
+            controller.awaitReady()
+            controller.save()
+            controller.save()
+            gate.complete(Unit)
+            withTimeout(2000) { controller.state.first { it.save == SequenceTemplateEditorSave.Committed } }
+            controller.save()
+            assertEquals(1, creates)
+            assertEquals(SequenceTemplateId("created"), canonical!!.sequence.id)
+            assertEquals(1L, canonical!!.sequence.revision)
+            assertFalse(controller.state.value.dirtyInput)
+            controller.close()
+        }
+
+    @Test
+    fun equivalentRawLiteralNoOpApplyCleansInputAndRestoresBackAndSourceAdmission() =
+        runBlocking {
+            val sourceId = ActivityTemplateId("linked-source")
+            val canonical = authoringState().withLinkedSource(sourceId)
+            val controller =
+                SequenceTemplateEditorController(
+                    this,
+                    SequenceTemplateEditorTarget.Existing(canonical.sequence.id),
+                    { canonical },
+                    { error("No picker") },
+                    { _, _, _ -> error("No create") },
+                    { _, _, _, _ -> error("No write or timestamp change") },
+                    { error("No commit timestamp") },
+                    loadSourceStatuses = { mapOf(sourceId to ActivityTemplateSourceStatus(sourceId, 3, false)) },
+                )
+            controller.awaitReady()
+            val step = DraftIdentity.Existing(SequenceNodeId("step-1"))
+            for (literal in listOf("00", "+0", "000")) {
+                controller.updateNumberInput(SequenceEditorInputKey.SEQUENCE_START_COUNTDOWN, literal, 0, 0) {}
+                assertTrue(controller.state.value.dirtyInput)
+                controller.enterManipulation(step)
+                controller.applyManipulation()
+                assertEquals(SequenceTemplateEditorSave.Idle, controller.state.value.save)
+                assertEquals(null, controller.state.value.manipulation)
+                assertTrue(
+                    controller.state.value.textInputs
+                        .isEmpty(),
+                )
+                assertFalse(controller.state.value.dirtyInput)
+                assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
+                val source =
+                    SequenceStepSourceActions(
+                        controller,
+                        SequenceTemplateEditorActions(controller, controller.state.value.generation),
+                        SequenceNodeId("step-1"),
+                    )
+                SequenceStepSourceOperation.entries.forEach { assertTrue(source.available(it)) }
+            }
+            var exits = 0
+            controller.requestBack { exits++ }
+            assertEquals(1, exits)
+            assertFalse(controller.state.value.discardConfirmationVisible)
+            controller.close()
+        }
+
     private val inlineDispatcher =
         object : CoroutineDispatcher() {
             override fun dispatch(

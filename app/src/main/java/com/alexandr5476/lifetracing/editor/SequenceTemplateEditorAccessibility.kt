@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,6 +34,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
@@ -43,6 +45,28 @@ internal val LocalSequenceEditorActions =
 @Composable
 internal fun SequenceEditorHeading(title: String) =
     Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+
+/** A retained native action keeps its published requested value instead of retoggling mutable node state. */
+@Composable
+internal fun SequenceMainValueCheckbox(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier,
+    enabled: Boolean,
+) = Checkbox(
+    checked = checked,
+    onCheckedChange = onCheckedChange,
+    modifier =
+        modifier.semantics {
+            if (enabled) {
+                onClick {
+                    onCheckedChange(!checked)
+                    true
+                }
+            }
+        },
+    enabled = enabled,
+)
 
 @Composable
 internal fun SequenceEditorStatus(message: Int) {

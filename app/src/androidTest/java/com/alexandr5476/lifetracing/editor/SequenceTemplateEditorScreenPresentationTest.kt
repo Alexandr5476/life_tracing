@@ -1595,6 +1595,92 @@ class SequenceTemplateEditorScreenPresentationTest {
     }
 
     @Test
+    fun localStepMainValueNativeUncheckKeepsPublishedIntentWhenAnotherFieldBecomesMain() {
+        var writes = 0
+        val controller = controller(emptyList(), onWrite = { writes++ })
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+        awaitReady(controller)
+        val identity = DraftIdentity.New("local-main-step")
+        val fields =
+            (0..1).map {
+                ActivitySnapshotFieldDraft(
+                    DraftIdentity.New("number-$it"),
+                    null,
+                    it,
+                    "Same",
+                    type = CustomFieldType.NUMBER,
+                )
+            }
+        composeTestRule.runOnIdle {
+            controller.updateDraft { draft ->
+                draft.copy(
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    identity,
+                                    0,
+                                    StepActivityDraft.Local(
+                                        ActivitySnapshotDraft(
+                                            "Local main",
+                                            null,
+                                            TimeTrackingMode.STOPWATCH,
+                                            null,
+                                            fields = fields,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                )
+            }
+        }
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_edit_step))).performClick()
+
+        fun main(ordinal: Int) =
+            composeTestRule.onLazyNode(
+                hasContentDescription(
+                    text(
+                        R.string.activity_editor_control_context,
+                        text(R.string.sequence_editor_main_value),
+                        text(
+                            R.string.activity_editor_control_context,
+                            text(
+                                R.string.activity_editor_field_context,
+                                text(R.string.activity_editor_number),
+                                ordinal + 1,
+                                "Same",
+                            ),
+                            text(R.string.sequence_manipulation_top_step, "Local main", 1),
+                        ),
+                    ),
+                ),
+            )
+        main(0).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        main(0).assertIsOn()
+        val uncheckA = main(0).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        main(1).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        main(1).assertIsOn()
+        main(0).assertIsOff()
+        composeTestRule.runOnIdle { uncheckA() }
+        main(1).assertIsOn()
+        main(0).assertIsOff()
+        assertEquals(
+            listOf(
+                false,
+                true,
+            ),
+            controller.state.value.readyDraft()!!.findStep(identity)!!.configuration()!!.fields.map {
+                it.isMainValue
+            },
+        )
+        main(1).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        main(1).assertIsOff()
+        assertEquals(0, writes)
+        controller.close()
+    }
+
+    @Test
     fun numberMainValueAndMissingVersusZeroUseNativeStateAndCurrentPrecision() {
         val number = SequenceFieldDraft(DraftIdentity.New("n1"), 0, "Same", CustomFieldType.NUMBER)
         val controller = presentSequenceFields(number, number.copy(identity = DraftIdentity.New("n2"), position = 1))
@@ -1657,6 +1743,15 @@ class SequenceTemplateEditorScreenPresentationTest {
                 .defaultNumberScaled,
         )
         sequenceControl(controller, 0, R.string.sequence_editor_main_value).performClick().assertIsOn()
+        val capturedUncheck =
+            sequenceControl(controller, 0, R.string.sequence_editor_main_value)
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        sequenceControl(controller, 1, R.string.sequence_editor_main_value).performClick().assertIsOn()
+        composeTestRule.runOnIdle { capturedUncheck() }
+        sequenceControl(controller, 1, R.string.sequence_editor_main_value).assertIsOn()
+        sequenceControl(controller, 1, R.string.sequence_editor_main_value).performClick().assertIsOff()
         sequenceControl(controller, 1, R.string.sequence_editor_main_value).performClick().assertIsOn()
         sequenceControl(controller, 0, R.string.sequence_editor_main_value).assertIsOff()
         sequenceControl(controller, 1, R.string.activity_editor_precision).performTextReplacement("2")
@@ -2591,6 +2686,46 @@ class SequenceTemplateEditorScreenPresentationTest {
 
     @Test
     fun russianManipulationNativeTargetsSupportCombinedScaling() = manipulationScales(Locale.forLanguageTag("ru"))
+
+    @Test
+    fun equivalentNativeCountdownApplyCleansInputWithoutWritingAndAllowsBackAndSourceActions() {
+        val canonical = manipulationAuthoring()
+        val controller = existingController(canonical)
+        var exits = 0
+        composeTestRule.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) { exits++ } } }
+        awaitReady(controller)
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_settings))).performClick()
+        sequenceInput(R.string.sequence_editor_start_countdown).performTextReplacement("00")
+        sequenceInput(R.string.sequence_editor_start_countdown).assertTextContains("00")
+        keyboard.enter()
+        assertTrue(controller.state.value.dirtyInput)
+        activateNative(nativeManipulationNode(controller, "a", enter = true))
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_apply))))
+        assertFalse(controller.state.value.dirtyInput)
+        assertTrue(
+            controller.state.value.textInputs
+                .isEmpty(),
+        )
+        assertEquals(canonical.toAuthoringDraft(), controller.state.value.readyDraft())
+        assertEquals(
+            canonical.sequence.revision,
+            (controller.state.value.load as SequenceTemplateEditorLoad.Ready).expectedRevision,
+        )
+        sequenceInput(R.string.sequence_editor_start_countdown).assertTextContains("0")
+        val context = text(R.string.sequence_manipulation_top_step, "Same", 1)
+        activateNative(
+            composeTestRule.onLazyNode(
+                hasContentDescription(
+                    text(R.string.activity_editor_control_context, text(R.string.sequence_editor_edit_step), context),
+                ),
+            ),
+        )
+        composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_save_as_new_template))).assertIsEnabled()
+        activateNative(composeTestRule.onLazyNode(hasText(text(R.string.sequence_editor_back))))
+        assertEquals(1, exits)
+        assertFalse(controller.state.value.discardConfirmationVisible)
+        controller.close()
+    }
 
     private fun manipulationScales(locale: Locale) {
         val configuration =

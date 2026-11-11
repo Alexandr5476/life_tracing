@@ -849,11 +849,13 @@ class SequenceTemplateEditorController internal constructor(
                     mutableState.update { it.copy(save = invalid.toSaveFailure()) }
                     return
                 }
-                if (submittedDraft == ready.original) {
+                if (durableTarget is SequenceTemplateEditorTarget.Existing && submittedDraft == ready.original) {
                     saving = false
                     clearManipulationSession()
                     mutableState.update {
                         it.copy(
+                            load = ready.copy(draft = ready.original),
+                            textInputs = emptyMap(),
                             manipulation = null,
                             save =
                                 if (exitAfter) {

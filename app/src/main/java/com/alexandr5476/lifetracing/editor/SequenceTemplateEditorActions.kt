@@ -85,11 +85,7 @@ internal class SequenceTemplateEditorActions(
     ): Boolean =
         controller.state.value
             .presentation()
-            ?.fields
-            ?.get(captured.identity)
-            ?.takeIf { it.type == captured.type }
-            ?.categoryOptions
-            ?.any { it.identity == option.identity } == true
+            ?.optionExists(captured, option) == true
 
     fun removeField(captured: SequenceFieldDraft) =
         update { draft ->

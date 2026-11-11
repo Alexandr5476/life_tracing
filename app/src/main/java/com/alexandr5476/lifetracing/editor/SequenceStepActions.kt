@@ -57,15 +57,17 @@ internal class SequenceStepActions(
             ?.configuration()
 
     fun fieldExists(captured: ActivitySnapshotFieldDraft): Boolean =
-        configuration()?.fields?.any { it.matches(captured) } == true
+        controller.state.value
+            .presentation()
+            ?.fieldExists(identity, captured) == true
 
     fun optionExists(
         captured: ActivitySnapshotFieldDraft,
         option: ActivitySnapshotCategoryOptionDraft,
     ): Boolean =
-        configuration()?.fields?.firstOrNull { it.matches(captured) }?.categoryOptions?.any {
-            it.identity == option.identity && it.sourceOptionId == option.sourceOptionId
-        } == true
+        controller.state.value
+            .presentation()
+            ?.optionExists(identity, captured, option) == true
 
     fun invoke(action: () -> Unit) =
         lease.invoke {

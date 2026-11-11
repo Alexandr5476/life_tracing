@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -172,7 +171,7 @@ private fun SequenceNumberField(
         actions.numberDefault(field, text)
     }
     FlowRow {
-        Checkbox(
+        SequenceMainValueCheckbox(
             checked = field.isMainValue,
             onCheckedChange = { checked ->
                 actions.update { draft ->
@@ -182,7 +181,11 @@ private fun SequenceNumberField(
                         draft.copy(
                             fields =
                                 draft.fields.map {
-                                    it.copy(isMainValue = it.identity == field.identity && checked)
+                                    when {
+                                        checked -> it.copy(isMainValue = it.identity == field.identity)
+                                        it.identity == field.identity -> it.copy(isMainValue = false)
+                                        else -> it
+                                    }
                                 },
                         )
                     }

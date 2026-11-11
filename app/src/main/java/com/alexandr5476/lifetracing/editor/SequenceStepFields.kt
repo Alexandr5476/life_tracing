@@ -6,7 +6,6 @@ package com.alexandr5476.lifetracing.editor
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -209,7 +208,7 @@ private fun SnapshotNumberField(
         R.string.activity_editor_number_invalid.takeIf { numberRejected },
     ) { text -> actions.numberDefault(field, text) }
     FlowRow {
-        Checkbox(
+        SequenceMainValueCheckbox(
             checked = field.isMainValue,
             onCheckedChange = { if (editable) actions.mainValue(field, it) },
             modifier = editorFocusTarget(stepControlDescription(R.string.sequence_editor_main_value)),

@@ -1262,3 +1262,109 @@ these three failures, not a replacement for a fresh unfiltered Controller full /
 gmd-full run, the five-API gates, independent GitHub CI or manual certification.
 The original canonical full-run failure remains recorded above. The patch remains
 uncommitted, and Parent completion is not declared.
+
+## PR40 review corrections B1, W1, W2 and W3 (2026-11-11)
+
+Pristine New Done now reaches the existing create writer even for a valid empty
+Sequence draft. The semantic no-op shortcut requires a persisted target, including
+one promoted by an earlier Apply. Validation and duplicate-command admission retain
+the existing contract. A successful existing-template no-op also restores the
+original canonical draft and clears accepted raw inputs after validation. No-op
+Apply therefore restores clean Back and Step source-action admission without a
+writer call or timestamp/revision change. Existing invalid-input and manipulation
+Discard/Undo/Redo regressions remain intact.
+
+The immutable Ready presentation indexes Step Fields by their owner and physical
+identity, with the existing type/source/unit checks; option membership includes
+physical and source option identity. Sequence-level option liveness uses the same
+presentation-owned lookup approach. Mutation callbacks still verify canonical
+current-draft ownership under the controller lock. The CountingList fixture covers
+80 Fields and 6,400 options within one Step, plus Sequence options, repeated labels,
+source provenance and removed/replaced targets. It bounds initial construction
+linearly, then requires zero collection reads across three inspection traversals.
+Sequence Main Value uncheck clears only its admitted current Number Field; selection
+continues to select the target uniquely.
+
+Three new Jupiter regressions failed before the production fixes: zero creates for
+pristine Done, retained dirty raw input after no-op Apply, and 1,603,400 Field reads
+during repeated liveness inspection. The existing native Number test now captures
+A's checked OnClick, selects B and invokes A's retained uncheck. Four additional
+instrumentation cases cover pristine production navigation and exactly-once Library
+refresh, physical create/reopen and StatisticsSeries linkage, native equivalent-raw
+Apply, and Main Value Save/reopen with surviving physical Field identity. The
+pristine-create fixture explicitly accounts for the bootstrap one-off Series.
+All original inventory identities remain; mandatory counts are 589 app, 627 data
+and 2 startup cases.
+
+The final local command succeeded in 4m 30s:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceStep*Test' --tests '*SequenceNumber*Test' --tests '*SequenceDraftPresentationTest' --tests '*SequenceTemplateEditor*Test' --tests '*SequenceManipulation*Test' :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest :app:lintDebug --continue --console=plain
+```
+
+JUnit XML records 80 tests with zero failures/errors/skips. Those JVM results were
+executed immediately before the final AndroidTest-only correction and reused
+UP-TO-DATE by the successful invocation. App ktlint, Detekt, lintDebug and both
+AndroidTest APK assembly tasks passed. Inventory/source checks and
+`git diff --check` passed.
+
+No managed-device task ran in this correction turn. The new physical-reopen and
+native cases are compiled, with device execution still pending. Full parent build,
+unfiltered JVM/static/coverage checks, all five unfiltered API suites, independent
+startup checks and exact-head GitHub CI remain Controller gates. Manual TalkBack
+and Switch Access validation remain explicitly unverified. This local patch
+verification does not certify those gates or Parent completion.
+
+## Canonical review-fix-9 instrumentation repair (2026-11-11)
+
+The supplied unfiltered API 35 execution remains recorded as failed: app XML has
+590 tests and three failures; data XML has 632 tests, zero failures and the five
+existing skips. Its original artifacts are under
+`.runtime/check-runs/wf-d6c98ba32658580da1fb4d84f0005197/review-fix-9-63280791ee4848d381f5b9ac7160e391/attempt-1/`.
+
+The pristine production navigation fixture read LibraryControllerOwner before
+Navigation3 composed its Library entry. It now waits for the production New
+sequence control before reading the retained controller, then preserves all
+creation, duplicate activation, revision, Library membership and exactly-once
+refresh assertions. Its final Library visibility assertion uses the regular
+scroll container rather than the editor-only LazyColumn helper.
+
+Both Main Value failures came from retaining Compose's default toggleable OnClick:
+that callback reads the mutable node's current checked value. After B becomes Main
+Value, A's captured checked action could therefore select A again. The shared
+SequenceMainValueCheckbox publishes an explicit native action whose requested
+Boolean stays bound to its published state. Material pointer/keyboard interaction,
+checkbox role/checked state, focus targets and current controller/identity admission
+remain in place. Both Sequence-level and Step-local Main Value controls use it.
+The native cases assert A/B's actual checked states before replaying the captured
+uncheck. A new local-Step sibling case also checks ordinary unselection and zero
+writer calls; it is pinned in the mandatory inventory. Counts are now 590 app,
+627 data and 2 startup entries, with every original identity retained.
+
+The first four-case diagnostic probe passed both presentation cases and exposed
+two downstream fixture mistakes: the Library scroll helper, and expecting Field
+removal to physically delete its canonical record. The persistence case now checks
+the active B Field's identity and Main Value, A's retained identity and exact
+Save-time deletion timestamp, unchanged StatisticsSeries, one revision advance,
+one writer, and complete canonical equality after physical database close/reopen.
+
+The authorized repair probe with the same four-case scope then passed on real
+API 35 instrumentation in 103.4 seconds: four tests, zero failures/errors/skips.
+The scope includes all three supplied failing methods plus
+`localStepMainValueNativeUncheckKeepsPublishedIntentWhenAnotherFieldBecomesMain`.
+Its original XML and log are under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/166c607ad7634b22a735e1a4eb5c3d44/tree-2/attempt-1/`.
+
+The following local command succeeded in 2m 2s; Jupiter XML records 80 tests with
+zero failures/errors/skips. App ktlint, Detekt, lintDebug and AndroidTest APK assembly
+passed, as did inventory/source verification and `git diff --check`.
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*SequenceStep*Test' --tests '*SequenceNumber*Test' --tests '*SequenceDraftPresentationTest' --tests '*SequenceTemplateEditor*Test' --tests '*SequenceManipulation*Test' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain
+```
+
+The scoped diagnostic PASS does not replace the original unfiltered failure or
+establish a full gate/CI PASS. Controller must rerun the canonical full and five-API
+checks, independent startup checks and exact-head GitHub CI on the corrected tree.
+Manual TalkBack and Switch Access validation remain explicitly unverified. The
+patch remains uncommitted for Controller verification.

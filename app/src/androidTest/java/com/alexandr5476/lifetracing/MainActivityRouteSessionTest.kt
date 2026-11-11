@@ -1767,6 +1767,87 @@ class MainActivityRouteSessionTest {
     }
 
     @Test
+    fun pristineProductionNewSequenceDoneCreatesOnceAndReturnsToLibrary() {
+        val library = LibraryRepository.create(composeTestRule.activity)
+        val before = library.search("", LibraryKindFilter.SEQUENCES).map { it.id }.toSet()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(
+                    composeTestRule.activity.getString(R.string.library_new_sequence),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        val retainedLibrary =
+            composeTestRule.activity.libraryControllerOwner.get {
+                error(
+                    "Library must be initialized",
+                )
+            }
+        composeTestRule.waitUntil(5_000) { retainedLibrary.state.value.browse is LibraryLoad.Content }
+        val beforeRefresh = retainedLibrary.state.value.browseRequestId
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.load is SequenceTemplateEditorLoad.Ready
+        }
+        val editor =
+            requireNotNull(
+                composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession,
+            ).controller
+        val done =
+            composeTestRule.onLazyNode(
+                hasText(composeTestRule.activity.getString(R.string.sequence_editor_done)),
+            )
+        val retained = done.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.runOnUiThread {
+            retained()
+            retained()
+        }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+        composeTestRule.runOnUiThread {
+            retained()
+            editor.save()
+        }
+        composeTestRule.waitForIdle()
+        val added = library.search("", LibraryKindFilter.SEQUENCES).filter { it.id !in before }
+        assertEquals(1, added.size)
+        val id = (added.single().id as LibraryTemplateId.Sequence).id
+        val canonical =
+            requireNotNull(
+                TemplateAuthoringRepository.create(composeTestRule.activity).getSequenceTemplateAuthoringState(id),
+            )
+        assertEquals(id, canonical.sequence.id)
+        assertEquals(1L, canonical.sequence.revision)
+        assertTrue(canonical.sequence.nodes.isEmpty())
+        assertEquals("", canonical.sequence.name)
+        assertTrue(
+            canonical.sequence.statisticsSeriesId.value
+                .isNotBlank(),
+        )
+        composeTestRule.waitUntil(5_000) {
+            (retainedLibrary.state.value.browse as? LibraryLoad.Content)
+                ?.value
+                ?.contents
+                ?.sequences
+                ?.any { it.id == LibraryTemplateId.Sequence(id) } == true
+        }
+        assertEquals(beforeRefresh + 1, retainedLibrary.state.value.browseRequestId)
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly() {
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
         composeTestRule

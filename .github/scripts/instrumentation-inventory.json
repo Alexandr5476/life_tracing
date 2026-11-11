@@ -791,6 +791,7 @@
       "productionManualHistoryDraftSurvivesRecreationAndCommitsExactlyOnceToCanonicalHistory",
       "productionPlanAffordanceUsesOneDestinationBackAndFreshTransientRouteState",
       "productionRouteRejectsStalePlanButKeepsFrozenSourceDivergenceExecutable",
+      "pristineProductionNewSequenceDoneCreatesOnceAndReturnsToLibrary",
       "productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly",
       "realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement",
       "restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState",
@@ -922,6 +923,7 @@
       "stableSurvivingFieldFocusAndNativeAddTypeChangeRemainReachable"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorPersistenceTest": [
+      "pristineNewDoneCreatesOneCanonicalLibraryTemplateAcrossPhysicalReopen",
       "editorUnitReplacementHelperPersistsANewLocalFieldWhilePreservingStepAndSnapshotProvenance",
       "existingMultiEditSavesOnceWhileAStaleEditorKeepsItsDraftAndCannotMutateCanonicalState",
       "manipulationApplyCommitsSeveralMovesAndFrozenCrossContainerDuplicateOnce",
@@ -950,6 +952,8 @@
       "localAndArchivedCommittedStepsOfferOnlySaveAsNew",
       "longPressShowsAccessibleHandlesAndPointerDragMovesTopLevelStepIntoRepeat",
       "newContextHeadingsNativeSetTextAndTabKeepDraftUncommitted",
+      "equivalentNativeCountdownApplyCleansInputWithoutWritingAndAllowsBackAndSourceActions",
+      "localStepMainValueNativeUncheckKeepsPublishedIntentWhenAnotherFieldBecomesMain",
       "numberMainValueAndMissingVersusZeroUseNativeStateAndCurrentPrecision",
       "oneCompactPickerServesTopLevelAndDoesNotRenderItsCatalogUntilOpened",
       "ordinaryNativeSaveFailureRetainsDraftForExplicitRetryWithoutReload",
@@ -1380,7 +1384,8 @@
       "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceManipulationAccessibilityPersistenceTest": [
-      "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership"
+      "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership",
+      "staleNativeMainValueUncheckPreservesCurrentSelectionThroughSaveAndPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceStepSourceAccessibilityTest": [
       "updateFromSourceNativeRecoveryReadsWithoutReplayingWriter",

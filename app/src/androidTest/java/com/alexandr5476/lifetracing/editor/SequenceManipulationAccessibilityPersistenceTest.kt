@@ -8,6 +8,8 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -363,6 +365,140 @@ class SequenceManipulationAccessibilityPersistenceTest {
             assertFalse(copied.name == "Mutable source now differs")
         } finally {
             controller?.close()
+            scope.cancel()
+            store.close()
+            context.deleteDatabase(databaseName)
+        }
+    }
+
+    @Test
+    fun staleNativeMainValueUncheckPreservesCurrentSelectionThroughSaveAndPhysicalReopen() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val databaseName = "main-value-${UUID.randomUUID()}.db"
+        var store = RuntimeRecoveryStore(context, databaseName)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var editor: SequenceTemplateEditorController? = null
+        try {
+            val created =
+                store.authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "Main",
+                        null,
+                        fields =
+                            listOf(
+                                com.alexandr5476.lifetracing.domain.SequenceFieldDraft(
+                                    DraftIdentity.New("a"),
+                                    0,
+                                    "Same",
+                                    CustomFieldType.NUMBER,
+                                ),
+                                com.alexandr5476.lifetracing.domain.SequenceFieldDraft(
+                                    DraftIdentity.New("b"),
+                                    1,
+                                    "Same",
+                                    CustomFieldType.NUMBER,
+                                ),
+                            ),
+                    ),
+                    createdAt = Instant.EPOCH,
+                )
+            val original = requireNotNull(store.authoring.getSequenceTemplateAuthoringState(created.id))
+            var writes = 0
+            val controller =
+                SequenceTemplateEditorController(
+                    scope,
+                    SequenceTemplateEditorTarget.Existing(created.id),
+                    { store.authoring.getSequenceTemplateAuthoringState(it) },
+                    { error("No picker") },
+                    { _, _, _ -> error("No create") },
+                    { id, revision, draft, at ->
+                        writes++
+                        store.authoring.saveSequenceTemplate(id, revision, draft, at)
+                    },
+                    { Instant.EPOCH.plusSeconds(1) },
+                )
+            editor = controller
+            compose.setContent { LifeTracingTheme { SequenceTemplateEditorRoute(controller) {} } }
+            compose.waitUntil(5000) { controller.state.value.load is SequenceTemplateEditorLoad.Ready }
+
+            fun control(
+                ordinal: Int,
+                operation: Int,
+            ) = compose.onLazyNode(
+                hasContentDescription(
+                    text(
+                        R.string.activity_editor_control_context,
+                        text(operation),
+                        text(
+                            R.string.activity_editor_field_context,
+                            text(R.string.activity_editor_number),
+                            ordinal + 1,
+                            "Same",
+                        ),
+                    ),
+                ),
+            )
+
+            fun main(ordinal: Int) = control(ordinal, R.string.sequence_editor_main_value)
+            main(0).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            main(0).assertIsOn()
+            val uncheckA = main(0).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            main(1).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            main(1).assertIsOn()
+            main(0).assertIsOff()
+            compose.runOnIdle { uncheckA() }
+            main(1).assertIsOn()
+            main(0).assertIsOff()
+            assertEquals(
+                listOf(false, true),
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .map { it.isMainValue },
+            )
+            main(1).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            assertEquals(
+                listOf(false, false),
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .map { it.isMainValue },
+            )
+            main(1).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            control(0, R.string.sequence_editor_remove).performSemanticsAction(SemanticsActions.OnClick) { it() }
+            compose.runOnIdle { uncheckA() }
+            assertTrue(
+                controller.state.value
+                    .readyDraft()!!
+                    .fields
+                    .single()
+                    .isMainValue,
+            )
+            compose
+                .onLazyNode(
+                    hasText(text(R.string.sequence_editor_done)),
+                ).performSemanticsAction(SemanticsActions.OnClick) {
+                    it()
+                }
+            compose.waitUntil(5000) { controller.state.value.save == SequenceTemplateEditorSave.Committed }
+            assertEquals(1, writes)
+            val canonical = requireNotNull(store.authoring.getSequenceTemplateAuthoringState(created.id))
+            assertEquals(created.revision + 1, canonical.sequence.revision)
+            assertEquals(original.sequence.statisticsSeriesId, canonical.sequence.statisticsSeriesId)
+            val surviving = canonical.sequence.fields.single { it.deletedAt == null }
+            assertEquals(original.sequence.fields[1].id, surviving.id)
+            assertTrue(surviving.isMainValue)
+            val removed = canonical.sequence.fields.single { it.id == original.sequence.fields[0].id }
+            assertEquals(Instant.EPOCH.plusSeconds(1), removed.deletedAt)
+            assertFalse(removed.isMainValue)
+            assertEquals(original.sequence.fields.size, canonical.sequence.fields.size)
+            controller.close()
+            scope.cancel()
+            store.close()
+            store = RuntimeRecoveryStore(context, databaseName)
+            assertEquals(canonical, store.authoring.getSequenceTemplateAuthoringState(created.id))
+        } finally {
+            editor?.close()
             scope.cancel()
             store.close()
             context.deleteDatabase(databaseName)

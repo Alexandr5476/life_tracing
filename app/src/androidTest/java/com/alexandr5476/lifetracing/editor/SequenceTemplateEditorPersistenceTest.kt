@@ -48,6 +48,81 @@ private const val ASYNC_STATE_TIMEOUT_MS = 5_000L
 @RunWith(AndroidJUnit4::class)
 class SequenceTemplateEditorPersistenceTest {
     @Test
+    fun pristineNewDoneCreatesOneCanonicalLibraryTemplateAcrossPhysicalReopen() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val databaseName = "pristine-sequence-${java.util.UUID.randomUUID()}.db"
+            var store = RuntimeRecoveryStore(context, databaseName)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            var editor: SequenceTemplateEditorController? = null
+            try {
+                val previousSeries = store.durableFacts().getValue("statistics_series")
+                var writes = 0
+                val controller =
+                    SequenceTemplateEditorController(
+                        scope,
+                        SequenceTemplateEditorTarget.New,
+                        { store.authoring.getSequenceTemplateAuthoringState(it) },
+                        { error("No picker") },
+                        { draft, placement, at ->
+                            writes++
+                            store.authoring.createSequenceTemplate(draft, placement, at)
+                        },
+                        { _, _, _, _ -> error("No update") },
+                        { Instant.EPOCH },
+                    )
+                editor = controller
+                controller.awaitReady()
+                controller.save()
+                controller.save()
+                withTimeout(ASYNC_STATE_TIMEOUT_MS) {
+                    controller.state.first { it.save == SequenceTemplateEditorSave.Committed }
+                }
+                controller.save()
+                assertEquals(1, writes)
+                val visible =
+                    store.library
+                        .search(
+                            "",
+                            com.alexandr5476.lifetracing.domain.LibraryKindFilter.SEQUENCES,
+                        ).single()
+                val id = (visible.id as com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence).id
+                val canonical = requireNotNull(store.authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(id, canonical.sequence.id)
+                assertEquals(1L, canonical.sequence.revision)
+                assertTrue(
+                    canonical.sequence.statisticsSeriesId.value
+                        .isNotBlank(),
+                )
+                assertEquals(SequenceTemplateDraft("", null), canonical.toAuthoringDraft())
+                val facts = store.durableFacts()
+                assertEquals(
+                    canonical.sequence.statisticsSeriesId.value,
+                    facts
+                        .getValue("statistics_series")
+                        .filterNot { it in previousSeries }
+                        .single()
+                        .first(),
+                )
+                controller.close()
+                scope.cancel()
+                store.close()
+                store = RuntimeRecoveryStore(context, databaseName)
+                assertEquals(canonical, store.authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(
+                    listOf(visible),
+                    store.library.search("", com.alexandr5476.lifetracing.domain.LibraryKindFilter.SEQUENCES),
+                )
+                assertEquals(facts, store.durableFacts())
+            } finally {
+                editor?.close()
+                scope.cancel()
+                store.close()
+                context.deleteDatabase(databaseName)
+            }
+        }
+
+    @Test
     fun newApplyPromotesStepsThenDoneUpdatesTheSameSingleDurableSequence() =
         runBlocking {
             val context = ApplicationProvider.getApplicationContext<Context>()
