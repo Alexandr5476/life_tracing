@@ -833,4 +833,12 @@
     <string name="sequence_source_archived_failure">Шаблон Activity — источник в архиве. Перезагрузите его состояние или сохраните шаг как новый шаблон.</string>
     <string name="sequence_source_missing_failure">Шаблон Activity — источник отсутствует или недоступен. Перезагрузите его состояние или сохраните шаг как новый шаблон.</string>
     <string name="sequence_source_failure">Действие с источником не выполнено. Сохранённый шаг не изменился. Явно повторите действие или перезагрузите.</string>
+    <string name="plan_calendar_today">%1$s, сегодня</string>
+    <string name="plan_calendar_range">%1$s – %2$s</string>
+    <string name="plan_calendar_current_week">Текущая неделя: %1$s</string>
+    <string name="plan_calendar_displayed_week">Открытая неделя: %1$s</string>
+    <string name="plan_calendar_week_section">Планы на неделю: %1$s</string>
+    <string name="plan_calendar_navigation">%1$s: %2$s</string>
+    <string name="plan_management_context">%1$s, %2$s, %3$s</string>
+    <string name="plan_management_action">%1$s: %2$s</string>
 </resources>

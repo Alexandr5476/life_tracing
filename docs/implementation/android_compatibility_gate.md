@@ -1,5 +1,15 @@
 # Android compatibility release gate
 
+## Plan calendar and active-row accessibility (S1)
+
+The mandatory inventory adds nine PlanScreenPresentationTest identities while
+retaining all prior cases. They cover localized canonical calendar context, native
+selection/actions, repeated management targets, strict temporal projection metadata,
+keyboard recovery and EN/RU scale extremes. See [Plan calendar accessibility
+evidence](plan_calendar_accessibility.md). Controller owns ci-fast, gmd-app and
+the independent unfiltered compatibility gates; APK assembly supplies no device or
+manual accessibility certification.
+
 ## Canonical-focus fixture and API26 graphics DMA repair (PR40, 2026-11-11)
 
 Run `42942194350`, head `8f6d9186a8dcfb535dd2bdd658aa4215d04afc6e`, reports

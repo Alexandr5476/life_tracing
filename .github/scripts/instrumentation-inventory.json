@@ -1216,7 +1216,16 @@
       "lifecycleAndSourceStatesOnlyOfferMutableChangedUpdate",
       "repeatedHourLabelsUseCanonicalOccurrenceOffsets",
       "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen",
-      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation"
+      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation",
+      "calendarNativeSelectionUsesCanonicalDatesAndNeverInventsDensity",
+      "managementNamesAreUniqueAndNativeActivationKeepsExactRowsAcrossReordering",
+      "keyboardDayReloadFailureRetryAndRemovedRowRecoverWithoutCommands",
+      "localizedCalendarDistinguishesTodaySelectedAndNavigatedWeekWithoutUiClock",
+      "exactSemanticsFollowCanonicalOffsetsZoneAndStrictOverduePublications",
+      "forbiddenManagementActionsRemainAbsentAndLifecycleStaysSeparateFromEngagement",
+      "englishRussianScaleExtremesKeepAllDatesAndManagementControlsKeyboardReachable",
+      "nativeWeekNavigationRetainsItsControlAcrossLoadingAndCanonicalPublication",
+      "passivePublicationsReorderingAndHiddenRouteNeverStealKeyboardOwnership"
     ],
     "com.alexandr5476.lifetracing.runtime.AndroidCompatibilityDeviceTest": [
       "recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi={api}]"

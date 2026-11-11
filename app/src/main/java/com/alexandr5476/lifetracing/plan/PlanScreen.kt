@@ -3,8 +3,10 @@
 package com.alexandr5476.lifetracing.plan
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,16 +19,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -38,12 +42,14 @@ import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
 @Composable
 fun PlanRoute(
@@ -64,50 +70,147 @@ fun PlanScreen(
     onExecute: (PlanActionIdentity) -> Unit = {},
     isRouteVisible: Boolean = true,
 ) {
-    val backFocus = remember { FocusRequester() }
-    LaunchedEffect(isRouteVisible) { if (isRouteVisible) backFocus.requestFocus() }
-    Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
-        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.headlineSmall)
-            TextButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
-                Text(stringResource(R.string.plan_back))
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(
-                onClick = { onAction(PlanAction.PreviousWeek) },
-            ) { Text(stringResource(R.string.plan_previous_week)) }
-            Text(state.weekStart.toString(), style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = { onAction(PlanAction.NextWeek) }) { Text(stringResource(R.string.plan_next_week)) }
-        }
-        TextButton(onClick = { onAction(PlanAction.Today) }) { Text(stringResource(R.string.plan_today)) }
-        when (val load = state.week) {
-            PlanLoad.Loading -> Text(stringResource(R.string.plan_loading))
-            is PlanLoad.Failure -> {
-                Text(load.message.label())
-                TextButton(onClick = { onAction(PlanAction.Refresh) }) {
-                    Text(stringResource(R.string.plan_retry))
+    val focus = rememberPlanCalendarFocus(state, isRouteVisible)
+    LifeTracingAccessibleTargets {
+        CompositionLocalProvider(LocalPlanCalendarFocus provides focus) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .focusGroup()
+                    .padding(MaterialTheme.spacing.large),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+            ) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.headlineSmall)
+                    TextButton(onClick = onBack, modifier = planCalendarFocusTarget().focusRequester(focus.back)) {
+                        Text(stringResource(R.string.plan_back))
+                    }
                 }
+                WeekNavigation(state, onAction)
+                val canonicalToday = (state.week as? PlanLoad.Content)?.value?.temporalContext?.today
+                val todayDescription =
+                    canonicalToday?.let {
+                        stringResource(
+                            R.string.plan_calendar_navigation,
+                            stringResource(R.string.plan_today),
+                            fullPlanDate(it),
+                        )
+                    } ?: stringResource(R.string.plan_today)
+                TextButton(
+                    onClick = { onAction(PlanAction.Today) },
+                    modifier =
+                        planCalendarFocusTarget().focusRequester(focus.today).semantics {
+                            contentDescription =
+                                todayDescription
+                        },
+                ) { Text(stringResource(R.string.plan_today)) }
+                when (val load = state.week) {
+                    PlanLoad.Loading -> Text(stringResource(R.string.plan_loading))
+                    is PlanLoad.Failure -> {
+                        Text(load.message.label())
+                        TextButton(
+                            onClick = { onAction(PlanAction.Refresh) },
+                            modifier = planCalendarFocusTarget().focusRequester(focus.retry),
+                        ) { Text(stringResource(R.string.plan_retry)) }
+                    }
+                    is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction, onExecute)
+                }
+                state.mutationFailure?.let { Text(it.label(), color = MaterialTheme.colorScheme.error) }
+                if (state.recoveryFailure != null && state.week !is PlanLoad.Failure && !state.cancelledOpen) {
+                    Text(state.recoveryFailure.label(), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = {
+                        onAction(PlanAction.Refresh)
+                    }, modifier = planCalendarFocusTarget()) { Text(stringResource(R.string.plan_retry)) }
+                }
+                LifeTracingPrimaryButton(
+                    enabled = !state.isMutating,
+                    modifier = planCalendarFocusTarget(),
+                    onClick = { onAction(PlanAction.OpenCatalog) },
+                ) { Text(stringResource(R.string.plan_add)) }
+                TextButton(onClick = {
+                    onAction(PlanAction.OpenCancelled)
+                }, modifier = planCalendarFocusTarget()) { Text(stringResource(R.string.plan_cancelled)) }
             }
-            is PlanLoad.Content -> WeekContent(load.value, state.isMutating, onAction, onExecute)
         }
-        state.mutationFailure?.let { Text(it.label(), color = MaterialTheme.colorScheme.error) }
-        if (state.recoveryFailure != null && state.week !is PlanLoad.Failure && !state.cancelledOpen) {
-            Text(state.recoveryFailure.label(), color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = { onAction(PlanAction.Refresh) }) { Text(stringResource(R.string.plan_retry)) }
-        }
-        LifeTracingPrimaryButton(
-            enabled = !state.isMutating,
-            onClick = { onAction(PlanAction.OpenCatalog) },
-        ) { Text(stringResource(R.string.plan_add)) }
-        TextButton(onClick = { onAction(PlanAction.OpenCancelled) }) { Text(stringResource(R.string.plan_cancelled)) }
     }
     state.catalog?.let { CatalogDialog(it, onAction) }
     state.form?.let { ScheduleDialog(it, state.isMutating, onAction) }
     if (state.cancelledOpen) CancelledDialog(state, onAction)
+}
+
+@Composable
+private fun fullPlanDate(date: java.time.LocalDate): String =
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(LocalConfiguration.current.locales[0]).format(date)
+
+private const val PLAN_WEEK_LAST_DAY_OFFSET = 6L
+
+@Composable
+private fun planWeekRange(start: java.time.LocalDate): String =
+    stringResource(
+        R.string.plan_calendar_range,
+        fullPlanDate(start),
+        fullPlanDate(start.plusDays(PLAN_WEEK_LAST_DAY_OFFSET)),
+    )
+
+@Composable
+private fun WeekNavigation(
+    state: PlanPresentationState,
+    onAction: (PlanAction) -> Unit,
+) {
+    val read = (state.week as? PlanLoad.Content)?.value
+    val range = planWeekRange(state.weekStart)
+    val today = read?.temporalContext?.today
+    val isCurrent = today != null && today in state.weekStart..state.weekStart.plusDays(PLAN_WEEK_LAST_DAY_OFFSET)
+    val weekDescription =
+        stringResource(
+            if (isCurrent) R.string.plan_calendar_current_week else R.string.plan_calendar_displayed_week,
+            range,
+        )
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        val previous =
+            stringResource(
+                R.string.plan_calendar_navigation,
+                stringResource(R.string.plan_previous_week),
+                planWeekRange(state.weekStart.minusWeeks(1)),
+            )
+        TextButton(
+            onClick = { onAction(PlanAction.PreviousWeek) },
+            modifier =
+                planCalendarFocusTarget().semantics {
+                    contentDescription = previous
+                    testTag = "plan-previous-week"
+                },
+        ) {
+            Text(stringResource(R.string.plan_previous_week))
+        }
+        Text(
+            weekDescription,
+            style = MaterialTheme.typography.titleMedium,
+            modifier =
+                Modifier.semantics {
+                    heading()
+                    testTag =
+                        "plan-displayed-week"
+                },
+        )
+        val next =
+            stringResource(
+                R.string.plan_calendar_navigation,
+                stringResource(R.string.plan_next_week),
+                planWeekRange(state.weekStart.plusWeeks(1)),
+            )
+        TextButton(
+            onClick = { onAction(PlanAction.NextWeek) },
+            modifier =
+                planCalendarFocusTarget().semantics {
+                    contentDescription = next
+                    testTag = "plan-next-week"
+                },
+        ) {
+            Text(stringResource(R.string.plan_next_week))
+        }
+    }
 }
 
 @Composable
@@ -117,27 +220,67 @@ private fun WeekContent(
     onAction: (PlanAction) -> Unit,
     onExecute: (PlanActionIdentity) -> Unit,
 ) {
-    Text(stringResource(R.string.plan_week_days), style = MaterialTheme.typography.titleMedium)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Text(
+        stringResource(R.string.plan_week_days),
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.semantics { heading() },
+    )
+    FlowRow(
+        Modifier.fillMaxWidth().selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         read.dayPresence.forEach { day ->
-            val densityDescription = stringResource(R.string.plan_day_density, day.date.toString(), day.count)
-            TextButton(
-                modifier =
-                    Modifier.semantics {
-                        testTag = "plan-day-${day.date}"
-                        contentDescription = densityDescription
-                    },
-                onClick = { onAction(PlanAction.SelectDate(day.date)) },
-            ) { Text("${day.date.dayOfMonth}\n${day.count}") }
+            key(day.date) {
+                val date = fullPlanDate(day.date)
+                val density = stringResource(R.string.plan_day_density, date, day.count)
+                val description =
+                    if (day.date == read.temporalContext?.today) {
+                        stringResource(R.string.plan_calendar_today, density)
+                    } else {
+                        density
+                    }
+                val focus = LocalPlanCalendarFocus.current
+                val focusModifier =
+                    if (day.date ==
+                        read.selectedDate
+                    ) {
+                        Modifier.focusRequester(focus.selectedDay)
+                    } else {
+                        Modifier
+                    }
+                LifeTracingChoiceButton(
+                    selected = day.date == read.selectedDate,
+                    modifier =
+                        planCalendarFocusTarget().then(focusModifier).semantics {
+                            testTag = "plan-day-${day.date}"
+                            contentDescription = description
+                            selected = day.date == read.selectedDate
+                        },
+                    onClick = { onAction(PlanAction.SelectDate(day.date)) },
+                ) { Text("${day.date.dayOfMonth}\n${day.count}") }
+            }
         }
     }
     Text(
-        stringResource(R.string.plan_selected_day, read.selectedDate.toString()),
+        stringResource(R.string.plan_selected_day, fullPlanDate(read.selectedDate)),
         style = MaterialTheme.typography.titleMedium,
+        modifier =
+            Modifier.semantics {
+                heading()
+                testTag = "plan-selected-heading"
+            },
     )
     if (read.selectedDayPlans.isEmpty()) Text(stringResource(R.string.plan_empty_day))
     PlanRows(read.selectedDayPlans, isMutating, onAction, onExecute)
-    Text(stringResource(R.string.plan_this_week), style = MaterialTheme.typography.titleMedium)
+    Text(
+        stringResource(R.string.plan_calendar_week_section, planWeekRange(read.weekStart)),
+        style = MaterialTheme.typography.titleMedium,
+        modifier =
+            Modifier.semantics {
+                heading()
+                testTag = "plan-week-heading"
+            },
+    )
     if (read.weekPlans.isEmpty()) Text(stringResource(R.string.plan_empty_week))
     PlanRows(read.weekPlans, isMutating, onAction, onExecute)
 }
@@ -150,44 +293,65 @@ private fun PlanRows(
     onExecute: (PlanActionIdentity) -> Unit,
 ) {
     val executable = rows.filter { it.plan.status == PlanEntryStatus.PLANNED && !it.engaged }
-    val descriptions =
-        planExecutionActionDescriptions(
+    val management =
+        disambiguatePlanDescriptions(
             executable.map {
-                PlanExecutionActionTarget(
+                stringResource(
+                    R.string.plan_management_context,
                     it.title,
-                    it.plan.kind,
-                    it.plan.target,
-                    it.activityMetadata?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING,
-                    it.effectiveLocalDate,
-                    it.exactLocalTime,
-                    it.exactUtcOffset,
+                    it.actionTarget().kindDescription(),
+                    it.actionTarget().scheduleDescription(),
                 )
             },
         )
+    val managementById = executable.mapIndexed { index, row -> row.plan.id to management[index] }.toMap()
+    val descriptions =
+        planExecutionActionDescriptions(
+            executable.map { it.actionTarget() },
+        )
     val descriptionById = executable.mapIndexed { index, row -> row.plan.id to descriptions[index] }.toMap()
-    rows.forEach { PlanRow(it, isMutating, onAction, onExecute, descriptionById[it.plan.id]) }
+    rows.forEach { row ->
+        key(row.plan.id) {
+            PlanRow(row, isMutating, onAction, onExecute, descriptionById[row.plan.id], managementById[row.plan.id])
+        }
+    }
 }
 
 @Composable
+@Suppress("LongParameterList")
 private fun PlanRow(
     row: PlanReadRow,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
     onExecute: (PlanActionIdentity) -> Unit,
     executionDescription: String?,
+    managementContext: String?,
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth().semantics {
+            isTraversalGroup = true
+            testTag = "plan-row-${row.plan.id.value}"
+        },
+    ) {
         Column(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
             Text(row.title, style = MaterialTheme.typography.titleMedium)
+            Text(row.actionTarget().kindDescription())
             row.shortComment?.let { Text(it) }
-            row.scheduleLabel()?.let { Text(it) }
+            row.scheduleLabel()?.let { label ->
+                val description = row.actionTarget().scheduleDescription()
+                Text(label, Modifier.semantics { contentDescription = description })
+            }
             row.activityMetadata?.timerTarget?.let {
                 Text(stringResource(R.string.plan_timer_target, DateUtils.formatElapsedTime(it.seconds)))
             }
             Text(row.lifecycleLabel())
+            if (row.plan.status == PlanEntryStatus.PLANNED && (row.engaged || row.overdue)) {
+                Text(stringResource(R.string.plan_planned))
+            }
+            if (row.engaged && row.overdue) Text(stringResource(R.string.plan_overdue))
             Text(row.sourceLabel())
             if (row.plan.status == PlanEntryStatus.PLANNED && !row.engaged) {
                 val executionLabel = row.executionLabel()
@@ -196,22 +360,65 @@ private fun PlanRow(
                     enabled = !isMutating,
                     onClick = { onExecute(row.plan.actionIdentity()) },
                     modifier =
-                        Modifier.semantics {
+                        planCalendarFocusTarget().semantics {
                             testTag = "plan-plan-action-${row.plan.id.value}"
                             contentDescription = executionDescription
                         },
                 ) { Text(executionLabel) }
-                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                    LifeTracingSecondaryButton(enabled = !isMutating, onClick = {
-                        onAction(PlanAction.Reschedule(row))
-                    }) { Text(stringResource(R.string.plan_reschedule)) }
-                    TextButton(enabled = !isMutating, onClick = {
-                        onAction(PlanAction.Cancel(row))
-                    }) { Text(stringResource(R.string.plan_cancel)) }
+                requireNotNull(managementContext)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                    val reschedule =
+                        stringResource(
+                            R.string.plan_management_action,
+                            stringResource(R.string.plan_reschedule),
+                            managementContext,
+                        )
+                    LifeTracingSecondaryButton(
+                        enabled = !isMutating,
+                        onClick = {
+                            onAction(PlanAction.Reschedule(row))
+                        },
+                        modifier =
+                            planCalendarFocusTarget().semantics {
+                                testTag = "plan-reschedule-${row.plan.id.value}"
+                                contentDescription = reschedule
+                            },
+                    ) { Text(stringResource(R.string.plan_reschedule)) }
+                    val cancel =
+                        stringResource(
+                            R.string.plan_management_action,
+                            stringResource(R.string.plan_cancel),
+                            managementContext,
+                        )
+                    TextButton(
+                        enabled = !isMutating,
+                        onClick = {
+                            onAction(PlanAction.Cancel(row))
+                        },
+                        modifier =
+                            planCalendarFocusTarget().semantics {
+                                testTag = "plan-cancel-${row.plan.id.value}"
+                                contentDescription = cancel
+                            },
+                    ) { Text(stringResource(R.string.plan_cancel)) }
                     if (row.sourceState == PlanSourceState.CHANGED) {
-                        TextButton(enabled = !isMutating, onClick = {
-                            onAction(PlanAction.UpdateFromTemplate(row))
-                        }) { Text(stringResource(R.string.plan_update_template)) }
+                        val update =
+                            stringResource(
+                                R.string.plan_management_action,
+                                stringResource(R.string.plan_update_template),
+                                managementContext,
+                            )
+                        TextButton(
+                            enabled = !isMutating,
+                            onClick = {
+                                onAction(PlanAction.UpdateFromTemplate(row))
+                            },
+                            modifier =
+                                planCalendarFocusTarget().semantics {
+                                    testTag = "plan-update-${row.plan.id.value}"
+                                    contentDescription = update
+                                },
+                        ) { Text(stringResource(R.string.plan_update_template)) }
                     }
                 }
             }
@@ -473,6 +680,7 @@ private fun CancelledDialog(
 
 @Composable private fun PlanReadRow.lifecycleLabel() =
     when {
+        plan.status == PlanEntryStatus.CANCELLED -> stringResource(R.string.daily_plan_cancelled)
         plan.status == PlanEntryStatus.FULFILLED -> stringResource(R.string.plan_fulfilled)
         engaged -> stringResource(R.string.plan_engaged)
         overdue -> stringResource(R.string.plan_overdue)

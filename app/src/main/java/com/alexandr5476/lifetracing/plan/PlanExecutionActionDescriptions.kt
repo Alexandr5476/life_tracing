@@ -6,8 +6,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanTarget
 import com.alexandr5476.lifetracing.domain.PlanTrackableKind
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
@@ -25,10 +27,36 @@ internal data class PlanExecutionActionTarget(
     val exactUtcOffset: ZoneOffset?,
 )
 
+internal fun PlanReadRow.actionTarget() =
+    PlanExecutionActionTarget(
+        title,
+        plan.kind,
+        plan.target,
+        activityMetadata?.timeTrackingMode == TimeTrackingMode.NO_LIVE_TRACKING,
+        effectiveLocalDate,
+        exactLocalTime,
+        exactUtcOffset,
+    )
+
+@Composable
+internal fun PlanExecutionActionTarget.kindDescription(): String =
+    stringResource(
+        if (kind ==
+            PlanTrackableKind.ACTIVITY
+        ) {
+            R.string.plan_execution_activity_kind
+        } else {
+            R.string.plan_execution_sequence
+        },
+    )
+
 /** Linear work over one presented section; no repository or historical lookups. */
 @Composable
-internal fun planExecutionActionDescriptions(targets: List<PlanExecutionActionTarget>): List<String> {
-    val descriptions = targets.map { executionDescription(it) }
+internal fun planExecutionActionDescriptions(targets: List<PlanExecutionActionTarget>): List<String> =
+    disambiguatePlanDescriptions(targets.map { executionDescription(it) })
+
+@Composable
+internal fun disambiguatePlanDescriptions(descriptions: List<String>): List<String> {
     val counts = descriptions.groupingBy { it }.eachCount()
     val positions = mutableMapOf<String, Int>()
     return descriptions.map { description ->
@@ -46,16 +74,7 @@ internal fun planExecutionActionDescriptions(targets: List<PlanExecutionActionTa
 @Composable
 private fun executionDescription(target: PlanExecutionActionTarget): String {
     val operation = stringResource(if (target.noLive) R.string.plan_complete_action else R.string.plan_start_action)
-    val kind =
-        stringResource(
-            if (target.kind ==
-                PlanTrackableKind.ACTIVITY
-            ) {
-                R.string.plan_execution_activity_kind
-            } else {
-                R.string.plan_execution_sequence
-            },
-        )
+    val kind = target.kindDescription()
     return stringResource(
         R.string.plan_execution_action_context,
         stringResource(R.string.plan_execution_action, target.title, operation),
@@ -65,7 +84,7 @@ private fun executionDescription(target: PlanExecutionActionTarget): String {
 }
 
 @Composable
-private fun PlanExecutionActionTarget.scheduleDescription(): String {
+internal fun PlanExecutionActionTarget.scheduleDescription(): String {
     val locale = LocalConfiguration.current.locales[0]
     val dateFormat = DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(locale)
     return when (val schedule = target) {

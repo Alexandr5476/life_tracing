@@ -833,4 +833,12 @@
     <string name="sequence_source_archived_failure">The source Activity Template is archived. Reload its status or save this Step as a new Template.</string>
     <string name="sequence_source_missing_failure">The source Activity Template is missing or unavailable. Reload its status or save this Step as a new Template.</string>
     <string name="sequence_source_failure">The source action failed. The committed Step is unchanged. Retry the action explicitly or reload.</string>
+    <string name="plan_calendar_today">%1$s, today</string>
+    <string name="plan_calendar_range">%1$s – %2$s</string>
+    <string name="plan_calendar_current_week">Current week: %1$s</string>
+    <string name="plan_calendar_displayed_week">Displayed week: %1$s</string>
+    <string name="plan_calendar_week_section">Week plans: %1$s</string>
+    <string name="plan_calendar_navigation">%1$s: %2$s</string>
+    <string name="plan_management_context">%1$s, %2$s, %3$s</string>
+    <string name="plan_management_action">%1$s: %2$s</string>
 </resources>
