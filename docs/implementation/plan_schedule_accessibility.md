@@ -1,5 +1,33 @@
 # Plan scheduling accessibility and form ownership (S3)
 
+## CI focus ordering repair (2026-11-11, run 43080921916)
+
+The API35 scaling failure's complete native artifact shows `plan-add` focused
+while the fixture awaits `plan-next-week`, whose bounds have moved above the
+viewport. After closing the creation form, the fixture immediately seeded a Plan
+and requested week navigation without observing the production return to Add.
+The calendar's deferred dialog-return effect can therefore supersede that request
+and scroll back to Add. The fixture now awaits the existing Add landing first.
+
+Scheduling, lifecycle and catalog focus helpers now admit the native window and
+keyboard mode before scrolling/requesting a control, and assert RequestFocus's
+result. Previously admission happened inside awaitFocus, after the request.
+The adjacent catalog dismiss/reopen journeys also await the existing Add landing.
+No target is repeatedly refocused to conceal a failure, and all original native
+keyboard, visibility, localization, scaling and persistence assertions remain.
+
+See [the lifecycle repair](plan_lifecycle_accessibility.md) for the API33 failure
+from this execution. These are fixture ordering corrections based on retained
+focus evidence and the production effects, not proof of repaired runtime behavior.
+The authorized repair probe returned `No active repair-probe lease` before device
+admission. Both original remote failures and the CI/local stability obligation
+remain open for fresh Controller verification; no local device or CI PASS is claimed.
+
+Host verification for this repair passed (Gradle exit 0):
+`gradlew.bat :app:assembleDebugAndroidTest :app:ktlintCheck :app:detekt --continue --console=plain`.
+All changed AndroidTest sources compiled and packaged. `git diff --check` passed.
+No production/JVM behavior or instrumentation testcase identity changed.
+
 This implements the production catalog -> scheduling -> Save and mutable Plan ->
 Reschedule -> scheduling -> Save paths under product v0.16 sections 15/35/37–40,
 domain v0.10 section 14, database v0.6 and the strict ExactDay/form-ownership

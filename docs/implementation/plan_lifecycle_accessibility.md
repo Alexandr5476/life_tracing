@@ -1,5 +1,25 @@
 # Plan lifecycle management and cancelled-plan restoration (S4)
 
+## CI scaling focus ordering repair (2026-11-11, run 43080921916)
+
+The API33 scaling failure's complete native artifact shows the Cancelled dialog's
+Close control focused while the fixture awaits `plan-restore-scale-0`. The native
+window is attached, focused and in keyboard mode. The background calendar also
+retains local focus on its Cancelled entry; that background state is not native
+input ownership. This evidence does not indicate a locked/unfocused emulator.
+
+The fixture changed density/locale and immediately scrolled/requested Restore.
+A replacement dialog has its own deferred production landing on Close. Each scale
+iteration now admits that window and observes Close before requesting the first
+row. The helper also admits native keyboard mode before any explicit focus request,
+rather than afterwards. All thirty Restore targets, native Tab traversal, More,
+Retry, Close, EN/RU scale combinations, physical target and no-write assertions
+remain. Production focus effects and Plan behavior are unchanged.
+
+See [the scheduling repair](plan_schedule_accessibility.md) for the sibling API35
+return-focus ordering defect and probe limitation. Runtime confirmation of the
+fixture-level assessment and the original remote failures remains Controller-owned.
+
 This presentation boundary follows product v0.16 sections 15/37-40, domain v0.10
 section 14, database v0.6 sections 11-12/19-20 and the optimistic-token,
 engagement, overdue and temporal-projection clarifications. Existing commands,

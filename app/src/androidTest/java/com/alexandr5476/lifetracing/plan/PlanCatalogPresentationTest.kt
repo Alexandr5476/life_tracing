@@ -164,6 +164,7 @@ class PlanCatalogPresentationTest {
         // Background roots can retain local Focused=true while the dialog owns native input.
         keyboard.awaitWindowFocus(compose.onNodeWithTag("plan-schedule-form"))
         compose.runOnIdle { fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId)) }
+        keyboard.awaitFocus(compose.onNodeWithTag("plan-add"))
         open()
         focus(catalogResultTag(activity.id))
         keyboard.sendKey(compose.onNodeWithTag(catalogResultTag(activity.id)), KeyEvent.KEYCODE_ENTER)
@@ -298,6 +299,7 @@ class PlanCatalogPresentationTest {
         keyboard.awaitFocus(compose.onNodeWithTag("plan-catalog-search"))
         focus("plan-catalog-close")
         keyboard.sendKey(compose.onNodeWithTag("plan-catalog-close"), KeyEvent.KEYCODE_ENTER)
+        keyboard.awaitFocus(compose.onNodeWithTag("plan-add"))
         open()
         focus("plan-catalog-more")
         keyboard.sendKey(compose.onNodeWithTag("plan-catalog-more"), KeyEvent.KEYCODE_ENTER)
@@ -551,8 +553,9 @@ class PlanCatalogPresentationTest {
 
     private fun focus(tag: String) {
         val node = compose.onNodeWithTag(tag)
+        keyboard.awaitWindowFocus(node)
         if (tag != "plan-catalog-close") node.performScrollTo()
-        node.performSemanticsAction(SemanticsActions.RequestFocus)
+        node.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
         keyboard.awaitFocus(node)
     }
 

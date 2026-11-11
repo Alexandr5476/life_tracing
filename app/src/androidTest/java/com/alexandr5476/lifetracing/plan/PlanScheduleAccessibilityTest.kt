@@ -372,6 +372,8 @@ class PlanScheduleAccessibilityTest {
         native("plan-schedule-save", Role.Button)
         assertTrue(f.commands.isEmpty())
         activate("plan-schedule-close")
+        // Close restores Add on the calendar after its native window regains focus.
+        keyboard.awaitFocus(compose.onNodeWithTag("plan-add"))
         val original = f.seed()
         openReschedule(f, original.id)
         for (language in listOf("en", "ru")) {
@@ -555,8 +557,9 @@ class PlanScheduleAccessibilityTest {
 
     private fun focus(tag: String) {
         val node = compose.onNodeWithTag(tag)
+        keyboard.awaitWindowFocus(node)
         if (tag != "plan-schedule-close" && tag != "plan-schedule-save") node.performScrollTo()
-        node.performSemanticsAction(SemanticsActions.RequestFocus)
+        node.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
         keyboard.awaitFocus(node)
     }
 

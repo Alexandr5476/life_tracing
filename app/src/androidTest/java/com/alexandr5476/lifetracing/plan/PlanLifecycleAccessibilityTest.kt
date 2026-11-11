@@ -272,6 +272,10 @@ class PlanLifecycleAccessibilityTest {
                     f.language.value = language
                     f.scale.value = scale
                 }
+                // Scaling can replace the Dialog window. Observe its production landing
+                // before requesting a row, so the new owner cannot steal focus back to Close.
+                keyboard.enter(compose.onNodeWithTag("plan-cancelled-close"))
+                keyboard.awaitFocus(compose.onNodeWithTag("plan-cancelled-close"))
                 val tags = (0..29).map { "plan-restore-scale-$it" } + "plan-cancelled-more"
                 for ((index, tag) in tags.withIndex()) {
                     val node = compose.onNodeWithTag(tag)
@@ -745,8 +749,9 @@ class PlanLifecycleAccessibilityTest {
 
     private fun focus(tag: String) {
         val node = compose.onNodeWithTag(tag)
+        keyboard.awaitWindowFocus(node)
         if (tag != "plan-cancelled-close") node.performScrollTo()
-        node.performSemanticsAction(SemanticsActions.RequestFocus)
+        node.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
         keyboard.awaitFocus(node)
     }
 
