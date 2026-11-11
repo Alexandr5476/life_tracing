@@ -1002,6 +1002,8 @@ def main():
             # Separate invocations prevent shared AVD setup/teardown races, even on failure.
             try:
                 quarantine_previous_outputs(repo, directory, module, args.api)
+                if profile is not None:
+                    profile.validate_graphics_environment()
                 run_gradle(command, directory, module, args.api, record,
                            timeout=max(0, row_deadline - time.monotonic()),
                            **({"profile_memory": True} if args.profile_host_memory else {}))

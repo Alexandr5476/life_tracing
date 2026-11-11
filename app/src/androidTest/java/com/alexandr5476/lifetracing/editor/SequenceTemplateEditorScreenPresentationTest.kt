@@ -2630,6 +2630,9 @@ class SequenceTemplateEditorScreenPresentationTest {
         awaitReady(controller)
         rejected(canonical)
         assertNull(controller.state.value.manipulation)
+        // Controller Ready precedes the deferred canonical focus landing. Observe
+        // production recovery before scrolling away and requesting another control.
+        keyboard.awaitFocus(sequenceInput(R.string.sequence_editor_name))
         activateNative(nativeManipulationNode(controller, "a", enter = true))
         val disposed = open()
         composeTestRule.runOnIdle { shown.value = false }

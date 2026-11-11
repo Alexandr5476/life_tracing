@@ -19,6 +19,7 @@ import zipfile
 
 PACKAGE = 'org.lifetracing.ciprofile'
 PROBE = PACKAGE + '/org.lifetracing.ciprofile.ProfileProbe'
+GRAPHICS_FEATURES = 'GLDMA = off\n'
 
 
 class CommandTimeout(ValueError):
@@ -46,6 +47,23 @@ def verify_probe(output, scaled_raster=False):
 def verify_restore(output):
     if not re.search(r"Successfully loaded snapshot 'default_boot' using \d+ ms", output):
         raise ValueError('Prepared default_boot was not actually restored')
+
+
+def verify_surface(output):
+    lines = output.splitlines()
+    indices = [i for i, line in enumerate(lines) if line.startswith('GLES:')]
+    if len(indices) != 1:
+        raise ValueError('Expected one actual SurfaceFlinger GLES renderer')
+    index = indices[0]
+    renderer = lines[index]
+    if 'ANGLE' not in renderer or 'SwiftShader' not in renderer:
+        raise ValueError('Actual SwANGLE renderer not confirmed')
+    extensions = lines[index + 1].split() if index + 1 < len(lines) else []
+    if not any(e.startswith('GL_') for e in extensions) or not any(e.startswith('ANDROID_EMU_') for e in extensions):
+        raise ValueError('Actual emulator GLES extensions not confirmed')
+    if 'ANDROID_EMU_dma_v1' in extensions:
+        raise ValueError('Unsafe API26 graphics DMA upload remains enabled')
+    return dict(gles=renderer, graphics_dma=False, extensions=extensions)
 
 
 def find_avd(root):
@@ -90,8 +108,17 @@ class Api26Profile:
         self.record['storage_free_bytes'] = shutil.disk_usage(storage).free
         self.temporary = Path(tempfile.mkdtemp(prefix='lifetracing-api26-profile-', dir=storage)).resolve()
         self.old_avd_home = os.environ.get('ANDROID_AVD_HOME')
+        self.old_emulator_home = os.environ.get('ANDROID_EMULATOR_HOME')
         self.avd_home = self.temporary / 'avd'
         self.avd_home.mkdir()
+        self.emulator_home = self.temporary / 'emulator'
+        self.emulator_home.mkdir()
+        # The API26 system_server tombstone reaches goldfish_dma_write with a
+        # null destination. Use gralloc's non-DMA upload path, keeping SwANGLE.
+        # This private override is inherited by preparation, restore and AGP/UTP.
+        (self.directory / 'advancedFeatures.ini').write_text(GRAPHICS_FEATURES, encoding='utf-8')
+        (self.emulator_home / 'advancedFeatures.ini').write_text(GRAPHICS_FEATURES, encoding='utf-8')
+        self.record['requested_graphics_dma'] = False
         self.memory = ci.HostMemoryProfile(self.directory, 'prepare')
         self.next_memory = 0
         self.emulator = None
@@ -101,6 +128,12 @@ class Api26Profile:
         self.serial = 'emulator-5580'
         # AGP's UTP controller explicitly uses5037, even when adb inherits another socket.
         os.environ['ANDROID_AVD_HOME'] = str(self.avd_home)
+        os.environ['ANDROID_EMULATOR_HOME'] = str(self.emulator_home)
+
+    def validate_graphics_environment(self):
+        if (os.environ.get('ANDROID_EMULATOR_HOME') != str(self.emulator_home)
+                or (self.emulator_home / 'advancedFeatures.ini').read_text(encoding='utf-8') != GRAPHICS_FEATURES):
+            raise ValueError('Private API26 graphics DMA override was lost')
 
     def save(self):
         self.record['updated_at'] = self.ci.timestamp()
@@ -290,10 +323,7 @@ class Api26Profile:
         output = self.shell(['am', 'instrument', '-w', '-r', PROBE], label+'-field', 30)
         self.record[label] = verify_probe(output, scaled_raster=self.scaled_raster)
         surface = self.shell(['dumpsys', 'SurfaceFlinger'], label+'-surface')
-        gles = [line.strip() for line in surface.splitlines() if 'GLES:' in line]
-        if len(gles) != 1 or 'ANGLE' not in gles[0] or 'SwiftShader' not in gles[0]:
-            raise ValueError('Actual SwANGLE renderer not confirmed')
-        self.record[label]['gles'] = gles[0]
+        self.record[label].update(verify_surface(surface))
         if 'Success' not in self.command([self.adb, '-s', self.serial, 'uninstall', PACKAGE], label+'-uninstall'):
             raise ValueError('Profile diagnostic APK uninstall not confirmed')
         self.save()
@@ -334,6 +364,7 @@ class Api26Profile:
             version = self.command([self.sdk/'emulator/emulator', '-no-window', '-no-audio', '-version'], 'emulator-version')
             if '37.2.13.0 (build_id 16740729)' not in version:
                 raise ValueError('Actual emulator build does not match the measured16740729 binary')
+            self.validate_graphics_environment()
             self.setup()
             apk = self.build_probe()
             self.start_emulator(False)
@@ -368,6 +399,8 @@ class Api26Profile:
         if self.emulator_log is not None: self.emulator_log.close()
         if self.old_avd_home is None: os.environ.pop('ANDROID_AVD_HOME', None)
         else: os.environ['ANDROID_AVD_HOME'] = self.old_avd_home
+        if self.old_emulator_home is None: os.environ.pop('ANDROID_EMULATOR_HOME', None)
+        else: os.environ['ANDROID_EMULATOR_HOME'] = self.old_emulator_home
         self.record['cleanup_passed'] = safe
         if safe:
             if self.temporary.is_symlink() or self.temporary.resolve() != self.temporary:

@@ -1,5 +1,64 @@
 # Android compatibility release gate
 
+## Canonical-focus fixture and API26 graphics DMA repair (PR40, 2026-11-11)
+
+Run `42942194350`, head `8f6d9186a8dcfb535dd2bdd658aa4215d04afc6e`, reports
+two distinct failures. The original XML, testcase logs, native-focus artifact,
+native tombstone and prepared/restored SurfaceFlinger readbacks were inspected.
+
+API35's retained-destination case fails immediately after `controller.retry()`.
+Controller Ready does not mean the deferred production keyboard landing has
+finished: the complete 3,678-byte diagnostic (SHA-256
+`c3a36799d39eb2280df58a7bd623bd67d10bf603cce8bea92d4ea6d7cf647172`)
+shows Sequence Name (`Pointer workout`) focused instead of the requested Step
+Manipulate button. The fixture now observes that canonical Name landing before
+scrolling to and requesting the Step control. The native RequestFocus/Enter and
+all retained-action, hidden-route, disposal and state-equality assertions remain.
+The sibling hidden-reload fixture already observes Name on becoming visible;
+destination-dialog helpers already observe their first production landing.
+No production focus behavior or durable authoring semantics change.
+
+API26's Russian compact Library case reaches a system-process crash at
+02:42:07.923: system_server PID 2478, android.anim TID 2524, SIGSEGV/null
+destination in `memcpy`. The retained full tombstone (`app-native-crash/04.log`,
+SHA-256 `edcc2641dbb2ff1c3f20cd11700b66bf47417423779e7a600c2a286de17186c7`)
+includes stack slots for `goldfish_dma_lock`, `goldfish_dma_write`,
+`ExtendedRCEncoderContext::lockAndWriteDma` and `rcUpdateColorBufferDMA_enc`.
+The unwinder itself has only two frames; the symbolic stack slots identify the
+graphics upload path, not a complete unwound call chain. Both pre-test actual
+SurfaceFlinger readbacks advertise `ANDROID_EMU_dma_v1`. This identifies the
+faulting transfer mechanism; the underlying allocation/mapping failure and any
+relationship to the earlier host emulator exit139 remain unresolved.
+
+The existing private API26 CI profile now requests `GLDMA = off` in its own
+`ANDROID_EMULATOR_HOME/advancedFeatures.ini`. Preparation, separate restoration
+and all AGP/UTP invocations inherit that home; original environment values are
+restored during cleanup. The requested file is retained with the profile's
+artifact hashes. Before every suite, the runner verifies the private environment
+and file. Preparation and actual snapshot restoration require a complete GLES
+extension readback with the DMA-v1 capability absent and ANGLE/SwiftShader still
+present. Missing, contradictory or DMA-enabled readbacks block admission.
+
+This is a targeted mitigation of the observed native path. AOSP's
+[gralloc implementation](https://android.googlesource.com/device/generic/goldfish-opengl/+/e877c8a2a0b1e2a092db0d89d7f4620aef561b7f/system/gralloc/gralloc.cpp)
+has a non-DMA color-buffer upload fallback; its
+[host feature gate](https://fuchsia.googlesource.com/third_party/android/device/generic/vulkan-cereal/+/ba29ba979efcfc2c2cd0f67d4060f451df459fcd/stream-servers/RenderControl.cpp)
+controls DMA-v1 advertisement with GLDMA. The rendering backend, raster, snapshot
+policy, memory guards, row deadlines, original inventories and Library assertions
+remain unchanged. The alternative transfer path may affect timing and memory;
+full hosted execution must establish its stability within the existing bounds.
+
+Both unchanged exact-test probes passed (137.6 seconds), demonstrating neither
+failure is reliably reproduced in isolation. Host-policy regressions cover the
+DMA readback, private environment inheritance/restoration, changed configuration
+and pre-suite admission failure. The prepared/restored DMA-admission regression
+fails at both boundaries against the original profile. All 90 host-policy tests
+pass; both original
+prepared/restored CI readbacks are correctly rejected by the new gate. Windows
+probes do not exercise the Linux37.2.13 CI profile. Fresh Controller execution and
+independent exact-head CI remain mandatory; no local PASS closes either original
+stability obligation.
+
 ## API26 native-exit evidence repair (PR40 follow-up, 2026-11-10)
 
 Run `42803170467`, job `129785590584`, head
