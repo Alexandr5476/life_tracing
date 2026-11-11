@@ -497,7 +497,22 @@ class PlanExactDayControllerTest {
                     readCount++
                     WeekPlanRead(it.weekStart, it.selectedDate, emptyList(), emptyList(), emptyList())
                 },
-                { _, _, _ -> emptyList() },
+                { _, _, _ ->
+                    listOf(
+                        ReusablePlanCatalogItem(
+                            LibraryTemplateId.Activity(ActivityTemplateId("activity")),
+                            "Template",
+                            null,
+                            null,
+                        ),
+                        ReusablePlanCatalogItem(
+                            LibraryTemplateId.Sequence(SequenceTemplateId("sequence")),
+                            "Template",
+                            null,
+                            null,
+                        ),
+                    )
+                },
                 { CancelledPlanPage(emptyList(), false) },
                 {
                     mutations += it
@@ -517,7 +532,7 @@ class PlanExactDayControllerTest {
                 else -> error("Expected new temporal input")
             } as PlanSchedule.ExactDay
 
-        fun newExact(
+        suspend fun newExact(
             sequence: Boolean,
             date: String = "2026-10-25",
             time: String = "02:30",
@@ -530,7 +545,12 @@ class PlanExactDayControllerTest {
                 } else {
                     LibraryTemplateId.Activity(ActivityTemplateId("activity"))
                 }
-            controller.dispatch(PlanAction.SelectCatalogItem(ReusablePlanCatalogItem(id, "Template", null, null)))
+            controller.dispatch(PlanAction.OpenCatalog)
+            val catalog =
+                kotlinx.coroutines.withTimeout(2_000) {
+                    controller.state.first { it.catalog?.loading == false }.catalog!!
+                }
+            controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.single { it.id == id }, catalog.context))
             controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
             controller.dispatch(PlanAction.ChangeScheduleDate(date))
             controller.dispatch(PlanAction.ChangeScheduleTime(time))

@@ -18,6 +18,7 @@ import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 /** Ephemeral native keyboard ownership. No Plan identity, command, or virtual-focus authority. */
 internal class PlanCalendarFocus {
     val back = FocusRequester()
+    val add = FocusRequester()
     val today = FocusRequester()
     val selectedDay = FocusRequester()
     val retry = FocusRequester()
@@ -40,6 +41,7 @@ internal fun rememberPlanCalendarFocus(
     val hasDialog = state.hasCalendarDialog()
     val interactive = isVisible && !hasDialog
     var landingPending by remember { mutableStateOf(isVisible) }
+    restoreCatalogEntryFocus(state, isVisible, interactive, focus.add)
     LaunchedEffect(isVisible) {
         focus.owner = null
         focus.removed = null
@@ -79,6 +81,30 @@ internal fun rememberPlanCalendarFocus(
         }
     }
     return focus
+}
+
+@Composable
+private fun restoreCatalogEntryFocus(
+    state: PlanPresentationState,
+    isVisible: Boolean,
+    interactive: Boolean,
+    add: FocusRequester,
+) {
+    val window = LocalWindowInfo.current
+    val mode = LocalInputModeManager.current.inputMode
+    var hadCatalog by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf(false) }
+    LaunchedEffect(state.catalog != null, state.form != null, state.cancelledOpen, isVisible) {
+        if (hadCatalog && state.catalog == null) pending = interactive
+        hadCatalog = state.catalog != null
+        if (!isVisible || state.form != null || state.cancelledOpen) pending = false
+    }
+    LaunchedEffect(pending, interactive, window.isWindowFocused, mode) {
+        if (pending && interactive && window.isWindowFocused) {
+            withFrameNanos { }
+            pending = !add.requestFocus()
+        }
+    }
 }
 
 private fun PlanPresentationState.hasCalendarDialog() = form != null || catalog != null || cancelledOpen

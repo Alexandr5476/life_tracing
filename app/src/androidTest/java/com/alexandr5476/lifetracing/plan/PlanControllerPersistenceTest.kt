@@ -304,6 +304,98 @@ class PlanControllerPersistenceTest {
             }
         }
 
+    @Test
+    fun catalogNavigationSelectionAndObsoleteCallbacksLeaveAllSourceAndPlanFactsUnchanged() =
+        runBlocking {
+            val authoring = TemplateAuthoringRepository.create(context)
+            val library = LibraryRepository.create(context)
+            val plans = PlanRepository.create(context) { zone }
+            val reads = PlanReadRepository.create(context) { zone }
+            val at = selected.atTime(10, 0).atZone(zone).toInstant()
+            val name = "S2 duplicate ${System.nanoTime()}"
+            val activity =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(name, "original", TimeTrackingMode.STOPWATCH, null),
+                    createdAt = at,
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        name,
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(activity.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = at,
+                )
+            val ids = listOf(LibraryTemplateId.Activity(activity.id), LibraryTemplateId.Sequence(sequence.id))
+            val before = ids.associateWith { catalogFacts(it) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val controller = controller(scope, library, plans, reads) { at }
+            try {
+                controller.awaitWeek()
+                controller.dispatch(PlanAction.OpenCatalog)
+                val context = requireNotNull(controller.state.value.catalog).context
+                controller.dispatch(PlanAction.SearchCatalog(name, context))
+                val catalog = withTimeout(5_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                assertEquals(ids.toSet(), catalog.items.map { it.id }.toSet())
+                for (id in ids) {
+                    controller.selectCatalog(id, name)
+                    val form = requireNotNull(controller.state.value.form)
+                    assertEquals(id, form.source?.id)
+                    assertNull(form.identity)
+                    assertFalse(form.scheduleEdited)
+                    controller.dispatch(PlanAction.DismissForm)
+                }
+                controller.dispatch(PlanAction.DismissCatalog(catalog.context))
+                controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.first(), catalog.context))
+                controller.dispatch(PlanAction.SearchCatalog("obsolete", catalog.context))
+                assertNull(controller.state.value.form)
+                assertNull(controller.state.value.catalog)
+                assertEquals(before, ids.associateWith { catalogFacts(it) })
+                assertNull(library.getRecent(100).firstOrNull { it.id in ids })
+            } finally {
+                controller.close()
+                scope.cancel()
+            }
+        }
+
+    private fun catalogFacts(id: LibraryTemplateId): List<List<String?>> =
+        SQLiteDatabase
+            .openDatabase(
+                context.getDatabasePath("lifetracing.db").path,
+                null,
+                SQLiteDatabase.OPEN_READONLY,
+            ).use { database ->
+                val activity = id is LibraryTemplateId.Activity
+                val sourceColumn = if (activity) "source_activity_template_id" else "source_sequence_template_id"
+                val template = if (activity) "activity_templates" else "sequence_templates"
+                val snapshot = if (activity) "activity_snapshots" else "sequence_snapshots"
+                listOf(
+                    "SELECT * FROM $template WHERE id = ?",
+                    "SELECT * FROM $snapshot WHERE source_template_id = ?",
+                    "SELECT * FROM plan_entries WHERE $sourceColumn = ?",
+                ).flatMap { sql ->
+                    database.rawQuery(sql, arrayOf(id.value)).use { cursor ->
+                        buildList {
+                            while (cursor.moveToNext()) {
+                                add(
+                                    (0 until cursor.columnCount).map { cursor.getString(it) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
     private fun controller(
         scope: CoroutineScope,
         library: LibraryRepository,
@@ -325,7 +417,7 @@ class PlanControllerPersistenceTest {
         name: String,
     ) {
         dispatch(PlanAction.OpenCatalog)
-        dispatch(PlanAction.SearchCatalog(name))
+        dispatch(PlanAction.SearchCatalog(name, requireNotNull(state.value.catalog).context))
         val item =
             withTimeout(5_000) {
                 state.first { it.catalog?.loading == false }.catalog!!.items.single {
@@ -333,7 +425,7 @@ class PlanControllerPersistenceTest {
                         id
                 }
             }
-        dispatch(PlanAction.SelectCatalogItem(item))
+        dispatch(PlanAction.SelectCatalogItem(item, requireNotNull(state.value.catalog).context))
     }
 
     private suspend fun PlanController.awaitWeek() = withTimeout(5_000) { state.first { it.week is PlanLoad.Content } }

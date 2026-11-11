@@ -264,7 +264,16 @@ class PlanExactDayPresentationTest {
             PlanController(
                 scope,
                 { WeekPlanRead(it.weekStart, it.selectedDate, emptyList(), emptyList(), emptyList()) },
-                { _, _, _ -> emptyList() },
+                { _, _, _ ->
+                    listOf(
+                        ReusablePlanCatalogItem(
+                            LibraryTemplateId.Activity(ActivityTemplateId("source")),
+                            "Activity",
+                            null,
+                            null,
+                        ),
+                    )
+                },
                 { CancelledPlanPage(emptyList(), false) },
                 { commands += it },
                 { Instant.parse("2026-10-24T10:00:00Z") },
@@ -272,17 +281,14 @@ class PlanExactDayPresentationTest {
                 boundaryScheduler = LocalDateBoundaryScheduler { _, _, _, _ -> },
             )
         try {
+            compose.runOnIdle { controller.dispatch(PlanAction.OpenCatalog) }
+            compose.waitUntil {
+                controller.state.value.catalog
+                    ?.loading == false
+            }
             compose.runOnIdle {
-                controller.dispatch(
-                    PlanAction.SelectCatalogItem(
-                        ReusablePlanCatalogItem(
-                            LibraryTemplateId.Activity(ActivityTemplateId("source")),
-                            "Activity",
-                            null,
-                            null,
-                        ),
-                    ),
-                )
+                val catalog = requireNotNull(controller.state.value.catalog)
+                controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.single(), catalog.context))
                 controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
                 controller.dispatch(PlanAction.ChangeScheduleDate("2026-10-25"))
                 controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))

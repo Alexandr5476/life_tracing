@@ -841,4 +841,15 @@
     <string name="plan_calendar_navigation">%1$s: %2$s</string>
     <string name="plan_management_context">%1$s, %2$s, %3$s</string>
     <string name="plan_management_action">%1$s: %2$s</string>
+    <string name="plan_catalog_result">%1$s, %2$s</string>
+    <string name="plan_catalog_ordinal">%1$s, результат %2$d из %3$d</string>
+    <string name="plan_catalog_query">Поиск: %1$s</string>
+    <string name="plan_catalog_loading">Загрузка каталога</string>
+    <string name="plan_catalog_searching">Поиск в каталоге</string>
+    <string name="plan_catalog_appending">Загрузка новых результатов</string>
+    <string name="plan_catalog_retrying">Повторный запрос каталога</string>
+    <string name="plan_catalog_search_failed">Не удалось загрузить результаты. Повторите запрос или измените поиск.</string>
+    <string name="plan_catalog_append_failed">Не удалось загрузить новые результаты. Загруженные результаты доступны. Повторите загрузку.</string>
+    <string name="plan_catalog_empty">Подходящих шаблонов нет</string>
+    <string name="plan_catalog_results">Загружено результатов: %1$d</string>
 </resources>

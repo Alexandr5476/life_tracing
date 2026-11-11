@@ -1474,3 +1474,16 @@ The original API26 profile, physical-raster assertions, full testcase inventory,
 increase API36 preparation time. Fresh exact-head CI must establish all original
 data/app/startup results on every API; local controls provide no full-matrix PASS
 credit and do not replace Controller review or the new Lead response.
+
+## S2 Add to Plan catalog accessibility boundary
+
+The inventory adds seven native catalog presentation identities and one source-scoped
+Room/controller write-free identity. All prior identities remain mandatory, including
+PlanScreenPresentationTest, PlanExactDayPresentationTest, execution regressions and
+MainActivity route-session cases. The existing Library typed bounded-keyset reader
+and its no-graph-hydration regression are unchanged. Controller owns ci-fast,
+gmd-app and independent exact-head GitHub compatibility execution. Local APK
+packaging does not execute instrumented keyboard/focus assertions or certify manual
+TalkBack/Switch Access operation. See [catalog evidence](plan_catalog_accessibility.md)
+for exact ownership, typed-source, failure/pagination, localization/scaling coverage
+and the remaining device/manual verification boundary.

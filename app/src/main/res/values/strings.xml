@@ -841,4 +841,15 @@
     <string name="plan_calendar_navigation">%1$s: %2$s</string>
     <string name="plan_management_context">%1$s, %2$s, %3$s</string>
     <string name="plan_management_action">%1$s: %2$s</string>
+    <string name="plan_catalog_result">%1$s, %2$s</string>
+    <string name="plan_catalog_ordinal">%1$s, result %2$d of %3$d</string>
+    <string name="plan_catalog_query">Search: %1$s</string>
+    <string name="plan_catalog_loading">Loading catalog</string>
+    <string name="plan_catalog_searching">Searching catalog</string>
+    <string name="plan_catalog_appending">Loading more results</string>
+    <string name="plan_catalog_retrying">Retrying catalog request</string>
+    <string name="plan_catalog_search_failed">Could not load results. Retry or edit Search.</string>
+    <string name="plan_catalog_append_failed">Could not load more results. Loaded results remain available. Retry loading more.</string>
+    <string name="plan_catalog_empty">No matching templates</string>
+    <string name="plan_catalog_results">Loaded results: %1$d</string>
 </resources>

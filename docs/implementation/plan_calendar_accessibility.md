@@ -43,7 +43,8 @@ through reordering. Hidden routes and open dialogs suppress recovery. Passive
 publication does not request focus when its owner survives. No focus operation
 submits/replays a command, and no periodic live-region announcement was added.
 The main screen uses the shared accessible minimum-target provider; dialog and
-catalog hardening remain deferred.
+catalog hardening were deferred from S1. The completed S2 catalog boundary is documented in
+[Add to Plan catalog accessibility and ownership](plan_catalog_accessibility.md).
 
 ## Instrumentation evidence registered for Controller
 

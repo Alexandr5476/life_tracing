@@ -883,11 +883,24 @@ class MainActivityRouteSessionTest {
 
         composeTestRule.onNodeWithText(addLabel).performScrollTo().performClick()
         composeTestRule.onNodeWithText(chooseLabel).assertIsDisplayed()
+        val catalogContext = requireNotNull(controller.state.value.catalog).context
         composeTestRule.runOnUiThread {
             controller.onRouteExited()
             composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
         }
         composeTestRule.onNodeWithText(planLabel).performClick()
+        composeTestRule.runOnUiThread {
+            controller.dispatch(
+                com.alexandr5476.lifetracing.plan.PlanAction
+                    .SearchCatalog("obsolete", catalogContext),
+            )
+            controller.dispatch(
+                com.alexandr5476.lifetracing.plan.PlanAction
+                    .DismissCatalog(catalogContext),
+            )
+        }
+        assertNull(controller.state.value.catalog)
+        assertNull(controller.state.value.form)
         composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(template.name).fetchSemanticsNodes().isNotEmpty()

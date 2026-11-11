@@ -1163,7 +1163,17 @@
       "textAndCategoryEditorsKeepExactFieldAndOptionIdsUntilExplicitComplete",
       "waitingNextHasExplicitNoCurrentStateAndStartNext"
     ],
+    "com.alexandr5476.lifetracing.plan.PlanCatalogPresentationTest": [
+      "confirmedEmptySearchRemovesOldResultsAndRetainsNativeCloseInBothLanguages",
+      "nativeEntryLocalizedDuplicatesAndEnterKeepExactTypedSourceWithoutFocusSelection",
+      "keyboardQueryReplacementKeepsSearchFocusAndRejectsLateReadPublication",
+      "nativePaginationPreservesTypedNodesAndFocusedResultAcrossAppendAndReordering",
+      "nativeFirstPageAndAppendRetriesRetainRawQueryAndNeverReplaySelection",
+      "visibleCloseNativeBackAndRouteExitInvalidatePendingCatalogAndRestoreEntry",
+      "englishRussianScaleExtremesKeepSearchAllLoadedResultsMoreRetryAndCloseReachable"
+    ],
     "com.alexandr5476.lifetracing.plan.PlanControllerPersistenceTest": [
+      "catalogNavigationSelectionAndObsoleteCallbacksLeaveAllSourceAndPlanFactsUnchanged",
       "archivedOrUnavailableSourceAfterCatalogSelectionRejectsWithoutPlanOrSnapshot",
       "realRepositoriesCreateActivitySequenceAndExactDayThroughTheProductionControllerBoundary",
       "realRepositoriesRescheduleCancelRestoreAndUpdateUsingFreshCanonicalIdentities"

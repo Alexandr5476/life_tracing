@@ -379,7 +379,9 @@ class PlanControllerTest {
                 releaseFirstRead.complete(Unit)
                 controller.dispatch(PlanAction.OpenCatalog)
                 withTimeout(2_000) { controller.state.first { it.catalog?.items == listOf(source) } }
-                controller.dispatch(PlanAction.SelectCatalogItem(source))
+                controller.dispatch(
+                    PlanAction.SelectCatalogItem(source, requireNotNull(controller.state.value.catalog).context),
+                )
                 controller.dispatch(PlanAction.SubmitForm)
                 controller.dispatch(PlanAction.SubmitForm)
                 withTimeout(2_000) { controller.state.first { !it.isMutating && mutations.isNotEmpty() } }
@@ -634,7 +636,9 @@ class PlanControllerTest {
                 controller.dispatch(PlanAction.SelectDate(selected))
                 controller.dispatch(PlanAction.OpenCatalog)
                 withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
-                controller.dispatch(PlanAction.SelectCatalogItem(source))
+                controller.dispatch(
+                    PlanAction.SelectCatalogItem(source, requireNotNull(controller.state.value.catalog).context),
+                )
                 controller.dispatch(PlanAction.OpenCancelled)
                 withTimeout(2_000) { controller.state.first { it.cancelled is PlanLoad.Content } }
 
@@ -807,9 +811,13 @@ class PlanControllerTest {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.OpenCatalog)
                 withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
-                controller.dispatch(PlanAction.SearchCatalog("old"))
+                controller.dispatch(
+                    PlanAction.SearchCatalog("old", requireNotNull(controller.state.value.catalog).context),
+                )
                 withTimeout(2_000) { oldCatalogEntered.await() }
-                controller.dispatch(PlanAction.SearchCatalog("new"))
+                controller.dispatch(
+                    PlanAction.SearchCatalog("new", requireNotNull(controller.state.value.catalog).context),
+                )
                 withTimeout(2_000) { controller.state.first { it.catalog?.items == listOf(newer) } }
                 releaseOldCatalog.complete(Unit)
                 withTimeout(2_000) { oldCatalogFinished.await() }
@@ -852,7 +860,13 @@ class PlanControllerTest {
             val exitAppendEntered = CompletableDeferred<Unit>()
             val releaseExitAppend = CompletableDeferred<Unit>()
             val exitAppendFinished = CompletableDeferred<Unit>()
-            val pageOne = (1..31).map { source.copy(name = "A %02d".format(it)) }
+            val pageOne =
+                (1..31).map {
+                    source.copy(
+                        id = LibraryTemplateId.Activity(ActivityTemplateId("page-$it")),
+                        name = "A %02d".format(it),
+                    )
+                }
             val queryB = source.copy(name = "B")
             var appendCalls = 0
             val controller =
@@ -882,11 +896,15 @@ class PlanControllerTest {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
                 controller.dispatch(PlanAction.OpenCatalog)
                 withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
-                controller.dispatch(PlanAction.SearchCatalog("A"))
+                controller.dispatch(
+                    PlanAction.SearchCatalog("A", requireNotNull(controller.state.value.catalog).context),
+                )
                 withTimeout(2_000) { controller.state.first { it.catalog?.hasNextPage == true } }
-                controller.dispatch(PlanAction.LoadMoreCatalog)
+                controller.dispatch(PlanAction.LoadMoreCatalog(requireNotNull(controller.state.value.catalog).context))
                 withTimeout(2_000) { appendEntered.await() }
-                controller.dispatch(PlanAction.SearchCatalog("B"))
+                controller.dispatch(
+                    PlanAction.SearchCatalog("B", requireNotNull(controller.state.value.catalog).context),
+                )
                 withTimeout(2_000) { controller.state.first { it.catalog?.items == listOf(queryB) } }
                 releaseAppend.complete(Unit)
                 withTimeout(2_000) { appendFinished.await() }
@@ -896,9 +914,11 @@ class PlanControllerTest {
                         ?.items,
                 )
 
-                controller.dispatch(PlanAction.SearchCatalog("A"))
+                controller.dispatch(
+                    PlanAction.SearchCatalog("A", requireNotNull(controller.state.value.catalog).context),
+                )
                 withTimeout(2_000) { controller.state.first { it.catalog?.hasNextPage == true } }
-                controller.dispatch(PlanAction.LoadMoreCatalog)
+                controller.dispatch(PlanAction.LoadMoreCatalog(requireNotNull(controller.state.value.catalog).context))
                 withTimeout(2_000) { exitAppendEntered.await() }
                 controller.onRouteExited()
                 releaseExitAppend.complete(Unit)
@@ -907,6 +927,307 @@ class PlanControllerTest {
             } finally {
                 releaseAppend.complete(Unit)
                 releaseExitAppend.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun dismissedCatalogCannotBeReopenedOrSelectedByObsoleteCallbacks() =
+        runBlocking {
+            val mutations = mutableListOf<PlanMutation>()
+            val controller = controller(commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
+                val context = requireNotNull(controller.state.value.catalog).context
+                controller.dispatch(PlanAction.DismissCatalog(context))
+                controller.dispatch(PlanAction.SearchCatalog("obsolete", context))
+                controller.dispatch(PlanAction.SelectCatalogItem(source, context))
+                assertNull(controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    @Suppress("LongMethod") // Each obsolete action is replayed across independently established ownership boundaries.
+    fun obsoleteCatalogActionsCannotOwnNewQueryDialogFormOrHiddenRoute() =
+        runBlocking {
+            val mutations = mutableListOf<PlanMutation>()
+            val controller = controller(commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                val first = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                val obsoleteResults =
+                    listOf(
+                        PlanAction.SelectCatalogItem(source, first.context),
+                        PlanAction.LoadMoreCatalog(first.context),
+                        PlanAction.SearchCatalog("stale retry", first.context, retry = true),
+                    )
+                val obsolete =
+                    obsoleteResults +
+                        listOf(
+                            PlanAction.SearchCatalog("stale", first.context),
+                            PlanAction.DismissCatalog(first.context),
+                        )
+                controller.dispatch(PlanAction.SearchCatalog("new", first.context))
+                val next = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                assertEquals(first.items, next.items) // Even the same exact identity cannot renew an old callback.
+                obsoleteResults.forEach(controller::dispatch)
+                assertEquals(next, controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                controller.dispatch(PlanAction.DismissCatalog(next.context))
+                obsolete.forEach(controller::dispatch)
+                assertNull(controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                controller.dispatch(PlanAction.OpenCatalog)
+                val reopened = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                obsolete.forEach(controller::dispatch)
+                controller.dispatch(PlanAction.DismissCatalog(next.context))
+                assertEquals(reopened, controller.state.value.catalog)
+                controller.dispatch(PlanAction.SelectCatalogItem(source, reopened.context))
+                val form = controller.state.value.form
+                obsolete.forEach(controller::dispatch)
+                assertEquals(form, controller.state.value.form)
+                assertNull(controller.state.value.catalog)
+                controller.dispatch(PlanAction.OpenCatalog)
+                val replaced = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                controller.dispatch(PlanAction.Reschedule(row("existing", 1)))
+                val reschedule = controller.state.value.form
+                controller.dispatch(PlanAction.SelectCatalogItem(source, replaced.context))
+                controller.dispatch(PlanAction.SearchCatalog("obsolete replacement", replaced.context))
+                assertEquals(reschedule, controller.state.value.form)
+                assertNull(controller.state.value.catalog)
+                controller.onRouteExited()
+                (obsolete + PlanAction.SelectCatalogItem(source, reopened.context)).forEach(controller::dispatch)
+                controller.dispatch(PlanAction.OpenCatalog)
+                assertNull(controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                controller.onRouteEntered()
+                assertNull(controller.state.value.catalog)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun pendingCatalogDismissalRejectsReadsAndInteractionsAfterReentry() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val mutations = mutableListOf<PlanMutation>()
+            val controller =
+                controller(readCatalog = { _, _, _ ->
+                    entered.complete(Unit)
+                    release.await()
+                    finished.complete(Unit)
+                    listOf(source)
+                }, commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                withTimeout(2_000) { entered.await() }
+                val context = requireNotNull(controller.state.value.catalog).context
+                controller.dispatch(PlanAction.DismissCatalog(context))
+                controller.onRouteExited()
+                controller.dispatch(PlanAction.SearchCatalog("stale", context))
+                controller.dispatch(PlanAction.SelectCatalogItem(source, context))
+                release.complete(Unit)
+                withTimeout(2_000) { finished.await() }
+                controller.onRouteEntered()
+                assertNull(controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    @Suppress("LongMethod") // Bounded first/append failure recovery and cursor identity form one catalog journey.
+    fun boundedTypedCatalogPagesRetryWithoutLosingSourcesOrSelecting() =
+        runBlocking {
+            val activity = source.copy(name = "Same")
+            val sequence =
+                activity.copy(
+                    id =
+                        LibraryTemplateId.Sequence(
+                            com.alexandr5476.lifetracing.domain
+                                .SequenceTemplateId(activity.id.value),
+                        ),
+                )
+            val page =
+                listOf(activity, sequence) +
+                    (1..29).map {
+                        source.copy(
+                            id = LibraryTemplateId.Activity(ActivityTemplateId("extra-$it")),
+                            name = "Z %02d".format(it),
+                        )
+                    }
+            val requests = mutableListOf<Triple<String, Int, ReusablePlanCatalogItem?>>()
+            var failFirst = true
+            var failAppend = true
+            val mutations = mutableListOf<PlanMutation>()
+            val controller =
+                controller(readCatalog = { query, limit, after ->
+                    requests += Triple(query, limit, after)
+                    if (after == null && failFirst) {
+                        failFirst = false
+                        error("first page")
+                    }
+                    if (after != null && failAppend) {
+                        failAppend = false
+                        error("append")
+                    }
+                    if (after == null) page else listOf(page.last(), page.last())
+                }, commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                val failed = withTimeout(2_000) { controller.state.first { it.catalog?.failure != null }.catalog!! }
+                assertTrue(failed.items.isEmpty())
+                controller.dispatch(PlanAction.SearchCatalog("  raw query  ", failed.context))
+                val loaded = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                assertEquals(page.take(30), loaded.items)
+                assertEquals("  raw query  ", loaded.query)
+                controller.dispatch(PlanAction.LoadMoreCatalog(loaded.context))
+                val appendFailed =
+                    withTimeout(2_000) { controller.state.first { it.catalog?.failure != null }.catalog!! }
+                assertEquals(loaded.items, appendFailed.items)
+                assertEquals(loaded.context, appendFailed.context)
+                controller.dispatch(PlanAction.LoadMoreCatalog(appendFailed.context))
+                val all = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                assertEquals(page, all.items)
+                assertEquals(page.map { it.id }.toSet().size, all.items.size)
+                assertFalse(all.hasNextPage)
+                assertEquals(listOf(31, 31, 31, 31), requests.map { it.second })
+                assertEquals(listOf(null, null, page[29], page[29]), requests.map { it.third })
+                assertEquals(listOf("", "  raw query  ", "  raw query  ", "  raw query  "), requests.map { it.first })
+                assertNull(controller.state.value.form)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun duplicateNamesAndCollidingIdValuesHandoffExactTypedSourceToFreshUntouchedForms() =
+        runBlocking {
+            val activity = source.copy(name = "Same")
+            val sequence =
+                activity.copy(
+                    id =
+                        LibraryTemplateId.Sequence(
+                            com.alexandr5476.lifetracing.domain
+                                .SequenceTemplateId(activity.id.value),
+                        ),
+                )
+            val mutations = mutableListOf<PlanMutation>()
+            val controller =
+                controller(readCatalog = { _, _, _ -> listOf(activity, sequence) }, commit = {
+                    mutations +=
+                        it
+                })
+            val forms = mutableListOf<PlanScheduleForm>()
+            try {
+                val selected = LocalDate.parse("2026-09-17")
+                controller.dispatch(PlanAction.SelectDate(selected))
+                for (item in listOf(activity, sequence)) {
+                    controller.dispatch(PlanAction.OpenCatalog)
+                    val catalog =
+                        withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                    controller.dispatch(
+                        PlanAction.SelectCatalogItem(
+                            item.copy(id = LibraryTemplateId.Activity(ActivityTemplateId("absent"))),
+                            catalog.context,
+                        ),
+                    )
+                    assertNull(controller.state.value.form)
+                    controller.dispatch(PlanAction.SelectCatalogItem(item, catalog.context))
+                    val form = requireNotNull(controller.state.value.form)
+                    forms += form
+                    assertNull(controller.state.value.catalog)
+                    assertEquals(item, form.source)
+                    assertEquals(item.id, form.source?.id)
+                    assertNull(form.identity)
+                    assertEquals(PlanScheduleKind.FLOATING_DAY, form.kind)
+                    assertEquals(selected.toString(), form.date)
+                    assertEquals(ZoneOffset.UTC, form.schedulingZoneId)
+                    assertFalse(form.scheduleEdited)
+                    assertEquals(0L, form.inputRevision)
+                    controller.dispatch(PlanAction.SelectCatalogItem(item, catalog.context))
+                    assertEquals(form, controller.state.value.form)
+                }
+                assertEquals(2, forms.map { it.formId }.toSet().size)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun currentLoadedSourceRemainsSelectableDuringAppendAndAppendCannotReopenFormHandoff() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val page = (1..31).map { source.copy(id = LibraryTemplateId.Activity(ActivityTemplateId("page-$it"))) }
+            val mutations = mutableListOf<PlanMutation>()
+            val controller =
+                controller(readCatalog = { _, _, after ->
+                    if (after == null) {
+                        page
+                    } else {
+                        entered.complete(Unit)
+                        release.await()
+                        finished.complete(Unit)
+                        listOf(page.last())
+                    }
+                }, commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                val catalog = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                controller.dispatch(PlanAction.LoadMoreCatalog(catalog.context))
+                withTimeout(2_000) { entered.await() }
+                controller.dispatch(PlanAction.SelectCatalogItem(page.first(), catalog.context))
+                val form = requireNotNull(controller.state.value.form)
+                assertEquals(page.first().id, form.source?.id)
+                release.complete(Unit)
+                withTimeout(2_000) { finished.await() }
+                assertNull(controller.state.value.catalog)
+                assertEquals(form, controller.state.value.form)
+                assertTrue(mutations.isEmpty())
+            } finally {
+                release.complete(Unit)
+                controller.close()
+            }
+        }
+
+    @Test
+    fun survivingSearchAndCloseCallbacksKeepDialogOwnershipWhileResultsRequireCurrentCollection() =
+        runBlocking {
+            val mutations = mutableListOf<PlanMutation>()
+            val controller = controller(commit = { mutations += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                val first = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                controller.dispatch(PlanAction.SearchCatalog("a", first.context))
+                controller.dispatch(PlanAction.SearchCatalog("ab", first.context))
+                assertEquals(
+                    "ab",
+                    controller.state.value.catalog
+                        ?.query,
+                )
+                controller.dispatch(PlanAction.SelectCatalogItem(source, first.context))
+                controller.dispatch(PlanAction.LoadMoreCatalog(first.context))
+                assertNull(controller.state.value.form)
+                controller.dispatch(PlanAction.DismissCatalog(first.context))
+                assertNull(controller.state.value.catalog)
+                assertTrue(mutations.isEmpty())
+            } finally {
                 controller.close()
             }
         }

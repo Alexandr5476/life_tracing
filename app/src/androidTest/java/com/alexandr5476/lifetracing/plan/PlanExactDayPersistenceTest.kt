@@ -450,7 +450,7 @@ class PlanExactDayPersistenceTest(
             PlanController(
                 scope,
                 { store.reads.getWeek(it) },
-                { _, _, _ -> emptyList() },
+                { _, _, _ -> listOf(ReusablePlanCatalogItem(source, "Template", null, null)) },
                 { store.reads.getCancelledPage(it) },
                 {
                     commands += it
@@ -465,8 +465,10 @@ class PlanExactDayPersistenceTest(
 
         suspend fun ready() = withTimeout(5_000) { controller.state.first { it.week is PlanLoad.Content } }
 
-        fun newExact(date: String = "2026-10-25") {
-            controller.dispatch(PlanAction.SelectCatalogItem(ReusablePlanCatalogItem(source, "Template", null, null)))
+        suspend fun newExact(date: String = "2026-10-25") {
+            controller.dispatch(PlanAction.OpenCatalog)
+            val catalog = withTimeout(5_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+            controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.single(), catalog.context))
             controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
             controller.dispatch(PlanAction.ChangeScheduleDate(date))
             controller.dispatch(PlanAction.ChangeScheduleTime("02:30"))

@@ -125,7 +125,7 @@ fun PlanScreen(
                 }
                 LifeTracingPrimaryButton(
                     enabled = !state.isMutating,
-                    modifier = planCalendarFocusTarget(),
+                    modifier = planCalendarFocusTarget().focusRequester(focus.add).semantics { testTag = "plan-add" },
                     onClick = { onAction(PlanAction.OpenCatalog) },
                 ) { Text(stringResource(R.string.plan_add)) }
                 TextButton(onClick = {
@@ -134,7 +134,7 @@ fun PlanScreen(
             }
         }
     }
-    state.catalog?.let { CatalogDialog(it, onAction) }
+    if (isRouteVisible) state.catalog?.let { key(it.context.dialogId) { PlanCatalogDialog(it, onAction) } }
     state.form?.let { ScheduleDialog(it, state.isMutating, onAction) }
     if (state.cancelledOpen) CancelledDialog(state, onAction)
 }
@@ -424,48 +424,6 @@ private fun PlanRow(
             }
         }
     }
-}
-
-@Composable
-private fun CatalogDialog(
-    catalog: PlanCatalogState,
-    onAction: (PlanAction) -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = { onAction(PlanAction.DismissCatalog) },
-        title = { Text(stringResource(R.string.plan_choose_template)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                LifeTracingOutlinedTextField(catalog.query, {
-                    onAction(PlanAction.SearchCatalog(it))
-                }, label = { Text(stringResource(R.string.plan_search)) })
-                catalog.items.forEach { item ->
-                    TextButton(modifier = Modifier.fillMaxWidth(), onClick = {
-                        onAction(PlanAction.SelectCatalogItem(item))
-                    }) { Text(item.name) }
-                }
-                if (catalog.loading) Text(stringResource(R.string.plan_loading))
-                catalog.failure?.let {
-                    Text(it.label(), color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { onAction(PlanAction.SearchCatalog(catalog.query)) }) {
-                        Text(stringResource(R.string.plan_retry))
-                    }
-                }
-                if (catalog.hasNextPage) {
-                    TextButton(onClick = {
-                        onAction(PlanAction.LoadMoreCatalog)
-                    }) { Text(stringResource(R.string.plan_load_more)) }
-                }
-            }
-        },
-        confirmButton = {
-        },
-        dismissButton = {
-            TextButton(
-                onClick = { onAction(PlanAction.DismissCatalog) },
-            ) { Text(stringResource(R.string.plan_close)) }
-        },
-    )
 }
 
 @Composable
