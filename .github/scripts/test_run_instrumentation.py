@@ -494,6 +494,54 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                     self.assertEqual(allowances[2], ("startup", 2745))
                     self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
 
+    def test_all_modern_rows_share_extended_bounded_budget(self):
+        # CI42726834230 exhausted 3300 s on API35/API36; CI42776221469 reached
+        # 574/586 app cases on API31 before the same deadline, without failures.
+        # All rows run the full inventory, including API33. Synthetic durations
+        # cross the old bound and leave startup room, while enforcing final expiry.
+        for api in (31, 33, 35, 36):
+            for app_seconds, result in ((3600, 0), (6000, 1)):
+                with self.subTest(api=api, app_seconds=app_seconds), tempfile.TemporaryDirectory() as temporary:
+                    root, clock, allowances = Path(temporary), [0.0], []
+                    env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
+                               GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="pull_request")
+                    def run(command, directory, module, actual_api, record, *, timeout):
+                        self.assertEqual(actual_api, api)
+                        self.assertIn(f"--max-workers={1 if api == 36 else 2}", command)
+                        self.assertFalse(any("class=" in arg for arg in command))
+                        self.assertEqual("-Plifetracing.compatibility.productionStartup=true" in command,
+                                         module == "startup")
+                        allowances.append((module, timeout))
+                        duration = {"data": 1000, "app": app_seconds, "startup": 180}[module]
+                        record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                        if duration > timeout:
+                            record.update(exit_code=143, abort_reason="execution deadline exceeded")
+                        else:
+                            self.write_inventory(root, module, api)
+                        clock[0] += min(duration, timeout)
+                    with patch.object(ci.Path, "cwd", return_value=root), patch.dict(os.environ, env), \
+                            patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
+                            patch.object(ci.time, "monotonic", side_effect=lambda: clock[0]), \
+                            patch.object(ci, "run_gradle", side_effect=run), \
+                            patch("sys.argv", ["ci", "--api", str(api)]), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ci.main(), result)
+                    self.assertEqual(allowances[:2], [("data", 6600), ("app", 5600)])
+                    evidence = json.loads((root / f"ci-evidence/api{api}/evidence.json").read_text())
+                    self.assertEqual(evidence["row_timeout_seconds"], 6600)
+                    if result:
+                        self.assertEqual(len(allowances), 2)
+                        self.assertEqual(evidence["modules"]["app"]["abort_reason"], "execution deadline exceeded")
+                        self.assertEqual(evidence["modules"]["startup"]["status"], "NOT_RUN")
+                    else:
+                        self.assertEqual(allowances[2], ("startup", 2000))
+                        self.assertTrue(all(r["mandatory_inventory_passed"] for r in evidence["modules"].values()))
+                        self.assertEqual([r["status"] for r in evidence["modules"].values()], ["PASSED"] * 3)
+
+    def test_workflow_all_rows_keep_ten_minutes_for_setup_cleanup_and_upload(self):
+        workflow = Path(__file__).parents[1] / "workflows/ci.yml"
+        self.assertIn("timeout-minutes: 120",
+                      workflow.read_text(encoding="utf-8"))
+
     def test_expired_row_budget_never_launches_or_certifies_remaining_invocations(self):
         with tempfile.TemporaryDirectory() as temporary:
             env = dict(EXPECTED_TEST_SHA="a" * 40, GITHUB_SHA="b" * 40, GITHUB_RUN_ID="7",
@@ -501,7 +549,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             with patch.object(ci.Path, "cwd", return_value=Path(temporary)), patch.dict(os.environ, env), \
                     patch.object(ci.subprocess, "check_output", return_value="a" * 40), \
                     patch.object(ci.subprocess, "Popen") as worker, \
-                    patch.object(ci.time, "monotonic", side_effect=[0, 3301]), \
+                    patch.object(ci.time, "monotonic", side_effect=[0, 6601]), \
                     patch("sys.argv", ["ci", "--api", "36"]):
                 self.assertEqual(ci.main(), 1)
             worker.assert_not_called()
@@ -1376,6 +1424,53 @@ class HostMemoryProfileTests(unittest.TestCase):
 
 
 class HostSignalObserverTests(unittest.TestCase):
+    def test_native_emulator_faults_retain_kernel_signal_details(self):
+        for number in (4, 6, 7, 8, 11):  # SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV on Linux.
+            with self.subTest(signal=number):
+                line = ("  qemu-system-x86-4329 [003] d..1. 803.125001: signal_generate: "
+                        f"sig={number} errno=0 code=1 comm=qemu-system-x86 pid=4327 grp=0 res=0")
+                event = ci.signal_event(line)
+                self.assertIsNotNone(event)
+                self.assertEqual(event["signal"], number)
+                self.assertEqual((event["sender_comm"], event["sender_tid"]), ("qemu-system-x86", 4329))
+                self.assertEqual((event["target_comm"], event["target_pid"]), ("qemu-system-x86", 4327))
+                self.assertEqual((event["code"], event["group"], event["result"]), (1, 0, 0))
+                self.assertNotIn("initiator", event)
+
+    def test_fault_observation_resolves_emulator_threads_and_excludes_live_foreign_faults(self):
+        line = ("  RenderThread-4329 [003] d..1. 803.125001: signal_generate: "
+                "sig=11 errno=0 code=1 comm=RenderThread pid=4329 grp=0 res=0")
+        for comm in ("qemu-system-x86", "emulator", "java", "unrelated"):
+            with self.subTest(comm=comm), \
+                    patch.object(ci.Path, "read_text", return_value="Name:\tRenderThread\nTgid:\t4327\n"), \
+                    patch.object(ci, "process_label", side_effect=lambda pid: dict(
+                        pid=pid, comm=comm if pid == 4327 else "RenderThread", start="100")):
+                event = ci.observed_signal_event(line, True)
+                if comm in ("java", "unrelated"):
+                    self.assertIsNone(event)
+                else:
+                    self.assertEqual(event["target_process_identity"]["pid"], 4327)
+                    self.assertEqual(event["target_identity"]["pid"], 4329)
+                    self.assertEqual(event["code"], 1)
+                # Explicit termination remains visible even for non-emulator targets.
+                self.assertIsNotNone(ci.observed_signal_event(line.replace("sig=11", "sig=15"), True))
+
+    def test_fault_observation_preserves_exited_or_unmapped_targets(self):
+        line = ("  RenderThread-4329 [003] d..1. 803.125001: signal_generate: "
+                "sig=11 errno=0 code=1 comm=RenderThread pid=4329 grp=0 res=0")
+        for status in (FileNotFoundError(), "Name:\tRenderThread\n", "Tgid:\tbad\n", "Tgid:\t4327\n"):
+            with self.subTest(status=status), patch.object(ci, "process_label", return_value=None), \
+                    patch.object(ci.Path, "read_text", **(
+                        dict(side_effect=status) if isinstance(status, Exception) else dict(return_value=status))):
+                event = ci.observed_signal_event(line, True)
+                self.assertEqual(event["target_pid"], 4329)
+                self.assertIsNone(event["target_process_identity"])
+        with patch.object(ci, "process_label") as label, patch.object(ci.Path, "read_text") as read:
+            self.assertEqual(ci.observed_signal_event(line, False), ci.signal_event(line))
+            self.assertIsNone(ci.observed_signal_event("unrelated diagnostic message", True))
+            label.assert_not_called()
+            read.assert_not_called()
+
     def test_signal_record_identifies_sender_and_receiver_without_claiming_external_initiator(self):
         line = ("  Runner.Worker-1370 [007] d..1. 303.735156: signal_generate: "
                 "sig=15 errno=0 code=0 comm=java pid=1376 grp=1 res=0")

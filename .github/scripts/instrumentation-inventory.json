@@ -748,15 +748,25 @@
       "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
       "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
       "nativeExistingAuthoringPreservesEligibleSourcesMetadataAndFrozenHistoryOnReopen",
+      "nativeExistingSequenceFieldsPreserveCompatibleIdentityAndFrozenStepsOnPhysicalReopen",
       "nativeNewActivityAuthoringCommitsOnceAndPhysicallyReopensCanonicalFields",
+      "nativeNewSequenceAuthoringCommitsOnceAndPhysicallyReopensCanonicalConfiguration",
       "nestedFolderCreateRenameMoveAndCanonicalPathRefreshSurvivePhysicalReopen",
       "nestedToolbarBackAndSystemBackPreserveTheirDifferentLibraryAdmission",
       "nonDestructiveTemplateOrganizationReopensCanonicalMetadataAndFrozenHistory",
       "productionConflictRequiresExplicitReloadAndDiscardLeavesNoPartialWriteOnReopen",
       "productionLoadRetryAndGatedWriterFailurePreserveSessionAndBackAdmissionUntilCommit",
+      "productionSequenceConflictExplicitReloadAndDiscardLeaveNoPartialWriteOnReopen",
       "quickStartPrimesEachExactDuplicateOnceAndBackCancelsWithoutDurableResidue",
       "retainedLibraryControlsCannotNavigateAfterFilterSearchOrRouteExit",
-      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState"
+      "staleOrganizationDestinationIsRejectedWithoutPartialWritesAndRetryReloadsCanonicalState",
+      "nativeSequenceManipulationRetainsSelectionAcrossRecreationAndDeliversApplyToLibraryOnce",
+      "nativeStepSourceCommandsPreserveIdentityProvenanceAndFrozenFactsThroughPhysicalReopen",
+      "productionUpdateFromSourceRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "productionUpdateSourceRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "productionSaveAsNewRecoveryRetainsSessionAcrossActivityRecreationWithoutWriterReplay",
+      "nativeSourceArchiveAfterInitialReadRejectsBothUpdateDirectionsAtomicallyAndStillAllowsSaveAsNew",
+      "nativeStepAuthoringAndOverrideOnlyEditsPhysicallyReopenWithoutRewritingFrozenOwnership"
     ],
     "com.alexandr5476.lifetracing.MainActivityRouteSessionTest": [
       "committedActivityCatalogChangeRefreshesTheRetainedLibraryAcrossTheRecreationBoundary",
@@ -781,6 +791,7 @@
       "productionManualHistoryDraftSurvivesRecreationAndCommitsExactlyOnceToCanonicalHistory",
       "productionPlanAffordanceUsesOneDestinationBackAndFreshTransientRouteState",
       "productionRouteRejectsStalePlanButKeepsFrozenSourceDivergenceExecutable",
+      "pristineProductionNewSequenceDoneCreatesOnceAndReturnsToLibrary",
       "productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly",
       "realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement",
       "restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState",
@@ -912,32 +923,60 @@
       "stableSurvivingFieldFocusAndNativeAddTypeChangeRemainReachable"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorPersistenceTest": [
+      "pristineNewDoneCreatesOneCanonicalLibraryTemplateAcrossPhysicalReopen",
       "editorUnitReplacementHelperPersistsANewLocalFieldWhilePreservingStepAndSnapshotProvenance",
       "existingMultiEditSavesOnceWhileAStaleEditorKeepsItsDraftAndCannotMutateCanonicalState",
       "manipulationApplyCommitsSeveralMovesAndFrozenCrossContainerDuplicateOnce",
       "manipulationApplyPersistenceFailureKeepsDurableGraphAndDraftHistory",
       "newApplyPromotesStepsThenDoneUpdatesTheSameSingleDurableSequence",
-      "productionSourceActionBoundaryReloadsEachCommittedRepositoryShape"
+      "productionSourceActionBoundaryReloadsEachCommittedRepositoryShape",
+      "rejectedFieldNumbersWriteNothingAndCorrectedExactDefaultsCommitOnceAcrossPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.editor.SequenceTemplateEditorScreenPresentationTest": [
       "cancelledDragAddsNoOperationAndRepeatHasMoveOnly",
       "committedApplyReloadFailureKeepsRetryReachableFromManipulationToolbar",
       "compactRowsKeepPendingAndLocalStepsIdentifiable",
+      "discardKeyboardDismissalRestoresFocusAndRevokesRetainedDialogActions",
       "doneRetryRecoversCanonicallyWithoutRepeatingTheWriterAndExitsOnce",
+      "duplicateFieldsAndOptionsKeepExactNativeTargetsAfterMutationAndTypeChange",
       "edgeHeldHandleDragAtFirstRowBoundaryDoesNotScrollOrMoveOnCancel",
       "edgeHeldHandleDragScrollsToOffscreenRepeatAndMovesFrozenChildOnce",
+      "englishCombinedScalingKeepsNativeSequenceTargetsReachable",
+      "expandedSettingsLazyDetachmentDoesNotRecoverOrRevokeItsLogicalControls",
+      "existingLoadingBackFailureRetryAndReadyHaveDeterministicKeyboardTargets",
       "finiteChoicesExposeTheirCurrentSelectedValue",
+      "gatedSavingAndCommittedRecoveryRejectDuplicateNativeSaveAndReadCanonically",
+      "hiddenAndDisposedSequenceCannotFocusOrSubmitRetainedNativeActions",
       "largeRepeatChildrenRemainLazy",
+      "lazyScrollingDoesNotTreatOffscreenNativeFocusAsARemovedDraftControl",
       "localAndArchivedCommittedStepsOfferOnlySaveAsNew",
       "longPressShowsAccessibleHandlesAndPointerDragMovesTopLevelStepIntoRepeat",
+      "newContextHeadingsNativeSetTextAndTabKeepDraftUncommitted",
+      "equivalentNativeCountdownApplyCleansInputWithoutWritingAndAllowsBackAndSourceActions",
+      "localStepMainValueNativeUncheckKeepsPublishedIntentWhenAnotherFieldBecomesMain",
+      "numberMainValueAndMissingVersusZeroUseNativeStateAndCurrentPrecision",
       "oneCompactPickerServesTopLevelAndDoesNotRenderItsCatalogUntilOpened",
+      "ordinaryNativeSaveFailureRetainsDraftForExplicitRetryWithoutReload",
       "pointerDragMovesRepeatChildToTopLevel",
       "pointerDragMovesStepFromOneRepeatToAnotherEmptyRepeat",
       "pointerDragReordersTopLevelAndSelectsTheDraggedRow",
       "pointerDuplicateMovesDirectlyAcrossContainersAsOneOperation",
+      "retainedManipulationApplyCannotCommitAfterDiscardOrReentry",
+      "retainedNormalFormAndDoneCannotActDuringOrAfterManipulation",
+      "russianCombinedScalingKeepsNativeSequenceTargetsReachable",
       "settingsAreDisclosedAndInvalidCountdownRemainsVisible",
+      "settingsCollapseRevokesNativeCallbacksAndRecoversOnlyMissingFocus",
+      "settingsExposeDisclosureCheckedStatesAndRawCountdownErrors",
       "sourceActionsRemainVisibleAcrossCanonicalReloadsAndNewSourceRelink",
-      "topLevelAndRepeatAddStepShareTheBoundedPicker"
+      "survivingFieldFocusAndRemovedTargetRecoveryRespectNativeOwnership",
+      "topLevelAndRepeatAddStepShareTheBoundedPicker",
+      "englishManipulationNativeTargetsSupportCombinedScaling",
+      "keyboardTraversalReachesOffscreenDestinationWithoutDragging",
+      "nativeManipulationMovesEveryContainerShapeDuplicatesAndDiscardsToPreEntryEdits",
+      "nativeRepeatEntryHasOnlyTopLevelSlotsAndDismissalRestoresAnExistingControl",
+      "retainedNativeDestinationsRejectDismissalStructureDiscardHiddenAndCanonicalGenerations",
+      "russianManipulationNativeTargetsSupportCombinedScaling",
+      "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
     "com.alexandr5476.lifetracing.history.HistoryScreenPresentationTest": [
       "activityDetailUsesHistoricalZoneAndPreservesFrozenConfigurationAndValues",
@@ -1310,6 +1349,7 @@
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure",
       "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
       "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
       "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",
@@ -1336,8 +1376,38 @@
       "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
       "unacknowledgedTransportKeepsTheArtifactAndOriginalFailure"
     ],
+    "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
+      "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
+      "visibleImeCloseStillDismissesThroughItsFocusedWindow"
+    ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsAndroidTest": [
       "nativeReadRetainsStderrExitStatusAndPlatformDiagnosticResults"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceManipulationAccessibilityPersistenceTest": [
+      "nativeCrossContainerMoveAndFrozenDuplicateApplyOnceAndPhysicallyReopenIndependentOwnership",
+      "staleNativeMainValueUncheckPreservesCurrentSelectionThroughSaveAndPhysicalReopen"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceStepSourceAccessibilityTest": [
+      "updateFromSourceNativeRecoveryReadsWithoutReplayingWriter",
+      "updateSourceNativeRecoveryReadsWithoutReplayingWriter",
+      "saveAsNewNativeRecoveryReadsWithoutReplayingWriter",
+      "nativeSourceAvailabilityDistinguishesActiveArchivedMissingAndUnlinkedWithoutPickerReads",
+      "retainedNativeSourceCallbacksCannotReviveAfterDisclosureModeCanonicalPublicationHiddenOrDetachedRoute",
+      "nativeOrdinaryFailureAndSourceConflictPreserveSessionAndRequireExplicitAction",
+      "sourceButtonsRemainContextualKeyboardReachableAndSizedAtEnglishRussianCombinedScaleExtremes",
+      "equalNameStepsInDifferentContainersExposeExactSourceAndNeverRebindRetainedOperations",
+      "rejectedNumberDefaultRetainsNativeTextAndBlocksEveryCommandUntilCorrection",
+      "rejectedPrecisionRetainsNativeTextAndBlocksEveryCommandUntilCorrection"
+    ],
+    "com.alexandr5476.lifetracing.editor.SequenceStepAccessibilityTest": [
+      "nativePickerCreatesIndependentLocalAndSameNameTemplateStepsInExactContainers",
+      "nativePickerKeepsBoundedPagesAndRevokesHiddenRecreatedAndRemovedTargetActions",
+      "nativePickerReportsLoadingFailureEmptyAndCancellationWithoutWrites",
+      "nativeLocalTrackingSettingsOverridesAndRepeatExposeSelectedCheckedAndRawErrors",
+      "nativeSnapshotFieldAndOptionCallbacksResolveIdentityAfterRemovalPrecisionTypeMovementAndCollapse",
+      "pendingTemplateDisclosureHasNativeGuidanceAndRetiredDisclosureCannotReopenOrCloseCurrentContent",
+      "nativeSnapshotInputFocusSurvivesUnrelatedRemovalAndInsertion",
+      "stepConfigurationAndPickerReflowAtEnglishAndRussianCombinedScalingExtremes"
     ]
   },
   "startup": {

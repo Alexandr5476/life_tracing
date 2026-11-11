@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
@@ -46,6 +47,81 @@ private const val ASYNC_STATE_TIMEOUT_MS = 5_000L
 
 @RunWith(AndroidJUnit4::class)
 class SequenceTemplateEditorPersistenceTest {
+    @Test
+    fun pristineNewDoneCreatesOneCanonicalLibraryTemplateAcrossPhysicalReopen() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val databaseName = "pristine-sequence-${java.util.UUID.randomUUID()}.db"
+            var store = RuntimeRecoveryStore(context, databaseName)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            var editor: SequenceTemplateEditorController? = null
+            try {
+                val previousSeries = store.durableFacts().getValue("statistics_series")
+                var writes = 0
+                val controller =
+                    SequenceTemplateEditorController(
+                        scope,
+                        SequenceTemplateEditorTarget.New,
+                        { store.authoring.getSequenceTemplateAuthoringState(it) },
+                        { error("No picker") },
+                        { draft, placement, at ->
+                            writes++
+                            store.authoring.createSequenceTemplate(draft, placement, at)
+                        },
+                        { _, _, _, _ -> error("No update") },
+                        { Instant.EPOCH },
+                    )
+                editor = controller
+                controller.awaitReady()
+                controller.save()
+                controller.save()
+                withTimeout(ASYNC_STATE_TIMEOUT_MS) {
+                    controller.state.first { it.save == SequenceTemplateEditorSave.Committed }
+                }
+                controller.save()
+                assertEquals(1, writes)
+                val visible =
+                    store.library
+                        .search(
+                            "",
+                            com.alexandr5476.lifetracing.domain.LibraryKindFilter.SEQUENCES,
+                        ).single()
+                val id = (visible.id as com.alexandr5476.lifetracing.domain.LibraryTemplateId.Sequence).id
+                val canonical = requireNotNull(store.authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(id, canonical.sequence.id)
+                assertEquals(1L, canonical.sequence.revision)
+                assertTrue(
+                    canonical.sequence.statisticsSeriesId.value
+                        .isNotBlank(),
+                )
+                assertEquals(SequenceTemplateDraft("", null), canonical.toAuthoringDraft())
+                val facts = store.durableFacts()
+                assertEquals(
+                    canonical.sequence.statisticsSeriesId.value,
+                    facts
+                        .getValue("statistics_series")
+                        .filterNot { it in previousSeries }
+                        .single()
+                        .first(),
+                )
+                controller.close()
+                scope.cancel()
+                store.close()
+                store = RuntimeRecoveryStore(context, databaseName)
+                assertEquals(canonical, store.authoring.getSequenceTemplateAuthoringState(id))
+                assertEquals(
+                    listOf(visible),
+                    store.library.search("", com.alexandr5476.lifetracing.domain.LibraryKindFilter.SEQUENCES),
+                )
+                assertEquals(facts, store.durableFacts())
+            } finally {
+                editor?.close()
+                scope.cancel()
+                store.close()
+                context.deleteDatabase(databaseName)
+            }
+        }
+
     @Test
     fun newApplyPromotesStepsThenDoneUpdatesTheSameSingleDurableSequence() =
         runBlocking {
@@ -726,6 +802,132 @@ class SequenceTemplateEditorPersistenceTest {
                 controller.close()
             } finally {
                 scope.cancel()
+            }
+        }
+
+    @Test
+    fun rejectedFieldNumbersWriteNothingAndCorrectedExactDefaultsCommitOnceAcrossPhysicalReopen() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val databaseName = "sequence-numbers-${java.util.UUID.randomUUID()}.db"
+            var store = RuntimeRecoveryStore(context, databaseName)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            var editor: SequenceTemplateEditorController? = null
+            val at = Instant.parse("2026-11-05T10:00:00Z")
+            try {
+                val source =
+                    store.authoring.createActivityTemplate(
+                        sourceDraft("numbers").copy(
+                            fields =
+                                sourceDraft("numbers").fields +
+                                    categorySourceDraft().fields.map { it.copy(position = 1) },
+                        ),
+                        createdAt = at,
+                    )
+                val fields =
+                    listOf(
+                        SequenceFieldDraft(DraftIdentity.New("missing"), 0, "Same", CustomFieldType.NUMBER),
+                        SequenceFieldDraft(
+                            DraftIdentity.New("zero"),
+                            1,
+                            "Same",
+                            CustomFieldType.NUMBER,
+                            defaultNumberScaled = 0,
+                        ),
+                        SequenceFieldDraft(
+                            DraftIdentity.New("signed"),
+                            2,
+                            "Same",
+                            CustomFieldType.NUMBER,
+                            displayPrecision = 3,
+                        ),
+                    )
+                val sequence =
+                    store.authoring.createSequenceTemplate(
+                        SequenceTemplateDraft(
+                            "Numbers",
+                            null,
+                            fields = fields,
+                            nodes =
+                                listOf(
+                                    step("first", 0, StepActivityDraft.FromTemplate(source.id)),
+                                    step("other", 1, StepActivityDraft.FromTemplate(source.id)),
+                                ),
+                        ),
+                        createdAt = at,
+                    )
+                val before = store.authoring.getSequenceTemplateAuthoringState(sequence.id)!!
+                val facts = store.durableFacts()
+                var saves = 0
+                editor =
+                    controller(
+                        scope,
+                        SequenceTemplateEditorTarget.Existing(sequence.id),
+                        store.authoring,
+                        at.plusSeconds(1),
+                        create = { error("No create") },
+                        save = { id, revision, draft, savedAt ->
+                            saves++
+                            store.authoring.saveSequenceTemplate(id, revision, draft, savedAt)
+                        },
+                    )
+                editor.awaitReady()
+                val draft = editor.state.value.readyDraft()!!
+                val first = (draft.nodes.first() as SequenceNodeDraft.Step).value
+                val number = first.configuration()!!.fields.first()
+                val sequenceNumber = draft.fields.last()
+                editor.setStepFieldNumber(first.identity, number, "-1.234")
+                editor.setSequenceFieldNumber(sequenceNumber, "9223372036854775.808")
+                editor.save()
+                assertEquals(0, saves)
+                assertEquals(facts, store.durableFacts())
+                editor.setStepFieldNumber(first.identity, number, "9", precision = true)
+                editor.save()
+                assertEquals(facts, store.durableFacts())
+                editor.setStepFieldNumber(first.identity, number, "3", precision = true)
+                editor.setStepFieldNumber(first.identity, number, "-1.234")
+                editor.setSequenceFieldNumber(sequenceNumber, "+2.345")
+                assertFalse(editor.state.value.hasInvalidInput(editor.state.value.readyDraft()!!))
+                editor.save()
+                editor.awaitCommitted()
+                assertEquals(1, saves)
+                val saved = store.authoring.getSequenceTemplateAuthoringState(sequence.id)!!
+                assertEquals(sequence.revision + 1, saved.sequence.revision)
+                val savedFirst = saved.sequence.nodes.first() as ActivityStep
+                val untouched = saved.sequence.nodes.last() as ActivityStep
+                assertNotEquals(
+                    (before.sequence.nodes.first() as ActivityStep).activitySnapshotId,
+                    savedFirst.activitySnapshotId,
+                )
+                assertEquals(before.sequence.nodes.last(), untouched)
+                assertEquals(
+                    before.activitySnapshots.getValue(untouched.activitySnapshotId),
+                    saved.activitySnapshots.getValue(untouched.activitySnapshotId),
+                )
+                val snapshot = saved.activitySnapshots.getValue(savedFirst.activitySnapshotId)
+                assertEquals(-1234L, snapshot.fields.first().defaultNumberScaled)
+                assertEquals(source.fields.map { it.id }, snapshot.fields.map { it.sourceFieldId })
+                assertEquals(
+                    source.fields.last().categoryOptions.map {
+                        it.id
+                    },
+                    snapshot.fields
+                        .last()
+                        .categoryOptions
+                        .map { it.sourceOptionId },
+                )
+                assertEquals(listOf(null, 0L, 2345L), saved.sequence.fields.map { it.defaultNumberScaled })
+                assertEquals(source, store.authoring.getActivityTemplate(source.id))
+                editor.close()
+                store.close()
+                store = RuntimeRecoveryStore(context, databaseName)
+                assertEquals(saved, store.authoring.getSequenceTemplateAuthoringState(sequence.id))
+                assertEquals(source, store.authoring.getActivityTemplate(source.id))
+            } finally {
+                editor?.close()
+                scope.cancel()
+                store.close()
+                context.deleteDatabase(databaseName)
             }
         }
 

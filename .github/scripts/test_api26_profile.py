@@ -18,6 +18,72 @@ runner_spec.loader.exec_module(runner)
 
 
 class ProfileAdmissionTests(unittest.TestCase):
+    def test_prepared_and_restored_guests_reject_actual_dma_advertisement(self):
+        field = ('INSTRUMENTATION_RESULT: actual_api=26\n'
+                 'INSTRUMENTATION_RESULT: snapshot_actual=false\n'
+                 'INSTRUMENTATION_RESULT: snapshot_property=false\nINSTRUMENTATION_CODE: 0\n')
+        surface = ('GLES: Google, ANGLE (SwiftShader), OpenGL ES 3.1\n'
+                   'GL_OES_EGL_image ANDROID_EMU_native_sync_v2\n')
+        for label in ('prepared', 'restored'):
+            for dma in (False, True):
+                with self.subTest(label=label, dma=dma):
+                    value = profile.Api26Profile.__new__(profile.Api26Profile)
+                    value.adb = 'adb'; value.serial = 'emulator-5580'; value.scaled_raster = False
+                    value.record = {}; value.command = Mock(return_value='Success'); value.save = Mock()
+                    actual = surface.replace('GL_OES_EGL_image', 'GL_OES_EGL_image ANDROID_EMU_dma_v1') if dma else surface
+                    value.shell = Mock(side_effect=[field, actual])
+                    if dma:
+                        with self.assertRaisesRegex(ValueError, 'DMA'):
+                            value.field(Path('probe.apk'), label)
+                        value.save.assert_not_called()
+                    else:
+                        value.field(Path('probe.apk'), label)
+                        self.assertEqual(value.record[label]['gles'], surface.splitlines()[0])
+                        value.save.assert_called_once()
+
+    def test_graphics_profile_rejects_the_observed_dma_upload_path_and_incomplete_readback(self):
+        good = ('GLES: Google, Android Emulator OpenGL ES Translator (ANGLE (SwiftShader)), OpenGL ES 3.1\n'
+                'GL_OES_EGL_image ANDROID_EMU_native_sync_v2 ANDROID_EMU_gles_max_version_3_1\n')
+        self.assertEqual(profile.verify_surface(good)['graphics_dma'], False)
+        for bad in (good.replace('GL_OES_EGL_image', 'GL_OES_EGL_image ANDROID_EMU_dma_v1'),
+                    good.splitlines()[0], '', good + good,
+                    good.replace('ANGLE (SwiftShader)', 'Other renderer'),
+                    good.replace('GL_OES_EGL_image ANDROID_EMU_native_sync_v2 '
+                                 'ANDROID_EMU_gles_max_version_3_1', 'permission denied')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                profile.verify_surface(bad)
+
+    def test_dma_override_is_private_inherited_retained_and_restores_the_callers_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helpers = Mock(); helpers.timestamp.return_value = 'now'
+            helpers.OwnedProcesses.return_value.cleanup.return_value = True
+            for index, previous in enumerate((None, str(root/'caller-emulator-home'))):
+                evidence = root/str(index); evidence.mkdir()
+                with patch.object(profile.Path, 'cwd', return_value=root), \
+                        patch.dict(os.environ, {'ANDROID_HOME':'sdk', 'ANDROID_ADB_SERVER_PORT':'5037',
+                                               'ADB_SERVER_SOCKET':'tcp:5037'}):
+                    if previous is None: os.environ.pop('ANDROID_EMULATOR_HOME', None)
+                    else: os.environ['ANDROID_EMULATOR_HOME'] = previous
+                    value = profile.Api26Profile(helpers, evidence, 100)
+                    try:
+                        emulator_home = Path(os.environ['ANDROID_EMULATOR_HOME'])
+                        self.assertEqual(emulator_home.parent, value.temporary)
+                        self.assertEqual((emulator_home/'advancedFeatures.ini').read_text(), 'GLDMA = off\n')
+                        value.validate_graphics_environment()
+                        with patch.dict(os.environ, {'ANDROID_EMULATOR_HOME':str(root/'other')}):
+                            with self.assertRaises(ValueError): value.validate_graphics_environment()
+                        (emulator_home/'advancedFeatures.ini').write_text('GLDMA = on\n')
+                        with self.assertRaises(ValueError): value.validate_graphics_environment()
+                        (emulator_home/'advancedFeatures.ini').write_text('GLDMA = off\n')
+                    finally:
+                        value.close()
+                    self.assertEqual(os.environ.get('ANDROID_EMULATOR_HOME'), previous)
+                    retained = value.directory/'advancedFeatures.ini'
+                    self.assertEqual(retained.read_text(), 'GLDMA = off\n')
+                    self.assertIn('advancedFeatures.ini', value.record['artifacts'])
+                    self.assertFalse(emulator_home.exists())
+
     def test_installed_probe_artifact_survives_cleanup_without_private_signing_key(self):
         import hashlib
         import shutil
@@ -103,11 +169,14 @@ class ProfileAdmissionTests(unittest.TestCase):
             value=profile.Api26Profile.__new__(profile.Api26Profile)
             value.directory=Path(temporary);value.avd=Path(temporary)/'device.avd'
             value.sdk=Path('sdk');value.name='device';value.ci=Mock();value.boot=Mock();value.record={}
-            with patch.object(profile.socket,'socket') as socket,patch.object(profile.subprocess,'Popen') as launch:
+            with patch.dict(os.environ, {'ANDROID_EMULATOR_HOME':'owned-emulator-home'}), \
+                    patch.object(profile.socket,'socket') as socket,patch.object(profile.subprocess,'Popen') as launch:
                 for restore in [False,True]:
                     value.start_emulator(restore);value.emulator_log.close()
                 commands=[c.args[0] for c in launch.call_args_list]
                 self.assertEqual([c[c.index('-port')+1] for c in commands],['5580','5582'])
+                self.assertEqual([c.kwargs['env']['ANDROID_EMULATOR_HOME'] for c in launch.call_args_list],
+                                 ['owned-emulator-home', 'owned-emulator-home'])
                 self.assertEqual(value.serial,'emulator-5582')
                 launch.reset_mock()
                 socket.return_value.__enter__.return_value.bind.side_effect=OSError(98,'Address already in use')
@@ -154,7 +223,7 @@ class ProfileAdmissionTests(unittest.TestCase):
                 factory.assert_not_called()
 
     def test_profile_failure_blocks_every_suite_and_preserves_shared_budget(self):
-        for defect, scaled in [(d, s) for d in ('prepare', 'cleanup', None) for s in (False, True)]:
+        for defect, scaled in [(d, s) for d in ('prepare', 'cleanup', 'graphics_environment', None) for s in (False, True)]:
             with self.subTest(defect=defect, scaled=scaled), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 env = dict(EXPECTED_TEST_SHA='a'*40, GITHUB_SHA='b'*40, GITHUB_RUN_ID='7',
@@ -167,7 +236,9 @@ class ProfileAdmissionTests(unittest.TestCase):
                     self.assertIn('-Plifetracing.compatibility.taskSnapshotsDisabled=true', command)
                     self.assertEqual('-Plifetracing.compatibility.scaledRaster=true' in command, scaled)
                     record.update(exit_code=0, process_cleanup_passed=True, device_cleanup_passed=True)
+                # Orchestration is synthetic: use an exact clock, not host uptime rounding.
                 with patch.object(runner.Path, 'cwd', return_value=root), patch.dict(os.environ, env), \
+                        patch.object(runner.time, 'monotonic', return_value=0), \
                         patch.object(runner.sys, 'platform', 'linux'), \
                         patch.object(runner.subprocess, 'check_output', return_value='a'*40), \
                         patch.object(runner.subprocess, 'run') as install, \
@@ -187,16 +258,24 @@ class ProfileAdmissionTests(unittest.TestCase):
                     factory.return_value.record = {'status':'FAILED' if defect=='prepare' else 'PREPARED'}
                     factory.return_value.close.return_value = defect != 'cleanup'
                     if defect == 'prepare': factory.return_value.prepare.side_effect = ValueError('field true')
+                    if defect == 'graphics_environment':
+                        factory.return_value.validate_graphics_environment.side_effect = ValueError('override lost')
                     self.assertEqual(runner.main(), int(defect is not None))
                     self.assertIn('build-tools;35.0.0', install.call_args.args[0])
                     self.assertIn('platforms;android-36', install.call_args.args[0])
                     factory.return_value.close.assert_called_once()
-                    self.assertEqual(reports.call_count, 0 if defect=='prepare' else 3)
+                    self.assertEqual(reports.call_count, 0 if defect=='prepare' else 1 if defect=='graphics_environment' else 3)
                 evidence = json.loads((root/'ci-evidence/api26/evidence.json').read_text())
                 if defect == 'prepare':
                     self.assertEqual(commands, [])
                     self.assertTrue(all(v['status']=='NOT_RUN' for v in evidence['modules'].values()))
-                else: self.assertEqual([v[0] for v in commands], ['data','app','startup'])
+                else:
+                    self.assertEqual([v[0] for v in commands], [] if defect=='graphics_environment' else ['data','app','startup'])
+                    self.assertEqual(factory.return_value.validate_graphics_environment.call_count,
+                                     1 if defect=='graphics_environment' else 3)
+                    if defect == 'graphics_environment':
+                        self.assertEqual(evidence['modules']['data']['status'], 'FAILED')
+                        self.assertTrue(all(evidence['modules'][m]['status']=='NOT_RUN' for m in ('app','startup')))
 
     def test_requested_property_or_wrong_api_cannot_certify_framework_state(self):
         good = ('INSTRUMENTATION_RESULT: actual_api=26\n'

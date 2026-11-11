@@ -20,7 +20,9 @@ import uuid
 import xml.etree.ElementTree as ET
 
 
-API26_ROW_TIMEOUT_SECONDS = 110 * 60
+EXTENDED_ROW_TIMEOUT_SECONDS = 110 * 60
+# Linux signal numbers: native emulator faults plus explicit process termination.
+OBSERVED_HOST_SIGNALS = (4, 6, 7, 8, 9, 11, 15)
 
 
 def timestamp():
@@ -40,13 +42,39 @@ def process_label(pid):
 
 def signal_event(line):
     match = re.search(r"^\s*(.+)-(\d+)\s+\[\d+\].*?\s(\d+\.\d+):\s+signal_generate: "
-                      r"sig=(9|15) errno=(-?\d+) code=(-?\d+) comm=(.*?) pid=(\d+) grp=(\d+) res=(\d+)", line)
+                      r"sig=(\d+) errno=(-?\d+) code=(-?\d+) comm=(.*?) pid=(\d+) grp=(\d+) res=(\d+)", line)
     if match is None:
         return None
     sender, tid, trace_time, sig, error, code, target, pid, group, result = match.groups()
+    if int(sig) not in OBSERVED_HOST_SIGNALS:
+        return None
     return dict(sender_comm=sender.strip(), sender_tid=int(tid), trace_seconds=trace_time,
                 signal=int(sig), errno=int(error), code=int(code),
                 target_comm=target, target_pid=int(pid), group=int(group), result=int(result))
+
+
+def observed_signal_event(line, direct_proc_ids):
+    event = signal_event(line)
+    if event is None or not direct_proc_ids:
+        return event
+    event["sender_identity"] = process_label(event["sender_tid"])
+    event["target_identity"] = process_label(event["target_pid"])
+    if event["signal"] not in (9, 15):
+        # JVMs routinely handle hardware faults. Keep them out of the bounded log,
+        # but resolve thread groups so renamed emulator threads are still observed.
+        leader = None
+        try:
+            status = Path(f"/proc/{event['target_pid']}/status").read_text()
+            tgid = next(line.split()[1] for line in status.splitlines() if line.startswith("Tgid:"))
+            leader = process_label(int(tgid))
+        except (OSError, ValueError, IndexError, StopIteration):
+            pass
+        event["target_process_identity"] = leader
+        if leader is not None and not leader["comm"].startswith(("qemu-system", "emulator")):
+            return None
+        # An exited target may no longer have /proc metadata. Retain its kernel
+        # record with a null process identity rather than discard the crash evidence.
+    return event
 
 
 class HostSignalObserver:
@@ -140,11 +168,8 @@ def observe_host_signals(directory, owner_pid, owner_start):
             pending = lines.pop()[-4096:]
             for raw in lines:
                 line = raw.decode("utf-8", "replace")
-                event = signal_event(line)
+                event = observed_signal_event(line, direct_pids)
                 if event is not None:
-                    if direct_pids:
-                        event["sender_identity"] = process_label(event["sender_tid"])
-                        event["target_identity"] = process_label(event["target_pid"])
                     events.append(event)
                     emit("signal", **event)
                 elif "mark_victim:" in line:
@@ -159,7 +184,8 @@ def observe_host_signals(directory, owner_pid, owner_start):
             raise RuntimeError("Signal observer owner is absent or changed")
         instance.mkdir()  # Never change another instance or the global tracer.
         (instance / "buffer_size_kb").write_text("128")
-        (instance / "events/signal/signal_generate/filter").write_text("sig == 9 || sig == 15")
+        (instance / "events/signal/signal_generate/filter").write_text(
+            " || ".join(f"sig == {number}" for number in OBSERVED_HOST_SIGNALS))
         (instance / "events/signal/signal_generate/enable").write_text("1")
         oom = instance / "events/oom/mark_victim/enable"
         if oom.exists():
@@ -185,12 +211,14 @@ def observe_host_signals(directory, owner_pid, owner_start):
         if not calibrated:
             raise RuntimeError("Known SIGTERM was not observed")
         ready = dict(calibrated=True, direct_proc_ids=direct_pids, owner=owner,
-                     observer=process_label(os.getpid()), instance=instance.name, oom_enabled=oom.exists())
+                     observer=process_label(os.getpid()), instance=instance.name, oom_enabled=oom.exists(),
+                     observed_signals=list(OBSERVED_HOST_SIGNALS),
+                     native_fault_scope="emulator-or-unresolved" if direct_pids else "all-targets-unmapped-pids")
         emit("ready", **ready)
         temp = directory / "ready.tmp"
         temp.write_text(json.dumps(ready), encoding="utf-8")
         temp.replace(directory / "ready.json")
-        observer_timeout = API26_ROW_TIMEOUT_SECONDS + 300
+        observer_timeout = EXTENDED_ROW_TIMEOUT_SECONDS + 300
         deadline = time.monotonic() + observer_timeout
         while time.monotonic() < deadline:
             read_events(0.2)
@@ -909,10 +937,11 @@ def main():
                     event=os.environ["GITHUB_EVENT_NAME"], started_at=timestamp(), modules={},
                     requested_renderer=renderer)
     failed = False
-    # API26 exhausted 55 minutes with data complete and app still running.
-    # Share 110 minutes across preparation/suites, leaving ten minutes in its
-    # 120-minute job for runner setup, cleanup and uploads. Other rows keep 55/60.
-    row_timeout = API26_ROW_TIMEOUT_SECONDS if args.api == 26 else 3300
+    # API26 and CI42726834230's API35/36 rows exhausted 55 minutes after data
+    # completed but before the full app suite. Share 110 minutes across preparation,
+    # data, app and startup, leaving ten minutes in their 120-minute jobs for
+    # runner setup, cleanup and uploads. Apply the same budget to every API row.
+    row_timeout = EXTENDED_ROW_TIMEOUT_SECONDS
     evidence["row_timeout_seconds"] = row_timeout
     row_deadline = time.monotonic() + row_timeout
     host_observer = None
@@ -973,6 +1002,8 @@ def main():
             # Separate invocations prevent shared AVD setup/teardown races, even on failure.
             try:
                 quarantine_previous_outputs(repo, directory, module, args.api)
+                if profile is not None:
+                    profile.validate_graphics_environment()
                 run_gradle(command, directory, module, args.api, record,
                            timeout=max(0, row_deadline - time.monotonic()),
                            **({"profile_memory": True} if args.profile_host_memory else {}))

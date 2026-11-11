@@ -75,14 +75,14 @@ open class LifeTracingApplication : Application() {
     internal open val runtimeGraphOwner: RuntimeGraphOwner
         get() = LifeTracingRuntimeGraph.processOwner
 
-    private val runtimeGraph by lazy { LifeTracingRuntimeGraph.from(this) }
-
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityStarted(activity: Activity) {
-                    runtimeGraph.scope.launch { runtimeGraph.coordinator.onForeground() }
+                    // Capture the current owner once; isolated instrumentation environments can replace it.
+                    val graph = LifeTracingRuntimeGraph.from(activity)
+                    graph.scope.launch { graph.coordinator.onForeground() }
                 }
 
                 override fun onActivityCreated(

@@ -752,17 +752,24 @@ internal fun LifeTracingApp(
                             if (session?.target != SequenceTemplateEditorTarget.New) {
                                 LaunchedEffect(Unit) { backStack.normalizeRestoredSequenceTemplateEditor() }
                             } else {
-                                SequenceTemplateEditorRoute(session.controller, onBack = {
-                                    sequenceEditorSessions.release(session)
-                                    backStack.removeSequenceTemplateEditor()
-                                }, onApplied = {
-                                    libraryOwner.refreshIfInitialized()
-                                }, onCommitted = {
-                                    session.exitPolicy.deliverCommitted {
+                                SequenceTemplateEditorRoute(
+                                    session.controller,
+                                    isRouteVisible =
+                                        backStack.lastOrNull() == NewSequenceTemplateEditor,
+                                    onBack = {
                                         sequenceEditorSessions.release(session)
-                                        backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
-                                    }
-                                })
+                                        backStack.removeSequenceTemplateEditor()
+                                    },
+                                    onApplied = { generation ->
+                                        session.deliverApplied(generation, libraryOwner::refreshIfInitialized)
+                                    },
+                                    onCommitted = {
+                                        session.exitPolicy.deliverCommitted {
+                                            sequenceEditorSessions.release(session)
+                                            backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
+                                        }
+                                    },
+                                )
                             }
                         }
                         entry<ExistingSequenceTemplateEditor> { route ->
@@ -775,17 +782,24 @@ internal fun LifeTracingApp(
                             if (session?.target != target) {
                                 LaunchedEffect(Unit) { backStack.normalizeRestoredSequenceTemplateEditor() }
                             } else {
-                                SequenceTemplateEditorRoute(session.controller, onBack = {
-                                    sequenceEditorSessions.release(session)
-                                    backStack.removeSequenceTemplateEditor()
-                                }, onApplied = {
-                                    libraryOwner.refreshIfInitialized()
-                                }, onCommitted = {
-                                    session.exitPolicy.deliverCommitted {
+                                SequenceTemplateEditorRoute(
+                                    session.controller,
+                                    isRouteVisible =
+                                        backStack.lastOrNull() == route,
+                                    onBack = {
                                         sequenceEditorSessions.release(session)
-                                        backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
-                                    }
-                                })
+                                        backStack.removeSequenceTemplateEditor()
+                                    },
+                                    onApplied = { generation ->
+                                        session.deliverApplied(generation, libraryOwner::refreshIfInitialized)
+                                    },
+                                    onCommitted = {
+                                        session.exitPolicy.deliverCommitted {
+                                            sequenceEditorSessions.release(session)
+                                            backStack.completeSequenceTemplateEditor(libraryOwner::refreshIfInitialized)
+                                        }
+                                    },
+                                )
                             }
                         }
                         entry<ExpandedLiveSequenceRoot> { route ->

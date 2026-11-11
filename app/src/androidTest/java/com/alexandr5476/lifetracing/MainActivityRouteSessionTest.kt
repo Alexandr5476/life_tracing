@@ -93,6 +93,7 @@ import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.launcher.StartActivityRouteSession
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
+import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1392,6 +1393,9 @@ class MainActivityRouteSessionTest {
                 .isEmpty()
         }
 
+        // The returned Plan retains the scroll used to reach the no-live action. Model completion
+        // and removal of that row do not put the heading back in the viewport.
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.plan_title)).performScrollTo()
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.plan_title)).assertIsDisplayed()
         composeTestRule.onAllNodesWithText(composeTestRule.activity.getString(R.string.plan_title)).assertCountEquals(1)
         composeTestRule.onNodeWithTag("plan-plan-action-${noLivePlan.id.value}").assertDoesNotExist()
@@ -1763,6 +1767,87 @@ class MainActivityRouteSessionTest {
     }
 
     @Test
+    fun pristineProductionNewSequenceDoneCreatesOnceAndReturnsToLibrary() {
+        val library = LibraryRepository.create(composeTestRule.activity)
+        val before = library.search("", LibraryKindFilter.SEQUENCES).map { it.id }.toSet()
+        composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule
+                .onAllNodesWithText(
+                    composeTestRule.activity.getString(R.string.library_new_sequence),
+                ).fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        val retainedLibrary =
+            composeTestRule.activity.libraryControllerOwner.get {
+                error(
+                    "Library must be initialized",
+                )
+            }
+        composeTestRule.waitUntil(5_000) { retainedLibrary.state.value.browse is LibraryLoad.Content }
+        val beforeRefresh = retainedLibrary.state.value.browseRequestId
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.load is SequenceTemplateEditorLoad.Ready
+        }
+        val editor =
+            requireNotNull(
+                composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession,
+            ).controller
+        val done =
+            composeTestRule.onLazyNode(
+                hasText(composeTestRule.activity.getString(R.string.sequence_editor_done)),
+            )
+        val retained = done.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.runOnUiThread {
+            retained()
+            retained()
+        }
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+        composeTestRule.runOnUiThread {
+            retained()
+            editor.save()
+        }
+        composeTestRule.waitForIdle()
+        val added = library.search("", LibraryKindFilter.SEQUENCES).filter { it.id !in before }
+        assertEquals(1, added.size)
+        val id = (added.single().id as LibraryTemplateId.Sequence).id
+        val canonical =
+            requireNotNull(
+                TemplateAuthoringRepository.create(composeTestRule.activity).getSequenceTemplateAuthoringState(id),
+            )
+        assertEquals(id, canonical.sequence.id)
+        assertEquals(1L, canonical.sequence.revision)
+        assertTrue(canonical.sequence.nodes.isEmpty())
+        assertEquals("", canonical.sequence.name)
+        assertTrue(
+            canonical.sequence.statisticsSeriesId.value
+                .isNotBlank(),
+        )
+        composeTestRule.waitUntil(5_000) {
+            (retainedLibrary.state.value.browse as? LibraryLoad.Content)
+                ?.value
+                ?.contents
+                ?.sequences
+                ?.any { it.id == LibraryTemplateId.Sequence(id) } == true
+        }
+        assertEquals(beforeRefresh + 1, retainedLibrary.state.value.browseRequestId)
+        composeTestRule
+            .onNodeWithText(composeTestRule.activity.getString(R.string.library_new_sequence))
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly() {
         composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_library)).performClick()
         composeTestRule
@@ -1877,15 +1962,44 @@ class MainActivityRouteSessionTest {
             second.controller.state.value.manipulation
                 ?.canRedo == true,
         )
+        val library = composeTestRule.activity.libraryControllerOwner.get { error("Library must already exist") }
+        composeTestRule.waitUntil(5_000) { library.state.value.browse is LibraryLoad.Content }
+        val beforeApply = library.state.value.browseRequestId
         composeTestRule
-            .onNodeWithText(composeTestRule.activity.getString(R.string.sequence_editor_apply))
-            .performScrollTo()
+            .onLazyNode(hasText(composeTestRule.activity.getString(R.string.sequence_editor_apply)))
             .performClick()
         composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 1L }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 1, library.state.value.browseRequestId)
+        recreateActivity()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(beforeApply + 1, library.state.value.browseRequestId)
+        composeTestRule.runOnUiThread {
+            second.controller.updateDraft { it.copy(shortComment = "Second explicit Apply") }
+            val currentStep =
+                second.controller.state.value
+                    .readyDraft()!!
+                    .nodes
+                    .first()
+            second.controller.enterManipulation(currentStep.identity)
+        }
+        composeTestRule
+            .onLazyNode(hasText(composeTestRule.activity.getString(R.string.sequence_editor_apply)))
+            .performClick()
+        composeTestRule.waitUntil(5_000) { second.controller.state.value.appliedGeneration == 2L }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
+        recreateActivity()
+        composeTestRule.waitForIdle()
+        assertSame(second, composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession)
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
         composeTestRule.runOnUiThread { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
         }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeApply + 2, library.state.value.browseRequestId)
         composeTestRule
             .onNode(
                 hasText(composeTestRule.activity.getString(R.string.library_search_hint)) and hasSetTextAction(),
@@ -1920,6 +2034,27 @@ class MainActivityRouteSessionTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
         }
+        composeTestRule.onNode(sequenceRow).performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.load is SequenceTemplateEditorLoad.Ready
+        }
+        val beforeDone = library.state.value.browseRequestId
+        val done =
+            composeTestRule.onLazyNode(
+                hasText(composeTestRule.activity.getString(R.string.sequence_editor_done)),
+            )
+        val retainedDone = done.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        done.performClick()
+        composeTestRule.waitUntil(5_000) {
+            composeTestRule.activity.sequenceTemplateEditorRouteSessions.activeSession == null
+        }
+        composeTestRule.runOnUiThread { retainedDone() }
+        composeTestRule.waitForIdle()
+        assertEquals(beforeDone + 1, library.state.value.browseRequestId)
     }
 
     @Test
@@ -2435,11 +2570,22 @@ class MainActivityRouteSessionTest {
         val coordinator = LifeTracingRuntimeGraph.from(previous).coordinator
         val semanticGeneration = coordinator.semanticGeneration.value
         composeTestRule.runOnUiThread(previous::recreate)
-        composeTestRule.waitUntil(5_000) {
-            runCatching {
-                composeTestRule.activity !== previous &&
-                    coordinator.semanticGeneration.value > semanticGeneration
-            }.getOrDefault(false)
+        try {
+            composeTestRule.waitUntil(5_000) {
+                runCatching {
+                    composeTestRule.activity !== previous &&
+                        coordinator.semanticGeneration.value > semanticGeneration
+                }.getOrDefault(false)
+            }
+        } catch (failure: androidx.compose.ui.test.ComposeTimeoutException) {
+            val current = composeTestRule.activity
+            throw AssertionError(
+                "Recreation/foreground publication: newActivity=${current !== previous}, " +
+                    "previousDestroyed=${previous.isDestroyed}, " +
+                    "sameCoordinator=${LifeTracingRuntimeGraph.from(current).coordinator === coordinator}, " +
+                    "semanticGeneration=$semanticGeneration -> ${coordinator.semanticGeneration.value}",
+                failure,
+            )
         }
         composeTestRule.waitForIdle()
     }

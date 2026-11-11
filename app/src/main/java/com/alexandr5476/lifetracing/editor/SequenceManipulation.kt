@@ -64,6 +64,7 @@ internal class SequenceManipulationSession(
         duplicateIdentity: DraftIdentity.New,
         destination: SequenceDropDestination,
     ): SequenceTemplateDraft? {
+        if (!draft.canDuplicateManipulation(sourceIdentity, duplicateSources)) return null
         val source = draft.step(sourceIdentity) ?: return null
         val sourceId = (source.identity as? DraftIdentity.Existing)?.id ?: return null
         val sourceActivity = source.activity as? StepActivityDraft.Existing ?: return null
@@ -93,7 +94,7 @@ internal class SequenceManipulationSession(
         before: SequenceManipulationSnapshot,
         after: SequenceManipulationSnapshot,
     ) {
-        if (before == after) return
+        if (before.draft == after.draft && before.textInputs == after.textInputs) return
         val structure = pendingStructures.removeFirstOrNull()
         undo.addLast(SequenceManipulationHistoryEntry.create(before, after, structure))
         redo.clear()
@@ -308,7 +309,7 @@ private data class ValueChange<T>(
 private fun <T> change(
     before: T,
     after: T,
-): ValueChange<T>? = after.takeIf { it != before }?.let(::ValueChange)
+): ValueChange<T>? = if (before != after) ValueChange(after) else null
 
 private fun <K, V> changes(
     before: Map<K, V>,

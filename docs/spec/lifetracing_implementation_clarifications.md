@@ -341,3 +341,33 @@ lifecycle changes retain the existing semantic/presentation revision policy.
 This clarification does not change identity allocation, persisted ordering, writer
 transactions, optimistic concurrency, snapshot propagation, historical immutability,
 or StatisticsSeries provenance.
+
+## Sequence Number authoring input authority (S4C1, 2026-11-05)
+
+Sequence-level Number Fields and Step ActivitySnapshot Number Fields use the existing
+Activity editor default/precision interaction policy. Editor-owned raw text is input
+state, not a persisted Number value. A rejected default or precision literal remains
+visible and blocks Save, Apply, Done and every Step source command, including direct
+controller admission. It also participates in dirty Back admission and manipulation
+Undo/Redo/Discard. Missing defaults remain distinct from explicit zero; signed scaled
+Long storage remains fixed at 1/1000. Raw validation text never enters Room.
+
+A valid blank/0–3 precision proposal revalidates the current visible default literal
+at that precision. It retains that literal and the last valid semantic default when
+revalidation fails; there is no rounding or truncation of proposed defaults. An
+invalid precision proposal retains its exact text and leaves semantic precision and
+default unchanged. Correction or explicit re-entry of the original accepted input
+restores eligibility subject to the existing clean-draft/source guards.
+
+Raw ownership follows Sequence Field identity, or Step plus ActivitySnapshot Field
+identity and source provenance, with distinct default/precision keys. Movement does
+not change ownership. Removal, type/unit replacement and canonical publication retire
+obsolete keys. Manipulation restoration restores the corresponding recorded raw state.
+A single native raw/semantic change is a single history operation. Existing nullable
+Short Comment deltas, source recovery, snapshot ownership, revisions and writer
+transactions are unchanged.
+
+Presentation may index the current bounded immutable draft and reuse that view for
+identity/context lookup. Native liveness inspection must not repeatedly traverse the
+complete Sequence. The index is presentation state; command execution continues to
+resolve canonical current identities under the controller lock.

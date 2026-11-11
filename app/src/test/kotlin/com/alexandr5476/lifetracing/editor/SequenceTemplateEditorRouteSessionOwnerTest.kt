@@ -84,6 +84,32 @@ class SequenceTemplateEditorRouteSessionOwnerTest {
             owner.release(recreated)
         }
 
+    @Test
+    fun appliedAcknowledgementsSurviveRecreationButEndWithTheirSession() =
+        runBlocking {
+            val owner = SequenceTemplateEditorRouteSessionOwner()
+            val first = owner.acquire(SequenceTemplateEditorTarget.New) { controller(this) }
+            var deliveries = 0
+            first.deliverApplied(0) { error("No successful Apply") }
+            first.deliverApplied(1) { deliveries++ }
+            val recreated = owner.acquire(SequenceTemplateEditorTarget.New) { error("Must retain session") }
+            assertSame(first, recreated)
+            recreated.deliverApplied(1) { error("Already acknowledged") }
+            recreated.deliverApplied(2) { deliveries++ }
+            recreated.deliverApplied(1) { error("Obsolete generation") }
+            recreated.deliverApplied(2) { error("Already acknowledged") }
+            assertEquals(2, deliveries)
+            var exits = 0
+            first.exitPolicy.deliverCommitted { exits++ }
+            recreated.exitPolicy.deliverCommitted { error("Already exited") }
+            assertEquals(1, exits)
+            owner.release(first)
+            val next = owner.acquire(SequenceTemplateEditorTarget.New) { controller(this) }
+            next.deliverApplied(1) { deliveries++ }
+            assertEquals(3, deliveries)
+            owner.release(next)
+        }
+
     private fun controller(scope: kotlinx.coroutines.CoroutineScope) =
         SequenceTemplateEditorController(
             scope,

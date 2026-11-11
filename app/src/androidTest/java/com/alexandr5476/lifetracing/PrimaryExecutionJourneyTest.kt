@@ -3,11 +3,15 @@
 package com.alexandr5476.lifetracing
 
 import androidx.activity.compose.setContent
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -70,8 +74,10 @@ import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -87,6 +93,84 @@ class PrimaryExecutionJourneyTest {
     @get:Rule val compose = createEmptyComposeRule()
 
     @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    fun nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure() =
+        journey { f ->
+            f.launch()
+            val present = mutableStateOf(true)
+            var clicks = 0
+            var failCommand = false
+            compose.runOnUiThread {
+                f.host().setContent {
+                    if (present.value) {
+                        Button(onClick = {
+                            clicks++
+                            if (failCommand) {
+                                present.value = false
+                                throw AssertionError("Dispatched native failure")
+                            }
+                        }) { Text("Current native action") }
+                    }
+                }
+            }
+            val matcher = hasText("Current native action") and hasClickAction()
+            assertFalse(
+                tryInvokeCurrent(matcher) {
+                    // Deterministically replace content between reachability and OnClick lookup.
+                    compose.runOnIdle { present.value = false }
+                },
+            )
+            assertEquals(0, clicks)
+            compose.runOnIdle { present.value = true }
+            assertTrue(tryInvokeCurrent(matcher))
+            assertEquals(1, clicks)
+            val acquisitionFailure =
+                assertThrows(AssertionError::class.java) {
+                    tryInvokeCurrent(matcher) { throw AssertionError("Still-current native failure") }
+                }
+            assertEquals("Still-current native failure", acquisitionFailure.message)
+            assertEquals(1, clicks)
+            compose.runOnIdle { failCommand = true }
+            val failure = assertThrows(AssertionError::class.java) { tryInvokeCurrent(matcher) }
+            assertEquals("Dispatched native failure", failure.message)
+            assertEquals(2, clicks)
+        }
+
+    private fun tryInvokeCurrent(
+        matcher: SemanticsMatcher,
+        beforeDispatch: () -> Unit = {},
+    ): Boolean {
+        val candidates = compose.onAllNodes(matcher).fetchSemanticsNodes()
+        if (candidates.isEmpty()) return false
+        val candidate = candidates.single()
+        var dispatched = false
+        try {
+            val node = reachable(compose.onNode(matcher))
+            beforeDispatch()
+            node.performSemanticsAction(SemanticsActions.OnClick) { click ->
+                dispatched = true
+                assertTrue("Native OnClick rejected the action", click())
+            }
+            return true
+        } catch (failure: AssertionError) {
+            // Refresh may replace content between the synchronized test API calls. Only retry
+            // acquisition of a removed node; a dispatched command (even a failure) is never replayed.
+            if (dispatched || compose.onAllNodes(matcher).fetchSemanticsNodes().any { it.id == candidate.id }) {
+                throw failure
+            }
+            return false
+        }
+    }
+
+    // Fixed Material dialog actions have no scroll ancestor; their bodies do.
+    private fun reachable(node: SemanticsNodeInteraction): SemanticsNodeInteraction {
+        val parent = node.fetchSemanticsNode().parent
+        if (generateSequence(parent) { it.parent }.any { it.config.contains(SemanticsActions.ScrollBy) }) {
+            node.performScrollTo()
+        }
+        return node.assertIsDisplayed()
+    }
 
     @Test
     fun dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen() =
@@ -988,49 +1072,31 @@ class PrimaryExecutionJourneyTest {
 
         fun invoke(id: Int) {
             await {
-                compose
-                    .onAllNodes(
-                        hasText(text(id)) and hasClickAction() and
-                            androidx.compose.ui.test
-                                .isEnabled(),
-                    ).fetchSemanticsNodes()
-                    .size == 1
+                tryInvokeCurrent(
+                    hasText(text(id)) and hasClickAction() and
+                        androidx.compose.ui.test
+                            .isEnabled(),
+                )
             }
-            reachable(action(text(id))).performSemanticsAction(SemanticsActions.OnClick)
             // Let NavDisplay install the destination and its Back handler before the next input.
             compose.waitForIdle()
-        }
-
-        // Fixed Material dialog actions have no scroll ancestor; their bodies do.
-        private fun reachable(node: SemanticsNodeInteraction): SemanticsNodeInteraction {
-            val parent = node.fetchSemanticsNode().parent
-            if (generateSequence(parent) { it.parent }.any { it.config.contains(SemanticsActions.ScrollBy) }) {
-                node.performScrollTo()
-            }
-            return node.assertIsDisplayed()
         }
 
         fun openSequenceActions() {
             val description = text(R.string.expanded_sequence_global_actions)
             await {
-                compose
-                    .onAllNodes(
+                host()
+                    .expandedLiveSequenceRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.commandInFlight == false &&
+                    tryInvokeCurrent(
                         hasContentDescription(description) and
                             androidx.compose.ui.test
                                 .isEnabled(),
-                    ).fetchSemanticsNodes()
-                    .size == 1 &&
-                    host()
-                        .expandedLiveSequenceRouteSessions.activeSession
-                        ?.controller
-                        ?.state
-                        ?.value
-                        ?.commandInFlight ==
-                    false
+                    )
             }
-            reachable(
-                compose.onNodeWithContentDescription(description),
-            ).performSemanticsAction(SemanticsActions.OnClick)
         }
 
         fun dailyLanding() {
@@ -1130,6 +1196,8 @@ class PrimaryExecutionJourneyTest {
         }
 
         fun expand() {
+            // Daily's header/focus survives Loading; wait for the refreshed active card after Back.
+            awaitDailyRuntime()
             invoke(R.string.daily_expand_sequence)
             await { host().expandedLiveSequenceRouteSessions.activeSession != null }
             compose.waitForIdle()
@@ -1163,13 +1231,12 @@ class PrimaryExecutionJourneyTest {
                     text(if (noLive) R.string.plan_complete_action else R.string.plan_start_action),
                 )
             await {
-                compose
-                    .onAllNodes(
-                        hasContentDescription(description, substring = true),
-                    ).fetchSemanticsNodes()
-                    .isNotEmpty()
+                tryInvokeCurrent(
+                    hasContentDescription(description, substring = true) and
+                        androidx.compose.ui.test
+                            .isEnabled(),
+                )
             }
-            planAction(name, noLive).performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
             await { compose.onAllNodesWithText(text(R.string.plan_execution_title)).fetchSemanticsNodes().size == 1 }
             if (waitForContent) {
                 await {
@@ -1223,8 +1290,7 @@ class PrimaryExecutionJourneyTest {
 
         fun openHistoryFact(name: String) {
             invoke(R.string.daily_history)
-            await { compose.onAllNodes(hasText(name) and hasClickAction()).fetchSemanticsNodes().size == 1 }
-            action(name).performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+            await { tryInvokeCurrent(hasText(name) and hasClickAction()) }
             await {
                 host()
                     .activityHistoryMutationRouteSessions.activeSession

@@ -1,5 +1,228 @@
 # Android compatibility release gate
 
+## Canonical-focus fixture and API26 graphics DMA repair (PR40, 2026-11-11)
+
+Run `42942194350`, head `8f6d9186a8dcfb535dd2bdd658aa4215d04afc6e`, reports
+two distinct failures. The original XML, testcase logs, native-focus artifact,
+native tombstone and prepared/restored SurfaceFlinger readbacks were inspected.
+
+API35's retained-destination case fails immediately after `controller.retry()`.
+Controller Ready does not mean the deferred production keyboard landing has
+finished: the complete 3,678-byte diagnostic (SHA-256
+`c3a36799d39eb2280df58a7bd623bd67d10bf603cce8bea92d4ea6d7cf647172`)
+shows Sequence Name (`Pointer workout`) focused instead of the requested Step
+Manipulate button. The fixture now observes that canonical Name landing before
+scrolling to and requesting the Step control. The native RequestFocus/Enter and
+all retained-action, hidden-route, disposal and state-equality assertions remain.
+The sibling hidden-reload fixture already observes Name on becoming visible;
+destination-dialog helpers already observe their first production landing.
+No production focus behavior or durable authoring semantics change.
+
+API26's Russian compact Library case reaches a system-process crash at
+02:42:07.923: system_server PID 2478, android.anim TID 2524, SIGSEGV/null
+destination in `memcpy`. The retained full tombstone (`app-native-crash/04.log`,
+SHA-256 `edcc2641dbb2ff1c3f20cd11700b66bf47417423779e7a600c2a286de17186c7`)
+includes stack slots for `goldfish_dma_lock`, `goldfish_dma_write`,
+`ExtendedRCEncoderContext::lockAndWriteDma` and `rcUpdateColorBufferDMA_enc`.
+The unwinder itself has only two frames; the symbolic stack slots identify the
+graphics upload path, not a complete unwound call chain. Both pre-test actual
+SurfaceFlinger readbacks advertise `ANDROID_EMU_dma_v1`. This identifies the
+faulting transfer mechanism; the underlying allocation/mapping failure and any
+relationship to the earlier host emulator exit139 remain unresolved.
+
+The existing private API26 CI profile now requests `GLDMA = off` in its own
+`ANDROID_EMULATOR_HOME/advancedFeatures.ini`. Preparation, separate restoration
+and all AGP/UTP invocations inherit that home; original environment values are
+restored during cleanup. The requested file is retained with the profile's
+artifact hashes. Before every suite, the runner verifies the private environment
+and file. Preparation and actual snapshot restoration require a complete GLES
+extension readback with the DMA-v1 capability absent and ANGLE/SwiftShader still
+present. Missing, contradictory or DMA-enabled readbacks block admission.
+
+This is a targeted mitigation of the observed native path. AOSP's
+[gralloc implementation](https://android.googlesource.com/device/generic/goldfish-opengl/+/e877c8a2a0b1e2a092db0d89d7f4620aef561b7f/system/gralloc/gralloc.cpp)
+has a non-DMA color-buffer upload fallback; its
+[host feature gate](https://fuchsia.googlesource.com/third_party/android/device/generic/vulkan-cereal/+/ba29ba979efcfc2c2cd0f67d4060f451df459fcd/stream-servers/RenderControl.cpp)
+controls DMA-v1 advertisement with GLDMA. The rendering backend, raster, snapshot
+policy, memory guards, row deadlines, original inventories and Library assertions
+remain unchanged. The alternative transfer path may affect timing and memory;
+full hosted execution must establish its stability within the existing bounds.
+
+Both unchanged exact-test probes passed (137.6 seconds), demonstrating neither
+failure is reliably reproduced in isolation. Host-policy regressions cover the
+DMA readback, private environment inheritance/restoration, changed configuration
+and pre-suite admission failure. The prepared/restored DMA-admission regression
+fails at both boundaries against the original profile. All 90 host-policy tests
+pass; both original
+prepared/restored CI readbacks are correctly rejected by the new gate. Windows
+probes do not exercise the Linux37.2.13 CI profile. Fresh Controller execution and
+independent exact-head CI remain mandatory; no local PASS closes either original
+stability obligation.
+
+## API26 native-exit evidence repair (PR40 follow-up, 2026-11-10)
+
+Run `42803170467`, job `129785590584`, head
+`0e1e1554841db3940ea10c7cd5d0cdde58094f21`, records an empty JUnit failure for
+`StatisticsRepositoryTest.signedLongNumberLineagesBoundRankWorkAfterPhysicalReopen`.
+The retained `data/.../pixel2Api26/emulator.1.fail.txt` ends with `EXIT CODE: 139`;
+the emulator crash handler reports `no stack mapping`. The testcase log has no
+assertion or application exception, and the data suite is incomplete. This does
+not establish whether repository workload, the fixture, or the host emulator
+triggered the native fault.
+
+The existing host observer discarded SIGSEGV twice: its tracefs filter and event
+parser both admitted only SIGKILL/SIGTERM. Its otherwise calibrated, nontruncated
+signal log therefore cannot exclude a native emulator fault. Both boundaries now
+share the observed Linux signal set, including SIGILL, SIGABRT, SIGBUS, SIGFPE and
+SIGSEGV. Ready evidence records that set and the effective target scope. With
+calibrated host PIDs, native fault records resolve the receiver's thread group:
+known non-emulator targets are excluded so handled JVM faults cannot exhaust the
+log; renamed emulator threads and already-exited/unresolved targets are retained.
+Unmapped PID namespaces retain the kernel records without process attribution.
+Events preserve the signal code and task identities, but a recorded signal alone
+does not prove an unhandled fault or an upstream cause. Existing SIGTERM
+calibration, bounded buffers/output, cleanup, command admission, failure
+classification and test inventories remain unchanged.
+
+The added fault-record regression fails for all five native fault signals before
+the repair. Thread-group filtering and missing metadata also have regression
+coverage. All 87 host-policy tests pass afterward. This is an evidence repair;
+the original CI failure and stability obligation remain open pending fresh
+Controller verification and independent CI. No production Statistics code or
+instrumentation assertion is changed.
+The host regressions use synthetic kernel records and process metadata; live
+Linux tracefs fault capture remains unverified by the Windows repair probe.
+
+## Hidden-IME fixture admission repair (PR40 follow-up, 2026-11-10)
+
+Run `42750399074`, head `7ccaf04f66de709d81e38a0f2cf9975353451d85`, fails the
+same Step-authoring Library journey on API26/API33 in `Fixture.invoke`'s new
+IME-closing call after Activity recreation. Both original XML failures were read.
+API26's complete diagnostic was recovered from all 80 acknowledged logcat frames:
+81,689 bytes, SHA-256 `54074a09850d042f3063b30e86f9b3ab29ce9408e657f31495e67d551197f2eb`.
+API33's retained diagnostic is 165,025 bytes, SHA-256
+`faa38114216b4b3f1276b6162c404d5e0e63da06d56b5000c9fe46ae1e23a56c`.
+Both show a hidden IME and no focused input window; neither records a SystemUI ANR.
+These observations are not classified as an infrastructure retry.
+
+The repository fixture imposed native keyboard-root admission even when the IME
+was already hidden. The original journey uses semantic Done/SetText at that
+boundary. A focused TextField is not sufficient evidence of a visible IME:
+restricting the call by text focus passed recreation but failed later on the
+override-only edit, with the same root-admission failure. That partial approach
+was removed. `KeyboardInputFixture.closeKeyboard` now returns only when attached
+root insets explicitly report the IME hidden. Visible or unavailable insets retain
+the original native-window admission and Espresso dismissal. Native Enter/Back/Tab
+and production-focus assertions retain their original admission requirements.
+There is no retry, timeout increase, synthetic keyboard action or production change.
+
+The original regression explicitly establishes that recreation retired its picker.
+It then focuses the surviving Sequence Name input before invoking the retained
+picker callback and semantic Done. The input matches both its label and fixture
+value to distinguish expanded Step Name controls. Every original assertion and
+persistence/reopen scenario remains.
+Two additive mandatory fixture cases cover closing a hidden IME on an unfocused
+background window while a real dialog owns native focus, and closing a visible
+IME in its focused window without changing text. Current mandatory app inventory
+is 585 named testcase identities; no original identity was removed.
+
+Authorized exact-test probes reproduce both original failures on the unchanged
+tree, advance to the later override failure with the discarded text-focus guard,
+and pass both complete original journeys with the insets guard (206.2 seconds).
+A separate explicit sibling scope passes native Enter Save, native manipulation
+across recreation, the original journey and both new fixture cases on both APIs:
+10 cases, zero failures/skips, 246.8 seconds. Reports are retained under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/4e0f80b4b15f4bb3bea019861bf32a06/tree-4/attempt-1/`.
+All 84 host-policy tests also pass with the additive inventory. Diagnostic probe
+results do not supersede the original CI evidence; Controller's canonical checks
+and fresh CI remain required. The underlying platform focus-transfer behavior
+is unchanged.
+
+Canonical local `gmd-full` attempt 1 subsequently exposed an invalid added
+prerequisite: no editable text could be focused after recreation. Android had
+legitimately focused the surviving Sequence Name input (`Step authoring`), while
+the picker was already closed. The regression now explicitly establishes that
+focused-input state instead of depending on platform focus restoration or prior
+test input mode. No production focus behavior or IME admission policy changes.
+
+The authorized API35 exact-test probe passes (136.4 seconds), including the later
+override-only edits and physical database reopen. A sibling scope passes all five
+cases without failures or skips: the original journey, native Enter Save,
+manipulation across recreation, and both IME fixture cases (157.4 seconds).
+Reports are retained under
+`.runtime/repair-probes/wf-d6c98ba32658580da1fb4d84f0005197/fb897e47f479429888a69f25e6958113/tree-3/attempt-1/`.
+These scoped results do not replace Controller's unfiltered local and independent
+CI gates, including fresh API26/API33 evidence for the original failures.
+Local app ktlint passes; Detekt, JVM tests and AndroidTest APK packaging complete
+successfully with up-to-date outputs. All 84 host-policy tests pass again.
+
+## PR40 CI repair: native fixture ordering and suite deadlines (2026-11-10)
+
+Original run `42726834230`, head `b4876085a7734adb1b3198844fb099b5a97f4ba5`,
+reports eight failed app cases across API31/API33. The original JUnit XML and all
+six named native-window diagnostic files were read from the retained reports;
+no emulator internals or replacement CI artifacts were used.
+
+- API31 `LibraryAccessibilityRouteTest.nativeStepAuthoringAndOverrideOnlyEditsPhysicallyReopenWithoutRewritingFrozenOwnership`
+  fails in the fixture's OnClick on a detached, formerly focused **Done** button.
+  The fixture used a previously exposed lazy action while focus/IME viewport
+  changes could still detach it. It now closes the IME through the stable editor
+  root after transferring focus, reveals the current action after native dismissal
+  completes, and performs one semantic OnClick. No action retry or
+  retained-callback admission rule changes. The adjacent revision, snapshot,
+  override, Plan, live-runtime and physical-reopen assertions remain intact.
+- API33 `MainActivityRouteSessionTest.planOriginDeliversLiveToDailyAndNoLiveBackToRefreshedPlan`
+  reaches the final heading assertion after no-live fulfillment and row removal.
+  Plan retains the scroll used to reach the action; an existing heading need not
+  be in that viewport. The fixture scrolls the heading into view before its original
+  display/count assertions. Routing, fulfillment and execution-count checks remain.
+- The six API33 focus failures are in the Sequence manipulation presentation and
+  persistence fixtures. Each diagnostic reports an interactive, unlocked device,
+  attached focused app window and keyboard mode; the chooser's first destination
+  is focused while the requested Cancel or other destination is unfocused. The
+  chooser intentionally suspends its initial landing for scroll/layout and window
+  admission. The fixtures previously requested the next target after idle alone,
+  racing that landing. Both native activation helpers and the sibling Library
+  route invocation helper now observe production focus on the first destination
+  after opening the chooser, before the next request or destination scroll.
+  RequestFocus, focus assertions, native Enter/Tab, stale destination rejection,
+  Undo/Redo/Discard, Apply/reload recovery and persistence assertions remain.
+  No focus assertion retry, synthetic click replacement or production focus change.
+
+The API35/API36 retained `evidence.json` records a 3300-second row budget, passing
+complete data inventory, app `abort_reason=execution deadline exceeded`, and startup
+`NOT_RUN`. Their app logs end at **410/584** and **401/584** respectively, each with
+zero reported failures. This is an execution-budget stop after testcase progress,
+not evidence of the older pre-test API36 startup ANR or of suite success.
+
+All five API rows now share the **110-minute execution / 120-minute job** policy.
+Preparation, data, app and independent startup share one bounded deadline, with
+10 minutes reserved for setup, cleanup and uploads.
+
+Follow-up CI42776221469 on `ce18f86e54cda2349163ec54fa4ec63fd6801fdd` passed
+five jobs; API31 exhausted its remaining 3300-second budget after complete data
+inventory and **574/586** app cases with zero reported failures. Its retained
+evidence records `execution deadline exceeded` and startup `NOT_RUN`. API31
+and API33 now receive the same bounded allowance as the other full-suite rows;
+API33 passed that run and is included for a consistent matrix-wide budget.
+This incomplete API31 run remains a failure pending fresh verification.
+API26's bounded signal observer, memory guards and profile are unchanged; API36
+keeps one Gradle worker. Full unfiltered suites, inventory validation, independent
+startup, cleanup and report retention remain mandatory. Host regressions exercise
+complete inventories beyond the old bound, decreasing per-invocation allowances,
+expiry blocking startup, and the workflow's cleanup/upload allowance.
+
+The eight original CI failures and API35/API36 incomplete suites require fresh
+Controller verification and independent CI. Local checks or a focused probe do
+not supersede that evidence or close the remote stability obligation.
+
+Local repair validation: all 84 host-policy tests pass; the new deadline tests
+failed against the old budgets before the runner/workflow fix. App ktlint, Detekt,
+JVM tests and `:app:assembleDebugAndroidTest` pass. The authorized
+`D:/controller/.runtime/agent-tools/repair-probe.cmd` declined execution with
+"No active repair-probe lease"; no device testcase ran and no corrected device
+PASS is claimed. No full Managed Device or remote CI check was launched.
+
 ## Library callback ownership regression inventory (W3, 2026-11-04)
 
 The Library callback comparison fix adds three original-JUnit identities to
@@ -57,7 +280,8 @@ API26 now has a **110-minute shared execution budget inside a 120-minute job**.
 This supersedes the historical 55/60-minute limits below. Preparation, data, app
 and independent startup share one deadline; cleanup and report uploads have a
 ten-minute allowance. The existing signal observer remains bounded at 115 minutes
-and still exits on owner disappearance or normal cleanup. Other rows keep 55/60.
+and still exits on owner disappearance or normal cleanup. The 2026-11-10 repair
+extends this policy to every API row after the later API31 deadline stop.
 [GitHub permits six-hour hosted jobs](https://docs.github.com/en/actions/reference/limits).
 CI41493383857 exhausted its 3300-second budget after all 627 mandatory data cases
 and 373 app cases passed. The latest scaled-raster profile peaked at 2,058,256 KiB
