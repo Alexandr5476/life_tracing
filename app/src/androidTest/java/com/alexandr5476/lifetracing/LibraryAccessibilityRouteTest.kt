@@ -4,7 +4,6 @@ package com.alexandr5476.lifetracing
 
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -22,6 +21,7 @@ import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
@@ -31,8 +31,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -1636,16 +1635,12 @@ class LibraryAccessibilityRouteTest {
                     R.string.sequence_editor_off,
                 ).performSemanticsAction(SemanticsActions.OnClick)
             val countdown = f.stepControl(linkedIdentity, R.string.sequence_editor_override_countdown)
-            // CI can show the native IME after semantic text replacement. Establish that
-            // viewport explicitly so revealing Done cannot depend on native IME timing.
-            countdown.performClick()
-            val editorView = (countdown.fetchSemanticsNode().root as ViewRootForTest).view
-            compose.waitUntil(5_000) {
-                compose.runOnIdle {
-                    ViewCompat.getRootWindowInsets(editorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
-                }
-            }
-            countdown.performTextReplacement("0")
+            // Hardware-keyboard editing does not require a visible software IME.
+            // Establish the intended edit target without depending on platform IME policy.
+            countdown
+                .performSemanticsAction(SemanticsActions.RequestFocus)
+                .awaitKeyboardFocus()
+                .performTextReplacement("0")
             assertEquals(
                 Duration.ZERO,
                 f
@@ -3350,9 +3345,26 @@ class LibraryAccessibilityRouteTest {
         }
 
         fun recreate() {
+            val dialogOpen = compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()
+            if (dialogOpen) {
+                keyboard.awaitWindowFocus(compose.onNode(isDialog()))
+                // Release the stopped dialog's native window before destroying its Activity.
+                // Otherwise API 26/33 can retain its retired token as the input focus target.
+                scenario!!.moveToState(Lifecycle.State.CREATED)
+            }
             scenario!!.recreate()
+            if (dialogOpen) scenario!!.moveToState(Lifecycle.State.RESUMED)
             scenario!!.onActivity { activity = it }
             compose.waitForIdle()
+            if (dialogOpen) {
+                val window =
+                    if (compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()) {
+                        compose.onNode(isDialog())
+                    } else {
+                        compose.onRoot()
+                    }
+                keyboard.enter(window)
+            }
         }
 
         fun requestDeletion(id: FolderId): String {
