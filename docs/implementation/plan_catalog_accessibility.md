@@ -25,11 +25,14 @@ source. The original published item and current presentation context are dispatc
 
 `PlanController.kt` retains its read-generation guard and adds independent ephemeral
 `PlanCatalogContext(dialogId, collectionId)` admission to SearchCatalog,
-LoadMoreCatalog, SelectCatalogItem and DismissCatalog. Search edits and Close belong
-to the continuously attached dialog; result, pagination and Retry callbacks also
-require their original collection. This lets multiple keyboard edits reach the same
-surviving field before recomposition without dropping the latest text, while a stale
-Retry cannot restore an obsolete query. A fresh dialog owns a fresh context.
+LoadMoreCatalog, SelectCatalogItem and DismissCatalog. Close belongs to the
+continuously attached dialog; result, pagination and Retry callbacks require their
+original collection. Search callbacks capture that collection as their producer
+identity and assign increasing ephemeral event sequences. Consecutive native edits
+from one callback before recomposition remain responsive. Accepting a callback from
+newer query state revokes the older producer; delayed or repeated events cannot
+overwrite the newer query, even with a larger sequence. Retry retains the current
+query and revokes the previous search producer. A fresh dialog owns a fresh context.
 A first-page/search request replaces collection ownership synchronously,
 clears old results and pagination, and retains the literal query through loading,
 failure and retry. Append requests retain collection ownership and already loaded
@@ -66,6 +69,23 @@ to Close. Focus movement never dispatches selection or persistence. S1 calendar 
 active-row behavior are retained.
 
 ## Executable evidence
+
+PR41 review corrections B1/W1 add three fail-first `PlanControllerTest` regressions
+for unpublished reschedule rows, modal ownership, and delayed search/retry callbacks.
+The rapid-input regression also rejects repeated or out-of-order events. Existing
+`PlanCatalogPresentationTest.keyboardQueryReplacementKeepsSearchFocusAndRejectsLateReadPublication`
+now replays an obsolete production search event and retry after native keyboard
+input advances the query. Existing parameterized
+`PlanExactDayPersistenceTest.untouchedHighPrecisionTargetSurvivesPreservationZoneTravelDismissalAndReopening`
+asserts rejected reschedule callbacks across day/week navigation, canonical
+replacement and modal ownership, with no commands or durable-fact changes before
+the existing physical-reopen assertions. These original JUnit identities are already
+in the mandatory inventory; no identity was added or removed.
+
+All three new JVM regressions failed against the original implementation. Local
+verification and AndroidTest APK assembly do not execute the native or Room-backed
+device assertions. Controller-owned device suites and exact-head CI remain required;
+manual TalkBack/Switch Access walkthroughs remain unverified.
 
 `PlanControllerTest` adds seven deterministic regressions, with explicit deferred gates
 for asynchronous work:

@@ -51,6 +51,7 @@ import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.theme.spacing
+import java.util.concurrent.atomic.AtomicLong
 
 /** One native window owns focus. Publication only recovers an actually removed keyboard target. */
 private class CatalogFocus {
@@ -100,6 +101,7 @@ internal fun PlanCatalogDialog(
     onAction: (PlanAction) -> Unit,
 ) {
     val focus = remember { CatalogFocus() }
+    val searchEvents = remember(catalog.context) { AtomicLong() }
     val scroll = rememberScrollState()
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -137,7 +139,15 @@ internal fun PlanCatalogDialog(
                 ) {
                     LifeTracingOutlinedTextField(
                         catalog.query,
-                        { onAction(PlanAction.SearchCatalog(it, catalog.context)) },
+                        {
+                            onAction(
+                                PlanAction.SearchCatalog(
+                                    it,
+                                    catalog.context,
+                                    editSequence = searchEvents.incrementAndGet(),
+                                ),
+                            )
+                        },
                         modifier = catalogSearchFocusTarget(focus),
                         label = { Text(stringResource(R.string.plan_search)) },
                     )

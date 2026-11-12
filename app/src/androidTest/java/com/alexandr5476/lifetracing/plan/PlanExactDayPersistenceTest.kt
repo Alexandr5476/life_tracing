@@ -145,6 +145,8 @@ class PlanExactDayPersistenceTest(
                 val original = fixture.seed("2026-10-25T02:30:27.123", 1)
                 val focus = fixture.store.reads.getFocusedAction(original.id)
                 val before = fixture.store.durableFacts()
+                fixture.rejectObsoleteReschedule(original)
+                assertEquals(before, fixture.store.durableFacts())
                 fixture.store.forbidPlanUpdates()
                 fixture.open(original)
                 fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId))
@@ -526,7 +528,68 @@ class PlanExactDayPersistenceTest(
                 .single { it.plan.id == id }
         }
 
-        fun open(plan: PlanEntry) = controller.dispatch(PlanAction.Reschedule(row(plan.id)))
+        suspend fun rejectObsoleteReschedule(plan: PlanEntry) {
+            val date = requireNotNull(row(plan.id).effectiveLocalDate)
+            val navigation =
+                listOf(
+                    PlanAction.SelectDate(date.minusDays(1)),
+                    PlanAction.NextWeek,
+                    PlanAction.Refresh,
+                )
+            for (navigate in navigation) {
+                open(plan)
+                val published =
+                    (controller.state.value.week as PlanLoad.Content)
+                        .value.selectedDayPlans
+                        .single { it.plan.id == plan.id }
+                controller.dispatch(PlanAction.DismissForm(controller.formId))
+                controller.dispatch(navigate)
+                controller.dispatch(PlanAction.Reschedule(published))
+                assertNull(controller.state.value.form)
+                ready()
+                controller.dispatch(PlanAction.Reschedule(published))
+                assertNull(controller.state.value.form)
+            }
+            open(plan)
+            val published =
+                (controller.state.value.week as PlanLoad.Content)
+                    .value.selectedDayPlans
+                    .single { it.plan.id == plan.id }
+            controller.dispatch(PlanAction.DismissForm(controller.formId))
+            controller.dispatch(PlanAction.OpenCatalog)
+            val dialog = requireNotNull(controller.state.value.catalog).context.dialogId
+            controller.dispatch(PlanAction.Reschedule(published))
+            assertNull(controller.state.value.form)
+            assertEquals(
+                dialog,
+                controller.state.value.catalog
+                    ?.context
+                    ?.dialogId,
+            )
+            controller.dispatch(PlanAction.DismissCatalog(requireNotNull(controller.state.value.catalog).context))
+            controller.dispatch(PlanAction.Reschedule(published))
+            val form = requireNotNull(controller.state.value.form)
+            controller.dispatch(PlanAction.Reschedule(published))
+            assertEquals(form, controller.state.value.form)
+            controller.dispatch(PlanAction.DismissForm(form.formId))
+            assertTrue(commands.isEmpty())
+        }
+
+        suspend fun open(plan: PlanEntry) {
+            val date = requireNotNull(row(plan.id).effectiveLocalDate)
+            val week =
+                date.with(
+                    java.time.temporal.TemporalAdjusters
+                        .previousOrSame(java.time.DayOfWeek.MONDAY),
+                )
+            while (controller.state.value.weekStart < week) controller.dispatch(PlanAction.NextWeek)
+            while (controller.state.value.weekStart > week) controller.dispatch(PlanAction.PreviousWeek)
+            controller.dispatch(PlanAction.SelectDate(date))
+            controller.dispatch(PlanAction.Refresh)
+            ready()
+            val read = (controller.state.value.week as PlanLoad.Content).value
+            controller.dispatch(PlanAction.Reschedule(read.selectedDayPlans.single { it.plan.id == plan.id }))
+        }
 
         fun onlyPlan(day: String = "2026-10-25"): PlanEntry {
             val date = LocalDate.parse(day)

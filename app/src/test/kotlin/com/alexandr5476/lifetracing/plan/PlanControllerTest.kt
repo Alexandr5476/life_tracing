@@ -40,6 +40,118 @@ import java.util.concurrent.Executor
 
 class PlanControllerTest {
     @Test
+    fun rescheduleRejectsUnpublishedRowsDuringAndAfterDayOrWeekNavigation() =
+        runBlocking {
+            val navigation =
+                listOf(
+                    PlanAction.NextWeek,
+                    PlanAction.PreviousWeek,
+                    PlanAction.SelectDate(LocalDate.parse("2026-09-16")),
+                )
+            for (navigate in navigation) {
+                val writes = mutableListOf<PlanMutation>()
+                val controller =
+                    controller(readWeek = { query ->
+                        week(query, row("published", 1).takeIf { query.selectedDate == LocalDate.parse("2026-09-15") })
+                    }, commit = { writes += it })
+                try {
+                    val original = withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                    val obsolete = (original.week as PlanLoad.Content).value.selectedDayPlans.single()
+                    controller.dispatch(navigate)
+                    controller.dispatch(PlanAction.Reschedule(obsolete))
+                    assertNull(controller.state.value.form, "Loading calendar must not admit the previous row")
+                    withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                    controller.dispatch(PlanAction.Reschedule(obsolete))
+                    assertNull(controller.state.value.form, "Off-screen row must not own a form")
+                    assertTrue(writes.isEmpty())
+                } finally {
+                    controller.close()
+                }
+            }
+        }
+
+    @Test
+    fun rescheduleRequiresExactPublishedRowAndCannotReplaceAnotherModal() =
+        runBlocking {
+            val writes = mutableListOf<PlanMutation>()
+            val controller = controller(readWeek = { week(it, row("published", 1)) }, commit = { writes += it })
+            try {
+                val initial = withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                val obsolete = (initial.week as PlanLoad.Content).value.selectedDayPlans.single()
+                controller.dispatch(PlanAction.Refresh)
+                val refreshed = withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+                val current = (refreshed.week as PlanLoad.Content).value.selectedDayPlans.single()
+                // Equal values and the same writer token do not renew publication ownership.
+                assertEquals(obsolete, current)
+                for (unpublished in listOf(obsolete, current.copy(), row("absent", 1))) {
+                    controller.dispatch(PlanAction.Reschedule(unpublished))
+                    assertNull(controller.state.value.form)
+                }
+                controller.dispatch(PlanAction.OpenCatalog)
+                val catalog = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                controller.dispatch(PlanAction.Reschedule(current))
+                assertEquals(catalog, controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                controller.dispatch(PlanAction.SelectCatalogItem(source, catalog.context))
+                val creation = requireNotNull(controller.state.value.form)
+                controller.dispatch(PlanAction.Reschedule(current))
+                assertEquals(creation, controller.state.value.form)
+                controller.dispatch(PlanAction.DismissForm(creation.formId))
+                controller.dispatch(PlanAction.OpenCancelled)
+                val cancelled = controller.state.value
+                controller.dispatch(PlanAction.Reschedule(current))
+                assertEquals(cancelled, controller.state.value)
+                controller.dispatch(PlanAction.DismissCancelled(requireNotNull(cancelled.cancelledContext)))
+                controller.dispatch(PlanAction.Reschedule(current))
+                val reschedule = requireNotNull(controller.state.value.form)
+                assertEquals(current.plan.id, reschedule.identity?.planEntryId)
+                controller.dispatch(PlanAction.Reschedule(current))
+                assertEquals(reschedule, controller.state.value.form)
+                controller.dispatch(PlanAction.DismissForm(reschedule.formId))
+                assertTrue(writes.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
+    fun delayedSearchAndRetryCannotOverwriteANewerAcceptedQueryOrReplacementDialog() =
+        runBlocking {
+            val writes = mutableListOf<PlanMutation>()
+            val requests = mutableListOf<String>()
+            val controller =
+                controller(readCatalog = { query, _, _ ->
+                    requests += query
+                    listOf(source)
+                }, commit = { writes += it })
+            try {
+                controller.dispatch(PlanAction.OpenCatalog)
+                val first = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                val delayed = PlanAction.SearchCatalog("obsolete", first.context, editSequence = 100)
+                val retry = PlanAction.SearchCatalog(first.query, first.context, retry = true)
+                controller.dispatch(PlanAction.SearchCatalog("a", first.context))
+                val edited = requireNotNull(controller.state.value.catalog)
+                controller.dispatch(PlanAction.SearchCatalog("ab", edited.context))
+                val accepted = requireNotNull(controller.state.value.catalog)
+                controller.dispatch(delayed)
+                controller.dispatch(retry)
+                assertEquals(accepted, controller.state.value.catalog)
+                withTimeout(2_000) { controller.state.first { it.catalog?.loading == false } }
+                assertEquals(listOf("", "a", "ab"), requests)
+                controller.dispatch(PlanAction.DismissCatalog(accepted.context))
+                controller.dispatch(PlanAction.OpenCatalog)
+                val replacement = requireNotNull(controller.state.value.catalog)
+                controller.dispatch(delayed)
+                controller.dispatch(retry)
+                assertEquals(replacement, controller.state.value.catalog)
+                assertNull(controller.state.value.form)
+                assertTrue(writes.isEmpty())
+            } finally {
+                controller.close()
+            }
+        }
+
+    @Test
     fun reentryConsumesQueuedInvalidationWithoutRepeatingItsBlockedRead() {
         val tasks = ArrayDeque<Runnable>()
         val dispatcher = Executor { tasks.addLast(it) }.asCoroutineDispatcher()
@@ -959,7 +1071,7 @@ class PlanControllerTest {
     fun obsoleteCatalogActionsCannotOwnNewQueryDialogFormOrHiddenRoute() =
         runBlocking {
             val mutations = mutableListOf<PlanMutation>()
-            val controller = controller(commit = { mutations += it })
+            val controller = controller(readWeek = { week(it, row("existing", 1)) }, commit = { mutations += it })
             try {
                 controller.dispatch(PlanAction.OpenCatalog)
                 val first = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
@@ -997,7 +1109,9 @@ class PlanControllerTest {
                 assertNull(controller.state.value.catalog)
                 controller.dispatch(PlanAction.OpenCatalog)
                 val replaced = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
-                controller.dispatch(PlanAction.Reschedule(row("existing", 1)))
+                controller.dispatch(PlanAction.DismissCatalog(replaced.context))
+                val published = (controller.state.value.week as PlanLoad.Content).value.selectedDayPlans.single()
+                controller.dispatch(PlanAction.Reschedule(published))
                 val reschedule = controller.state.value.form
                 controller.dispatch(PlanAction.SelectCatalogItem(source, replaced.context))
                 controller.dispatch(PlanAction.SearchCatalog("obsolete replacement", replaced.context))
@@ -1217,8 +1331,9 @@ class PlanControllerTest {
             try {
                 controller.dispatch(PlanAction.OpenCatalog)
                 val first = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
-                controller.dispatch(PlanAction.SearchCatalog("a", first.context))
-                controller.dispatch(PlanAction.SearchCatalog("ab", first.context))
+                controller.dispatch(PlanAction.SearchCatalog("a", first.context, editSequence = 1))
+                controller.dispatch(PlanAction.SearchCatalog("ab", first.context, editSequence = 2))
+                controller.dispatch(PlanAction.SearchCatalog("delayed a", first.context, editSequence = 1))
                 assertEquals(
                     "ab",
                     controller.state.value.catalog
@@ -1246,7 +1361,7 @@ class PlanControllerTest {
                 controller(
                     readWeek = {
                         if (rejectRead) error("canonical read failed after commit")
-                        week(it)
+                        week(it, row("pending", 1))
                     },
                     commit = {
                         mutations += it
@@ -1256,7 +1371,8 @@ class PlanControllerTest {
                 )
             try {
                 withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
-                controller.dispatch(PlanAction.Reschedule(row("pending", 1)))
+                val published = (controller.state.value.week as PlanLoad.Content).value.selectedDayPlans.single()
+                controller.dispatch(PlanAction.Reschedule(published))
                 val form = requireNotNull(controller.state.value.form)
                 val save = PlanAction.SubmitForm(form.formId, form.inputRevision)
                 controller.dispatch(save)

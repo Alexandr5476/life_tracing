@@ -198,6 +198,7 @@ class PlanCatalogPresentationTest {
         val search = compose.onNodeWithTag("plan-catalog-search")
         keyboard.sendKey(search, KeyEvent.KEYCODE_A)
         compose.waitUntil { enteredA.isCompleted }
+        val obsoleteSearch = fixture.actions.filterIsInstance<PlanAction.SearchCatalog>().last()
         keyboard.awaitFocus(search)
         compose.onNodeWithTag(catalogResultTag(activity.id)).assertDoesNotExist()
         keyboard.sendKey(search, KeyEvent.KEYCODE_B)
@@ -205,6 +206,16 @@ class PlanCatalogPresentationTest {
             fixture.controller.state.value.catalog
                 ?.query == "ab"
         }
+        assertEquals("ab", search.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        compose.runOnIdle {
+            fixture.controller.dispatch(obsoleteSearch.copy(query = "obsolete", editSequence = Long.MAX_VALUE))
+            fixture.controller.dispatch(PlanAction.SearchCatalog("a", obsoleteSearch.context, retry = true))
+        }
+        assertEquals(
+            "ab",
+            fixture.controller.state.value.catalog
+                ?.query,
+        )
         assertEquals("ab", search.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         compose.runOnIdle { releaseB.complete(Unit) }
         compose.waitUntil {

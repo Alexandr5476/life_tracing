@@ -54,12 +54,12 @@ class PlanExactDayControllerTest {
             for (nextId in listOf("plan", "another-plan")) {
                 val fixture = PlanScheduleControllerFixture(this)
                 try {
-                    fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                    fixture.openExisting()
                     fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
                     val obsolete = fixture.selection(ZoneOffset.ofHours(1))
                     fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId))
                     val next = existingExactPlanRow().let { it.copy(plan = it.plan.copy(id = PlanEntryId(nextId))) }
-                    fixture.controller.dispatch(PlanAction.Reschedule(next))
+                    fixture.openExisting(next)
                     fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
                     assertEquals(obsolete.inputRevision, fixture.form.inputRevision)
                     fixture.controller.dispatch(obsolete)
@@ -90,7 +90,7 @@ class PlanExactDayControllerTest {
                     val fixture = PlanScheduleControllerFixture(this)
                     try {
                         if (existing) {
-                            fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                            fixture.openExisting()
                             fixture.controller.dispatch(
                                 PlanAction.ChangeScheduleDate("2026-10-26", fixture.controller.formId),
                             )
@@ -300,7 +300,7 @@ class PlanExactDayControllerTest {
         runBlocking {
             val fixture = PlanScheduleControllerFixture(this)
             try {
-                fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                fixture.openExisting()
                 val identity = fixture.form.identity
                 assertTrue(fixture.form.preservesExistingSchedule)
                 assertTrue(fixture.form.offsetChoices.isEmpty())
@@ -308,7 +308,7 @@ class PlanExactDayControllerTest {
                 fixture.signal.value++
                 fixture.submit()
                 assertEquals(identity, (fixture.mutations.single() as PlanMutation.PreserveSchedule).identity)
-                fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                fixture.openExisting()
                 fixture.controller.dispatch(PlanAction.DismissForm(fixture.controller.formId))
                 assertEquals(1, fixture.mutations.size)
                 assertNull(fixture.controller.state.value.form)
@@ -322,7 +322,7 @@ class PlanExactDayControllerTest {
         runBlocking {
             val fixture = PlanScheduleControllerFixture(this)
             try {
-                fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                fixture.openExisting()
                 fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId))
                 fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:30", fixture.controller.formId))
                 assertFalse(fixture.form.preservesExistingSchedule)
@@ -347,7 +347,7 @@ class PlanExactDayControllerTest {
                     val fixture = PlanScheduleControllerFixture(this)
                     try {
                         if (existing) {
-                            fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                            fixture.openExisting()
                             fixture.controller.dispatch(
                                 PlanAction.ChangeScheduleTime("02:31", fixture.controller.formId),
                             )
@@ -497,7 +497,7 @@ class PlanExactDayControllerTest {
         runBlocking {
             val fixture = PlanScheduleControllerFixture(this)
             try {
-                fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                fixture.openExisting()
                 fixture.controller.dispatch(PlanAction.ChangeScheduleDate(fixture.form.date, fixture.controller.formId))
                 fixture.controller.dispatch(PlanAction.ChangeScheduleTime(fixture.form.time, fixture.controller.formId))
                 fixture.controller.dispatch(PlanAction.ChangeScheduleKind(fixture.form.kind, fixture.controller.formId))

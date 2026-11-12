@@ -33,12 +33,13 @@ internal class PlanScheduleControllerFixture(
     val signal = MutableStateFlow(0L)
     val mutations = mutableListOf<PlanMutation>()
     var readCount = 0
+    private var publishedRows = emptyList<PlanReadRow>()
     val controller =
         PlanController(
             scope,
             {
                 readCount++
-                WeekPlanRead(it.weekStart, it.selectedDate, emptyList(), emptyList(), emptyList())
+                WeekPlanRead(it.weekStart, it.selectedDate, publishedRows, emptyList(), emptyList())
             },
             { _, _, _ ->
                 listOf(
@@ -112,6 +113,17 @@ internal class PlanScheduleControllerFixture(
     fun choose(offset: ZoneOffset) = controller.dispatch(selection(offset))
 
     suspend fun ready() = withTimeout(2_000) { controller.state.first { it.week is PlanLoad.Content } }
+
+    suspend fun openExisting(row: PlanReadRow = existingExactPlanRow()) {
+        controller.state.value.form
+            ?.let { controller.dispatch(PlanAction.DismissForm(it.formId)) }
+        controller.state.value.catalog
+            ?.let { controller.dispatch(PlanAction.DismissCatalog(it.context)) }
+        publishedRows = listOf(row)
+        controller.dispatch(PlanAction.Refresh)
+        ready()
+        controller.dispatch(PlanAction.Reschedule(row))
+    }
 
     suspend fun submit() {
         controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))

@@ -97,6 +97,9 @@ class PlanLifecycleControllerTest {
                 cancelledRow("form").let {
                     it.copy(plan = it.plan.copy(status = PlanEntryStatus.PLANNED, cancelledAt = null))
                 }
+            f.active = listOf(active)
+            f.controller.dispatch(PlanAction.Refresh)
+            f.drain()
             f.controller.dispatch(PlanAction.Reschedule(active))
             val form = f.controller.state.value.form
             assertTrue(form != null)

@@ -138,6 +138,7 @@ sealed interface PlanAction {
         val query: String,
         val context: PlanCatalogContext,
         val retry: Boolean = false,
+        val editSequence: Long = 0,
     ) : PlanAction
 
     data class LoadMoreCatalog(
@@ -276,6 +277,8 @@ class PlanController internal constructor(
 ) {
     private val readGeneration = AtomicLong()
     private val catalogGeneration = AtomicLong()
+    private var catalogSearchContext: PlanCatalogContext? = null
+    private var catalogSearchSequence = -1L
     private val cancelledGeneration = AtomicLong()
     private val mutationInFlight = AtomicBoolean()
     private val recoveryLock = Any()
@@ -326,10 +329,7 @@ class PlanController internal constructor(
                     }
                 PlanAction.OpenCatalog -> openCatalog()
                 is PlanAction.DismissCatalog -> if (ownsCatalogDialog(action.context)) dismissCatalog()
-                is PlanAction.SearchCatalog ->
-                    if (ownsCatalogDialog(action.context) && (!action.retry || ownsCatalog(action.context))) {
-                        loadCatalog(action.query, null, false)
-                    }
+                is PlanAction.SearchCatalog -> searchCatalog(action)
                 is PlanAction.LoadMoreCatalog ->
                     if (ownsCatalog(action.context)) {
                         mutableState.value.catalog?.let {
@@ -548,8 +548,8 @@ class PlanController internal constructor(
             }
         }
 
-    // Search and Close belong to the surviving dialog, rather than a removed result collection.
-    // Result, pagination and Retry callbacks additionally require their original collection.
+    // Close belongs to the surviving dialog. Results, pagination and Retry require their collection.
+    // Search additionally orders events from the currently accepted text-field callback producer.
     private fun ownsCatalogDialog(context: PlanCatalogContext): Boolean =
         !closed &&
             visible &&
@@ -560,7 +560,27 @@ class PlanController internal constructor(
     private fun ownsCatalog(context: PlanCatalogContext): Boolean =
         ownsCatalogDialog(context) && mutableState.value.catalog?.context == context
 
+    private fun searchCatalog(action: PlanAction.SearchCatalog) {
+        if (!ownsCatalogDialog(action.context)) return
+        val sameProducer = action.context == catalogSearchContext
+        val admitted =
+            if (action.retry) {
+                ownsCatalog(action.context) && action.query == mutableState.value.catalog?.query
+            } else {
+                action.editSequence >= 0 &&
+                    (ownsCatalog(action.context) || sameProducer) &&
+                    (!sameProducer || action.editSequence > catalogSearchSequence)
+            }
+        if (!admitted) return
+        // Consecutive native edits before recomposition retain this producer. Once a callback
+        // from newer query state is accepted, the old producer cannot regain authority.
+        catalogSearchContext = if (action.retry) null else action.context
+        catalogSearchSequence = action.editSequence
+        loadCatalog(action.query, null, false)
+    }
+
     private fun dismissCatalog() {
+        catalogSearchContext = null
         catalogGeneration.incrementAndGet()
         mutableState.update { it.copy(catalog = null) }
     }
@@ -568,6 +588,7 @@ class PlanController internal constructor(
     private fun openCatalog() {
         val unavailable = closed || !visible || mutationInFlight.get()
         if (unavailable || mutableState.value.cancelledOpen) return
+        catalogSearchContext = null
         mutableState.update { it.copy(catalog = PlanCatalogState(), form = null) }
         loadCatalog("", null, false)
     }
@@ -661,9 +682,7 @@ class PlanController internal constructor(
     }
 
     private fun openReschedule(row: PlanReadRow) {
-        if (closed || !visible || mutableState.value.cancelledOpen) return
-        if (mutableState.value.isMutating || !row.isMutable()) return
-        dismissCatalog()
+        if (!ownsActiveRow(row) || mutableState.value.isMutating) return
         val zone = zoneId()
         val (kind, date, time) = row.plan.target.toForm(zone)
         mutableState.update {

@@ -56,6 +56,13 @@ Actual kind/date/time edits permanently revoke preservation, even after restorin
 text. Edited proposals still pass PlanScheduleInput and public writer validation;
 equivalence, optimistic identity, engagement and lifecycle remain writer decisions.
 
+PR41 B1 aligns Reschedule with Cancel/Update admission: only the exact row object
+in the currently published canonical Day/Week collection can open a form, while
+the calendar owns the visible surface. Loading, off-screen, replaced and fabricated
+equal rows are rejected. Catalog, Cancelled and scheduling modals prevent a late
+calendar callback from replacing their owner. This is ephemeral presentation
+admission; writer validation and unchanged-target preservation remain unchanged.
+
 New and edited ExactDay forms retain literal date/time strings and the captured
 zone. Gaps, malformed dates/times, invalid Week anchors, ambiguity, invalid offsets
 and submillisecond precision remain blocking typed errors. Overlaps have no default:

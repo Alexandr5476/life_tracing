@@ -71,7 +71,7 @@ class PlanScheduleOwnershipTest {
                             if (oldCreation) {
                                 fixture.newExact(false)
                             } else {
-                                fixture.controller.dispatch(PlanAction.Reschedule(existingExactPlanRow()))
+                                fixture.openExisting()
                                 fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.form.formId))
                             }
                             val old = fixture.form
@@ -95,7 +95,7 @@ class PlanScheduleOwnershipTest {
                                             plan = it.plan.copy(id = PlanEntryId("replacement")),
                                         )
                                     }
-                                fixture.controller.dispatch(PlanAction.Reschedule(row))
+                                fixture.openExisting(row)
                                 fixture.controller.dispatch(PlanAction.ChangeScheduleTime("02:31", fixture.form.formId))
                             }
                             fixture.choose(ZoneOffset.ofHours(1))
@@ -164,7 +164,7 @@ class PlanScheduleOwnershipTest {
                 val fixture = PlanScheduleControllerFixture(this)
                 try {
                     val row = existingExactPlanRow().let { it.copy(plan = it.plan.copy(target = target)) }
-                    fixture.controller.dispatch(PlanAction.Reschedule(row))
+                    fixture.openExisting(row)
                     val original = fixture.form
                     fixture.zone = ZoneId.of("Pacific/Auckland")
                     fixture.controller.dispatch(PlanAction.ChangeScheduleKind(original.kind, original.formId))
@@ -175,7 +175,7 @@ class PlanScheduleOwnershipTest {
                         original.identity,
                         (fixture.mutations.single() as PlanMutation.PreserveSchedule).identity,
                     )
-                    fixture.controller.dispatch(PlanAction.Reschedule(row))
+                    fixture.openExisting(row)
                     val form = fixture.form
                     fixture.controller.dispatch(PlanAction.ChangeScheduleDate("invalid", form.formId))
                     fixture.controller.dispatch(PlanAction.ChangeScheduleDate(form.date, form.formId))
