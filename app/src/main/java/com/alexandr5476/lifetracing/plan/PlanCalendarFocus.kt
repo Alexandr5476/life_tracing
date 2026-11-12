@@ -1,0 +1,160 @@
+package com.alexandr5476.lifetracing.plan
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalWindowInfo
+import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
+
+/** Ephemeral native keyboard ownership. No Plan identity, command, or virtual-focus authority. */
+internal class PlanCalendarFocus {
+    val back = FocusRequester()
+    val add = FocusRequester()
+    val cancelled = FocusRequester()
+    val today = FocusRequester()
+    val selectedDay = FocusRequester()
+    val retry = FocusRequester()
+    var owner: Any? = null
+    var removed by mutableStateOf<Any?>(null)
+    var awaitingRead by mutableStateOf(false)
+    var recovering = false
+}
+
+internal val LocalPlanCalendarFocus = staticCompositionLocalOf { PlanCalendarFocus() }
+
+@Composable
+internal fun rememberPlanCalendarFocus(
+    state: PlanPresentationState,
+    isVisible: Boolean,
+): PlanCalendarFocus {
+    val focus = remember { PlanCalendarFocus() }
+    val window = LocalWindowInfo.current
+    val mode = LocalInputModeManager.current.inputMode
+    val hasDialog = state.hasCalendarDialog()
+    val interactive = isVisible && !hasDialog
+    var landingPending by remember { mutableStateOf(isVisible) }
+    restoreDialogEntryFocus(state, isVisible, interactive, focus)
+    LaunchedEffect(isVisible) {
+        focus.owner = null
+        focus.removed = null
+        focus.awaitingRead = false
+        landingPending = isVisible
+    }
+    LaunchedEffect(interactive, window.isWindowFocused, mode, landingPending) {
+        if (interactive && window.isWindowFocused && landingPending) {
+            withFrameNanos { }
+            landingPending = !focus.back.requestFocus()
+        }
+    }
+    val loading = state.week is PlanLoad.Loading
+    val failure = state.week is PlanLoad.Failure
+    val hasSelectedDay =
+        (state.week as? PlanLoad.Content)?.value?.let { read ->
+            read.dayPresence.any { it.date == read.selectedDate }
+        } == true
+    LaunchedEffect(interactive, window.isWindowFocused, mode, focus.removed, loading, failure, hasSelectedDay) {
+        val needsRecovery = focus.removed != null || focus.awaitingRead && !loading
+        if (!interactive) {
+            focus.removed = null
+            focus.awaitingRead = false
+        } else if (window.isWindowFocused && needsRecovery) {
+            withFrameNanos { }
+            focus.recovering = true
+            val target =
+                when {
+                    failure -> focus.retry
+                    hasSelectedDay -> focus.selectedDay
+                    else -> focus.today
+                }
+            target.requestFocus()
+            focus.recovering = false
+            focus.removed = null
+            focus.awaitingRead = loading
+        }
+    }
+    return focus
+}
+
+@Composable
+@Suppress("CyclomaticComplexMethod") // Three existing modal return paths share one native window owner.
+private fun restoreDialogEntryFocus(
+    state: PlanPresentationState,
+    isVisible: Boolean,
+    interactive: Boolean,
+    focus: PlanCalendarFocus,
+) {
+    val window = LocalWindowInfo.current
+    val mode = LocalInputModeManager.current.inputMode
+    var hadCatalog by remember { mutableStateOf(false) }
+    var hadCancelled by remember { mutableStateOf(false) }
+    var returnToCancelled by remember { mutableStateOf(false) }
+    var priorForm by remember { mutableStateOf<PlanScheduleForm?>(null) }
+    var pending by remember { mutableStateOf(false) }
+    var returnToAdd by remember { mutableStateOf(true) }
+    LaunchedEffect(state.catalog != null, state.form?.formId, state.cancelledOpen, isVisible) {
+        returnToCancelled = false
+        if (hadCancelled && !state.cancelledOpen && interactive) {
+            pending = true
+            returnToCancelled = true
+        }
+        hadCancelled = state.cancelledOpen
+        if (hadCatalog && state.catalog == null && interactive) {
+            pending = true
+            returnToAdd = true
+        }
+        if (priorForm != null && state.form == null && interactive) {
+            pending = true
+            returnToAdd = priorForm?.identity == null
+        }
+        hadCatalog = state.catalog != null
+        priorForm = state.form
+        if (!interactive) pending = false
+    }
+    LaunchedEffect(pending, interactive, window.isWindowFocused, mode, state.isMutating, state.week) {
+        if (pending && interactive && window.isWindowFocused) {
+            withFrameNanos { }
+            val target = if (returnToCancelled) focus.cancelled else state.dialogReturnTarget(focus, returnToAdd)
+            pending = !target.requestFocus()
+        }
+    }
+}
+
+private fun PlanPresentationState.dialogReturnTarget(
+    focus: PlanCalendarFocus,
+    returnToAdd: Boolean,
+): FocusRequester {
+    val hasDay = (week as? PlanLoad.Content)?.value?.dayPresence?.any { it.date == selectedDate } == true
+    return when {
+        returnToAdd && !isMutating -> focus.add
+        week is PlanLoad.Failure -> focus.retry
+        hasDay -> focus.selectedDay
+        else -> focus.today
+    }
+}
+
+private fun PlanPresentationState.hasCalendarDialog() = form != null || catalog != null || cancelledOpen
+
+/** Remember inside a date/PlanEntryId key so reordering cannot reuse another row's focus node. */
+@Composable
+internal fun planCalendarFocusTarget(): Modifier {
+    val focus = LocalPlanCalendarFocus.current
+    val token = remember { Any() }
+    return Modifier
+        .onFocusTargetAttachmentChanged { attached ->
+            if (!attached && focus.owner === token) focus.removed = token
+        }.onFocusChanged {
+            if (it.isFocused) {
+                focus.owner = token
+                if (!focus.recovering && focus.removed == null) focus.awaitingRead = false
+            }
+        }
+}

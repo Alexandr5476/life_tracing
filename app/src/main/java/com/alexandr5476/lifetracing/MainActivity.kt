@@ -533,6 +533,7 @@ internal fun LifeTracingApp(
                             PlanRoute(
                                 planController,
                                 isRouteVisible = backStack.lastOrNull() == PlanRoot,
+                                ownsRoute = { backStack.lastOrNull() == PlanRoot },
                                 onBack = backStack::removePlan,
                                 onExecute = { identity ->
                                     planExecutionSessions

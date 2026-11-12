@@ -1,5 +1,15 @@
 # Android compatibility release gate
 
+## Plan calendar and active-row accessibility (S1)
+
+The mandatory inventory adds nine PlanScreenPresentationTest identities while
+retaining all prior cases. They cover localized canonical calendar context, native
+selection/actions, repeated management targets, strict temporal projection metadata,
+keyboard recovery and EN/RU scale extremes. See [Plan calendar accessibility
+evidence](plan_calendar_accessibility.md). Controller owns ci-fast, gmd-app and
+the independent unfiltered compatibility gates; APK assembly supplies no device or
+manual accessibility certification.
+
 ## Canonical-focus fixture and API26 graphics DMA repair (PR40, 2026-11-11)
 
 Run `42942194350`, head `8f6d9186a8dcfb535dd2bdd658aa4215d04afc6e`, reports
@@ -1464,3 +1474,88 @@ The original API26 profile, physical-raster assertions, full testcase inventory,
 increase API36 preparation time. Fresh exact-head CI must establish all original
 data/app/startup results on every API; local controls provide no full-matrix PASS
 credit and do not replace Controller review or the new Lead response.
+
+## S2 Add to Plan catalog accessibility boundary
+
+The inventory adds seven native catalog presentation identities and one source-scoped
+Room/controller write-free identity. All prior identities remain mandatory, including
+PlanScreenPresentationTest, PlanExactDayPresentationTest, execution regressions and
+MainActivity route-session cases. The existing Library typed bounded-keyset reader
+and its no-graph-hydration regression are unchanged. Controller owns ci-fast,
+gmd-app and independent exact-head GitHub compatibility execution. Local APK
+packaging does not execute instrumented keyboard/focus assertions or certify manual
+TalkBack/Switch Access operation. See [catalog evidence](plan_catalog_accessibility.md)
+for exact ownership, typed-source, failure/pagination, localization/scaling coverage
+and the remaining device/manual verification boundary.
+
+
+## S3 scheduling form accessibility boundary
+
+The app inventory adds seven original JUnit4 identities in
+`PlanScheduleAccessibilityTest`. Prior S1/S2 calendar/catalog, strict ExactDay,
+physical persistence, focused execution, MainActivity route-session, repository and
+migration identities remain mandatory. New cases combine native keyboard/semantics
+with production controller/repository writes and physical database reopen/canonical
+reads, plus EN/RU and interface/text/system-font extremes. See
+[scheduling evidence](plan_schedule_accessibility.md) for admission, preservation,
+focus, temporal/failure coverage and the device/manual verification boundary.
+Controller owns ci-fast, gmd-app and independent exact-head compatibility execution.
+Host compilation/APK packaging grants no device PASS or manual TalkBack/Switch
+Access certification.
+
+
+S3 host verification (2026-11-11): the final direct CMD Gradle invocation exited 0;
+70 focused Plan JVM cases have zero failures/errors/skips, app ktlint/Detekt/
+lintDebug passed, and AndroidTest APK assembly passed. Every prior inventory
+identity remains; the seven new methods match their registrations. EN/RU XML and
+diff checks passed. These results are host evidence only; native EN/RU scaling,
+physical reopen and accessibility action assertions still require Controller device
+execution, and no manual TalkBack/Switch Access certification is claimed.
+
+
+S3 API35 repair (2026-11-11): Controller attempt 1 completed 615 cases with four
+failures, all at the shared scheduling test's reschedule-entry wait. The fixture
+selected an out-of-week date without first navigating from October 19 to October
+26. Its helper now uses native week/day navigation before the unchanged exact-row
+Reschedule action and downstream assertions. All seven scheduling identities remain.
+AndroidTest APK assembly, app ktlint and Detekt passed locally; inventory and diff
+checks passed. The authorized containing-class probe returned "No active
+repair-probe lease" before device/testcase admission. Original device failures
+remain pending Controller runtime revalidation; no new device/CI PASS is claimed.
+See [repair evidence](plan_schedule_accessibility.md) for the causal fixture details.
+
+
+S3 causal visibility repair (2026-11-11): the four-case API35 rerun passed the
+three reschedule/preservation/Close cases but failed Russian creation-context
+visibility in the scale matrix. The fixture now establishes the current native
+window/keyboard owner, moves focus out of editable fields and dismisses the IME
+before its unchanged passive-text visibility assertions. Failure diagnostics retain
+locale/scale, bounds, scrolling and native/Compose focus through the existing
+acknowledged transport. Production behavior and all seven identities are unchanged.
+AndroidTest compilation/APK assembly and app ktlint/Detekt passed. The authorized
+probe again reported no active lease before device admission. The original Russian
+visibility failure remains unverified, and focus/IME relocation is an assessment
+rather than a confirmed runtime cause. Controller device/CI gates remain required.
+
+
+## S4 Plan lifecycle and restoration accessibility boundary
+
+The mandatory inventory adds ten PlanLifecycleAccessibilityTest identities and two
+PlanCommandRepositoryTest transaction identities, retaining every prior case.
+See [lifecycle accessibility evidence](plan_lifecycle_accessibility.md) for native
+identity/focus/scaling, bounded pagination, stale-dialog admission, canonical
+recovery and physical reopen coverage. Controller owns ci-fast, gmd-app and
+independent exact-head compatibility execution. Host compilation/APK assembly is
+not device execution or manual TalkBack/Switch Access certification.
+
+
+## PR41 B2 / W2 navigation and calendar ownership correction
+
+The mandatory app inventory adds three `PlanExecuteNavigationAuthorityTest` cases
+and `PlanScheduleAccessibilityTest.obsoleteCalendarAndAddCallbacksPreserveDialogDefaultAndPhysicalTarget`.
+Existing B1/W1, focused execution, Plan physical persistence and compatibility
+identities remain mandatory. See [calendar ownership correction](plan_calendar_accessibility.md)
+for callback authority and regression scope. Controller must retain device
+fail-first/corrected evidence and run unfiltered API 26/31/33/35/36 plus exact-head
+CI. Host APK packaging does not execute native or physical-reopen assertions and
+does not certify TalkBack or Switch Access.

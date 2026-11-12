@@ -21,6 +21,7 @@ import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
@@ -30,6 +31,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -1632,7 +1634,13 @@ class LibraryAccessibilityRouteTest {
                     R.string.sequence_editor_override_sound,
                     R.string.sequence_editor_off,
                 ).performSemanticsAction(SemanticsActions.OnClick)
-            f.stepControl(linkedIdentity, R.string.sequence_editor_override_countdown).performTextReplacement("0")
+            val countdown = f.stepControl(linkedIdentity, R.string.sequence_editor_override_countdown)
+            // Hardware-keyboard editing does not require a visible software IME.
+            // Establish the intended edit target without depending on platform IME policy.
+            countdown
+                .performSemanticsAction(SemanticsActions.RequestFocus)
+                .awaitKeyboardFocus()
+                .performTextReplacement("0")
             assertEquals(
                 Duration.ZERO,
                 f
@@ -2644,6 +2652,18 @@ class LibraryAccessibilityRouteTest {
                 java.util.concurrent.atomic
                     .AtomicInteger()
 
+            fun checkpoint(phase: String) {
+                val message =
+                    "Source recovery operation=${f.text(operation)} phase=$phase " +
+                        "attempts=${attempts.get()} accepted=${accepted.get()} reads=${reads.get()}"
+                android.util.Log.i("LibrarySourceRecovery", message)
+                // API 26 managed devices cannot retain additionalTestOutput. Send phases
+                // to the host as well, so emulator loss cannot erase the last reached step.
+                androidx.test.platform.app.InstrumentationRegistry
+                    .getInstrumentation()
+                    .sendStatus(2, android.os.Bundle().apply { putString("stream", "\n$message\n") })
+            }
+
             suspend fun gatedWriter(action: () -> Unit) {
                 attempts.incrementAndGet()
                 started.complete(Unit)
@@ -2738,15 +2758,19 @@ class LibraryAccessibilityRouteTest {
                         true
                 }
                 assertEquals(1, accepted.get())
+                checkpoint("committed-read-failed")
                 val committed = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
                 val durable = f.store.durableFacts()
                 assertEquals(before, f.library.state.value.browseRequestId)
+                checkpoint("before-recreate")
                 f.recreate()
+                checkpoint("after-recreate")
                 assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
                 assertTrue((controller.state.value.save as SequenceTemplateEditorSave.Failure).committedAwaitingReload)
                 assertEquals(2, reads.get())
                 compose.runOnIdle { retained() }
                 val retry = compose.onLazyNode(hasText(f.text(R.string.sequence_editor_retry)) and hasClickAction())
+                checkpoint("before-retry-focus")
                 keyboard.enter(retry)
                 retry.performSemanticsAction(SemanticsActions.RequestFocus)
                 keyboard.awaitFocus(retry)
@@ -2758,13 +2782,19 @@ class LibraryAccessibilityRouteTest {
                 assertEquals(1, accepted.get())
                 assertEquals(committed.toAuthoringDraft(), controller.state.value.readyDraft())
                 assertEquals(durable, f.store.durableFacts())
+                checkpoint("recovered-before-second-recreate")
                 f.recreate()
+                checkpoint("after-second-recreate")
                 assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
                 assertEquals(before + 1, f.library.state.value.browseRequestId)
                 compose.runOnIdle { retained() }
+                checkpoint("before-editor-back")
                 f.invoke(R.string.sequence_editor_back)
+                checkpoint("after-editor-back")
                 f.libraryLanding()
+                checkpoint("before-database-reopen")
                 f.reopenOrganization { assertEquals(committed, authoring.getSequenceTemplateAuthoringState(id)) }
+                checkpoint("complete")
             } finally {
                 controller.close()
                 scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
@@ -3337,9 +3367,26 @@ class LibraryAccessibilityRouteTest {
         }
 
         fun recreate() {
+            val dialogOpen = compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()
+            if (dialogOpen) {
+                keyboard.awaitWindowFocus(compose.onNode(isDialog()))
+                // Release the stopped dialog's native window before destroying its Activity.
+                // Otherwise API 26/33 can retain its retired token as the input focus target.
+                scenario!!.moveToState(Lifecycle.State.CREATED)
+            }
             scenario!!.recreate()
+            if (dialogOpen) scenario!!.moveToState(Lifecycle.State.RESUMED)
             scenario!!.onActivity { activity = it }
             compose.waitForIdle()
+            if (dialogOpen) {
+                val window =
+                    if (compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()) {
+                        compose.onNode(isDialog())
+                    } else {
+                        compose.onRoot()
+                    }
+                keyboard.enter(window)
+            }
         }
 
         fun requestDeletion(id: FolderId): String {

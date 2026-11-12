@@ -324,6 +324,8 @@
       "timerReconcilesAtExactDeadlineAndSecondStartCreatesNothing"
     ],
     "com.alexandr5476.lifetracing.data.persistence.PlanCommandRepositoryTest": [
+      "conflictingCancelAndUpdateAdmitOneWriterAndRejectTheOtherOptimisticIdentityAtomically",
+      "lifecycleCommandsRejectNonadvancingPersistedMillisecondWithoutAnyPartialFacts",
       "activityAndSequenceUpdateReplaceFrozenSnapshotsAndPruneOnlyUnreferencedOldOnes",
       "archivedCreationAndPostSnapshotPlanCollisionRollBackWithoutOrphans",
       "canonicalPlanReadersRejectOneSidedAndWrongRevisionSnapshotProvenanceButAllowBothMissing",
@@ -736,6 +738,22 @@
     ],
     "com.alexandr5476.lifetracing.LifeTracingAppearanceCompositionTest": [
       "inherited_system_components_survive_recomposition_and_preference_changes"
+    ],
+    "com.alexandr5476.lifetracing.PlanExecuteNavigationAuthorityTest": [
+      "modalAndOutgoingRouteCallbacksCannotAcquireSessionOrChangeDestination",
+      "rejectedModalExecuteCannotNavigateOrInvokeARetainedExecutionWriter",
+      "staleDayWeekAndReplacedRowsCannotNavigateButCurrentDuplicateCan"
+    ],
+    "com.alexandr5476.lifetracing.PlanRouteAdmissionTest": [
+      "sameTurnBackRejectsCancelWithAValidCanonicalIdentity",
+      "sameTurnBackRejectsChangedSourceUpdateWithAValidCanonicalIdentity",
+      "sameTurnBackRejectsRestoreFromTheStillOwnedCancelledDialog",
+      "sameTurnBackRejectsEditedRescheduleSubmissionFromTheStillOwnedForm",
+      "sameTurnBackRejectsNewPlanSubmissionFromTheStillOwnedForm",
+      "sameTurnBackRejectsCalendarAndCatalogCallbacksAndRetainsReentryDefaults",
+      "focusedExecutionTransitionRejectsRetainedCalendarAndManagementActionsAndReturns",
+      "currentRouteCancelRestoreUpdateAndSubmitPersistThroughPhysicalReopen",
+      "writerAdmittedBeforeBackCompletesOnceWithoutReplayOnReentry"
     ],
     "com.alexandr5476.lifetracing.MainActivityPlanVisibilityTest": [
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
@@ -1163,7 +1181,29 @@
       "textAndCategoryEditorsKeepExactFieldAndOptionIdsUntilExplicitComplete",
       "waitingNextHasExplicitNoCurrentStateAndStartNext"
     ],
+    "com.alexandr5476.lifetracing.plan.PlanCatalogPresentationTest": [
+      "confirmedEmptySearchRemovesOldResultsAndRetainsNativeCloseInBothLanguages",
+      "nativeEntryLocalizedDuplicatesAndEnterKeepExactTypedSourceWithoutFocusSelection",
+      "keyboardQueryReplacementKeepsSearchFocusAndRejectsLateReadPublication",
+      "nativePaginationPreservesTypedNodesAndFocusedResultAcrossAppendAndReordering",
+      "nativeFirstPageAndAppendRetriesRetainRawQueryAndNeverReplaySelection",
+      "visibleCloseNativeBackAndRouteExitInvalidatePendingCatalogAndRestoreEntry",
+      "englishRussianScaleExtremesKeepSearchAllLoadedResultsMoreRetryAndCloseReachable"
+    ],
+    "com.alexandr5476.lifetracing.plan.PlanLifecycleAccessibilityTest": [
+      "recoveryRetryReadsBothSurfacesWithoutReplayingRestoreAndCloseRemainsNativeEnabled",
+      "forbiddenLifecycleAndSourceRowsExposeNoForbiddenNativeOrCustomActions",
+      "rejectedPhysicalCancelLeavesAllDurableFactsUnchangedAfterReopenAndNeverRetriesWriter",
+      "nativeEntryLocalizedDuplicateRestoreNamesHaveSingleClickAndExactIdentityWithoutFocusCommands",
+      "nativePaginationKeepsFocusedRowsDuringAppendFailureAndRetriesOnlyBoundedFailedPage",
+      "initialLoadingFailureRetryEmptyAndNativeDismissalReturnToSurvivingEntry",
+      "pendingReadDismissalReopenRouteExitAndObsoleteCallbacksNeverOwnNewDialog",
+      "englishRussianCombinedScalingKeepsFullPageRestoreMoreRetryCloseNativeAndPhysicallyReachable",
+      "physicalActivitySequenceCancelAndRestoreRetainExactIdentitySnapshotSourceAndPastInstant",
+      "physicalExplicitActivitySequenceUpdatesPreserveTargetsSeriesChildrenAndOtherFrozenHistory"
+    ],
     "com.alexandr5476.lifetracing.plan.PlanControllerPersistenceTest": [
+      "catalogNavigationSelectionAndObsoleteCallbacksLeaveAllSourceAndPlanFactsUnchanged",
       "archivedOrUnavailableSourceAfterCatalogSelectionRejectsWithoutPlanOrSnapshot",
       "realRepositoriesCreateActivitySequenceAndExactDayThroughTheProductionControllerBoundary",
       "realRepositoriesRescheduleCancelRestoreAndUpdateUsingFreshCanonicalIdentities"
@@ -1216,7 +1256,16 @@
       "lifecycleAndSourceStatesOnlyOfferMutableChangedUpdate",
       "repeatedHourLabelsUseCanonicalOccurrenceOffsets",
       "weekRecoveryFailureRemainsRetryableWhileCancelledDialogIsOpen",
-      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation"
+      "duplicatePlanActionsRemainDistinctAcrossLanguagesWeeksAndNativeActivation",
+      "calendarNativeSelectionUsesCanonicalDatesAndNeverInventsDensity",
+      "managementNamesAreUniqueAndNativeActivationKeepsExactRowsAcrossReordering",
+      "keyboardDayReloadFailureRetryAndRemovedRowRecoverWithoutCommands",
+      "localizedCalendarDistinguishesTodaySelectedAndNavigatedWeekWithoutUiClock",
+      "exactSemanticsFollowCanonicalOffsetsZoneAndStrictOverduePublications",
+      "forbiddenManagementActionsRemainAbsentAndLifecycleStaysSeparateFromEngagement",
+      "englishRussianScaleExtremesKeepAllDatesAndManagementControlsKeyboardReachable",
+      "nativeWeekNavigationRetainsItsControlAcrossLoadingAndCanonicalPublication",
+      "passivePublicationsReorderingAndHiddenRouteNeverStealKeyboardOwnership"
     ],
     "com.alexandr5476.lifetracing.runtime.AndroidCompatibilityDeviceTest": [
       "recordsActualApiAndRejectsMismatchedRequestedTarget[actualApi={api}]"
@@ -1376,6 +1425,9 @@
       "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
       "unacknowledgedTransportKeepsTheArtifactAndOriginalFailure"
     ],
+    "com.alexandr5476.lifetracing.ui.ScrollableTestNodesTest": [
+      "missingLazyTargetRetainsOriginalCauseAndFocusedViewportWithoutInvokingActions"
+    ],
     "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
       "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
       "visibleImeCloseStillDismissesThroughItsFocusedWindow"
@@ -1408,6 +1460,16 @@
       "pendingTemplateDisclosureHasNativeGuidanceAndRetiredDisclosureCannotReopenOrCloseCurrentContent",
       "nativeSnapshotInputFocusSurvivesUnrelatedRemovalAndInsertion",
       "stepConfigurationAndPickerReflowAtEnglishAndRussianCombinedScalingExtremes"
+    ],
+    "com.alexandr5476.lifetracing.plan.PlanScheduleAccessibilityTest": [
+      "obsoleteCalendarAndAddCallbacksPreserveDialogDefaultAndPhysicalTarget",
+      "nativeChangedRescheduleKeepsPlanSnapshotSourceAndStatisticsProvenanceAfterReopen",
+      "nativeCloseAndHiddenRouteInvalidateOldSaveAndRestoreOnlySurvivingPlanFocus",
+      "nativeControlsRetainLocalizedErrorsSelectionsAndKeyboardReachabilityAtScaleExtremes",
+      "nativeCreationRetainsTypedSourcesAndAllThreeTargetsSurvivePhysicalReopen",
+      "nativeGapPrecisionAndOverlapChoicesPersistOnlyExplicitDistinctOccurrences",
+      "nativePendingSaveDisablesEditingAndRepeatedActivationWhileCloseRetainsAcceptedWriter",
+      "nativeUntouchedReschedulePreservesExactTargetTimestampsAndSnapshotAfterZoneTravel"
     ]
   },
   "startup": {

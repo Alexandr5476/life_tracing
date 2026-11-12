@@ -75,7 +75,7 @@ class PlanControllerPersistenceTest {
                 assertNull(library.getRecent(100).firstOrNull { it.id == LibraryTemplateId.Activity(timer.id) })
 
                 controller.selectCatalog(LibraryTemplateId.Activity(timer.id), timer.name)
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 val timerRow = controller.awaitIdleRow(timer.name, inWeek = false)
                 assertEquals(PlanTarget.FloatingDay(selected), timerRow.plan.target)
                 assertEquals(Duration.ofSeconds(90), timerRow.activityMetadata?.timerTarget)
@@ -101,8 +101,8 @@ class PlanControllerPersistenceTest {
                         createdAt = clock,
                     )
                 controller.selectCatalog(LibraryTemplateId.Sequence(sequence.id), sequence.name)
-                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.WEEK))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.WEEK, controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 val sequenceRow = controller.awaitIdleRow(sequence.name, inWeek = true)
                 assertEquals(PlanTarget.Week(monday), sequenceRow.plan.target)
                 assertTrue(
@@ -121,10 +121,10 @@ class PlanControllerPersistenceTest {
                         createdAt = clock,
                     )
                 controller.selectCatalog(LibraryTemplateId.Activity(exact.id), exact.name)
-                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY))
-                controller.dispatch(PlanAction.ChangeScheduleDate(selected.toString()))
-                controller.dispatch(PlanAction.ChangeScheduleTime("15:45"))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.EXACT_DAY, controller.formId))
+                controller.dispatch(PlanAction.ChangeScheduleDate(selected.toString(), controller.formId))
+                controller.dispatch(PlanAction.ChangeScheduleTime("15:45", controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 val exactRow = controller.awaitIdleRow(exact.name, inWeek = false)
                 val exactTarget = exactRow.plan.target as PlanTarget.ExactDay
                 assertEquals(selected.atTime(15, 45).atZone(zone).toInstant(), exactTarget.scheduledAt)
@@ -160,14 +160,14 @@ class PlanControllerPersistenceTest {
                         createdAt = clock,
                     )
                 controller.selectCatalog(LibraryTemplateId.Activity(template.id), template.name)
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 var row = controller.awaitIdleRow(template.name, inWeek = false)
 
                 clock = clock.plusSeconds(1)
                 val nextDay = selected.plusDays(1)
                 controller.dispatch(PlanAction.Reschedule(row))
-                controller.dispatch(PlanAction.ChangeScheduleDate(nextDay.toString()))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleDate(nextDay.toString(), controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 controller.awaitIdle()
                 assertTrue(
                     reads.getWeek(weekQuery(selected, clock)).selectedDayPlans.none { it.plan.id == row.plan.id },
@@ -178,16 +178,16 @@ class PlanControllerPersistenceTest {
 
                 clock = clock.plusSeconds(1)
                 controller.dispatch(PlanAction.Reschedule(row))
-                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.WEEK))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.WEEK, controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 row = controller.awaitIdleRow(template.name, inWeek = true)
                 assertEquals(PlanTarget.Week(monday), row.plan.target)
 
                 clock = clock.plusSeconds(1)
                 controller.dispatch(PlanAction.Reschedule(row))
-                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.FLOATING_DAY))
-                controller.dispatch(PlanAction.ChangeScheduleDate(selected.toString()))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleKind(PlanScheduleKind.FLOATING_DAY, controller.formId))
+                controller.dispatch(PlanAction.ChangeScheduleDate(selected.toString(), controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 controller.awaitIdle()
                 controller.dispatch(PlanAction.SelectDate(selected))
                 row = controller.awaitRow(template.name, inWeek = false)
@@ -203,8 +203,8 @@ class PlanControllerPersistenceTest {
                 assertTrue(row.overdue)
                 val friday = selected.plusDays(3)
                 controller.dispatch(PlanAction.Reschedule(row))
-                controller.dispatch(PlanAction.ChangeScheduleDate(friday.toString()))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.ChangeScheduleDate(friday.toString(), controller.formId))
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 controller.awaitIdle()
                 controller.dispatch(PlanAction.SelectDate(friday))
                 row = controller.awaitRow(template.name, inWeek = false)
@@ -231,11 +231,15 @@ class PlanControllerPersistenceTest {
                             it.plan.id ==
                                 retained.id
                         },
+                        requireNotNull(controller.state.value.cancelledContext),
                     ),
                 )
                 row = controller.awaitIdleRow(template.name, inWeek = false)
                 assertEquals(retained.target, row.plan.target)
                 assertEquals(retained.activitySnapshotId, row.plan.activitySnapshotId)
+                controller.dispatch(
+                    PlanAction.DismissCancelled(requireNotNull(controller.state.value.cancelledContext)),
+                )
 
                 clock = clock.plusSeconds(1)
                 val changed =
@@ -281,7 +285,7 @@ class PlanControllerPersistenceTest {
                     )
                 controller.selectCatalog(LibraryTemplateId.Activity(archived.id), archived.name)
                 library.archiveActivityTemplate(archived.id, clock.plusSeconds(1))
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 controller.awaitActionUnavailable()
                 assertEquals(0, count("plan_entries", archived.id.value))
                 assertEquals(0, count("activity_snapshots", archived.id.value))
@@ -294,7 +298,7 @@ class PlanControllerPersistenceTest {
                     )
                 controller.selectCatalog(LibraryTemplateId.Activity(unavailable.id), unavailable.name)
                 deleteActivityTemplate(unavailable.id.value)
-                controller.dispatch(PlanAction.SubmitForm)
+                controller.dispatch(PlanAction.SubmitForm(controller.formId, controller.formRevision))
                 controller.awaitActionUnavailable()
                 assertEquals(0, count("plan_entries", unavailable.id.value))
                 assertEquals(0, count("activity_snapshots", unavailable.id.value))
@@ -303,6 +307,98 @@ class PlanControllerPersistenceTest {
                 scope.cancel()
             }
         }
+
+    @Test
+    fun catalogNavigationSelectionAndObsoleteCallbacksLeaveAllSourceAndPlanFactsUnchanged() =
+        runBlocking {
+            val authoring = TemplateAuthoringRepository.create(context)
+            val library = LibraryRepository.create(context)
+            val plans = PlanRepository.create(context) { zone }
+            val reads = PlanReadRepository.create(context) { zone }
+            val at = selected.atTime(10, 0).atZone(zone).toInstant()
+            val name = "S2 duplicate ${System.nanoTime()}"
+            val activity =
+                authoring.createActivityTemplate(
+                    ActivityTemplateDraft(name, "original", TimeTrackingMode.STOPWATCH, null),
+                    createdAt = at,
+                )
+            val sequence =
+                authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        name,
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("step"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(activity.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = at,
+                )
+            val ids = listOf(LibraryTemplateId.Activity(activity.id), LibraryTemplateId.Sequence(sequence.id))
+            val before = ids.associateWith { catalogFacts(it) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val controller = controller(scope, library, plans, reads) { at }
+            try {
+                controller.awaitWeek()
+                controller.dispatch(PlanAction.OpenCatalog)
+                val context = requireNotNull(controller.state.value.catalog).context
+                controller.dispatch(PlanAction.SearchCatalog(name, context))
+                val catalog = withTimeout(5_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
+                assertEquals(ids.toSet(), catalog.items.map { it.id }.toSet())
+                for (id in ids) {
+                    controller.selectCatalog(id, name)
+                    val form = requireNotNull(controller.state.value.form)
+                    assertEquals(id, form.source?.id)
+                    assertNull(form.identity)
+                    assertFalse(form.scheduleEdited)
+                    controller.dispatch(PlanAction.DismissForm(controller.formId))
+                }
+                controller.dispatch(PlanAction.DismissCatalog(catalog.context))
+                controller.dispatch(PlanAction.SelectCatalogItem(catalog.items.first(), catalog.context))
+                controller.dispatch(PlanAction.SearchCatalog("obsolete", catalog.context))
+                assertNull(controller.state.value.form)
+                assertNull(controller.state.value.catalog)
+                assertEquals(before, ids.associateWith { catalogFacts(it) })
+                assertNull(library.getRecent(100).firstOrNull { it.id in ids })
+            } finally {
+                controller.close()
+                scope.cancel()
+            }
+        }
+
+    private fun catalogFacts(id: LibraryTemplateId): List<List<String?>> =
+        SQLiteDatabase
+            .openDatabase(
+                context.getDatabasePath("lifetracing.db").path,
+                null,
+                SQLiteDatabase.OPEN_READONLY,
+            ).use { database ->
+                val activity = id is LibraryTemplateId.Activity
+                val sourceColumn = if (activity) "source_activity_template_id" else "source_sequence_template_id"
+                val template = if (activity) "activity_templates" else "sequence_templates"
+                val snapshot = if (activity) "activity_snapshots" else "sequence_snapshots"
+                listOf(
+                    "SELECT * FROM $template WHERE id = ?",
+                    "SELECT * FROM $snapshot WHERE source_template_id = ?",
+                    "SELECT * FROM plan_entries WHERE $sourceColumn = ?",
+                ).flatMap { sql ->
+                    database.rawQuery(sql, arrayOf(id.value)).use { cursor ->
+                        buildList {
+                            while (cursor.moveToNext()) {
+                                add(
+                                    (0 until cursor.columnCount).map { cursor.getString(it) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
     private fun controller(
         scope: CoroutineScope,
@@ -325,7 +421,7 @@ class PlanControllerPersistenceTest {
         name: String,
     ) {
         dispatch(PlanAction.OpenCatalog)
-        dispatch(PlanAction.SearchCatalog(name))
+        dispatch(PlanAction.SearchCatalog(name, requireNotNull(state.value.catalog).context))
         val item =
             withTimeout(5_000) {
                 state.first { it.catalog?.loading == false }.catalog!!.items.single {
@@ -333,7 +429,7 @@ class PlanControllerPersistenceTest {
                         id
                 }
             }
-        dispatch(PlanAction.SelectCatalogItem(item))
+        dispatch(PlanAction.SelectCatalogItem(item, requireNotNull(state.value.catalog).context))
     }
 
     private suspend fun PlanController.awaitWeek() = withTimeout(5_000) { state.first { it.week is PlanLoad.Content } }

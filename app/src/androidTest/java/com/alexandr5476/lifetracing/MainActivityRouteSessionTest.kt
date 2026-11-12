@@ -870,9 +870,10 @@ class MainActivityRouteSessionTest {
                 ActivityTemplateDraft("Plan route refresh $suffix", null, TimeTrackingMode.STOPWATCH, null),
                 createdAt = Instant.now(),
             )
-        PlanRepository
-            .create(composeTestRule.activity)
-            .createActivityPlanFromTemplate(template.id, PlanSchedule.FloatingDay(selected), Instant.now())
+        val plan =
+            PlanRepository
+                .create(composeTestRule.activity)
+                .createActivityPlanFromTemplate(template.id, PlanSchedule.FloatingDay(selected), Instant.now())
 
         composeTestRule.onNodeWithText(planLabel).assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
@@ -882,19 +883,47 @@ class MainActivityRouteSessionTest {
 
         composeTestRule.onNodeWithText(addLabel).performScrollTo().performClick()
         composeTestRule.onNodeWithText(chooseLabel).assertIsDisplayed()
+        val catalogContext = requireNotNull(controller.state.value.catalog).context
         composeTestRule.runOnUiThread {
             controller.onRouteExited()
             composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
         }
         composeTestRule.onNodeWithText(planLabel).performClick()
+        composeTestRule.runOnUiThread {
+            controller.dispatch(
+                com.alexandr5476.lifetracing.plan.PlanAction
+                    .SearchCatalog("obsolete", catalogContext),
+            )
+            controller.dispatch(
+                com.alexandr5476.lifetracing.plan.PlanAction
+                    .DismissCatalog(catalogContext),
+            )
+        }
+        assertNull(controller.state.value.catalog)
+        assertNull(controller.state.value.form)
         composeTestRule.onNodeWithText(chooseLabel).assertDoesNotExist()
         composeTestRule.waitUntil(5_000) {
             composeTestRule.onAllNodesWithText(template.name).fetchSemanticsNodes().isNotEmpty()
         }
 
         composeTestRule
-            .onAllNodesWithText(composeTestRule.activity.getString(R.string.plan_reschedule))[0]
+            .onNodeWithTag("plan-reschedule-${plan.id.value}")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertIsEnabled()
             .performClick()
+        composeTestRule.waitUntil(5_000) {
+            controller.state.value.form
+                ?.identity
+                ?.planEntryId == plan.id
+        }
+        assertEquals(
+            plan.id,
+            controller.state.value.form
+                ?.identity
+                ?.planEntryId,
+        )
+        composeTestRule.onNodeWithTag("plan-schedule-form").assertIsDisplayed()
         composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(2)
         composeTestRule.runOnUiThread {
             controller.onRouteExited()
@@ -906,7 +935,17 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
 
-        composeTestRule.onNodeWithText(cancelledLabel).performClick()
+        assertNull(controller.state.value.form)
+        composeTestRule.onNodeWithTag("plan-schedule-form").assertDoesNotExist()
+
+        composeTestRule
+            .onNodeWithText(cancelledLabel)
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        composeTestRule.waitUntil(5_000) { controller.state.value.cancelledOpen }
+        assertTrue(controller.state.value.cancelledOpen)
+        composeTestRule.onNodeWithText(closeLabel).assertIsDisplayed()
         composeTestRule.runOnUiThread {
             controller.onRouteExited()
             composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
@@ -919,6 +958,7 @@ class MainActivityRouteSessionTest {
         }
         composeTestRule.onAllNodesWithText(rescheduleLabel).assertCountEquals(1)
         composeTestRule.onAllNodesWithText(cancelledLabel).assertCountEquals(1)
+        assertFalse(controller.state.value.cancelledOpen)
         composeTestRule.onAllNodesWithText(planTitle).assertCountEquals(1)
         assertEquals(selected, controller.state.value.selectedDate)
     }
