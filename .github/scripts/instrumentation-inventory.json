@@ -1409,6 +1409,9 @@
       "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
       "unacknowledgedTransportKeepsTheArtifactAndOriginalFailure"
     ],
+    "com.alexandr5476.lifetracing.ui.ScrollableTestNodesTest": [
+      "missingLazyTargetRetainsOriginalCauseAndFocusedViewportWithoutInvokingActions"
+    ],
     "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
       "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
       "visibleImeCloseStillDismissesThroughItsFocusedWindow"

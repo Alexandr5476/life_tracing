@@ -4,6 +4,7 @@ package com.alexandr5476.lifetracing
 
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -30,6 +31,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -1632,7 +1635,17 @@ class LibraryAccessibilityRouteTest {
                     R.string.sequence_editor_override_sound,
                     R.string.sequence_editor_off,
                 ).performSemanticsAction(SemanticsActions.OnClick)
-            f.stepControl(linkedIdentity, R.string.sequence_editor_override_countdown).performTextReplacement("0")
+            val countdown = f.stepControl(linkedIdentity, R.string.sequence_editor_override_countdown)
+            // CI can show the native IME after semantic text replacement. Establish that
+            // viewport explicitly so revealing Done cannot depend on native IME timing.
+            countdown.performClick()
+            val editorView = (countdown.fetchSemanticsNode().root as ViewRootForTest).view
+            compose.waitUntil(5_000) {
+                compose.runOnIdle {
+                    ViewCompat.getRootWindowInsets(editorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+                }
+            }
+            countdown.performTextReplacement("0")
             assertEquals(
                 Duration.ZERO,
                 f
