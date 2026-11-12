@@ -175,3 +175,57 @@ compilation/APK assembly, app ktlint, Detekt and lintDebug passed. Inventory che
 confirm the new methods match their registrations and every original entry is
 retained; `git diff --check` passed. These results establish host checks only;
 Controller-owned device and CI gates above are still pending.
+
+## PR41 review correction B3 / remaining W2 (2026-11-12)
+
+The production PlanRoute now admits all callbacks through one route-ownership
+gate. MainActivity supplies a predicate that reads the current navigation stack
+synchronously at event time. Every PlanAction (calendar, catalog, form,
+Cancelled-list, retry/recovery and management), Back, and focused execution
+navigation passes this gate before reaching the existing controller checks.
+The visibility DisposableEffect still owns read publication and boundary
+lifecycle; it is no longer the sole defense against retained callbacks during
+the same UI turn as a navigation change. Daily-origin execution is unchanged.
+
+The gate rejects new events only. It neither cancels nor replays a writer already
+admitted by the controller. Optimistic identities, exact row membership,
+form UUID/revision, dialog contexts, DST admission, transactions and canonical
+recovery remain unchanged. No persistence or scheduling semantics changed.
+
+Nine new PlanRouteAdmissionTest original-JUnit identities are registered in the
+mandatory inventory. The regressions capture native callbacks on the production
+MainActivity, invoke Back and obsolete callbacks in a single UI-thread block,
+and require rejection before the visibility effect. They cover valid Cancel,
+changed-source Update, Restore, edited reschedule Submit, creation Submit,
+Previous/Next/Today/SelectDate/Add/Cancelled entry, and focused execution
+navigation/return. A current-route positive journey exercises explicit Update,
+reschedule, Cancel, Restore and creation. A CompletableDeferred writer gate
+covers an admitted cancellation completing once across exit and reentry.
+
+The isolated physical fixtures compare all durable tables, close the Activity,
+production runtime database owner and fixture database, reopen, and inspect
+canonical focused/Week projections. The assertions cover frozen snapshots,
+source revision, Statistics provenance, Plan identity/target/tokens and absent
+execution linkage/session creation. Reentry also checks retained calendar
+context and Add defaults. Existing B1/W1/B2 regressions and inventory identities
+are retained.
+
+The regression source was added before the production fix. Device fail-first
+and corrected execution, including the physical-reopen assertions, remain
+Controller-owned and have not been run locally. Automated semantics are not
+manual TalkBack or Switch Access certification; those walkthroughs remain
+unverified. The unfiltered API 26/31/33/35/36 inventory and exact-head CI are
+still mandatory.
+
+B3/W2 host verification passed:
+
+```powershell
+.\gradlew.bat :app:compileDebugAndroidTestKotlin :app:testDebugUnitTest :app:detekt --console=plain --continue
+.\gradlew.bat :app:assembleDebugAndroidTest :app:ktlintCheck :app:detekt :app:lintDebug --continue --console=plain
+```
+
+The app JVM XML contains 511 tests with zero failures/errors/skips. The final
+AndroidTest source compiles and its APK packages successfully; app ktlint,
+Detekt and lintDebug pass. The inventory audit retains every prior identity and
+matches all nine added methods. These are host results only, not execution of
+the new device regressions or physical-reopen assertions.

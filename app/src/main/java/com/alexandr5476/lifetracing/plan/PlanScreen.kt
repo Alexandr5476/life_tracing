@@ -51,9 +51,19 @@ fun PlanRoute(
     onBack: () -> Unit,
     onExecute: (PlanActionIdentity) -> Unit = {},
     isRouteVisible: Boolean = true,
+    ownsRoute: () -> Boolean = { isRouteVisible },
 ) {
     val state by controller.state.collectAsState()
-    PlanScreen(state, controller::dispatch, onBack, { controller.executeIfOwned(it, onExecute) }, isRouteVisible)
+    // Read navigation ownership at event admission; visibility effects may still be pending.
+    // This gate does not revoke writers that the controller has already admitted.
+    val admit: (() -> Unit) -> Unit = { action -> if (ownsRoute()) action() }
+    PlanScreen(
+        state,
+        onAction = { action -> admit { controller.dispatch(action) } },
+        onBack = { admit(onBack) },
+        onExecute = { row -> admit { controller.executeIfOwned(row, onExecute) } },
+        isRouteVisible = isRouteVisible,
+    )
 }
 
 @Composable

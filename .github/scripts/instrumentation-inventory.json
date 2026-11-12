@@ -744,6 +744,17 @@
       "rejectedModalExecuteCannotNavigateOrInvokeARetainedExecutionWriter",
       "staleDayWeekAndReplacedRowsCannotNavigateButCurrentDuplicateCan"
     ],
+    "com.alexandr5476.lifetracing.PlanRouteAdmissionTest": [
+      "sameTurnBackRejectsCancelWithAValidCanonicalIdentity",
+      "sameTurnBackRejectsChangedSourceUpdateWithAValidCanonicalIdentity",
+      "sameTurnBackRejectsRestoreFromTheStillOwnedCancelledDialog",
+      "sameTurnBackRejectsEditedRescheduleSubmissionFromTheStillOwnedForm",
+      "sameTurnBackRejectsNewPlanSubmissionFromTheStillOwnedForm",
+      "sameTurnBackRejectsCalendarAndCatalogCallbacksAndRetainsReentryDefaults",
+      "focusedExecutionTransitionRejectsRetainedCalendarAndManagementActionsAndReturns",
+      "currentRouteCancelRestoreUpdateAndSubmitPersistThroughPhysicalReopen",
+      "writerAdmittedBeforeBackCompletesOnceWithoutReplayOnReentry"
+    ],
     "com.alexandr5476.lifetracing.MainActivityPlanVisibilityTest": [
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
     ],
