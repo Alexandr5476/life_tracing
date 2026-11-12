@@ -27,6 +27,7 @@ import com.alexandr5476.lifetracing.plan.PlanController
 import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.plan.PlanLoad
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,18 +54,20 @@ class PlanExecuteNavigationAuthorityTest {
             for (id in listOf(f.day, f.week)) {
                 val original = f.capture(id)
                 for (action in listOf(PlanAction.NextWeek, PlanAction.PreviousWeek)) {
+                    f.holdReads()
                     compose.runOnUiThread {
                         f.controller.dispatch(action)
                         original()
                         f.assertNoExecution()
                     }
-                    f.awaitContent()
+                    f.publishAfterRowRetirement(id)
                     compose.runOnUiThread {
                         original()
                         f.assertNoExecution()
                     }
                 }
                 val beforeDayChange = f.capture(id)
+                f.holdReads()
                 compose.runOnUiThread {
                     val state = f.controller.state.value
                     val other = state.weekStart.plusDays((state.selectedDate.dayOfWeek.value % 7).toLong())
@@ -72,7 +75,7 @@ class PlanExecuteNavigationAuthorityTest {
                     beforeDayChange()
                     f.assertNoExecution()
                 }
-                f.awaitContent()
+                f.publishAfterRowRetirement(id)
                 compose.runOnUiThread {
                     beforeDayChange()
                     f.assertNoExecution()
@@ -81,8 +84,9 @@ class PlanExecuteNavigationAuthorityTest {
                 f.awaitContent()
                 val replaced = f.capture(id)
                 val prior = (f.controller.state.value.week as PlanLoad.Content).value
+                f.holdReads()
                 compose.runOnUiThread { f.controller.dispatch(PlanAction.Refresh) }
-                f.awaitContent()
+                f.publishAfterRowRetirement(id)
                 val current = (f.controller.state.value.week as PlanLoad.Content).value
                 assertTrue(prior !== current)
                 compose.runOnUiThread {
@@ -218,10 +222,14 @@ class PlanExecuteNavigationAuthorityTest {
         private var managementWrites = 0
         var executionWrites = 0
             private set
+        private var readPermit = CompletableDeferred<Unit>().apply { complete(Unit) }
         val controller =
             PlanController(
                 scope,
-                { query -> withContext(Dispatchers.IO) { reads.getWeek(query) } },
+                { query ->
+                    readPermit.await()
+                    withContext(Dispatchers.IO) { reads.getWeek(query) }
+                },
                 { _, _, _ -> emptyList() },
                 { CancelledPlanPage(emptyList(), false) },
                 { managementWrites++ },
@@ -247,6 +255,21 @@ class PlanExecuteNavigationAuthorityTest {
         fun awaitContent() {
             compose.waitUntil(5_000) { controller.state.value.week is PlanLoad.Content }
             compose.waitForIdle()
+        }
+
+        fun holdReads() {
+            compose.runOnIdle { readPermit = CompletableDeferred() }
+        }
+
+        fun publishAfterRowRetirement(id: PlanEntryId) {
+            // Material's semantics callback reads the clickable node's current onClick.
+            // A fast reload can reuse that node and retarget a captured native action.
+            // Compose Loading first so this test actually retains an obsolete callback.
+            compose.waitForIdle()
+            assertTrue(controller.state.value.week is PlanLoad.Loading)
+            compose.onNodeWithTag("plan-plan-action-${id.value}").assertDoesNotExist()
+            compose.runOnUiThread { readPermit.complete(Unit) }
+            awaitContent()
         }
 
         fun retainExecutionProbe(): com.alexandr5476.lifetracing.plan.PlanExecutionRouteSession {

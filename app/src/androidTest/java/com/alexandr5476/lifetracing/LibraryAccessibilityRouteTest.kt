@@ -2652,6 +2652,18 @@ class LibraryAccessibilityRouteTest {
                 java.util.concurrent.atomic
                     .AtomicInteger()
 
+            fun checkpoint(phase: String) {
+                val message =
+                    "Source recovery operation=${f.text(operation)} phase=$phase " +
+                        "attempts=${attempts.get()} accepted=${accepted.get()} reads=${reads.get()}"
+                android.util.Log.i("LibrarySourceRecovery", message)
+                // API 26 managed devices cannot retain additionalTestOutput. Send phases
+                // to the host as well, so emulator loss cannot erase the last reached step.
+                androidx.test.platform.app.InstrumentationRegistry
+                    .getInstrumentation()
+                    .sendStatus(2, android.os.Bundle().apply { putString("stream", "\n$message\n") })
+            }
+
             suspend fun gatedWriter(action: () -> Unit) {
                 attempts.incrementAndGet()
                 started.complete(Unit)
@@ -2746,15 +2758,19 @@ class LibraryAccessibilityRouteTest {
                         true
                 }
                 assertEquals(1, accepted.get())
+                checkpoint("committed-read-failed")
                 val committed = f.store.authoring.getSequenceTemplateAuthoringState(id)!!
                 val durable = f.store.durableFacts()
                 assertEquals(before, f.library.state.value.browseRequestId)
+                checkpoint("before-recreate")
                 f.recreate()
+                checkpoint("after-recreate")
                 assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
                 assertTrue((controller.state.value.save as SequenceTemplateEditorSave.Failure).committedAwaitingReload)
                 assertEquals(2, reads.get())
                 compose.runOnIdle { retained() }
                 val retry = compose.onLazyNode(hasText(f.text(R.string.sequence_editor_retry)) and hasClickAction())
+                checkpoint("before-retry-focus")
                 keyboard.enter(retry)
                 retry.performSemanticsAction(SemanticsActions.RequestFocus)
                 keyboard.awaitFocus(retry)
@@ -2766,13 +2782,19 @@ class LibraryAccessibilityRouteTest {
                 assertEquals(1, accepted.get())
                 assertEquals(committed.toAuthoringDraft(), controller.state.value.readyDraft())
                 assertEquals(durable, f.store.durableFacts())
+                checkpoint("recovered-before-second-recreate")
                 f.recreate()
+                checkpoint("after-second-recreate")
                 assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
                 assertEquals(before + 1, f.library.state.value.browseRequestId)
                 compose.runOnIdle { retained() }
+                checkpoint("before-editor-back")
                 f.invoke(R.string.sequence_editor_back)
+                checkpoint("after-editor-back")
                 f.libraryLanding()
+                checkpoint("before-database-reopen")
                 f.reopenOrganization { assertEquals(committed, authoring.getSequenceTemplateAuthoringState(id)) }
+                checkpoint("complete")
             } finally {
                 controller.close()
                 scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
