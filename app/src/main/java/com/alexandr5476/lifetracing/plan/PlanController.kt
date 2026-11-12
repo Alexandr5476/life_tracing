@@ -414,6 +414,15 @@ class PlanController internal constructor(
             }
         }
 
+    /** Navigation is admitted only by the exact row in the currently owned canonical projection. */
+    fun executeIfOwned(
+        row: PlanReadRow,
+        onExecute: (PlanActionIdentity) -> Unit,
+    ): Unit =
+        synchronized(recoveryLock) {
+            if (ownsActiveRow(row) && !mutationInFlight.get()) onExecute(row.rowIdentity())
+        }
+
     fun close(): Unit =
         synchronized(recoveryLock) {
             closed = true
@@ -485,6 +494,7 @@ class PlanController internal constructor(
         selectedDate: LocalDate,
     ): Unit =
         synchronized(recoveryLock) {
+            if (!ownsCalendar()) return
             mutableState.update { it.copy(weekStart = weekStart, selectedDate = selectedDate) }
             loadWeek()
         }
@@ -586,8 +596,7 @@ class PlanController internal constructor(
     }
 
     private fun openCatalog() {
-        val unavailable = closed || !visible || mutationInFlight.get()
-        if (unavailable || mutableState.value.cancelledOpen) return
+        if (!ownsCalendar() || mutationInFlight.get()) return
         catalogSearchContext = null
         mutableState.update { it.copy(catalog = PlanCatalogState(), form = null) }
         loadCatalog("", null, false)

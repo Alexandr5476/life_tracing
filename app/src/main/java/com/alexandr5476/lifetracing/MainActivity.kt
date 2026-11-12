@@ -535,10 +535,12 @@ internal fun LifeTracingApp(
                                 isRouteVisible = backStack.lastOrNull() == PlanRoot,
                                 onBack = backStack::removePlan,
                                 onExecute = { identity ->
-                                    planExecutionSessions
-                                        .acquire(identity, PlanExecutionOrigin.PLAN) {
-                                            runtimeGraph.createPlanExecutionController(identity)
-                                        }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
+                                    if (backStack.lastOrNull() == PlanRoot) {
+                                        planExecutionSessions
+                                            .acquire(identity, PlanExecutionOrigin.PLAN) {
+                                                runtimeGraph.createPlanExecutionController(identity)
+                                            }?.let { backStack.openPlanExecution(it.expectedIdentity, it.origin) }
+                                    }
                                 },
                             )
                         }

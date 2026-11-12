@@ -461,6 +461,57 @@ class PlanScheduleAccessibilityTest {
         )
     }
 
+    @Test
+    fun obsoleteCalendarAndAddCallbacksPreserveDialogDefaultAndPhysicalTarget() {
+        val f = launch()
+        val selected = f.controller.state.value.selectedDate
+        val stale =
+            listOf("plan-previous-week", "plan-next-week", "plan-day-${selected.plusDays(1)}", "plan-add")
+                .map { tag ->
+                    compose
+                        .onNodeWithTag(tag)
+                        .performScrollTo()
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                }
+        activate("plan-add", accessibility = true)
+        compose.waitUntil {
+            f.controller.state.value.catalog
+                ?.loading == false
+        }
+        val catalogState = f.controller.state.value
+        compose.runOnIdle { stale.forEach { it() } }
+        assertEquals(catalogState, f.controller.state.value)
+        val result = compose.onNodeWithTag(catalogResultTag(f.activitySource.id)).performScrollTo()
+        result.performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+        compose.waitUntil { f.controller.state.value.form != null }
+        assertEquals(selected.toString(), f.form.date)
+        edit("date", "raw-date")
+        val owned = f.controller.state.value
+        compose.runOnIdle { stale.forEach { it() } }
+        assertEquals(owned, f.controller.state.value)
+        assertTrue(f.commands.isEmpty())
+        edit("date", selected.toString())
+        save(f, accessibility = true)
+        val saved = f.rows().single().plan
+        assertEquals(PlanTarget.FloatingDay(selected), saved.target)
+        f.reopen()
+        assertEquals(
+            saved.actionIdentity(),
+            f.store.reads
+                .getFocusedAction(saved.id)
+                .identity,
+        )
+        assertEquals(
+            PlanTarget.FloatingDay(selected),
+            f
+                .rows()
+                .single()
+                .plan.target,
+        )
+    }
+
     private fun launch(): Fixture {
         val f = Fixture()
         fixture = f

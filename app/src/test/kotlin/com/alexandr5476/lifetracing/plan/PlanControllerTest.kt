@@ -1107,6 +1107,7 @@ class PlanControllerTest {
                 obsolete.forEach(controller::dispatch)
                 assertEquals(form, controller.state.value.form)
                 assertNull(controller.state.value.catalog)
+                controller.dispatch(PlanAction.DismissForm(requireNotNull(form).formId))
                 controller.dispatch(PlanAction.OpenCatalog)
                 val replaced = withTimeout(2_000) { controller.state.first { it.catalog?.loading == false }.catalog!! }
                 controller.dispatch(PlanAction.DismissCatalog(replaced.context))
@@ -1277,6 +1278,7 @@ class PlanControllerTest {
                     assertEquals(0L, form.inputRevision)
                     controller.dispatch(PlanAction.SelectCatalogItem(item, catalog.context))
                     assertEquals(form, controller.state.value.form)
+                    controller.dispatch(PlanAction.DismissForm(form.formId))
                 }
                 assertEquals(2, forms.map { it.formId }.toSet().size)
                 assertTrue(mutations.isEmpty())

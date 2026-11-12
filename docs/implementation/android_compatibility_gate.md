@@ -1547,3 +1547,15 @@ identity/focus/scaling, bounded pagination, stale-dialog admission, canonical
 recovery and physical reopen coverage. Controller owns ci-fast, gmd-app and
 independent exact-head compatibility execution. Host compilation/APK assembly is
 not device execution or manual TalkBack/Switch Access certification.
+
+
+## PR41 B2 / W2 navigation and calendar ownership correction
+
+The mandatory app inventory adds three `PlanExecuteNavigationAuthorityTest` cases
+and `PlanScheduleAccessibilityTest.obsoleteCalendarAndAddCallbacksPreserveDialogDefaultAndPhysicalTarget`.
+Existing B1/W1, focused execution, Plan physical persistence and compatibility
+identities remain mandatory. See [calendar ownership correction](plan_calendar_accessibility.md)
+for callback authority and regression scope. Controller must retain device
+fail-first/corrected evidence and run unfiltered API 26/31/33/35/36 plus exact-head
+CI. Host APK packaging does not execute native or physical-reopen assertions and
+does not certify TalkBack or Switch Access.

@@ -208,7 +208,7 @@ class PlanScreenPresentationTest {
                     PlanPresentationState(monday, selected, PlanLoad.Content(read)),
                     {},
                     {},
-                    { clicked = it },
+                    { clicked = it.plan.actionIdentity() },
                 )
             }
         }
@@ -355,7 +355,7 @@ class PlanScreenPresentationTest {
                         {
                         },
                         {},
-                        clicked::add,
+                        { clicked += it.plan.actionIdentity() },
                     )
                 }
             }

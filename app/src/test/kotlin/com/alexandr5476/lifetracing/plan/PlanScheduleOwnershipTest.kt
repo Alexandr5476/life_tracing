@@ -65,7 +65,7 @@ class PlanScheduleOwnershipTest {
         runBlocking {
             for (oldCreation in listOf(false, true)) {
                 for (newCreation in listOf(false, true)) {
-                    for (dismiss in listOf(false, true)) {
+                    for (exitRoute in listOf(false, true)) {
                         val fixture = PlanScheduleControllerFixture(this)
                         try {
                             if (oldCreation) {
@@ -85,7 +85,12 @@ class PlanScheduleOwnershipTest {
                                     PlanAction.SubmitForm(old.formId, old.inputRevision),
                                     PlanAction.DismissForm(old.formId),
                                 )
-                            if (dismiss) fixture.controller.dispatch(PlanAction.DismissForm(old.formId))
+                            if (exitRoute) {
+                                fixture.controller.onRouteExited()
+                                fixture.controller.onRouteEntered()
+                            } else {
+                                fixture.controller.dispatch(PlanAction.DismissForm(old.formId))
+                            }
                             if (newCreation) {
                                 fixture.newExact(true)
                             } else {

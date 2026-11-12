@@ -89,6 +89,10 @@ internal class PlanScheduleControllerFixture(
             } else {
                 LibraryTemplateId.Activity(ActivityTemplateId("activity"))
             }
+        controller.state.value.form
+            ?.let { controller.dispatch(PlanAction.DismissForm(it.formId)) }
+        controller.state.value.catalog
+            ?.let { controller.dispatch(PlanAction.DismissCatalog(it.context)) }
         controller.dispatch(PlanAction.OpenCatalog)
         val catalog =
             kotlinx.coroutines.withTimeout(2_000) {

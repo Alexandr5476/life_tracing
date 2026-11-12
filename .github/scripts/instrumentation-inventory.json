@@ -739,6 +739,11 @@
     "com.alexandr5476.lifetracing.LifeTracingAppearanceCompositionTest": [
       "inherited_system_components_survive_recomposition_and_preference_changes"
     ],
+    "com.alexandr5476.lifetracing.PlanExecuteNavigationAuthorityTest": [
+      "modalAndOutgoingRouteCallbacksCannotAcquireSessionOrChangeDestination",
+      "rejectedModalExecuteCannotNavigateOrInvokeARetainedExecutionWriter",
+      "staleDayWeekAndReplacedRowsCannotNavigateButCurrentDuplicateCan"
+    ],
     "com.alexandr5476.lifetracing.MainActivityPlanVisibilityTest": [
       "forwardExecutionHidesPendingCalendarWorkAndBackReloadsTheRetainedDate"
     ],
@@ -1446,6 +1451,7 @@
       "stepConfigurationAndPickerReflowAtEnglishAndRussianCombinedScalingExtremes"
     ],
     "com.alexandr5476.lifetracing.plan.PlanScheduleAccessibilityTest": [
+      "obsoleteCalendarAndAddCallbacksPreserveDialogDefaultAndPhysicalTarget",
       "nativeChangedRescheduleKeepsPlanSnapshotSourceAndStatisticsProvenanceAfterReopen",
       "nativeCloseAndHiddenRouteInvalidateOldSaveAndRestoreOnlySurvivingPlanFocus",
       "nativeControlsRetainLocalizedErrorsSelectionsAndKeyboardReachabilityAtScaleExtremes",

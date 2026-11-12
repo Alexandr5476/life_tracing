@@ -130,3 +130,48 @@ before executing any testcase. Runtime confirmation remains Controller-owned;
 this repair does not claim a corrected device PASS or close the original gate.
 
 Repair host verification passed: `./gradlew.bat :app:ktlintAndroidTestSourceSetCheck :app:assembleDebugAndroidTest --console=plain`. AndroidTest Kotlin compilation, APK packaging and instrumentation-source style checks succeeded; `git diff --check` and mandatory-inventory preservation also passed.
+
+
+## PR41 review corrections B2 / W2 (2026-11-12)
+
+Plan-origin Execute retains the exact originating `PlanReadRow` until the existing
+controller checks visible calendar ownership, absence of a modal owner, exact
+reference membership in the currently published Day/Week projection, mutable
+lifecycle and absence of an in-flight mutation. Only then is its existing
+`PlanActionIdentity` passed to navigation. MainActivity independently requires
+`PlanRoot` to remain the top entry before acquiring the existing focused execution
+session. Daily-origin acquisition and PR38 execution commands are unchanged.
+
+Calendar context changes and Add to Plan now require that same calendar owner
+before changing state or starting a read. Hidden routes and catalog, scheduling or
+Cancelled dialogs cannot move the retained selected day or replace an owned form
+or catalog. Failed-read recovery and visible calendar navigation remain available.
+Fixtures that formerly replaced a form through Add explicitly dismiss and reopen.
+No persistence, temporal resolution, snapshot, localization or schema rule changes.
+
+Four W2 JVM regressions failed against the uncorrected controller. Additional
+ownership regressions cover exact publication, duplicate identities and unavailable
+lifecycle. Three production MainActivity route regressions retain native callbacks
+across day/week changes, canonical replacement, modals, same-turn Back and another
+screen; they check session/destination authority, a current duplicate-row positive
+case, frozen facts and a retained execution writer spy. One native scheduling
+regression retains calendar/Add callbacks through both dialogs and validates the
+legitimate default target after a physical database reopen. All four new original
+JUnit4 identities are registered without removing existing inventory entries.
+
+Device fail-first/corrected execution, physical reopen assertions, the unfiltered
+API 26/31/33/35/36 suites and exact-head CI remain Controller-owned. Host compilation
+is not device execution. Manual TalkBack/Switch Access remains unverified.
+
+
+B2/W2 final host verification passed:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebugAndroidTest :app:ktlintCheck :app:detekt :app:lintDebug --continue --console=plain
+```
+
+The app JVM XML records 511 tests with zero failures/errors/skips. AndroidTest
+compilation/APK assembly, app ktlint, Detekt and lintDebug passed. Inventory checks
+confirm the new methods match their registrations and every original entry is
+retained; `git diff --check` passed. These results establish host checks only;
+Controller-owned device and CI gates above are still pending.

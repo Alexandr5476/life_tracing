@@ -37,7 +37,6 @@ import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanReadRow
 import com.alexandr5476.lifetracing.domain.PlanSourceState
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
-import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -54,7 +53,7 @@ fun PlanRoute(
     isRouteVisible: Boolean = true,
 ) {
     val state by controller.state.collectAsState()
-    PlanScreen(state, controller::dispatch, onBack, onExecute, isRouteVisible)
+    PlanScreen(state, controller::dispatch, onBack, { controller.executeIfOwned(it, onExecute) }, isRouteVisible)
 }
 
 @Composable
@@ -63,7 +62,7 @@ fun PlanScreen(
     state: PlanPresentationState,
     onAction: (PlanAction) -> Unit,
     onBack: () -> Unit,
-    onExecute: (PlanActionIdentity) -> Unit = {},
+    onExecute: (PlanReadRow) -> Unit = {},
     isRouteVisible: Boolean = true,
 ) {
     val focus = rememberPlanCalendarFocus(state, isRouteVisible)
@@ -235,7 +234,7 @@ private fun WeekContent(
     read: com.alexandr5476.lifetracing.domain.WeekPlanRead,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
-    onExecute: (PlanActionIdentity) -> Unit,
+    onExecute: (PlanReadRow) -> Unit,
 ) {
     Text(
         stringResource(R.string.plan_week_days),
@@ -307,7 +306,7 @@ private fun PlanRows(
     rows: List<PlanReadRow>,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
-    onExecute: (PlanActionIdentity) -> Unit,
+    onExecute: (PlanReadRow) -> Unit,
 ) {
     val executable = rows.filter { it.plan.status == PlanEntryStatus.PLANNED && !it.engaged }
     val management =
@@ -340,7 +339,7 @@ private fun PlanRow(
     row: PlanReadRow,
     isMutating: Boolean,
     onAction: (PlanAction) -> Unit,
-    onExecute: (PlanActionIdentity) -> Unit,
+    onExecute: (PlanReadRow) -> Unit,
     executionDescription: String?,
     managementContext: String?,
 ) {
@@ -375,7 +374,7 @@ private fun PlanRow(
                 requireNotNull(executionDescription)
                 LifeTracingPrimaryButton(
                     enabled = !isMutating,
-                    onClick = { onExecute(row.plan.actionIdentity()) },
+                    onClick = { onExecute(row) },
                     modifier =
                         planCalendarFocusTarget().semantics {
                             testTag = "plan-plan-action-${row.plan.id.value}"
