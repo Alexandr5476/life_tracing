@@ -475,6 +475,244 @@ class HistoryAccessibilityPresentationTest {
         }
     }
 
+    @Test
+    fun deletionConfirmationNativeFocusLabelsAndTargetsSurviveEnglishRussianScaleExtremes() {
+        val language = mutableStateOf("en")
+        val scale = mutableStateOf(0)
+        val configurations = listOf(Triple(90, 90, 1f), Triple(120, 130, 2f), Triple(90, 130, 2f))
+        val root =
+            activity(
+                "exact-deletion-id",
+            ).copy(
+                planEntryId =
+                    com.alexandr5476.lifetracing.domain
+                        .PlanEntryId("fulfilled"),
+            )
+        val detail =
+            com.alexandr5476.lifetracing.domain.ActivityHistoryDetail(
+                root,
+                END.plusSeconds(1),
+                ZONE,
+                com.alexandr5476.lifetracing.domain
+                    .ActivityTemplateSettings(),
+                emptyList(),
+            )
+        val scope =
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+            )
+        var writes = 0
+        val controller =
+            ActivityHistoryMutationController(scope, root.executionId, {
+                detail
+            }, { _, _, _ -> error("Plan correction forbidden") }, { _, _, _ -> writes++ })
+        val session = ActivityHistoryMutationRouteSession(root.executionId, controller)
+        var localized: android.content.Context = compose.activity
+        try {
+            compose.setContent {
+                val context = LocalContext.current
+                val (interfaceScale, textScale, font) = configurations[scale.value]
+                val configuration =
+                    Configuration(LocalConfiguration.current).apply {
+                        setLocale(Locale.forLanguageTag(language.value))
+                        fontScale = font
+                    }
+                val density = LocalDensity.current
+                localized = context.createConfigurationContext(configuration)
+                CompositionLocalProvider(
+                    LocalContext provides localized,
+                    LocalConfiguration provides configuration,
+                    LocalDensity provides Density(density.density, font),
+                ) {
+                    LifeTracingAppearance(
+                        AppearancePreferences(interfaceScalePercent = interfaceScale, textScalePercent = textScale),
+                    ) {
+                        ActivityHistoryDetailRoute(session, {}, {}, {})
+                    }
+                }
+            }
+            keyboard.enter()
+            compose.waitUntil(5_000) { controller.state.value.load is HistoryDetailLoad.Content }
+            for (locale in listOf("en", "ru")) {
+                for (index in configurations.indices) {
+                    compose.runOnIdle {
+                        language.value = locale
+                        scale.value = index
+                    }
+                    val delete = compose.onNodeWithTag("history-delete")
+                    delete.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(delete)
+                    assertTrue(
+                        delete.fetchSemanticsNode().config[SemanticsProperties.ContentDescription].single().contains(
+                            root.executionId.value,
+                        ),
+                    )
+                    compose.onNodeWithTag("history-correct").assertDoesNotExist()
+                    delete.performKeyInput { pressKey(Key.Enter) }
+                    val cancel = compose.onNodeWithTag("history-delete-cancel")
+                    keyboard.awaitFocus(cancel)
+                    compose
+                        .onNodeWithText(
+                            localized.getString(R.string.history_delete_plan_preserved),
+                            substring = true,
+                        ).performScrollTo()
+                        .assertIsDisplayed()
+                    compose
+                        .onNodeWithText(
+                            localized.getString(R.string.history_delete_template_preserved),
+                            substring = true,
+                        ).performScrollTo()
+                        .assertIsDisplayed()
+                    val confirm = compose.onNodeWithTag("history-delete-confirm")
+                    assertTrue(
+                        confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].label!!.contains(
+                            root.executionId.value,
+                        ),
+                    )
+                    val retained = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                    for (node in listOf(cancel, confirm)) {
+                        node.performScrollTo().assertIsDisplayed().performSemanticsAction(SemanticsActions.RequestFocus)
+                        keyboard.awaitFocus(node)
+                        val bounds = node.fetchSemanticsNode().touchBoundsInRoot
+                        val density = compose.activity.resources.displayMetrics.density
+                        assertTrue("$locale/$index width $bounds", bounds.width >= 48 * density - 1)
+                        assertTrue("$locale/$index height $bounds", bounds.height >= 48 * density - 1)
+                    }
+                    assertEquals(0, writes)
+                    cancel.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                    cancel.performKeyInput { pressKey(Key.Enter) }
+                    keyboard.awaitFocus(delete)
+                    compose.runOnIdle { retained() }
+                    assertEquals(0, writes)
+                }
+            }
+        } finally {
+            controller.close()
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
+
+    @Test
+    fun hiddenDeletionRetainsWriterAndTerminalRouteNeverRevivesDestructiveControls() {
+        val visible = mutableStateOf(true)
+        val attached = mutableStateOf(true)
+        var ownsRoute = true
+        val root = activity("terminal-deletion")
+        val detail =
+            com.alexandr5476.lifetracing.domain.ActivityHistoryDetail(
+                root,
+                END,
+                ZONE,
+                com.alexandr5476.lifetracing.domain
+                    .ActivityTemplateSettings(),
+                emptyList(),
+            )
+        val scope =
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+            )
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var writes = 0
+        var refreshes = 0
+        var completions = 0
+        val controller =
+            ActivityHistoryMutationController(
+                scope,
+                root.executionId,
+                { detail },
+                { _, _, _ -> error("unused correction") },
+                { _, _, _ ->
+                    writes++
+                    gate.await()
+                },
+            )
+        val session = ActivityHistoryMutationRouteSession(root.executionId, controller)
+        try {
+            compose.setContent {
+                LifeTracingTheme {
+                    Box {
+                        if (attached.value) {
+                            ActivityHistoryDetailRoute(
+                                session,
+                                {},
+                                { refreshes++ },
+                                { completions++ },
+                                isRouteVisible = visible.value,
+                                ownsRoute = { ownsRoute },
+                            )
+                        }
+                        TextButton(onClick = {}) { Text("Foreground destination") }
+                    }
+                }
+            }
+            keyboard.enter()
+            compose.waitUntil(5_000) { controller.state.value.load is HistoryDetailLoad.Content }
+            compose.onNodeWithTag("history-delete").performSemanticsAction(SemanticsActions.OnClick) { it() }
+            val retained =
+                compose
+                    .onNodeWithTag(
+                        "history-delete-confirm",
+                    ).fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            compose.runOnIdle {
+                ownsRoute = false
+                retained()
+                ownsRoute = true
+                retained()
+                ownsRoute = false
+                visible.value = false
+            }
+            assertEquals(0, writes)
+            compose.runOnIdle {
+                ownsRoute = true
+                visible.value = true
+            }
+            compose
+                .onNodeWithTag(
+                    "history-delete-confirm",
+                ).performScrollTo()
+                .performSemanticsAction(SemanticsActions.OnClick) {
+                    it()
+                }
+            compose.waitUntil(5_000) { controller.state.value.isMutating }
+            compose.runOnIdle {
+                ownsRoute = false
+                visible.value = false
+            }
+            val foreground = compose.onNodeWithText("Foreground destination")
+            foreground.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(foreground)
+            compose.runOnIdle { gate.complete(Unit) }
+            compose.waitUntil(5_000) { controller.state.value.deleted }
+            compose.waitForIdle()
+            foreground.assertIsFocused()
+            assertEquals(0, completions)
+            assertEquals(1, refreshes)
+            compose.onNodeWithTag("history-delete").assertDoesNotExist()
+            compose.onNodeWithTag("history-delete-confirm").assertDoesNotExist()
+            compose.runOnIdle {
+                retained()
+                attached.value = false
+            }
+            compose.runOnIdle {
+                ownsRoute = true
+                retained()
+                visible.value = true
+                attached.value = true
+            }
+            compose.waitUntil(5_000) { completions == 1 }
+            compose.runOnIdle { retained() }
+            assertEquals(1, writes)
+            assertEquals(1, refreshes)
+            compose.onNodeWithTag("history-delete").assertDoesNotExist()
+            compose.onNodeWithTag("history-correct").assertDoesNotExist()
+        } finally {
+            controller.close()
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
+
     private fun page(roots: List<CompletedHistoryRoot>) =
         HistoryPresentationState(HistoryBrowseWindow(DATE.minusDays(27), DATE), HistoryRootsLoad.Content(roots))
 

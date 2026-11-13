@@ -905,4 +905,10 @@
     <string name="history_correction_reloaded">Correction saved. Current historical details loaded.</string>
     <string name="history_correction_retry_save">Retry saving correction</string>
     <string name="history_correction_plan_unavailable">Correction is unavailable for an Activity linked to a Plan.</string>
+    <string name="history_delete_target_action">Delete historical execution: %1$s</string>
+    <string name="history_delete_confirm_action">Confirm deletion: %1$s</string>
+    <string name="history_delete_retry">Retry deletion</string>
+    <string name="history_delete_template_preserved">Only this completed execution is deleted. Its reusable Template is unchanged.</string>
+    <string name="history_delete_plan_preserved">The linked Plan remains fulfilled by this same execution. Its schedule and original fulfillment time are unchanged; deleting this history does not reopen the Plan.</string>
+    <string name="history_deleted_returning">Execution deleted. Returning to refreshed History…</string>
 </resources>

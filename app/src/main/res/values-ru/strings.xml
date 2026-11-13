@@ -905,4 +905,10 @@
     <string name="history_correction_reloaded">Исправление сохранено. Актуальные данные истории загружены.</string>
     <string name="history_correction_retry_save">Повторить сохранение исправления</string>
     <string name="history_correction_plan_unavailable">Исправление недоступно для Activity, связанной с планом.</string>
+    <string name="history_delete_target_action">Удалить историческое выполнение: %1$s</string>
+    <string name="history_delete_confirm_action">Подтвердить удаление: %1$s</string>
+    <string name="history_delete_retry">Повторить удаление</string>
+    <string name="history_delete_template_preserved">Удаляется только это завершённое выполнение. Его многоразовый шаблон не изменится.</string>
+    <string name="history_delete_plan_preserved">Связанный план останется выполненным этим же выполнением. Расписание и исходное время выполнения плана не изменятся; удаление истории не откроет план заново.</string>
+    <string name="history_deleted_returning">Выполнение удалено. Возвращаемся в обновлённую историю…</string>
 </resources>

@@ -15,6 +15,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
@@ -2618,6 +2619,464 @@ class PrimaryExecutionJourneyTest {
             } finally {
                 history.close()
                 scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+            }
+        }
+
+    @Test
+    fun accessibleTimedDeletionKeepsIndistinguishableSiblingAfterPhysicalReopen() = deletionJourney(DeletionCase.TIMED)
+
+    @Test
+    fun accessiblePlanLinkedDeletionPreservesEntireFulfilledPlanAfterPhysicalReopen() =
+        deletionJourney(DeletionCase.PLAN)
+
+    @Test
+    fun russianScaledNoLiveDeletionKeepsMissingDurationAfterPhysicalReopen() = deletionJourney(DeletionCase.NO_LIVE)
+
+    @Test
+    fun accessibleArchivedSourceDeletionLeavesTemplateUnchangedAfterPhysicalReopen() =
+        deletionJourney(DeletionCase.ARCHIVED)
+
+    @Test
+    fun accessibleDeletionFailureRequiresExplicitCurrentTargetRetry() = deletionJourney(DeletionCase.FAILURE)
+
+    @Test
+    fun accessibleStaleDeletionReloadRequiresNewConfirmationWithoutOverwriting() = deletionJourney(DeletionCase.STALE)
+
+    @Test
+    fun accessibleConcurrentDeletionRecoversUnavailableWithoutRepeatingWriter() =
+        deletionJourney(DeletionCase.UNAVAILABLE)
+
+    @Test
+    fun committedDeletionHistoryReadFailureRetriesOnlyCanonicalRead() = deletionJourney(DeletionCase.READ_FAILURE)
+
+    @Test
+    fun accessibleLastRootDeletionReturnsCanonicalEmptyHistoryAfterPhysicalReopen() = deletionJourney(DeletionCase.LAST)
+
+    private enum class DeletionCase { TIMED, PLAN, NO_LIVE, ARCHIVED, FAILURE, STALE, UNAVAILABLE, READ_FAILURE, LAST }
+
+    private fun deletionJourney(case: DeletionCase) =
+        journey { f ->
+            val zone = ZoneId.systemDefault()
+            val noLive = case == DeletionCase.NO_LIVE
+            val end = f.seedTime.minusSeconds(60)
+            val start = end.minusSeconds(600)
+            val source =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Indistinguishable deletion",
+                        "Frozen comment",
+                        if (noLive) TimeTrackingMode.NO_LIVE_TRACKING else TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("amount"),
+                                    0,
+                                    "Amount",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = 1,
+                                    defaultNumberScaled = 12555,
+                                ),
+                            ),
+                    ),
+                    createdAt = f.seedTime.minusSeconds(7200),
+                )
+            val plan =
+                if (case == DeletionCase.PLAN) {
+                    f.store.plans.createActivityPlanFromTemplate(source.id, f.schedule(), f.seedTime.minusSeconds(3600))
+                } else {
+                    null
+                }
+            val entry =
+                when {
+                    plan != null ->
+                        f.store.activityCommands.addManualTimedFromPlan(
+                            f.store.planReads
+                                .getFocusedAction(plan.id)
+                                .identity,
+                            start,
+                            end,
+                            f.seedTime,
+                            zone,
+                        )
+                    noLive ->
+                        f.store.activityCommands.addManualNoLive(
+                            ActivityEntrySource.Template(source.id),
+                            end,
+                            f.seedTime,
+                            zone,
+                        )
+                    else ->
+                        f.store.activityCommands.addManualTimed(
+                            ActivityEntrySource.Template(source.id),
+                            start,
+                            end,
+                            f.seedTime,
+                            zone,
+                        )
+                }
+            val sibling =
+                if (noLive) {
+                    f.store.activityCommands.addManualNoLive(
+                        ActivityEntrySource.Template(source.id),
+                        end,
+                        f.seedTime,
+                        zone,
+                    )
+                } else {
+                    f.store.activityCommands.addManualTimed(
+                        ActivityEntrySource.Template(source.id),
+                        start,
+                        end,
+                        f.seedTime,
+                        zone,
+                        overlapApproved = true,
+                    )
+                }
+            if (case ==
+                DeletionCase.ARCHIVED
+            ) {
+                f.store.library.archiveActivityTemplate(source.id, f.seedTime.plusMillis(1))
+            }
+            if (case == DeletionCase.LAST) {
+                f.store.activityCommands.softDeleteHistory(sibling.id, sibling.updatedAt, f.seedTime.plusMillis(1))
+            }
+            val unrelatedSequence =
+                if (case == DeletionCase.TIMED) {
+                    val sequenceSource = f.sequenceTemplate()
+                    val sequence =
+                        f.store.library
+                            .startSequenceFromTemplate(
+                                sequenceSource.id,
+                                f.seedTime,
+                                f.seedTime,
+                                zone,
+                            ).execution
+                    f.store.live.endSequenceEarly(f.seedTime.plusMillis(1))
+                    sequence.id
+                } else {
+                    null
+                }
+            val frozenChildren = unrelatedSequence?.let { f.store.children(it) }
+            val frozenSequenceDetail = unrelatedSequence?.let { f.store.history.getSequenceDetail(it) }
+            val originalGlobal = f.store.statistics.global(StatisticsPeriod.AllTime)
+            val original = f.store.activity(entry.id)
+            val originalSnapshot =
+                f.store.activityCommands
+                    .getHistory(entry.id)!!
+                    .snapshot
+            val frozenSibling = f.store.activity(sibling.id)
+            val frozenPlan = plan?.let { f.store.plans.getPlan(it.id) }
+            if (plan != null) assertEquals(PlanEntryStatus.FULFILLED, frozenPlan!!.status)
+            val before = f.store.durableFacts()
+            val counts = f.store.executionCounts()
+            val originalSeries = f.store.statistics.activitySeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
+            f.useProductionAppearance(if (noLive) 120 else 90, if (noLive) 130 else 90)
+            f.launch()
+            if (noLive) f.applyAppearance("ru", 2f, 120, 130)
+            val graph = LifeTracingRuntimeGraph.from(f.host())
+            val attempts = AtomicInteger()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val controller =
+                ActivityHistoryMutationController(
+                    graph.scope,
+                    entry.id,
+                    { id ->
+                        kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) { f.store.history.getActivityDetail(id) }
+                    },
+                    { _, _, _ -> error("Deletion journey cannot correct") },
+                    { id, expected, at ->
+                        val attempt = attempts.incrementAndGet()
+                        if (case == DeletionCase.FAILURE && attempt == 1) error("ordinary writer failure")
+                        if (case == DeletionCase.TIMED) {
+                            entered.complete(Unit)
+                            release.await()
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.activityCommands.softDeleteHistory(id, expected, at)
+                        }
+                    },
+                )
+            compose.runOnIdle { f.host().activityHistoryMutationRouteSessions.acquire(entry.id) { controller } }
+            val failHistory =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(case == DeletionCase.READ_FAILURE)
+            if (case == DeletionCase.READ_FAILURE) {
+                compose.runOnIdle {
+                    f.host().historyControllerOwner.get {
+                        com.alexandr5476.lifetracing.history.HistoryController(
+                            graph.scope,
+                            { query ->
+                                if (controller.state.value.deleted &&
+                                    failHistory.get()
+                                ) {
+                                    error("History read after commit")
+                                }
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    f.store.history.getCompletedRoots(query)
+                                }
+                            },
+                            readLatestDate = { context ->
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    f.store.history.getLatestCompletedPrimaryLocalDate(context.now, context.zoneId)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            f.invoke(R.string.daily_history)
+            f.await { compose.onAllNodes(hasTestTag("history-back")).fetchSemanticsNodes().size == 1 }
+            val history =
+                compose.runOnIdle {
+                    f.host().historyControllerOwner.get {
+                        error(
+                            "Production History required",
+                        )
+                    }
+                }
+            f.await { history.state.value.load is HistoryRootsLoad.Content }
+            f.await {
+                tryInvokeCurrent(
+                    hasContentDescription(
+                        f.text(R.string.history_activity_record, entry.id.value),
+                        substring = true,
+                    ) and
+                        hasClickAction(),
+                )
+            }
+            f.await { controller.state.value.load is HistoryDetailLoad.Content }
+            assertEquals(entry.id, (controller.state.value.load as HistoryDetailLoad.Content).value.root.executionId)
+            if (plan != null) compose.onNodeWithTag("history-correct").assertDoesNotExist()
+            val delete = reachable(compose.onNodeWithTag("history-delete"))
+            assertTrue(
+                delete
+                    .fetchSemanticsNode()
+                    .config[androidx.compose.ui.semantics.SemanticsProperties.ContentDescription]
+                    .single()
+                    .contains(
+                        entry.id.value,
+                    ),
+            )
+            delete.performSemanticsAction(SemanticsActions.RequestFocus)
+            delete.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            compose.waitForIdle()
+            val cancel = reachable(compose.onNodeWithTag("history-delete-cancel"))
+            keyboard.awaitFocus(cancel)
+            assertEquals(before, f.store.durableFacts())
+            val obsolete =
+                compose
+                    .onNodeWithTag(
+                        "history-delete-confirm",
+                    ).fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            f.systemBack()
+            keyboard.awaitFocus(compose.onNodeWithTag("history-delete"))
+            compose.runOnIdle { obsolete() }
+            assertEquals(0, attempts.get())
+            f.await { tryInvokeCurrent(hasTestTag("history-delete")) }
+            val confirmation = reachable(compose.onNodeWithTag("history-delete-confirm"))
+            val retained = confirmation.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            if (plan != null) {
+                compose
+                    .onNodeWithText(
+                        f.text(R.string.history_delete_plan_preserved),
+                        substring = true,
+                    ).performScrollTo()
+                    .assertIsDisplayed()
+            }
+            f.await { tryInvokeCurrent(hasTestTag("history-delete-cancel")) }
+            keyboard.awaitFocus(compose.onNodeWithTag("history-delete"))
+            compose.runOnIdle { retained() }
+            assertEquals(before, f.store.durableFacts())
+            f.await { tryInvokeCurrent(hasTestTag("history-delete")) }
+            val nativeBack = compose.onNodeWithText(f.text(R.string.history_back))
+            reachable(nativeBack).performSemanticsAction(SemanticsActions.RequestFocus)
+            nativeBack.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            keyboard.awaitFocus(compose.onNodeWithTag("history-delete"))
+            assertEquals(before, f.store.durableFacts())
+            f.await { tryInvokeCurrent(hasTestTag("history-delete")) }
+            val currentConfirm = reachable(compose.onNodeWithTag("history-delete-confirm"))
+            val confirm = currentConfirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            val competing =
+                when (case) {
+                    DeletionCase.STALE ->
+                        f.store.activityCommands
+                            .correctHistory(
+                                entry.id,
+                                ActivityHistoryCorrection(
+                                    original.updatedAt,
+                                    ActivityHistoryTimeCorrection.Timed(start, end),
+                                    zone,
+                                    original.values,
+                                    "Competing historical comment",
+                                ),
+                                f.seedTime.plusSeconds(1),
+                            ).execution
+                    DeletionCase.UNAVAILABLE ->
+                        f.store.activityCommands.softDeleteHistory(
+                            entry.id,
+                            original.updatedAt,
+                            f.seedTime.plusSeconds(1),
+                        )
+                    else -> null
+                }
+            val competingFacts = if (competing != null) f.store.durableFacts() else null
+            // All accepted submissions use native semantics, including repeated events before disposal.
+            currentConfirm.performSemanticsAction(SemanticsActions.RequestFocus)
+            currentConfirm.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            if (case == DeletionCase.TIMED) {
+                f.await { entered.isCompleted }
+                compose.runOnIdle {
+                    confirm()
+                    confirm()
+                }
+                compose.onNodeWithTag("history-delete-confirm").assertIsNotEnabled()
+                compose.onNodeWithTag("history-delete-cancel").assertIsNotEnabled()
+                f.systemBack()
+                val session = f.host().activityHistoryMutationRouteSessions.activeSession
+                f.recreate()
+                assertSame(session, f.host().activityHistoryMutationRouteSessions.activeSession)
+                release.complete(Unit)
+            }
+            if (case == DeletionCase.FAILURE) {
+                f.await { controller.state.value.issue == ActivityHistoryMutationIssue.DELETE_FAILURE }
+                val retry = reachable(compose.onNodeWithTag("history-delete-confirm"))
+                keyboard.awaitFocus(retry)
+                compose.onNodeWithText(f.text(R.string.history_delete_retry)).assertIsDisplayed()
+                compose.runOnIdle { confirm() }
+                assertEquals(1, attempts.get())
+                retry.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            }
+            if (competing != null) {
+                f.await {
+                    controller.state.value.issue == ActivityHistoryMutationIssue.STALE &&
+                        controller.state.value.load !is HistoryDetailLoad.Loading
+                }
+                assertEquals(competingFacts, f.store.durableFacts())
+                assertTrue(!controller.state.value.deleteConfirmation)
+                compose.runOnIdle {
+                    confirm()
+                    retained()
+                    obsolete()
+                }
+                assertEquals(1, attempts.get())
+                if (case == DeletionCase.UNAVAILABLE) {
+                    assertTrue(controller.state.value.load is HistoryDetailLoad.Unavailable)
+                    compose.onNodeWithTag("history-delete").assertDoesNotExist()
+                    keyboard.awaitFocus(compose.onNodeWithText(f.text(R.string.history_back)))
+                } else {
+                    assertEquals(competing, f.store.activity(entry.id))
+                }
+                f.systemBack()
+                f.await { history.state.value.load !is HistoryRootsLoad.Loading }
+                assertTrue(
+                    (history.state.value.load as HistoryRootsLoad.Content).roots.none {
+                        case == DeletionCase.UNAVAILABLE &&
+                            it is CompletedActivityHistoryRoot &&
+                            it.executionId == entry.id
+                    },
+                )
+                f.reopen(
+                    historyDay = original.primaryLocalDate,
+                    expectedAllTimeCount =
+                        originalGlobal.topLevelExecutionCount - if (case == DeletionCase.UNAVAILABLE) 1 else 0,
+                ) { assertEquals(competingFacts, durableFacts()) }
+            } else {
+                f.await { f.host().activityHistoryMutationRouteSessions.activeSession == null }
+                f.await { history.state.value.load !is HistoryRootsLoad.Loading }
+                if (case == DeletionCase.READ_FAILURE) {
+                    assertTrue(controller.state.value.deleted)
+                    assertTrue(history.state.value.load is HistoryRootsLoad.Failure)
+                    assertEquals(1, attempts.get())
+                    val retry = reachable(compose.onNodeWithTag("history-retry"))
+                    retry.performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(retry)
+                    failHistory.set(false)
+                    retry.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                    f.await { history.state.value.load is HistoryRootsLoad.Content }
+                }
+                keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+                compose.runOnIdle {
+                    confirm()
+                    retained()
+                    obsolete()
+                }
+                assertEquals(if (case == DeletionCase.FAILURE) 2 else 1, attempts.get())
+                assertEquals(1L, controller.state.value.refreshGeneration)
+                val deleted = f.store.activity(entry.id)
+                assertTrue(deleted.deletedAt != null)
+                assertEquals(original.copy(deletedAt = deleted.deletedAt, updatedAt = deleted.updatedAt), deleted)
+                assertEquals(
+                    before.filterKeys { it != "activity_executions" },
+                    f.store.durableFacts().filterKeys {
+                        it !=
+                            "activity_executions"
+                    },
+                )
+                assertEquals(counts, f.store.executionCounts())
+                assertTrue(
+                    (history.state.value.load as? HistoryRootsLoad.Content)?.roots.orEmpty().none {
+                        it is CompletedActivityHistoryRoot && it.executionId == entry.id
+                    },
+                )
+                if (case == DeletionCase.LAST) assertEquals(HistoryRootsLoad.Empty, history.state.value.load)
+                f.reopen(
+                    historyDay = original.primaryLocalDate,
+                    expectedAllTimeCount = originalGlobal.topLevelExecutionCount - 1,
+                ) {
+                    assertEquals(deleted, activity(entry.id))
+                    assertEquals(frozenSibling, activity(sibling.id))
+                    assertEquals(originalSnapshot, activityCommands.getHistory(entry.id)!!.snapshot)
+                    assertEquals(frozenChildren, unrelatedSequence?.let { children(it) })
+                    assertEquals(frozenSequenceDetail, unrelatedSequence?.let { this.history.getSequenceDetail(it) })
+                    val global = statistics.global(StatisticsPeriod.AllTime)
+                    assertEquals(originalGlobal.topLevelExecutionCount - 1, global.topLevelExecutionCount)
+                    assertEquals(
+                        originalGlobal.totalTrackedDuration - (original.activeDuration ?: Duration.ZERO),
+                        global.totalTrackedDuration,
+                    )
+                    assertTrue(
+                        daily
+                            .getDaily(
+                                DailyQuery(original.primaryLocalDate, Instant.now(), 20, zone),
+                            ).completedHistory
+                            .none {
+                                it is CompletedActivityHistoryRoot && it.executionId == entry.id
+                            },
+                    )
+                    assertEquals(frozenPlan, plan?.let { plans.getPlan(it.id) })
+                    assertEquals(counts, executionCounts())
+                    assertNull(this.history.getActivityDetail(entry.id))
+                    assertTrue(f.roots(this).none { it is CompletedActivityHistoryRoot && it.executionId == entry.id })
+                    val series = statistics.activitySeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
+                    assertEquals(originalSeries.executionCount - 1, series.executionCount)
+                    assertEquals(if (noLive || case == DeletionCase.LAST) 0L else 1L, series.durations.sampleCount)
+                    assertEquals(
+                        if (noLive ||
+                            case == DeletionCase.LAST
+                        ) {
+                            Duration.ZERO
+                        } else {
+                            Duration.ofMinutes(10)
+                        },
+                        series.durations.total,
+                    )
+                    assertEquals(
+                        if (case == DeletionCase.LAST) 0L else 1L,
+                        statistics
+                            .numberFieldStatistics(
+                                source.statisticsSeriesId,
+                                StatisticsFieldId.Activity(source.fields.single().id),
+                                StatisticsPeriod.AllTime,
+                            ).recordedCount,
+                    )
+                    assertNull(live.getActiveSession())
+                }
             }
         }
 

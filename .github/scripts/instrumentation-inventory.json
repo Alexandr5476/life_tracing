@@ -997,6 +997,8 @@
       "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
     "com.alexandr5476.lifetracing.history.HistoryAccessibilityPresentationTest": [
+      "hiddenDeletionRetainsWriterAndTerminalRouteNeverRevivesDestructiveControls",
+      "deletionConfirmationNativeFocusLabelsAndTargetsSurviveEnglishRussianScaleExtremes",
       "readOnlyDetailPublishesLoadingRetryUnavailableAndFrozenConfiguredActualValuesWithoutWrites",
       "duplicateNamesAndTimesKeepOneNativeActionPerExactTypedExecution",
       "rootDescriptionsKeepEndpointOffsetsDatesStoredGroupingAndMissingVersusZero",
@@ -1414,6 +1416,15 @@
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "accessibleLastRootDeletionReturnsCanonicalEmptyHistoryAfterPhysicalReopen",
+      "committedDeletionHistoryReadFailureRetriesOnlyCanonicalRead",
+      "accessibleArchivedSourceDeletionLeavesTemplateUnchangedAfterPhysicalReopen",
+      "accessibleConcurrentDeletionRecoversUnavailableWithoutRepeatingWriter",
+      "accessibleDeletionFailureRequiresExplicitCurrentTargetRetry",
+      "accessiblePlanLinkedDeletionPreservesEntireFulfilledPlanAfterPhysicalReopen",
+      "accessibleStaleDeletionReloadRequiresNewConfirmationWithoutOverwriting",
+      "accessibleTimedDeletionKeepsIndistinguishableSiblingAfterPhysicalReopen",
+      "russianScaledNoLiveDeletionKeepsMissingDurationAfterPhysicalReopen",
       "historyDuplicateRootsUseExactNativeRoutesAndRejectOutgoingCallbacksAcrossBackAndRecreation",
       "russianLargeFontHistoryDuplicateRootsKeepExactNativeRoutesAndReturnFocus",
       "historyProductionPagingFailureRetryAndExitKeepCanonicalBoundsAndRejectOldNativeActions",

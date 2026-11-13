@@ -139,9 +139,9 @@ internal fun ActivityHistoryDetailRoute(
         BackHandler(enabled = interactive && (state.draft != null || state.deleteConfirmation || state.isMutating)) {
             if (ownsRoute()) controller.handleBack()
         }
-        LaunchedEffect(state.refreshGeneration, state.deleted) {
+        LaunchedEffect(state.refreshGeneration, state.deleted, interactive) {
             session.deliverRefresh(state.refreshGeneration, onRefresh)
-            if (state.deleted) session.deliverDelete(onDeleted)
+            if (state.deleted && interactive && ownsRoute()) session.deliverDelete(onDeleted)
         }
         val historyAdmission = rememberHistoryAdmission(state, { controller.state.value }, ownsRoute, interactive)
         val focus =
@@ -160,7 +160,6 @@ internal fun ActivityHistoryDetailRoute(
             ) {
                 ActivityHistoryMutationSurface(
                     state,
-                    { admission.action(it)() },
                     onBack = admission.back { if (!controller.handleBack()) onBack() },
                 )
             }
@@ -431,7 +430,7 @@ private fun HistoryRootRow(
 }
 
 @Composable
-private fun historyRootDescription(
+internal fun historyRootDescription(
     root: CompletedHistoryRoot,
     record: String,
 ): String {
@@ -530,9 +529,14 @@ internal fun ActivityDetail(detail: ActivityHistoryDetail) {
 @Composable
 private fun ActivityHistoryMutationSurface(
     state: ActivityHistoryMutationState,
-    onAction: (ActivityHistoryMutationAction) -> Unit,
     onBack: () -> Unit,
 ) {
+    val deleteFocus =
+        remember {
+            androidx.compose.ui.focus
+                .FocusRequester()
+        }
+    ActivityDeletionReturnFocus(state, deleteFocus)
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
@@ -561,7 +565,9 @@ private fun ActivityHistoryMutationSurface(
                 HistoryDetailLoad.Unavailable ->
                     HistoryCard {
                         state.issue?.let { MutationIssue(it) }
-                        HistoryReadStatus(R.string.history_unavailable)
+                        HistoryReadStatus(
+                            if (state.deleted) R.string.history_deleted_returning else R.string.history_unavailable,
+                        )
                     }
                 is HistoryDetailLoad.Failure -> {
                     state.issue?.let { MutationIssue(it) }
@@ -577,7 +583,7 @@ private fun ActivityHistoryMutationSurface(
                             CorrectionOverlapWarning(state)
                         state.draft != null -> ActivityCorrectionEditor(load.value, state)
                         state.deleteConfirmation ->
-                            DeleteConfirmation(load.value, state.isMutating, state.issue, onAction)
+                            ActivityDeletionConfirmation(load.value, state)
                         else -> {
                             state.issue?.let { MutationIssue(it) }
                             HistoryReadStatus(
@@ -599,11 +605,7 @@ private fun ActivityHistoryMutationSurface(
                                 } else {
                                     Text(stringResource(R.string.history_correction_plan_unavailable))
                                 }
-                                LifeTracingSecondaryButton(
-                                    onClick = { onAction(ActivityHistoryMutationAction.RequestDelete) },
-                                    enabled = !state.isMutating && LocalActivityCorrectionAdmission.current.canFocus(),
-                                    modifier = historyFocusTarget().testTag("history-delete"),
-                                ) { Text(stringResource(R.string.history_delete)) }
+                                ActivityDeletionButton(load.value, state, deleteFocus)
                             }
                         }
                     }
@@ -1117,29 +1119,6 @@ private fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
             SequenceHistoryMutationIssue.STRUCTURAL_FAILURE -> R.string.sequence_history_structural_failure
         }
     Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
-}
-
-@Composable
-private fun DeleteConfirmation(
-    detail: ActivityHistoryDetail,
-    isMutating: Boolean,
-    issue: ActivityHistoryMutationIssue?,
-    onAction: (ActivityHistoryMutationAction) -> Unit,
-) {
-    Text(stringResource(R.string.history_delete_title), style = MaterialTheme.typography.headlineSmall)
-    Text(stringResource(R.string.history_delete_message, detail.root.title))
-    issue?.let { MutationIssue(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.Cancel) },
-            enabled = !isMutating,
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        LifeTracingPrimaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.ConfirmDelete) },
-            enabled = !isMutating,
-            modifier = Modifier.testTag("history-delete-confirm"),
-        ) { Text(stringResource(if (isMutating) R.string.history_deleting else R.string.history_delete)) }
-    }
 }
 
 @Composable

@@ -63,6 +63,8 @@ class ActivityCorrectionAdmissionTest : ActivityHistoryMutationTestFixture() {
             begin()
             assertNull(fixture.controller.state.value.draft)
             foreground = true
+            begin()
+            assertNull(fixture.controller.state.value.draft)
             owner.attached = false
             begin()
             assertNull(fixture.controller.state.value.draft)

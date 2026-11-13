@@ -164,6 +164,7 @@ class ActivityHistoryMutationController internal constructor(
     val state: StateFlow<ActivityHistoryMutationState> = mutableState
     private var operation: Job? = null
     private var pendingCorrection: PendingCorrection? = null
+    private var pendingDelete: Pair<ActivityExecutionId, Instant>? = null
     private var closed = false
 
     init {
@@ -171,7 +172,7 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     fun dispatch(action: ActivityHistoryMutationAction) {
-        if (closed) return
+        if (closed || mutableState.value.deleted) return
         // A non-durable publication prevents an immediate retry/failure from retaining old actions.
         mutableState.update { it.copy(publication = it.publication + 1) }
         when (action) {
@@ -241,8 +242,10 @@ class ActivityHistoryMutationController internal constructor(
         if (closed || mutableState.value.isMutating) return
         operation?.cancel()
         pendingCorrection = null
+        pendingDelete = null
         mutableState.update {
             it.copy(
+                refreshGeneration = it.refreshGeneration + if (issue == ActivityHistoryMutationIssue.STALE) 1 else 0,
                 load = HistoryDetailLoad.Loading,
                 draft = null,
                 deleteConfirmation = false,
@@ -316,19 +319,17 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     private fun requestDelete() {
-        if (
-            mutableState.value.isMutating ||
-            mutableState.value.overlapWarning ||
-            mutableState.value.load !is HistoryDetailLoad.Content
-        ) {
-            return
-        }
-        mutableState.update { it.copy(draft = null, deleteConfirmation = true, issue = null) }
+        val state = mutableState.value
+        if (!state.canRequestActivityDeletion(executionId)) return
+        val detail = (state.load as HistoryDetailLoad.Content).value
+        pendingDelete = executionId to detail.updatedAt
+        mutableState.update { it.copy(deleteConfirmation = true, issue = null) }
     }
 
     private fun cancelTransient() {
         if (mutableState.value.isMutating) return
         pendingCorrection = null
+        pendingDelete = null
         mutableState.update {
             it.copy(draft = null, deleteConfirmation = false, overlapWarning = false, issue = null)
         }
@@ -463,14 +464,18 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     private fun delete() {
-        if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
-        val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
+        val state = mutableState.value
+        if (!state.canConfirmActivityDeletion(executionId)) return
+        val detail = (state.load as HistoryDetailLoad.Content).value
+        val target = pendingDelete ?: return
+        if (target.first != executionId || target.second != detail.updatedAt) return
         val commandAt = now()
         mutableState.update { it.copy(isMutating = true, issue = null) }
         operation =
             scope.launch {
                 try {
-                    softDelete(executionId, detail.updatedAt, commandAt)
+                    softDelete(target.first, target.second, commandAt)
+                    pendingDelete = null
                     if (!closed) {
                         mutableState.update {
                             it.copy(
@@ -478,6 +483,7 @@ class ActivityHistoryMutationController internal constructor(
                                 deleteConfirmation = false,
                                 refreshGeneration = it.refreshGeneration + 1,
                                 deleted = true,
+                                load = HistoryDetailLoad.Unavailable,
                             )
                         }
                     }
@@ -654,12 +660,14 @@ internal class ActivityHistoryMutationRouteSessionOwner : ViewModel() {
         create: () -> ActivityHistoryMutationController,
     ): ActivityHistoryMutationRouteSession {
         session?.takeIf { it.executionId == executionId }?.let { return it }
+        val previous = session?.controller
+        check(previous == null || !previous.state.value.isMutating) { "History writer still owns its route session" }
         session?.controller?.close()
         return ActivityHistoryMutationRouteSession(executionId, create()).also { session = it }
     }
 
     fun release(expected: ActivityHistoryMutationRouteSession) {
-        if (session !== expected) return
+        if (session !== expected || expected.controller.state.value.isMutating) return
         expected.controller.close()
         session = null
     }

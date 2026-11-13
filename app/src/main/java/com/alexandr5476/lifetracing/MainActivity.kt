@@ -629,8 +629,12 @@ internal fun LifeTracingApp(
                                 },
                                 onRefresh = refreshActivityHistory,
                                 onDeleted = {
-                                    activityHistorySessions.release(session)
-                                    backStack.removeActivityHistoryDetail(route.executionId)
+                                    if (backStack.lastOrNull() == route &&
+                                        activityHistorySessions.activeSession === session
+                                    ) {
+                                        activityHistorySessions.release(session)
+                                        backStack.removeActivityHistoryDetail(route.executionId)
+                                    }
                                 },
                             )
                         }

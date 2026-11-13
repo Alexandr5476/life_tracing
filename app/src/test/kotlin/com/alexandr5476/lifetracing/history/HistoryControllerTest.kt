@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -870,6 +871,40 @@ class HistoryControllerTest {
             )
             assertEquals(listOf("latest"), fixture.contentIds())
             fixture.close()
+        }
+
+    @Test
+    fun deletionRefreshRediscoversNewestRootAndLastRootBecomesCanonicalEmpty() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val newest = root("newest").copy(primaryLocalDate = TODAY.plusDays(60))
+            val previous = root("previous").copy(primaryLocalDate = TODAY.plusDays(30))
+            var stored = listOf(newest, previous)
+            val controller =
+                HistoryController(
+                    scope,
+                    readRoots = { query ->
+                        stored.filter {
+                            it.primaryLocalDate in
+                                query.dateRange.startDate..query.dateRange.endDate
+                        }
+                    },
+                    now = { NOW },
+                    zoneId = { ZoneOffset.UTC },
+                    readLatestDate = { stored.maxOfOrNull { it.primaryLocalDate } },
+                )
+            controller.onRouteEntered()
+            assertEquals(listOf(newest), (controller.state.value.load as HistoryRootsLoad.Content).roots)
+            stored = listOf(previous)
+            controller.dispatch(HistoryAction.Refresh)
+            assertEquals(previous.primaryLocalDate, controller.state.value.newestDate)
+            assertEquals(listOf(previous), (controller.state.value.load as HistoryRootsLoad.Content).roots)
+            stored = emptyList()
+            controller.dispatch(HistoryAction.Refresh)
+            assertEquals(HistoryRootsLoad.Empty, controller.state.value.load)
+            assertFalse(controller.state.value.canLoadMore)
+            controller.close()
+            scope.cancel()
         }
 
     @Test

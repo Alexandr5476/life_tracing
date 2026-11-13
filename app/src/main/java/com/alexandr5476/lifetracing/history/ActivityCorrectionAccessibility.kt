@@ -11,8 +11,10 @@ package com.alexandr5476.lifetracing.history
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.CustomFieldType
@@ -24,15 +26,26 @@ internal class ActivityCorrectionAdmission(
     private val current: () -> ActivityHistoryMutationState,
     private val ownsRoute: () -> Boolean,
     private val dispatch: (ActivityHistoryMutationAction) -> Unit,
+    private val onRevoked: () -> Unit = {},
 ) {
     var attached = true
+    private var revoked = false
 
-    fun canFocus(): Boolean = attached && ownsRoute()
+    fun canFocus(): Boolean = attached && !revoked && ownsRoute()
+
+    private fun ownsActionRoute(): Boolean {
+        if (!attached || revoked) return false
+        if (ownsRoute()) return true
+        // Losing ownership permanently revokes retained callbacks, even before a hidden frame.
+        revoked = true
+        onRevoked()
+        return false
+    }
 
     fun back(block: () -> Unit): () -> Unit =
         {
             val state = current()
-            if (canFocus() && state === publication && !state.isMutating) block()
+            if (ownsActionRoute() && state === publication && !state.isMutating) block()
         }
 
     fun action(action: ActivityHistoryMutationAction): () -> Unit =
@@ -56,19 +69,16 @@ internal class ActivityCorrectionAdmission(
         action: ActivityHistoryMutationAction,
     ): Boolean {
         val state = current()
-        if (!canFocus() || state !== expected || state.isMutating) return false
+        if (!ownsActionRoute() || state !== expected || state.isMutating) return false
+        if (state.deleted) return false
         if (action == ActivityHistoryMutationAction.Retry) {
             return state.load is HistoryDetailLoad.Failure || state.load is HistoryDetailLoad.Unavailable
         }
         val detail = (state.load as? HistoryDetailLoad.Content)?.value ?: return false
         if (detail.root.executionId != executionId || state.deleted) return false
-        // Deletion keeps its existing command and confirmation policy, sharing only presentation ownership.
         when (action) {
-            ActivityHistoryMutationAction.RequestDelete ->
-                return state.draft == null &&
-                    !state.overlapWarning &&
-                    !state.deleteConfirmation
-            ActivityHistoryMutationAction.ConfirmDelete -> return state.deleteConfirmation
+            ActivityHistoryMutationAction.RequestDelete -> return state.canRequestActivityDeletion(executionId)
+            ActivityHistoryMutationAction.ConfirmDelete -> return state.canConfirmActivityDeletion(executionId)
             ActivityHistoryMutationAction.Cancel -> return state.draft != null || state.deleteConfirmation
             else -> Unit
         }
@@ -104,6 +114,20 @@ internal class ActivityCorrectionAdmission(
     }
 }
 
+/** The controller and every native action use the same transient deletion policy. */
+internal fun ActivityHistoryMutationState.canRequestActivityDeletion(id: ActivityExecutionId): Boolean =
+    deletionDetailIsCurrent(id) && !deleteConfirmation
+
+internal fun ActivityHistoryMutationState.canConfirmActivityDeletion(id: ActivityExecutionId): Boolean =
+    deletionDetailIsCurrent(id) && deleteConfirmation
+
+private fun ActivityHistoryMutationState.deletionDetailIsCurrent(id: ActivityExecutionId): Boolean =
+    !deleted &&
+        !isMutating &&
+        draft == null &&
+        !overlapWarning &&
+        (load as? HistoryDetailLoad.Content)?.value?.root?.executionId == id
+
 internal val LocalActivityCorrectionAdmission =
     staticCompositionLocalOf<ActivityCorrectionAdmission> {
         error("Activity correction action owner missing")
@@ -121,9 +145,12 @@ internal fun rememberActivityCorrectionAdmission(
     val read by rememberUpdatedState(current)
     val owner by rememberUpdatedState(ownsRoute)
     val send by rememberUpdatedState(dispatch)
+    var revocationGeneration by remember { mutableStateOf(0L) }
     val admission =
-        remember(ActivityCorrectionPublication(state), visible) {
-            ActivityCorrectionAdmission(executionId, state, { read() }, { visible && owner() }, { send(it) })
+        remember(ActivityCorrectionPublication(state), visible, revocationGeneration) {
+            ActivityCorrectionAdmission(executionId, state, { read() }, { visible && owner() }, { send(it) }) {
+                revocationGeneration++
+            }
         }
     DisposableEffect(admission) { onDispose { admission.attached = false } }
     return admission
