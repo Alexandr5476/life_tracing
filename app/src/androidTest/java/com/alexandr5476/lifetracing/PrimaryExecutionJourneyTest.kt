@@ -1360,10 +1360,12 @@ class PrimaryExecutionJourneyTest {
                     input("history-correction-field-${fields[0].id.value}", "bad")
                     f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
                     assertEquals(0, writes.get())
+                    keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
                     if (dst) {
                         val index = if (case == CorrectionCase.DST_SECOND) 1 else 0
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-completed-offset-$index")) }
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
+                        keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-started-offset-$index")) }
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
                     }
@@ -1371,6 +1373,8 @@ class PrimaryExecutionJourneyTest {
                         ActivityHistoryMutationIssue.INVALID_NUMBER,
                         controller.state.value.issue,
                     )
+                    // Rejection publishes before the next-frame recovery focus/scroll effect.
+                    keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
                     input("history-correction-field-${fields[0].id.value}", "0")
                     input("history-correction-field-${fields[2].id.value}", "")
                     f.await { tryInvokeCurrent(hasTestTag("history-correction-field-${fields[3].id.value}-missing")) }
@@ -1893,12 +1897,29 @@ class PrimaryExecutionJourneyTest {
                 val fields = source.fields.sortedBy { it.position }
                 compose.onNodeWithTag("manual-history-field-${fields[0].id.value}-actual").assertIsFocused()
                 assertEquals(endLocal.toString().replace('T', ' '), controller.state.value.completedText)
+
+                fun rejectSave(expected: ManualEntryCommand.Invalid) {
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                    f.await { controller.state.value.command == expected }
+                    // Observe production recovery before scrolling away; requesting focus here
+                    // would mask a broken recovery effect and race its bring-into-view scroll.
+                    keyboard.awaitFocus(compose.onNodeWithTag("manual-history-save"))
+                    assertEquals(before, f.store.durableFacts())
+                }
+
                 input("manual-history-field-${fields[0].id.value}-actual", "bad")
-                f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
-                assertEquals(before, f.store.durableFacts())
-                assertTrue(
-                    controller.state.value.command is ManualEntryCommand.Invalid,
-                )
+                if (overlapOffset != null) {
+                    // Timestamp admission precedes Field validation, one endpoint at a time.
+                    rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME))
+                    assertEquals(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME, controller.state.value.completedIssue)
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-completed-offset-$overlapOffset")) }
+                    compose.onNodeWithTag("manual-history-completed-offset-$overlapOffset").assertIsSelected()
+                    rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME))
+                    assertEquals(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME, controller.state.value.startedIssue)
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-started-offset-$overlapOffset")) }
+                    compose.onNodeWithTag("manual-history-started-offset-$overlapOffset").assertIsSelected()
+                }
+                rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_NUMBER, fields[0].id))
                 input("manual-history-field-${fields[0].id.value}-actual", "0")
                 input("manual-history-field-${fields[2].id.value}-actual", "")
                 f.await { tryInvokeCurrent(hasTestTag("manual-history-field-${fields[3].id.value}-missing")) }
@@ -1910,14 +1931,6 @@ class PrimaryExecutionJourneyTest {
                         "manual-history-option-${fields[1].categoryOptions.first().id.value}",
                     ).assertIsNotSelected()
                 assertEquals(before, f.store.durableFacts())
-                if (overlapOffset != null) {
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-completed-offset-$overlapOffset")) }
-                    compose.onNodeWithTag("manual-history-completed-offset-$overlapOffset").assertIsSelected()
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-started-offset-$overlapOffset")) }
-                    compose.onNodeWithTag("manual-history-started-offset-$overlapOffset").assertIsSelected()
-                }
                 if (language == "en") {
                     f.recreate()
                     assertSame(
