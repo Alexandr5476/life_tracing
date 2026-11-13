@@ -46,6 +46,8 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
@@ -54,7 +56,6 @@ import com.alexandr5476.lifetracing.domain.ActivityHistoryField
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
-import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
@@ -67,13 +68,13 @@ import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.historicalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
-import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -120,30 +121,49 @@ internal fun ActivityHistoryDetailRoute(
     isRouteVisible: Boolean = true,
     ownsRoute: () -> Boolean = { isRouteVisible },
 ) {
-    val controller = session.controller
-    val state by controller.state.collectAsState()
-    BackHandler(enabled = state.draft != null || state.deleteConfirmation || state.isMutating) {
-        controller.handleBack()
-    }
-    LaunchedEffect(state.refreshGeneration, state.deleted) {
-        session.deliverRefresh(state.refreshGeneration, onRefresh)
-        if (state.deleted) session.deliverDelete(onDeleted)
-    }
-    val admission = rememberHistoryAdmission(state, { controller.state.value }, ownsRoute, isRouteVisible)
-    val focus =
-        rememberHistoryFocus(
-            isRouteVisible,
-            state.load is HistoryDetailLoad.Loading,
-            state.load is HistoryDetailLoad.Failure,
-            ownsRoute,
-        )
-    LifeTracingAccessibleTargets {
-        CompositionLocalProvider(LocalHistoryAdmission provides admission, LocalHistoryFocus provides focus) {
-            ActivityHistoryMutationSurface(
+    key(session.controller) {
+        val controller = session.controller
+        val state by controller.state.collectAsState()
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+        val interactive = isRouteVisible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+        val admission =
+            rememberActivityCorrectionAdmission(
+                session.executionId,
                 state,
+                { controller.state.value },
+                { ownsRoute() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) },
+                interactive,
                 controller::dispatch,
-                onBack = admission.callback { if (!controller.handleBack()) onBack() },
             )
+        BackHandler(enabled = interactive && (state.draft != null || state.deleteConfirmation || state.isMutating)) {
+            if (ownsRoute()) controller.handleBack()
+        }
+        LaunchedEffect(state.refreshGeneration, state.deleted) {
+            session.deliverRefresh(state.refreshGeneration, onRefresh)
+            if (state.deleted) session.deliverDelete(onDeleted)
+        }
+        val historyAdmission = rememberHistoryAdmission(state, { controller.state.value }, ownsRoute, interactive)
+        val focus =
+            rememberHistoryFocus(
+                interactive,
+                state.load is HistoryDetailLoad.Loading,
+                state.load is HistoryDetailLoad.Failure,
+                ownsRoute,
+                backEnabled = !state.isMutating,
+            )
+        LifeTracingAccessibleTargets {
+            CompositionLocalProvider(
+                LocalActivityCorrectionAdmission provides admission,
+                LocalHistoryAdmission provides historyAdmission,
+                LocalHistoryFocus provides focus,
+            ) {
+                ActivityHistoryMutationSurface(
+                    state,
+                    { admission.action(it)() },
+                    onBack = admission.back { if (!controller.handleBack()) onBack() },
+                )
+            }
         }
     }
 }
@@ -520,190 +540,75 @@ private fun ActivityHistoryMutationSurface(
         ) {
             TextButton(
                 onClick = onBack,
-                enabled = !state.isMutating,
-                modifier = historyFocusTarget(LocalHistoryFocus.current.back).historyActionSemantics(onBack),
+                enabled = !state.isMutating && LocalActivityCorrectionAdmission.current.canFocus(),
+                modifier =
+                    historyFocusTarget(
+                        LocalHistoryFocus.current.back,
+                        !state.isMutating,
+                    ).historyActionSemantics(onBack),
             ) { Text(stringResource(R.string.history_back)) }
             when (val load = state.load) {
-                HistoryDetailLoad.Loading -> HistoryCard { HistoryReadStatus(R.string.history_detail_loading) }
-                HistoryDetailLoad.Unavailable -> HistoryCard { HistoryReadStatus(R.string.history_unavailable) }
+                HistoryDetailLoad.Loading ->
+                    HistoryCard {
+                        HistoryReadStatus(
+                            if (state.correctionCommitted) {
+                                R.string.history_correction_reloading
+                            } else {
+                                R.string.history_detail_loading
+                            },
+                        )
+                    }
+                HistoryDetailLoad.Unavailable ->
+                    HistoryCard {
+                        state.issue?.let { MutationIssue(it) }
+                        HistoryReadStatus(R.string.history_unavailable)
+                    }
                 is HistoryDetailLoad.Failure -> {
-                    val retry = LocalHistoryAdmission.current.callback { onAction(ActivityHistoryMutationAction.Retry) }
-                    FailureCard(retry)
+                    state.issue?.let { MutationIssue(it) }
+                    if (state.correctionCommitted) HistoryReadStatus(R.string.history_correction_reload_failure)
+                    FailureCard(
+                        LocalActivityCorrectionAdmission.current.action(ActivityHistoryMutationAction.Retry),
+                        enabled = LocalActivityCorrectionAdmission.current.canFocus(),
+                    )
                 }
                 is HistoryDetailLoad.Content -> {
                     when {
                         state.overlapWarning ->
-                            OverlapWarning(state.isMutating, onAction)
-                        state.draft != null -> CorrectionEditor(load.value, state, onAction)
+                            CorrectionOverlapWarning(state)
+                        state.draft != null -> ActivityCorrectionEditor(load.value, state)
                         state.deleteConfirmation ->
                             DeleteConfirmation(load.value, state.isMutating, state.issue, onAction)
                         else -> {
                             state.issue?.let { MutationIssue(it) }
-                            HistoryReadStatus(R.string.history_detail_ready)
+                            HistoryReadStatus(
+                                if (state.correctionCommitted) {
+                                    R.string.history_correction_reloaded
+                                } else {
+                                    R.string.history_detail_ready
+                                },
+                            )
                             ActivityDetail(load.value)
-                            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
                                 if (load.value.root.planEntryId == null) {
-                                    LifeTracingSecondaryButton(
-                                        onClick = { onAction(ActivityHistoryMutationAction.BeginCorrection) },
-                                        modifier = Modifier.testTag("history-correct"),
-                                    ) { Text(stringResource(R.string.history_correct)) }
+                                    CorrectionButton(
+                                        ActivityHistoryMutationAction.BeginCorrection,
+                                        stringResource(R.string.history_correct),
+                                        "history-correct",
+                                        enabled = !state.isMutating,
+                                    )
+                                } else {
+                                    Text(stringResource(R.string.history_correction_plan_unavailable))
                                 }
                                 LifeTracingSecondaryButton(
                                     onClick = { onAction(ActivityHistoryMutationAction.RequestDelete) },
-                                    modifier = Modifier.testTag("history-delete"),
+                                    enabled = !state.isMutating && LocalActivityCorrectionAdmission.current.canFocus(),
+                                    modifier = historyFocusTarget().testTag("history-delete"),
                                 ) { Text(stringResource(R.string.history_delete)) }
                             }
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun OverlapWarning(
-    isMutating: Boolean,
-    onAction: (ActivityHistoryMutationAction) -> Unit,
-) {
-    Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.CancelOverlap) },
-            enabled = !isMutating,
-            modifier = Modifier.testTag("history-overlap-cancel"),
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        LifeTracingPrimaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.ProceedOverlap) },
-            enabled = !isMutating,
-            modifier = Modifier.testTag("history-overlap-proceed"),
-        ) { Text(stringResource(R.string.history_overlap_proceed)) }
-    }
-}
-
-@Composable
-private fun CorrectionEditor(
-    detail: ActivityHistoryDetail,
-    state: ActivityHistoryMutationState,
-    onAction: (ActivityHistoryMutationAction) -> Unit,
-) {
-    val draft = requireNotNull(state.draft)
-    Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
-    Text(stringResource(R.string.history_event_zone, draft.eventZoneId.id))
-    draft.startedText?.let { started ->
-        LifeTracingOutlinedTextField(
-            started,
-            { onAction(ActivityHistoryMutationAction.EditStarted(it)) },
-            Modifier.fillMaxWidth().testTag("history-correction-started"),
-            label = { Text(stringResource(R.string.history_correction_started)) },
-            enabled = !state.isMutating,
-        )
-        OffsetChoices(draft.startedOffsets, draft.startedOffset) {
-            onAction(ActivityHistoryMutationAction.SelectStartedOffset(it))
-        }
-    }
-    LifeTracingOutlinedTextField(
-        draft.completedText,
-        { onAction(ActivityHistoryMutationAction.EditCompleted(it)) },
-        Modifier.fillMaxWidth().testTag("history-correction-completed"),
-        label = { Text(stringResource(R.string.history_correction_completed)) },
-        enabled = !state.isMutating,
-    )
-    OffsetChoices(draft.completedOffsets, draft.completedOffset) {
-        onAction(ActivityHistoryMutationAction.SelectCompletedOffset(it))
-    }
-    LifeTracingOutlinedTextField(
-        draft.shortComment,
-        { onAction(ActivityHistoryMutationAction.EditComment(it)) },
-        Modifier.fillMaxWidth().testTag("history-correction-comment"),
-        label = { Text(stringResource(R.string.history_short_comment)) },
-        enabled = !state.isMutating,
-    )
-    detail.fields.forEach { field ->
-        CorrectionField(field, draft.values.getValue(field.id), state.isMutating, onAction)
-    }
-    state.issue?.let { MutationIssue(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.Cancel) },
-            enabled = !state.isMutating,
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        LifeTracingPrimaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.Save) },
-            enabled = !state.isMutating,
-            modifier = Modifier.testTag("history-correction-save"),
-        ) {
-            Text(stringResource(if (state.isMutating) R.string.history_saving else R.string.history_save_correction))
-        }
-    }
-}
-
-@Composable
-private fun CorrectionField(
-    field: ActivityHistoryField,
-    draft: ActivityHistoryFieldDraft,
-    isMutating: Boolean,
-    onAction: (ActivityHistoryMutationAction) -> Unit,
-) {
-    HistoryCard {
-        Text(field.name, style = MaterialTheme.typography.titleSmall)
-        Text(
-            stringResource(
-                R.string.history_configured_value,
-                historyConfigured(
-                    field.configuredValue,
-                    field.categoryOptions.associate { it.id to it.label },
-                    field.displayPrecision,
-                    field.unit,
-                ),
-            ),
-        )
-        if (draft.missing) Text(stringResource(R.string.history_missing_value))
-        when (field.type) {
-            CustomFieldType.NUMBER ->
-                LifeTracingOutlinedTextField(
-                    draft.numberText,
-                    { onAction(ActivityHistoryMutationAction.EditNumber(field.id, it)) },
-                    Modifier.fillMaxWidth().testTag("history-correction-field-${field.id.value}"),
-                    label = { Text(stringResource(R.string.manual_history_actual)) },
-                    enabled = !isMutating,
-                )
-            CustomFieldType.TEXT ->
-                LifeTracingOutlinedTextField(
-                    draft.text,
-                    { onAction(ActivityHistoryMutationAction.EditText(field.id, it)) },
-                    Modifier.fillMaxWidth().testTag("history-correction-field-${field.id.value}"),
-                    label = { Text(stringResource(R.string.manual_history_actual)) },
-                    enabled = !isMutating,
-                )
-            CustomFieldType.CATEGORY ->
-                field.categoryOptions.forEach { option ->
-                    TextButton(
-                        onClick = { onAction(ActivityHistoryMutationAction.SelectCategory(field.id, option.id)) },
-                        enabled = !isMutating,
-                        modifier = Modifier.testTag("history-correction-option-${option.id.value}"),
-                    ) {
-                        Text(
-                            if (!draft.missing &&
-                                draft.selectedOptionId == option.id
-                            ) {
-                                "✓ ${option.label}"
-                            } else {
-                                option.label
-                            },
-                        )
-                    }
-                }
-        }
-        LifeTracingSecondaryButton(
-            onClick = { onAction(ActivityHistoryMutationAction.SetMissing(field.id, !draft.missing)) },
-            enabled = !isMutating,
-        ) {
-            Text(
-                stringResource(
-                    if (draft.missing) R.string.manual_history_restore_value else R.string.manual_history_set_missing,
-                ),
-            )
         }
     }
 }
@@ -1238,7 +1143,7 @@ private fun DeleteConfirmation(
 }
 
 @Composable
-private fun MutationIssue(issue: ActivityHistoryMutationIssue) {
+internal fun MutationIssue(issue: ActivityHistoryMutationIssue) {
     val resource =
         when (issue) {
             ActivityHistoryMutationIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
@@ -1252,7 +1157,13 @@ private fun MutationIssue(issue: ActivityHistoryMutationIssue) {
             ActivityHistoryMutationIssue.SAVE_FAILURE -> R.string.history_correction_failure
             ActivityHistoryMutationIssue.DELETE_FAILURE -> R.string.history_delete_failure
         }
-    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
+    Text(
+        stringResource(resource),
+        Modifier.semantics {
+            liveRegion = LiveRegionMode.Polite
+        },
+        color = MaterialTheme.colorScheme.error,
+    )
 }
 
 @Composable
@@ -1428,7 +1339,7 @@ private fun HistoryFieldContent(
 }
 
 @Composable
-private fun historyConfigured(
+internal fun historyConfigured(
     value: Any,
     labels: Map<*, String>,
     precision: Int?,
@@ -1474,7 +1385,10 @@ private fun HistoryReadStatus(resource: Int) {
 }
 
 @Composable
-private fun FailureCard(onRetry: () -> Unit) {
+private fun FailureCard(
+    onRetry: () -> Unit,
+    enabled: Boolean = true,
+) {
     HistoryCard(container = MaterialTheme.colorScheme.errorContainer) {
         Text(
             stringResource(R.string.history_read_failure),
@@ -1483,8 +1397,9 @@ private fun FailureCard(onRetry: () -> Unit) {
         )
         LifeTracingPrimaryButton(
             onClick = onRetry,
+            enabled = enabled,
             modifier =
-                historyFocusTarget(LocalHistoryFocus.current.retry)
+                historyFocusTarget(LocalHistoryFocus.current.retry, enabled)
                     .historyActionSemantics(onRetry)
                     .testTag("history-retry"),
         ) { Text(stringResource(R.string.history_retry)) }
@@ -1628,14 +1543,8 @@ private fun intervalKindResource(kind: SequenceIntervalKind): Int =
 
 private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
 
-private fun numberText(
+internal fun numberText(
     value: Long,
     precision: Int?,
     unit: String?,
-): String =
-    BigDecimal
-        .valueOf(value, 3)
-        .setScale(precision ?: 3)
-        .stripTrailingZeros()
-        .toPlainString() +
-        unit?.let { " $it" }.orEmpty()
+): String = formatLauncherNumber(value, precision) + unit?.let { " $it" }.orEmpty()

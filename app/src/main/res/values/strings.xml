@@ -900,4 +900,9 @@
     <string name="manual_history_retry_source">Retry selected activity %1$s</string>
     <string name="manual_history_retry_save">Retry saving completed activity</string>
     <string name="manual_history_selected_source">Selected activity source: %1$s</string>
+    <string name="history_correction_reloading">Correction saved. Reloading historical details…</string>
+    <string name="history_correction_reload_failure">Correction saved, but details could not be reloaded. Retry only reloads details.</string>
+    <string name="history_correction_reloaded">Correction saved. Current historical details loaded.</string>
+    <string name="history_correction_retry_save">Retry saving correction</string>
+    <string name="history_correction_plan_unavailable">Correction is unavailable for an Activity linked to a Plan.</string>
 </resources>

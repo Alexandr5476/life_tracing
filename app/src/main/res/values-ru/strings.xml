@@ -900,4 +900,9 @@
     <string name="manual_history_retry_source">Повторить загрузку выбранной активности %1$s</string>
     <string name="manual_history_retry_save">Повторить сохранение завершённой активности</string>
     <string name="manual_history_selected_source">Выбранный шаблон активности: %1$s</string>
+    <string name="history_correction_reloading">Исправление сохранено. Загрузка данных истории…</string>
+    <string name="history_correction_reload_failure">Исправление сохранено, но данные не загружены. Повтор загружает только данные.</string>
+    <string name="history_correction_reloaded">Исправление сохранено. Актуальные данные истории загружены.</string>
+    <string name="history_correction_retry_save">Повторить сохранение исправления</string>
+    <string name="history_correction_plan_unavailable">Исправление недоступно для Activity, связанной с планом.</string>
 </resources>

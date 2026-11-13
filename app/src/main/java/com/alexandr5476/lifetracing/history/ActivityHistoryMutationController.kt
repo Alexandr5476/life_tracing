@@ -1,5 +1,6 @@
 @file:Suppress(
     "CyclomaticComplexMethod",
+    "ComplexCondition",
     "LongMethod",
     "LongParameterList",
     "ReturnCount",
@@ -55,9 +56,11 @@ data class ActivityHistoryFieldDraft(
     val selectedOptionId: ActivitySnapshotCategoryOptionId? = null,
     val text: String = "",
     val missing: Boolean = false,
+    val numberWasEdited: Boolean = false,
 )
 
 data class ActivityHistoryCorrectionDraft(
+    val executionId: ActivityExecutionId,
     val expectedUpdatedAt: Instant,
     val eventZoneId: ZoneId,
     val startedText: String?,
@@ -72,7 +75,14 @@ data class ActivityHistoryCorrectionDraft(
     val shortCommentWasEdited: Boolean = false,
 )
 
+enum class ActivityCorrectionEndpoint { STARTED, COMPLETED }
+
 data class ActivityHistoryMutationState(
+    val publication: Long = 0,
+    val draftGeneration: Long = 0,
+    val correctionCommitted: Boolean = false,
+    val issueFieldId: ActivitySnapshotFieldId? = null,
+    val issueEndpoint: ActivityCorrectionEndpoint? = null,
     val load: HistoryDetailLoad<ActivityHistoryDetail> = HistoryDetailLoad.Loading,
     val draft: ActivityHistoryCorrectionDraft? = null,
     val deleteConfirmation: Boolean = false,
@@ -162,6 +172,8 @@ class ActivityHistoryMutationController internal constructor(
 
     fun dispatch(action: ActivityHistoryMutationAction) {
         if (closed) return
+        // A non-durable publication prevents an immediate retry/failure from retaining old actions.
+        mutableState.update { it.copy(publication = it.publication + 1) }
         when (action) {
             ActivityHistoryMutationAction.Retry -> reload()
             ActivityHistoryMutationAction.BeginCorrection -> beginCorrection()
@@ -186,7 +198,13 @@ class ActivityHistoryMutationController internal constructor(
             is ActivityHistoryMutationAction.EditNumber ->
                 editValue(
                     action.id,
-                ) { copy(numberText = action.text, missing = false) }
+                ) {
+                    copy(
+                        numberText = action.text,
+                        missing = false,
+                        numberWasEdited = numberWasEdited || numberText != action.text,
+                    )
+                }
             is ActivityHistoryMutationAction.EditText ->
                 editValue(
                     action.id,
@@ -234,7 +252,7 @@ class ActivityHistoryMutationController internal constructor(
         operation =
             scope.launch {
                 try {
-                    val detail = readDetail(executionId)
+                    val detail = readCanonicalDetail()
                     if (!closed) {
                         mutableState.update {
                             it.copy(
@@ -261,9 +279,10 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     private fun beginCorrection() {
-        if (mutableState.value.isMutating) return
-        val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
-        if (detail.root.planEntryId != null) return
+        val state = mutableState.value
+        if (state.isMutating || state.draft != null || state.overlapWarning || state.deleteConfirmation) return
+        val detail = (state.load as? HistoryDetailLoad.Content)?.value ?: return
+        if (detail.root.executionId != executionId || detail.root.planEntryId != null) return
         val zone = detail.originalZoneId
         val startedOccurrence = detail.root.startedAt?.toHistoricalLocalDateTime(zone)
         val completedOccurrence = detail.root.completedAt.toHistoricalLocalDateTime(zone)
@@ -271,6 +290,7 @@ class ActivityHistoryMutationController internal constructor(
             it.copy(
                 draft =
                     ActivityHistoryCorrectionDraft(
+                        executionId,
                         detail.updatedAt,
                         zone,
                         detail.root.startedAt?.let { instant ->
@@ -286,7 +306,11 @@ class ActivityHistoryMutationController internal constructor(
                         originalShortComment = detail.root.shortComment,
                     ),
                 deleteConfirmation = false,
+                draftGeneration = it.draftGeneration + 1,
+                correctionCommitted = false,
                 issue = null,
+                issueFieldId = null,
+                issueEndpoint = null,
             )
         }
     }
@@ -311,8 +335,14 @@ class ActivityHistoryMutationController internal constructor(
     }
 
     private fun editDraft(transform: ActivityHistoryCorrectionDraft.() -> ActivityHistoryCorrectionDraft) {
-        if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
-        mutableState.update { state -> state.copy(draft = state.draft?.transform(), issue = null) }
+        val state = mutableState.value
+        if (state.isMutating || state.overlapWarning || state.deleteConfirmation) return
+        val detail = (state.load as? HistoryDetailLoad.Content)?.value ?: return
+        if (detail.root.executionId != executionId || detail.root.planEntryId != null) return
+        if (state.draft?.executionId != executionId) return
+        mutableState.update {
+            it.copy(draft = it.draft?.transform(), issue = null, issueFieldId = null, issueEndpoint = null)
+        }
     }
 
     private fun editValue(
@@ -324,7 +354,12 @@ class ActivityHistoryMutationController internal constructor(
         if (mutableState.value.isMutating || mutableState.value.overlapWarning) return
         val detail = (mutableState.value.load as? HistoryDetailLoad.Content)?.value ?: return
         val draft = mutableState.value.draft ?: return
-        if (detail.root.planEntryId != null) return
+        if (detail.root.executionId != executionId ||
+            draft.executionId != executionId ||
+            detail.root.planEntryId != null
+        ) {
+            return
+        }
         val commandAt = now()
         val correction = buildCorrection(detail, draft, commandAt) ?: return
         mutableState.update { it.copy(isMutating = true, issue = null) }
@@ -403,11 +438,12 @@ class ActivityHistoryMutationController internal constructor(
                     isMutating = false,
                     overlapWarning = false,
                     refreshGeneration = it.refreshGeneration + 1,
+                    correctionCommitted = true,
                 )
             }
             val canonical =
                 try {
-                    readDetail(executionId)
+                    readCanonicalDetail()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
@@ -480,23 +516,45 @@ class ActivityHistoryMutationController internal constructor(
                     true,
                 ) ?: return null
             }
-        if (completed > commandAt) return invalid(ActivityHistoryMutationIssue.FUTURE_COMPLETION)
-        if (started != null && started > completed) return invalid(ActivityHistoryMutationIssue.REVERSED_INTERVAL)
+        if (completed >
+            commandAt
+        ) {
+            return invalid(
+                ActivityHistoryMutationIssue.FUTURE_COMPLETION,
+                endpoint = ActivityCorrectionEndpoint.COMPLETED,
+            )
+        }
+        if (started != null &&
+            started > completed
+        ) {
+            return invalid(
+                ActivityHistoryMutationIssue.REVERSED_INTERVAL,
+                endpoint = ActivityCorrectionEndpoint.STARTED,
+            )
+        }
         val values =
             detail.fields.mapNotNull { field ->
                 val value = draft.values[field.id] ?: return invalid(ActivityHistoryMutationIssue.SAVE_FAILURE)
                 if (value.missing) return@mapNotNull null
                 when (field.type) {
-                    CustomFieldType.NUMBER ->
+                    CustomFieldType.NUMBER -> {
+                        // Display precision is separate from storage precision. Only an explicit edit reparses it.
+                        val original = field.actualValue as? ActivityHistoryActualValue.Number
+                        val number =
+                            if (!value.numberWasEdited && original != null) {
+                                original.scaledValue
+                            } else {
+                                parseLauncherNumber(value.numberText, field.displayPrecision)
+                            }
                         NumberExecutionValue(
                             field.id,
-                            parseLauncherNumber(value.numberText, field.displayPrecision)
-                                ?: return invalid(ActivityHistoryMutationIssue.INVALID_NUMBER),
+                            number ?: return invalid(ActivityHistoryMutationIssue.INVALID_NUMBER, fieldId = field.id),
                         )
+                    }
                     CustomFieldType.CATEGORY -> {
                         val option =
                             value.selectedOptionId?.takeIf { id -> field.categoryOptions.any { it.id == id } }
-                                ?: return invalid(ActivityHistoryMutationIssue.INVALID_CATEGORY)
+                                ?: return invalid(ActivityHistoryMutationIssue.INVALID_CATEGORY, fieldId = field.id)
                         CategoryExecutionValue(field.id, option)
                     }
                     CustomFieldType.TEXT -> TextExecutionValue(field.id, value.text)
@@ -511,7 +569,11 @@ class ActivityHistoryMutationController internal constructor(
             },
             draft.eventZoneId,
             values,
-            if (draft.shortCommentWasEdited) draft.shortComment.ifBlank { null } else draft.originalShortComment,
+            if (!draft.shortCommentWasEdited || draft.shortComment == draft.originalShortComment.orEmpty()) {
+                draft.originalShortComment
+            } else {
+                draft.shortComment.ifBlank { null }
+            },
         )
     }
 
@@ -520,12 +582,17 @@ class ActivityHistoryMutationController internal constructor(
         zone: ZoneId,
         selectedOffset: ZoneOffset?,
         started: Boolean,
-    ): Instant? =
-        when (val result = resolveHistoricalLocalDateTime(text, zone, selectedOffset)) {
+    ): Instant? {
+        val endpoint = if (started) ActivityCorrectionEndpoint.STARTED else ActivityCorrectionEndpoint.COMPLETED
+        return when (val result = resolveHistoricalLocalDateTime(text, zone, selectedOffset)) {
             is HistoricalLocalDateTimeResolution.Resolved -> result.instant
-            HistoricalLocalDateTimeResolution.Invalid -> invalid(ActivityHistoryMutationIssue.INVALID_DATE_TIME)
+            HistoricalLocalDateTimeResolution.Invalid ->
+                invalid(
+                    ActivityHistoryMutationIssue.INVALID_DATE_TIME,
+                    endpoint = endpoint,
+                )
             HistoricalLocalDateTimeResolution.Nonexistent ->
-                invalid(ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME)
+                invalid(ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME, endpoint = endpoint)
             is HistoricalLocalDateTimeResolution.Ambiguous -> {
                 mutableState.update { state ->
                     state.copy(
@@ -538,14 +605,25 @@ class ActivityHistoryMutationController internal constructor(
                                 }
                             },
                         issue = ActivityHistoryMutationIssue.AMBIGUOUS_LOCAL_TIME,
+                        issueEndpoint = endpoint,
                     )
                 }
                 null
             }
         }
+    }
 
-    private fun <T> invalid(issue: ActivityHistoryMutationIssue): T? {
-        mutableState.update { it.copy(issue = issue) }
+    private suspend fun readCanonicalDetail(): ActivityHistoryDetail? =
+        readDetail(executionId)?.also {
+            require(it.root.executionId == executionId) { "History detail identity does not match the route" }
+        }
+
+    private fun <T> invalid(
+        issue: ActivityHistoryMutationIssue,
+        fieldId: ActivitySnapshotFieldId? = null,
+        endpoint: ActivityCorrectionEndpoint? = null,
+    ): T? {
+        mutableState.update { it.copy(issue = issue, issueFieldId = fieldId, issueEndpoint = endpoint) }
         return null
     }
 
@@ -596,6 +674,10 @@ internal class ActivityHistoryMutationRouteSession(
     val executionId: ActivityExecutionId,
     val controller: ActivityHistoryMutationController,
 ) {
+    init {
+        require(controller.executionId == executionId) { "History session identity does not match its controller" }
+    }
+
     private var deliveredRefreshGeneration = 0L
     private var deliveredDelete = false
 

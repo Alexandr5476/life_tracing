@@ -1439,7 +1439,17 @@
       "accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen",
       "accessibleTimerManualEntryKeepsTargetAndOvertimeIntervalAfterPhysicalReopen",
       "manualCatalogReplacementAndStaleReviewKeepExactSourcesWithoutEagerHydrationOrWrites",
-      "russianScaledNoLiveManualEntryRetainsMissingDurationAfterPhysicalReopen"
+      "russianScaledNoLiveManualEntryRetainsMissingDurationAfterPhysicalReopen",
+      "accessibleApprovedOverlapCorrectionSurvivesPhysicalReopen",
+      "accessibleCommentOnlyCorrectionReplacesSnapshotAfterPhysicalReopen",
+      "accessibleCommittedCorrectionReloadRetryNeverReplaysWriterAfterPhysicalReopen",
+      "accessibleCorrectionExplicitRetryPreservesDraftAfterOrdinarySaveFailure",
+      "accessibleFirstDstCorrectionSurvivesPhysicalReopen",
+      "accessibleSecondDstCorrectionSurvivesPhysicalReopen",
+      "accessibleStaleCorrectionPreservesCompetingFactsAfterPhysicalReopen",
+      "accessibleTimedCorrectionUsesExactDuplicateExecutionAndSurvivesPhysicalReopen",
+      "accessibleUnchangedCommentPreservesSnapshotAfterPhysicalReopen",
+      "russianScaledNoLiveCorrectionPreservesMissingDurationAfterPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",
@@ -1496,6 +1506,18 @@
       "nativeGapPrecisionAndOverlapChoicesPersistOnlyExplicitDistinctOccurrences",
       "nativePendingSaveDisablesEditingAndRepeatedActivationWhileCloseRetainsAcceptedWriter",
       "nativeUntouchedReschedulePreservesExactTargetTimestampsAndSnapshotAfterZoneTravel"
+    ],
+    "com.alexandr5476.lifetracing.history.ActivityHistoryCorrectionAccessibilityTest": [
+      "committedReadFailureExposesReadOnlyRetryAndPendingBackKeepsTheSession",
+      "hiddenDisposedAndReplacedRoutesRevokeRetainedNativeInputAndSaveActions",
+      "localizedScaledNoLiveEditorKeepsNativeTargetsReachableWithoutStartOrWrites",
+      "nativeInputsKeepDuplicateFieldAndOptionIdentityAndMissingZeroEmptyDistinct",
+      "originalOverlapOffsetsRemainSelectedUntilEachEndpointIsEdited",
+      "overlapCancelRevokesApprovalAndDuplicateProceedRunsOnlyOneWriter",
+      "pendingSessionFirstCompositionRestoresNativeBackFocusAfterCanonicalReload",
+      "restoringMissingCategoryRequiresAnOwnedChoiceAndAssociatesItsNativeError",
+      "resumedRouteReenablesControlsAndRevokesCallbacksCapturedBeforePause",
+      "staleDeletedTargetRequiresCanonicalRecoveryAndHasNoCorrectionControls"
     ]
   },
   "startup": {

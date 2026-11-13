@@ -251,6 +251,10 @@ internal fun LifeTracingApp(
                 activityHistoryMutationRouteSessions ?: remember { ActivityHistoryMutationRouteSessionOwner() }
             val sequenceHistorySessions =
                 sequenceHistoryMutationRouteSessions ?: remember { SequenceHistoryMutationRouteSessionOwner() }
+            val refreshActivityHistory: () -> Unit = {
+                historyOwner.get(runtimeGraph::createHistoryController).dispatch(HistoryAction.Refresh)
+                controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
+            }
             val planVisible = backStack.lastOrNull() is PlanRoot
             DisposableEffect(planOwner, planVisible) {
                 planOwner.onRouteVisibilityChanged(planVisible)
@@ -377,13 +381,11 @@ internal fun LifeTracingApp(
                             backStack.handleStatisticsSeriesDetailBack(route.seriesId, statisticsDetailSessions)
                         }
                         backStack.lastOrNull() is ActivityHistoryDetailRoot -> {
-                            val session = activityHistorySessions.activeSession
-                            if (session?.controller?.handleBack() != true) {
-                                session?.let(activityHistorySessions::release)
-                                backStack.removeActivityHistoryDetail(
-                                    (backStack.last() as ActivityHistoryDetailRoot).executionId,
-                                )
-                            }
+                            backStack.handleActivityHistoryDetailBack(
+                                (backStack.last() as ActivityHistoryDetailRoot).executionId,
+                                activityHistorySessions,
+                                refreshActivityHistory,
+                            )
                         }
                         backStack.lastOrNull() is SequenceHistoryDetailRoot -> {
                             val route = backStack.last() as SequenceHistoryDetailRoot
@@ -615,17 +617,17 @@ internal fun LifeTracingApp(
                             ActivityHistoryDetailRoute(
                                 session,
                                 isRouteVisible = backStack.lastOrNull() == route,
-                                ownsRoute = { backStack.lastOrNull() == route },
+                                ownsRoute = {
+                                    backStack.lastOrNull() == route && activityHistorySessions.activeSession === session
+                                },
                                 onBack = {
-                                    activityHistorySessions.release(session)
-                                    backStack.removeActivityHistoryDetail(route.executionId)
+                                    backStack.handleActivityHistoryDetailBack(
+                                        route.executionId,
+                                        activityHistorySessions,
+                                        refreshActivityHistory,
+                                    )
                                 },
-                                onRefresh = {
-                                    historyOwner
-                                        .get(runtimeGraph::createHistoryController)
-                                        .dispatch(HistoryAction.Refresh)
-                                    controller.dispatch(com.alexandr5476.lifetracing.daily.DailyAction.Retry)
-                                },
+                                onRefresh = refreshActivityHistory,
                                 onDeleted = {
                                     activityHistorySessions.release(session)
                                     backStack.removeActivityHistoryDetail(route.executionId)
@@ -956,6 +958,24 @@ internal fun MutableList<NavKey>.openActivityHistoryDetail(executionId: String) 
 
 internal fun MutableList<NavKey>.removeActivityHistoryDetail(expectedExecutionId: String) {
     if ((lastOrNull() as? ActivityHistoryDetailRoot)?.executionId == expectedExecutionId) removeAt(lastIndex)
+}
+
+internal fun MutableList<NavKey>.handleActivityHistoryDetailBack(
+    expectedExecutionId: String,
+    sessions: ActivityHistoryMutationRouteSessionOwner,
+    refresh: () -> Unit,
+) {
+    val session = sessions.activeSession
+    val routeMatches = (lastOrNull() as? ActivityHistoryDetailRoot)?.executionId == expectedExecutionId
+    val sessionMatches = session == null || session.executionId.value == expectedExecutionId
+    if (!routeMatches || !sessionMatches) return
+    if (session?.controller?.handleBack() == true) return
+    if (session != null) {
+        // Back can precede the next composition after the writer has already committed.
+        session.deliverRefresh(session.controller.state.value.refreshGeneration, refresh)
+        sessions.release(session)
+    }
+    removeActivityHistoryDetail(expectedExecutionId)
 }
 
 internal fun MutableList<NavKey>.openSequenceHistoryDetail(executionId: String) {

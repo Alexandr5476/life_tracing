@@ -114,10 +114,12 @@ internal fun Modifier.historyActionSemantics(
 internal class HistoryFocus {
     val back = FocusRequester()
     val retry = FocusRequester()
+    var recoveryTarget: FocusRequester? = null
     var owner: Any? = null
     var removed by mutableStateOf<Any?>(null)
     var awaitingRead by mutableStateOf(false)
     var recovering = false
+    var landingPending by mutableStateOf(true)
 }
 
 internal val LocalHistoryFocus = staticCompositionLocalOf { HistoryFocus() }
@@ -129,22 +131,23 @@ internal fun rememberHistoryFocus(
     loading: Boolean,
     failed: Boolean,
     ownsRoute: () -> Boolean,
+    backEnabled: Boolean = true,
 ): HistoryFocus {
     val focus = remember { HistoryFocus() }
     val owner by rememberUpdatedState(ownsRoute)
     val window = LocalWindowInfo.current
     val mode = LocalInputModeManager.current.inputMode
     val foreground = visible && window.isWindowFocused
-    var pending by remember { mutableStateOf(visible) }
     LaunchedEffect(visible) {
         focus.removed = null
         focus.awaitingRead = false
-        pending = visible
+        focus.landingPending = visible
     }
-    LaunchedEffect(visible, window.isWindowFocused, mode, pending) {
-        if (foreground && owner() && pending) {
+    // Availability changes retry a pending native landing after a session first appears while saving.
+    LaunchedEffect(visible, window.isWindowFocused, mode, focus.landingPending, backEnabled) {
+        if (foreground && owner()) {
             withFrameNanos { }
-            if (owner()) pending = !focus.back.requestFocus()
+            if (owner() && focus.landingPending) focus.landingPending = !focus.back.requestFocus()
         }
     }
     LaunchedEffect(visible, window.isWindowFocused, mode, focus.removed, loading, failed) {
@@ -153,7 +156,7 @@ internal fun rememberHistoryFocus(
             withFrameNanos { }
             if (owner()) {
                 focus.recovering = true
-                (if (failed) focus.retry else focus.back).requestFocus()
+                (if (failed) focus.retry else focus.recoveryTarget ?: focus.back).requestFocus()
                 focus.recovering = false
                 focus.removed = null
                 focus.awaitingRead = loading
@@ -180,6 +183,7 @@ internal fun historyFocusTarget(
             if (!attached && focus.owner === token) focus.removed = token
         }.onFocusChanged {
             if (it.isFocused) {
+                focus.landingPending = false
                 focus.owner = token
                 if (!focus.recovering && focus.removed == null) focus.awaitingRead = false
             }
