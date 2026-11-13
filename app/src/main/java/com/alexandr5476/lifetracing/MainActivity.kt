@@ -633,25 +633,38 @@ internal fun LifeTracingApp(
                             )
                         }
                         entry<ManualActivityEntryRoot> {
+                            if (ManualActivityEntryRoot !in backStack) return@entry
                             val session = manualEntrySessions.activeSession
                             if (session == null) {
                                 LaunchedEffect(Unit) { backStack.normalizeRestoredManualActivityEntry() }
                             } else {
                                 ManualActivityEntryRoute(
                                     session.controller,
+                                    isRouteVisible = backStack.lastOrNull() == ManualActivityEntryRoot,
+                                    ownsRoute = {
+                                        backStack.lastOrNull() == ManualActivityEntryRoot &&
+                                            manualEntrySessions.activeSession === session
+                                    },
                                     onBack = {
-                                        if (session.controller.state.value.command !is ManualEntryCommand.Committing) {
+                                        if (backStack.lastOrNull() == ManualActivityEntryRoot &&
+                                            manualEntrySessions.activeSession === session &&
+                                            !session.controller.state.value.blocksExit
+                                        ) {
                                             manualEntrySessions.release(session)
                                             backStack.removeManualActivityEntry()
                                         }
                                     },
                                     onCommitted = {
-                                        session.deliverCommitted {
-                                            manualEntrySessions.release(session)
-                                            backStack.completeManualActivityEntry {
-                                                historyOwner
-                                                    .get(runtimeGraph::createHistoryController)
-                                                    .dispatch(HistoryAction.Refresh)
+                                        if (backStack.lastOrNull() == ManualActivityEntryRoot &&
+                                            manualEntrySessions.activeSession === session
+                                        ) {
+                                            session.deliverCommitted {
+                                                manualEntrySessions.release(session)
+                                                backStack.completeManualActivityEntry {
+                                                    historyOwner
+                                                        .get(runtimeGraph::createHistoryController)
+                                                        .dispatch(HistoryAction.Refresh)
+                                                }
                                             }
                                         }
                                     },

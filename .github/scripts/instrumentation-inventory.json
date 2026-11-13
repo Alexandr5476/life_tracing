@@ -1029,10 +1029,17 @@
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
       "actualFieldInteractionsPreserveZeroEmptyAndStableCategoryIdentityAcrossMissing",
       "ambiguityChoicesShowBothOccurrencesAndConcreteOffsets",
+      "catalogCallbacksLoseOwnershipOnReplacementAndDisposal",
+      "emptyLoadingFailureAndExhaustedCatalogExposeSeparateRecoveryStates",
       "expectedErrorsAndMissingPresentationHaveDistinctEnglishAndRussianResources",
       "gapAndStaleRecoveryRenderTypedLocalizedActions",
+      "hiddenRouteExposesDisabledNativeTargetsForEditingAndOverlapCommands",
+      "lifecycleResumeReenablesNativeControlsAndRevokesCallbacksFromBeforePause",
       "noLiveHasNoStartInput",
-      "timerTargetIsHumanReadable"
+      "repeatedImmediateReadFailureKeepsTheProductionRouteRetryActionable",
+      "replacingControllerWithEqualFailureContentKeepsCurrentRouteActionsAndRevokesOldCallbacks",
+      "timerTargetIsHumanReadable",
+      "unrelatedCatalogPublicationPreservesNativeInputFocusWithoutDispatchingAnyAction"
     ],
     "com.alexandr5476.lifetracing.history.SequenceHistoryMutationRepositoryIntegrationTest": [
       "productionControllerCloseGapPersistsMovedNoLiveChildWithoutTimedFacts",
@@ -1425,7 +1432,14 @@
       "russianLargeFontProductionActivityJourneyKeepsActionsReachable",
       "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
       "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
-      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
+      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
+      "accessibleFirstDstOccurrenceSurvivesPhysicalReopen",
+      "accessibleHistoricalOverlapNeedsExplicitApprovalAndSurvivesPhysicalReopen",
+      "accessibleSecondDstOccurrenceSurvivesPhysicalReopen",
+      "accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen",
+      "accessibleTimerManualEntryKeepsTargetAndOvertimeIntervalAfterPhysicalReopen",
+      "manualCatalogReplacementAndStaleReviewKeepExactSourcesWithoutEagerHydrationOrWrites",
+      "russianScaledNoLiveManualEntryRetainsMissingDurationAfterPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",

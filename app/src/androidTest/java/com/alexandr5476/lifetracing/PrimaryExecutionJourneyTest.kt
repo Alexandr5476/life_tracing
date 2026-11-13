@@ -15,6 +15,8 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
@@ -39,10 +41,15 @@ import com.alexandr5476.lifetracing.domain.ActiveSequenceRuntime
 import com.alexandr5476.lifetracing.domain.ActiveSequenceState
 import com.alexandr5476.lifetracing.domain.ActiveSequenceStateResolver
 import com.alexandr5476.lifetracing.domain.ActiveSessionState
+import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
+import com.alexandr5476.lifetracing.domain.ActivityCompletionReason
+import com.alexandr5476.lifetracing.domain.ActivityEntrySource
 import com.alexandr5476.lifetracing.domain.ActivityFieldDraft
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryQuery
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.DailyQuery
@@ -56,11 +63,19 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
+import com.alexandr5476.lifetracing.domain.StatisticsCategoryOptionId
+import com.alexandr5476.lifetracing.domain.StatisticsFieldDetail
+import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.domain.cursor
+import com.alexandr5476.lifetracing.domain.toAuthoringDraft
+import com.alexandr5476.lifetracing.history.ManualActivityEntryController
+import com.alexandr5476.lifetracing.history.ManualEntryCommand
+import com.alexandr5476.lifetracing.history.ManualEntryIssue
+import com.alexandr5476.lifetracing.history.ManualEntryLoad
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.LauncherLoad
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
@@ -87,8 +102,12 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Real NavDisplay, route owners, controllers, mutation gate and physical production repositories. */
@@ -981,6 +1000,542 @@ class PrimaryExecutionJourneyTest {
         }
     }
 
+    @Test
+    fun accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.STOPWATCH)
+
+    @Test
+    fun russianScaledNoLiveManualEntryRetainsMissingDurationAfterPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.NO_LIVE_TRACKING, language = "ru", font = 2f)
+
+    @Test
+    fun accessibleTimerManualEntryKeepsTargetAndOvertimeIntervalAfterPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.TIMER)
+
+    @Test
+    fun accessibleFirstDstOccurrenceSurvivesPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.STOPWATCH, overlapOffset = 0)
+
+    @Test
+    fun accessibleSecondDstOccurrenceSurvivesPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.STOPWATCH, overlapOffset = 1)
+
+    @Test
+    fun accessibleHistoricalOverlapNeedsExplicitApprovalAndSurvivesPhysicalReopen() =
+        manualEntryJourney(TimeTrackingMode.STOPWATCH, existingOverlap = true)
+
+    @Suppress("LongParameterList")
+    private fun manualEntryJourney(
+        mode: TimeTrackingMode,
+        language: String = "en",
+        font: Float = 1f,
+        overlapOffset: Int? = null,
+        existingOverlap: Boolean = false,
+    ) {
+        val originalZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("Europe/Berlin"))
+        try {
+            journey { f ->
+                val zone = ZoneId.of("Europe/Berlin")
+                val optionA = DraftIdentity.New("a")
+                val optionB = DraftIdentity.New("b")
+                val source =
+                    f.store.authoring.createActivityTemplate(
+                        ActivityTemplateDraft(
+                            "Duplicate manual source",
+                            null,
+                            mode,
+                            if (mode == TimeTrackingMode.TIMER) Duration.ofMinutes(10) else null,
+                            fields =
+                                listOf(
+                                    ActivityFieldDraft(
+                                        DraftIdentity.New("number"),
+                                        0,
+                                        "Duplicate",
+                                        CustomFieldType.NUMBER,
+                                        unit = "km",
+                                        displayPrecision = 2,
+                                        defaultNumberScaled = 1000,
+                                    ),
+                                    ActivityFieldDraft(
+                                        DraftIdentity.New("category"),
+                                        1,
+                                        "Duplicate",
+                                        CustomFieldType.CATEGORY,
+                                        defaultCategoryOption = optionA,
+                                        categoryOptions =
+                                            listOf(
+                                                ActivityCategoryOptionDraft(optionA, 0, "Same"),
+                                                ActivityCategoryOptionDraft(optionB, 1, "Same"),
+                                            ),
+                                    ),
+                                    ActivityFieldDraft(
+                                        DraftIdentity.New("text"),
+                                        2,
+                                        "Duplicate",
+                                        CustomFieldType.TEXT,
+                                        defaultText = "configured",
+                                    ),
+                                    ActivityFieldDraft(
+                                        DraftIdentity.New("missing"),
+                                        3,
+                                        "Duplicate",
+                                        CustomFieldType.TEXT,
+                                        defaultText = "keep only in configuration",
+                                    ),
+                                ),
+                        ),
+                        createdAt = f.seedTime,
+                    )
+                val other =
+                    f.store.authoring.createActivityTemplate(
+                        ActivityTemplateDraft(source.name, null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                        createdAt = f.seedTime,
+                    )
+                val plan = f.store.plans.createActivityPlanFromTemplate(source.id, f.schedule(), f.seedTime)
+                val startLocal =
+                    if (overlapOffset != null) {
+                        LocalDateTime.parse("2025-10-26T02:10")
+                    } else {
+                        LocalDateTime
+                            .ofInstant(
+                                f.seedTime,
+                                zone,
+                            ).minusDays(2)
+                            .withHour(23)
+                            .withMinute(50)
+                            .withSecond(0)
+                            .withNano(0)
+                    }
+                val endLocal = startLocal.plusMinutes(if (overlapOffset != null) 30 else 40)
+                val offset = overlapOffset?.let { if (it == 0) ZoneOffset.ofHours(2) else ZoneOffset.ofHours(1) }
+                val start = startLocal.toInstant(offset ?: zone.rules.getValidOffsets(startLocal).single())
+                val end = endLocal.toInstant(offset ?: zone.rules.getValidOffsets(endLocal).single())
+                val previous =
+                    if (existingOverlap) {
+                        f.store.activityCommands.addManualTimed(
+                            ActivityEntrySource.Template(source.id),
+                            start,
+                            end,
+                            f.seedTime,
+                            zone,
+                            expectedTemplateRevision = source.revision,
+                        )
+                    } else {
+                        null
+                    }
+                val before = f.store.durableFacts()
+                f.useProductionAppearance(if (language == "en") 90 else 120, if (language == "en") 90 else 130)
+                f.launch()
+                if (language != "en") f.applyAppearance(language, font, 120, 130)
+                f.invoke(R.string.daily_history)
+                f.invoke(R.string.manual_history_title)
+                f.await { f.host().manualActivityEntryRouteSessions.activeSession != null }
+                val entryController =
+                    f
+                        .host()
+                        .manualActivityEntryRouteSessions.activeSession!!
+                        .controller
+                f.await {
+                    entryController.state.value.catalog is ManualEntryLoad.Content
+                }
+                compose.waitForIdle()
+                val landing = compose.onNodeWithTag("manual-history-back")
+                landing.assertIsFocused()
+                // Native Tab moves away from the route landing without selecting or writing.
+                landing.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Tab) }
+                val firstRow =
+                    (entryController.state.value.catalog as ManualEntryLoad.Content)
+                        .value
+                        .first()
+                compose.onNodeWithTag("manual-history-activity-${firstRow.id.value}").assertIsFocused()
+                assertEquals(before, f.store.durableFacts())
+                f.await { tryInvokeCurrent(hasTestTag("manual-history-activity-${source.id.value}")) }
+                val controller =
+                    f
+                        .host()
+                        .manualActivityEntryRouteSessions.activeSession!!
+                        .controller
+                f.await {
+                    controller.state.value.selected is ManualEntryLoad.Content
+                }
+                assertEquals(
+                    source,
+                    (controller.state.value.selected as ManualEntryLoad.Content)
+                        .value,
+                )
+                compose.onNodeWithTag("manual-history-activity-${source.id.value}").assertIsSelected()
+                compose.onNodeWithTag("manual-history-activity-${other.id.value}").assertIsNotSelected()
+
+                fun input(
+                    tag: String,
+                    value: String,
+                ) {
+                    reachable(compose.onNodeWithTag(tag)).performSemanticsAction(SemanticsActions.SetText) { set ->
+                        assertTrue(set(AnnotatedString(value)))
+                    }
+                    compose.waitForIdle()
+                }
+                if (mode !=
+                    TimeTrackingMode.NO_LIVE_TRACKING
+                ) {
+                    input("manual-history-started", startLocal.toString().replace('T', ' '))
+                } else {
+                    compose.onNodeWithTag("manual-history-started").assertDoesNotExist()
+                }
+                input("manual-history-completed", endLocal.toString().replace('T', ' '))
+                val completionInput = reachable(compose.onNodeWithTag("manual-history-completed"))
+                completionInput.performSemanticsAction(SemanticsActions.RequestFocus)
+                completionInput.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Tab) }
+                val fields = source.fields.sortedBy { it.position }
+                compose.onNodeWithTag("manual-history-field-${fields[0].id.value}-actual").assertIsFocused()
+                assertEquals(endLocal.toString().replace('T', ' '), controller.state.value.completedText)
+                input("manual-history-field-${fields[0].id.value}-actual", "bad")
+                f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                assertEquals(before, f.store.durableFacts())
+                assertTrue(
+                    controller.state.value.command is ManualEntryCommand.Invalid,
+                )
+                input("manual-history-field-${fields[0].id.value}-actual", "0")
+                input("manual-history-field-${fields[2].id.value}-actual", "")
+                f.await { tryInvokeCurrent(hasTestTag("manual-history-field-${fields[3].id.value}-missing")) }
+                val chosen = fields[1].categoryOptions.last()
+                f.await { tryInvokeCurrent(hasTestTag("manual-history-option-${chosen.id.value}")) }
+                compose.onNodeWithTag("manual-history-option-${chosen.id.value}").assertIsSelected()
+                compose
+                    .onNodeWithTag(
+                        "manual-history-option-${fields[1].categoryOptions.first().id.value}",
+                    ).assertIsNotSelected()
+                assertEquals(before, f.store.durableFacts())
+                if (overlapOffset != null) {
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-completed-offset-$overlapOffset")) }
+                    compose.onNodeWithTag("manual-history-completed-offset-$overlapOffset").assertIsSelected()
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-started-offset-$overlapOffset")) }
+                    compose.onNodeWithTag("manual-history-started-offset-$overlapOffset").assertIsSelected()
+                }
+                if (language == "en") {
+                    f.recreate()
+                    assertSame(
+                        controller,
+                        f
+                            .host()
+                            .manualActivityEntryRouteSessions.activeSession!!
+                            .controller,
+                    )
+                }
+                val save = reachable(compose.onNodeWithTag("manual-history-save"))
+                val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                save.performSemanticsAction(SemanticsActions.RequestFocus)
+                save.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                if (existingOverlap) {
+                    f.await {
+                        controller.state.value.command is ManualEntryCommand.Overlap
+                    }
+                    assertEquals(before, f.store.durableFacts())
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-overlap-cancel")) }
+                    assertEquals(before, f.store.durableFacts())
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-overlap-proceed")) }
+                }
+                f.await { f.host().manualActivityEntryRouteSessions.activeSession == null }
+                compose.runOnIdle {
+                    retainedSave()
+                    retainedSave()
+                }
+                compose.onNodeWithTag("history-back").assertIsFocused()
+                val day =
+                    if (mode ==
+                        TimeTrackingMode.NO_LIVE_TRACKING
+                    ) {
+                        endLocal.toLocalDate()
+                    } else {
+                        startLocal.toLocalDate()
+                    }
+                val rows = f.store.history.getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(day, day), 10))
+                val saved =
+                    rows.filterIsInstance<CompletedActivityHistoryRoot>().single {
+                        it.executionId !=
+                            previous?.id
+                    }
+                val frozen =
+                    f.store.activityCommands
+                        .getHistory(saved.executionId)!!
+                        .snapshot
+                f.reopen(historyDay = day) {
+                    assertEquals((if (existingOverlap) 2L else 1L) to 0L, executionCounts())
+                    assertNull(live.getActiveSession())
+                    assertEquals(source, authoring.getActivityTemplate(source.id))
+                    assertEquals(other, authoring.getActivityTemplate(other.id))
+                    assertEquals(plan, plans.getPlan(plan.id))
+                    val entry = activity(saved.executionId)
+                    assertEquals(ActivityCompletionReason.MANUAL_HISTORY_ENTRY, entry.completionReason)
+                    assertNull(entry.planEntryId)
+                    assertEquals(zone, entry.originalZoneId)
+                    assertEquals(
+                        zone.rules
+                            .getOffset(
+                                if (mode ==
+                                    TimeTrackingMode.NO_LIVE_TRACKING
+                                ) {
+                                    end
+                                } else {
+                                    start
+                                },
+                            ).totalSeconds /
+                            60,
+                        entry.originalUtcOffsetMinutes,
+                    )
+                    assertEquals(day, entry.primaryLocalDate)
+                    assertEquals(end, entry.completedAt)
+                    assertEquals(if (mode == TimeTrackingMode.NO_LIVE_TRACKING) null else start, entry.startedAt)
+                    assertEquals(
+                        if (mode ==
+                            TimeTrackingMode.NO_LIVE_TRACKING
+                        ) {
+                            null
+                        } else {
+                            Duration.between(start, end)
+                        },
+                        entry.activeDuration,
+                    )
+                    assertEquals(frozen, activityCommands.getHistory(saved.executionId)!!.snapshot)
+                    assertEquals(source.id, frozen.sourceTemplateId)
+                    assertEquals(source.revision, frozen.sourceRevision)
+                    assertEquals(source.statisticsSeriesId, frozen.statisticsSeriesId)
+                    assertEquals(source.timerTarget, frozen.timerTarget)
+                    val detail = history.getActivityDetail(entry.id)!!
+
+                    fun actual(position: Int) =
+                        detail.fields
+                            .single {
+                                it.id ==
+                                    frozen.fields.single { field -> field.sourceFieldId == fields[position].id }.id
+                            }.actualValue
+                    assertEquals(ActivityHistoryActualValue.Number(0), actual(0))
+                    assertEquals(ActivityHistoryActualValue.Text(""), actual(2))
+                    assertEquals(ActivityHistoryActualValue.Missing, actual(3))
+                    val category = actual(1) as ActivityHistoryActualValue.Category
+                    assertEquals(
+                        chosen.id,
+                        frozen.fields
+                            .flatMap { it.categoryOptions }
+                            .single {
+                                it.id ==
+                                    category.optionId
+                            }.sourceOptionId,
+                    )
+                    val fieldStatistics =
+                        statistics
+                            .seriesDetail(
+                                source.statisticsSeriesId,
+                                StatisticsPeriod.AllTime,
+                            ).fields
+                    val number =
+                        (
+                            fieldStatistics.single { it.field.id == StatisticsFieldId.Activity(fields[0].id) }
+                                as StatisticsFieldDetail.Number
+                        ).statistics
+                    assertEquals(0L, number.missingCount)
+                    assertEquals(0L, number.values.minimumScaled)
+                    assertEquals(
+                        java.math.BigInteger.valueOf(if (existingOverlap) 1000 else 0),
+                        number.values.totalScaled,
+                    )
+                    val categories =
+                        (
+                            fieldStatistics.single { it.field.id == StatisticsFieldId.Activity(fields[1].id) }
+                                as StatisticsFieldDetail.Category
+                        ).statistics
+                    assertEquals(
+                        1L,
+                        categories.values
+                            .single {
+                                it.id ==
+                                    StatisticsCategoryOptionId.ActivitySource(chosen.id)
+                            }.count,
+                    )
+                    assertEquals(2, fieldStatistics.filterIsInstance<StatisticsFieldDetail.Text>().size)
+                    val statistics = statistics.activitySeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
+                    assertEquals(if (existingOverlap) 2L else 1L, statistics.executionCount)
+                    assertEquals(
+                        if (mode ==
+                            TimeTrackingMode.NO_LIVE_TRACKING
+                        ) {
+                            0L
+                        } else {
+                            statistics.executionCount
+                        },
+                        statistics.durations.sampleCount,
+                    )
+                    assertEquals(
+                        if (mode ==
+                            TimeTrackingMode.NO_LIVE_TRACKING
+                        ) {
+                            Duration.ZERO
+                        } else {
+                            Duration.between(start, end).multipliedBy(statistics.executionCount)
+                        },
+                        statistics.durations.total,
+                    )
+                }
+            }
+        } finally {
+            TimeZone.setDefault(originalZone)
+        }
+    }
+
+    @Test
+    fun manualCatalogReplacementAndStaleReviewKeepExactSourcesWithoutEagerHydrationOrWrites() =
+        journey { f ->
+            repeat(51) {
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Same catalog name", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = f.seedTime,
+                )
+            }
+            val firstPage = f.store.library.getReusableActivityCatalog(50)
+            val secondPage = f.store.library.getReusableActivityCatalog(50, firstPage.last())
+            val readGate = CompletableDeferred<Unit>()
+            val catalogReads = AtomicInteger()
+            val sourceReads =
+                java.util.concurrent
+                    .ConcurrentLinkedQueue<com.alexandr5476.lifetracing.domain.ActivityTemplateId>()
+            val attempts = AtomicInteger()
+            f.launch()
+            val graph = LifeTracingRuntimeGraph.from(f.host())
+            val controller =
+                ManualActivityEntryController(
+                    graph.scope,
+                    { after ->
+                        if (catalogReads.incrementAndGet() == 1) {
+                            readGate.await()
+                            error("Catalog read failure")
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.library.getReusableActivityCatalog(50, after)
+                        }
+                    },
+                    { id ->
+                        sourceReads.add(id)
+                        if (sourceReads.size == 1) error("Selected source read failure")
+                        kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) { f.store.authoring.getActivityTemplate(id) }
+                    },
+                    { _, _ -> error("No-live must not query overlaps") },
+                    { error("No-live must not write timed history") },
+                    { proposal ->
+                        attempts.incrementAndGet()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.activityCommands.addManualNoLive(
+                                proposal.source,
+                                proposal.completedAt,
+                                proposal.commandAt,
+                                proposal.zoneId,
+                                proposal.values,
+                                proposal.expectedTemplateRevision,
+                            )
+                        }
+                    },
+                )
+            f.host().manualActivityEntryRouteSessions.acquire { controller }
+            f.invoke(R.string.daily_history)
+            f.invoke(R.string.manual_history_title)
+            f.await { catalogReads.get() == 1 }
+            compose.onNodeWithText(f.text(R.string.manual_history_loading)).assertExists()
+            assertTrue(sourceReads.isEmpty())
+            readGate.complete(Unit)
+            f.await { controller.state.value.catalog is ManualEntryLoad.Failure }
+            val oldRetry =
+                reachable(compose.onNodeWithTag("manual-history-catalog-retry"))
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-catalog-retry")) }
+            f.await { controller.state.value.catalog is ManualEntryLoad.Content }
+            assertEquals(50, (controller.state.value.catalog as ManualEntryLoad.Content).value.size)
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-activity-${firstPage.first().id.value}")) }
+            f.await { controller.state.value.selected is ManualEntryLoad.Failure }
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-source-retry")) }
+            f.await { controller.state.value.selected is ManualEntryLoad.Content }
+            val firstSource = (controller.state.value.selected as ManualEntryLoad.Content).value
+            val oldSelect =
+                compose
+                    .onNodeWithTag("manual-history-activity-${firstPage.last().id.value}")
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val oldText =
+                compose
+                    .onNodeWithTag("manual-history-completed")
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.SetText]
+                    .action!!
+            val more = reachable(compose.onNodeWithTag("manual-history-load-more"))
+            val oldMore = more.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            more.performSemanticsAction(SemanticsActions.RequestFocus)
+            more.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            f.await { (controller.state.value.catalog as? ManualEntryLoad.Content)?.value == secondPage }
+            assertEquals(firstSource, (controller.state.value.selected as ManualEntryLoad.Content).value)
+            assertEquals(listOf(firstSource.id, firstSource.id), sourceReads.toList())
+            compose.runOnIdle {
+                oldSelect()
+                oldMore()
+                oldRetry()
+            }
+            assertEquals(3, catalogReads.get())
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-activity-${secondPage.single().id.value}")) }
+            f.await {
+                (controller.state.value.selected as? ManualEntryLoad.Content)?.value?.id == secondPage.single().id
+            }
+            val source = (controller.state.value.selected as ManualEntryLoad.Content).value
+            val draft = controller.state.value.completedText
+            compose.runOnIdle { oldText(AnnotatedString("obsolete")) }
+            assertEquals(draft, controller.state.value.completedText)
+            val changed =
+                f.store.authoring.saveActivityTemplate(
+                    source.id,
+                    source.revision,
+                    source.toAuthoringDraft().copy(name = "Reviewed current source"),
+                    f.seedTime.plusMillis(1),
+                )
+            val beforeStale = f.store.durableFacts()
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+            f.await { controller.state.value.command == ManualEntryCommand.Failure(ManualEntryIssue.TEMPLATE_STALE) }
+            assertEquals(beforeStale, f.store.durableFacts())
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-command-retry")) }
+            f.await {
+                (controller.state.value.selected as? ManualEntryLoad.Content)?.value?.revision == changed.revision
+            }
+            assertEquals(changed, (controller.state.value.selected as ManualEntryLoad.Content).value)
+            assertEquals(1, attempts.get())
+            f.store.library.archiveActivityTemplate(changed.id, f.seedTime.plusMillis(2))
+            val archived = f.store.durableFacts()
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+            f.await { controller.state.value.command == ManualEntryCommand.Failure(ManualEntryIssue.TEMPLATE_STALE) }
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-command-retry")) }
+            f.await {
+                controller.state.value.selected ==
+                    ManualEntryLoad.Failure(
+                        ManualEntryIssue.TEMPLATE_UNAVAILABLE,
+                    )
+            }
+            assertEquals(archived, f.store.durableFacts())
+            f.systemBack()
+            compose.runOnIdle {
+                oldSelect()
+                oldMore()
+                oldRetry()
+                oldText(AnnotatedString("disposed"))
+            }
+            assertEquals(3, catalogReads.get())
+            assertEquals(2, attempts.get())
+            assertEquals(listOf(firstSource.id, firstSource.id, source.id, source.id, source.id), sourceReads.toList())
+            assertEquals(0L to 0L, f.store.executionCounts())
+        }
+
     private val noPreflight =
         object : PreflightScheduler {
             override fun schedule(
@@ -1701,17 +2256,22 @@ class PrimaryExecutionJourneyTest {
             compose.waitForIdle()
         }
 
-        fun roots(reads: RuntimeRecoveryStore) =
-            reads.history.getCompletedRoots(
-                CompletedHistoryQuery(HistoryDateRange(day, day), 20),
-            )
+        fun roots(
+            reads: RuntimeRecoveryStore,
+            historyDay: LocalDate = day,
+        ) = reads.history.getCompletedRoots(
+            CompletedHistoryQuery(HistoryDateRange(historyDay, historyDay), 20),
+        )
 
-        fun reopen(checks: RuntimeRecoveryStore.() -> Unit) {
+        fun reopen(
+            historyDay: LocalDate = day,
+            checks: RuntimeRecoveryStore.() -> Unit,
+        ) {
             val facts = store.durableFacts()
-            val roots = roots(store)
+            val roots = roots(store, historyDay)
             roots.forEach { root ->
                 assertEquals(zone, root.originalZoneId)
-                assertEquals(day, root.primaryLocalDate)
+                assertEquals(historyDay, root.primaryLocalDate)
             }
             val statistics = store.statistics.global(StatisticsPeriod.AllTime)
             val daily = store.daily.getDaily(DailyQuery(day, Instant.now(), 20, zone))
@@ -1721,7 +2281,7 @@ class PrimaryExecutionJourneyTest {
             store.close()
             store = RuntimeRecoveryStore(app, "lifetracing.db")
             assertEquals(facts, store.durableFacts())
-            assertEquals(roots, roots(store))
+            assertEquals(roots, roots(store, historyDay))
             assertEquals(statistics, store.statistics.global(StatisticsPeriod.AllTime))
             assertEquals(roots.size.toLong(), statistics.topLevelExecutionCount)
             assertEquals(

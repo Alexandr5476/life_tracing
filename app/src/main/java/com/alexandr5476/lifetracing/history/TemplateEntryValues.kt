@@ -19,6 +19,7 @@ internal sealed interface TemplateEntryValues {
 
     data class Invalid(
         val issue: TemplateEntryValueIssue,
+        val fieldId: ActivityTemplateFieldId? = null,
     ) : TemplateEntryValues
 }
 
@@ -45,21 +46,22 @@ internal fun ActivityTemplate.proposeEntryValues(
 ): TemplateEntryValues {
     val values = mutableListOf<ActivityEntryValueOverride>()
     for (field in fields.filter { it.deletedAt == null }) {
-        val draft = drafts[field.id] ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.MISSING_DRAFT)
+        val draft =
+            drafts[field.id] ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.MISSING_DRAFT, field.id)
         val value =
             when {
                 draft.missing -> ActivityEntryValue.Missing
                 field.type == CustomFieldType.NUMBER -> {
                     val number =
                         parseLauncherNumber(draft.numberText, field.displayPrecision)
-                            ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_NUMBER)
+                            ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_NUMBER, field.id)
                     ActivityEntryValue.Number(number)
                 }
                 field.type == CustomFieldType.CATEGORY -> {
                     val selected =
                         draft.selectedOptionId?.takeIf { id ->
                             field.categoryOptions.any { it.id == id && !it.isArchived }
-                        } ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_CATEGORY)
+                        } ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_CATEGORY, field.id)
                     ActivityEntryValue.Category(ActivityEntryOptionReference.Template(selected))
                 }
                 else -> ActivityEntryValue.Text(draft.text)

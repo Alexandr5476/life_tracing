@@ -878,4 +878,26 @@
     <string name="history_timed_range">Started: %1$s\nCompleted: %2$s</string>
     <string name="history_completion_time">Completed: %1$s</string>
     <string name="history_actual_field">%1$s — actual: %2$s</string>
+    <string name="manual_history_no_selection">No activity selected. Choose an activity from the catalog.</string>
+    <string name="manual_history_catalog_empty">No reusable activities are available.</string>
+    <string name="manual_history_catalog_item">%1$s. Activity source %2$s</string>
+    <string name="manual_history_more_pages">More activities are available. Load more replaces this page; your selection is retained.</string>
+    <string name="manual_history_catalog_end">End of activity catalog.</string>
+    <string name="manual_history_selected">Selected activity: %1$s. Activity source %2$s</string>
+    <string name="manual_history_zone">Historical entry time zone: %1$s</string>
+    <string name="manual_history_field_context">Field %1$d: %2$s</string>
+    <string name="manual_history_choice_context">%1$s: %2$s</string>
+    <string name="manual_history_option_context">%1$s. Option %2$d: %3$s</string>
+    <string name="manual_history_actual_context">%1$s — actual value</string>
+    <string name="manual_history_present_value">Present value</string>
+    <string name="manual_history_present_empty">Present empty text</string>
+    <string name="manual_history_number_format">Unit: %1$s. Decimal places: %2$d.</string>
+    <string name="manual_history_committed">Saved. Returning to History.</string>
+    <string name="manual_history_page">Catalog page %1$d</string>
+    <string name="manual_history_loading_replacement">Loading replacement page. Your selected activity is retained.</string>
+    <string name="manual_history_no_unit">none</string>
+    <string name="manual_history_retry_catalog">Retry activity catalog</string>
+    <string name="manual_history_retry_source">Retry selected activity %1$s</string>
+    <string name="manual_history_retry_save">Retry saving completed activity</string>
+    <string name="manual_history_selected_source">Selected activity source: %1$s</string>
 </resources>
