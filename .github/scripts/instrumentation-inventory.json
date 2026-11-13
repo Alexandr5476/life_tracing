@@ -996,6 +996,15 @@
       "russianManipulationNativeTargetsSupportCombinedScaling",
       "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
+    "com.alexandr5476.lifetracing.history.HistoryAccessibilityPresentationTest": [
+      "readOnlyDetailPublishesLoadingRetryUnavailableAndFrozenConfiguredActualValuesWithoutWrites",
+      "duplicateNamesAndTimesKeepOneNativeActionPerExactTypedExecution",
+      "rootDescriptionsKeepEndpointOffsetsDatesStoredGroupingAndMissingVersusZero",
+      "reorderedRefreshRetainsNativeFocusButRevokesOldActionBeforeRecomposition",
+      "removedLoadMoreRecoversThroughLoadingFailureRetryAndEmptyWithoutReplayingActions",
+      "hiddenAndDisposedHistoryRejectsRetainedActionsAndCannotStealForegroundFocus",
+      "englishRussianScaleExtremesKeepDatesAndNativeTargetsReachable"
+    ],
     "com.alexandr5476.lifetracing.history.HistoryScreenPresentationTest": [
       "activityDetailUsesHistoricalZoneAndPreservesFrozenConfigurationAndValues",
       "ambiguousTimingReviewKeepsSelectedOffsetVisibleAndInProposal",
@@ -1398,6 +1407,9 @@
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "historyDuplicateRootsUseExactNativeRoutesAndRejectOutgoingCallbacksAcrossBackAndRecreation",
+      "russianLargeFontHistoryDuplicateRootsKeepExactNativeRoutesAndReturnFocus",
+      "historyProductionPagingFailureRetryAndExitKeepCanonicalBoundsAndRejectOldNativeActions",
       "nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure",
       "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
       "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",

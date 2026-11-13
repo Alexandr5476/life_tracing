@@ -68,6 +68,7 @@ data class HistoryPresentationState(
     val canNavigateNewer: Boolean = false,
     val canLoadMore: Boolean = false,
     val discoveryFailure: String? = null,
+    val newestDate: LocalDate = window.endDate,
 )
 
 sealed interface HistoryAction {
@@ -121,6 +122,7 @@ class HistoryController internal constructor(
         }
 
     fun dispatch(action: HistoryAction) {
+        if (closed || !routeActive) return
         when (action) {
             HistoryAction.Older -> load(mutableState.value.window.older())
             HistoryAction.Newer ->
@@ -149,6 +151,8 @@ class HistoryController internal constructor(
     fun onRouteExited() {
         routeActive = false
         retryDiscovery = null
+        retryRequest = null
+        nextCursor = null
         generation.incrementAndGet()
         discoveryGeneration.incrementAndGet()
     }
@@ -219,6 +223,7 @@ class HistoryController internal constructor(
             mutableState.update { state ->
                 state.copy(
                     canNavigateNewer = state.window.endDate < upperBound,
+                    newestDate = upperBound,
                     discoveryFailure = null,
                 )
             }
@@ -232,8 +237,9 @@ class HistoryController internal constructor(
         window: HistoryBrowseWindow,
         continuation: CompletedHistoryCursor? = null,
     ) {
-        if (closed) return
+        if (closed || !routeActive) return
         val request = generation.incrementAndGet()
+        nextCursor = null
         val admittedRequest = HistoryRequest(window, continuation)
         retryRequest = admittedRequest
         val canNavigateNewer = window.endDate < upperBound
@@ -242,6 +248,7 @@ class HistoryController internal constructor(
                 window = window,
                 load = HistoryRootsLoad.Loading,
                 canNavigateNewer = canNavigateNewer,
+                newestDate = upperBound,
                 canLoadMore = false,
             )
         }

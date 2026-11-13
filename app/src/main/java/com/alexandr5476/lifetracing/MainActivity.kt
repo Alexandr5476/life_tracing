@@ -548,6 +548,7 @@ internal fun LifeTracingApp(
                             HistoryRoute(
                                 historyController,
                                 isRouteVisible = backStack.lastOrNull() == HistoryRoot,
+                                ownsRoute = { backStack.lastOrNull() == HistoryRoot },
                                 onBack = {
                                     historyOwner.onRouteExited()
                                     backStack.removeHistory()
@@ -600,6 +601,8 @@ internal fun LifeTracingApp(
                             }
                         }
                         entry<ActivityHistoryDetailRoot> { route ->
+                            // NavDisplay can recompose an outgoing entry after Back released its session.
+                            if (route !in backStack) return@entry
                             val executionId =
                                 com.alexandr5476.lifetracing.domain
                                     .ActivityExecutionId(route.executionId)
@@ -611,6 +614,8 @@ internal fun LifeTracingApp(
                                 }
                             ActivityHistoryDetailRoute(
                                 session,
+                                isRouteVisible = backStack.lastOrNull() == route,
+                                ownsRoute = { backStack.lastOrNull() == route },
                                 onBack = {
                                     activityHistorySessions.release(session)
                                     backStack.removeActivityHistoryDetail(route.executionId)
@@ -654,6 +659,7 @@ internal fun LifeTracingApp(
                             }
                         }
                         entry<SequenceHistoryDetailRoot> { route ->
+                            if (route !in backStack) return@entry
                             val executionId =
                                 com.alexandr5476.lifetracing.domain
                                     .SequenceExecutionId(route.executionId)
@@ -665,6 +671,8 @@ internal fun LifeTracingApp(
                                 }
                             SequenceHistoryDetailRoute(
                                 session,
+                                isRouteVisible = backStack.lastOrNull() == route,
+                                ownsRoute = { backStack.lastOrNull() == route },
                                 onBack = {
                                     backStack.handleSequenceHistoryDetailBack(
                                         route.executionId,

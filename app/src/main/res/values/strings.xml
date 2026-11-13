@@ -868,4 +868,14 @@
     <string name="plan_cancelled_empty">No cancelled plans</string>
     <string name="plan_cancelled_results">Cancelled plans loaded: %1$d</string>
     <string name="plan_lifecycle_pending">Applying plan change and reloading. Plan actions are temporarily unavailable.</string>
+    <string name="history_activity_record">Activity record %1$s</string>
+    <string name="history_sequence_record">Sequence record %1$s</string>
+    <string name="history_open_record">Open details for %1$s</string>
+    <string name="history_older_period">Older: %1$s</string>
+    <string name="history_newer_period">Newer: %1$s</string>
+    <string name="history_results">Results on this page: %1$d</string>
+    <string name="history_detail_ready">Historical details loaded</string>
+    <string name="history_timed_range">Started: %1$s\nCompleted: %2$s</string>
+    <string name="history_completion_time">Completed: %1$s</string>
+    <string name="history_actual_field">%1$s — actual: %2$s</string>
 </resources>

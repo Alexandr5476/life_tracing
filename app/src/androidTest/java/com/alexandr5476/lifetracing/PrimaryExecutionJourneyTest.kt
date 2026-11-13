@@ -18,10 +18,12 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
@@ -70,8 +72,10 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
+import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -985,6 +989,381 @@ class PrimaryExecutionJourneyTest {
             ): PreflightHandle = error("Fixture has no pre-start countdown")
         }
 
+    @Test
+    fun historyDuplicateRootsUseExactNativeRoutesAndRejectOutgoingCallbacksAcrossBackAndRecreation() =
+        historyDuplicateJourney("en", 90, 90, 1f)
+
+    @Test
+    fun russianLargeFontHistoryDuplicateRootsKeepExactNativeRoutesAndReturnFocus() =
+        historyDuplicateJourney("ru", 120, 130, 2f)
+
+    private fun historyDuplicateJourney(
+        language: String,
+        interfaceScale: Int,
+        textScale: Int,
+        font: Float,
+    ) = journey { f ->
+        val createdAt = f.seedTime.minusSeconds(2)
+        val source =
+            f.store.authoring.createActivityTemplate(
+                ActivityTemplateDraft("Duplicate history", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = createdAt,
+            )
+        val zone = ZoneId.systemDefault()
+        val activities =
+            List(2) {
+                f.store.library.completeNoLiveActivityFromTemplate(source.id, f.seedTime, f.seedTime, zone)
+            }
+        val sequenceSource =
+            f.store.authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "Duplicate history",
+                    null,
+                    settings = SequenceTemplateSettings(),
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("history-step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(source.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = createdAt,
+            )
+        val sequence =
+            f.store.library
+                .startSequenceFromTemplate(
+                    sequenceSource.id,
+                    f.seedTime.minusSeconds(1),
+                    f.seedTime.minusSeconds(1),
+                    zone,
+                ).execution
+        f.store.live.endSequenceEarly(f.seedTime)
+        val before = f.store.durableFacts()
+        // Keep MainActivity's production saveable composition path for the recreation journey.
+        if (language == "en") f.useProductionAppearance(interfaceScale, textScale)
+        f.launch()
+        if (language != "en") f.applyAppearance(language, font, interfaceScale, textScale)
+        val entry = f.action(f.text(R.string.daily_history))
+        entry.performScrollTo()
+        keyboard.awaitFocus(compose.onNodeWithContentDescription(f.text(R.string.daily_previous_day)))
+        var remainingTabs = 32
+        while (!entry.fetchSemanticsNode().config.getOrElse(
+                androidx.compose.ui.semantics.SemanticsProperties.Focused,
+            ) { false } &&
+            remainingTabs-- > 0
+        ) {
+            keyboard.sendKey(entry, android.view.KeyEvent.KEYCODE_TAB)
+        }
+        entry.assertIsFocused()
+        entry.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+        // NavDisplay creates the production owner during composition, after the key handler returns.
+        f.await {
+            compose
+                .onAllNodes(hasTestTag("history-back"))
+                .fetchSemanticsNodes()
+                .size == 1
+        }
+        keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+        val history =
+            compose.runOnIdle {
+                f.host().historyControllerOwner.get { error("Production History required") }
+            }
+        f.await { history.state.value.load is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content }
+        val retainedOlder =
+            compose
+                .onNodeWithTag("history-older")
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val retainedBack =
+            compose
+                .onNodeWithTag("history-back")
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val retainedAdd =
+            compose
+                .onNodeWithTag("history-add-completed-activity")
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        val firstRecord = f.text(R.string.history_activity_record, activities.first().id.value)
+        val immediateOpen =
+            compose
+                .onNode(hasContentDescription(firstRecord, substring = true))
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        compose.runOnIdle {
+            immediateOpen()
+            f.host().onBackPressedDispatcher.onBackPressed()
+            retainedOlder()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("history-back").assertExists()
+        assertNull(f.host().activityHistoryMutationRouteSessions.activeSession)
+        for (execution in activities) {
+            val record = f.text(R.string.history_activity_record, execution.id.value)
+            val row = compose.onNode(hasContentDescription(record, substring = true) and hasClickAction())
+            row.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(row)
+            val retained = row.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            row.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            f.await {
+                f
+                    .host()
+                    .activityHistoryMutationRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.load is
+                    com.alexandr5476.lifetracing.history.HistoryDetailLoad.Content
+            }
+            val session = f.host().activityHistoryMutationRouteSessions.activeSession!!
+            assertEquals(execution.id, session.executionId)
+            val detailBack = f.action(f.text(R.string.history_back))
+            keyboard.awaitFocus(detailBack)
+            val window = history.state.value.window
+            compose.runOnIdle {
+                retained()
+                retainedOlder()
+                retainedBack()
+                retainedAdd()
+            }
+            assertSame(session, f.host().activityHistoryMutationRouteSessions.activeSession)
+            assertNull(f.host().manualActivityEntryRouteSessions.activeSession)
+            assertEquals(window, history.state.value.window)
+            detailBack.assertIsFocused()
+            // A legitimate background refresh remains admitted under an exact detail route.
+            compose.runOnIdle { history.dispatch(com.alexandr5476.lifetracing.history.HistoryAction.Refresh) }
+            f.await { history.state.value.load is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content }
+            detailBack.assertIsFocused()
+            if (language == "en") f.recreate()
+            assertSame(session, f.host().activityHistoryMutationRouteSessions.activeSession)
+            keyboard.awaitFocus(f.action(f.text(R.string.history_back)))
+            f.action(f.text(R.string.history_back)).performKeyInput {
+                pressKey(androidx.compose.ui.input.key.Key.Enter)
+            }
+            keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+            // Outgoing composition must not reacquire the session released by native Back.
+            compose.runOnIdle { assertNull(f.host().activityHistoryMutationRouteSessions.activeSession) }
+            compose.runOnIdle { retained() }
+            assertNull(f.host().activityHistoryMutationRouteSessions.activeSession)
+        }
+        val sequenceRow =
+            compose.onNode(
+                hasContentDescription(f.text(R.string.history_sequence_record, sequence.id.value), substring = true)
+                    and hasClickAction(),
+            )
+        sequenceRow.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(sequenceRow)
+        sequenceRow.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+        f.await {
+            f
+                .host()
+                .sequenceHistoryMutationRouteSessions.activeSession
+                ?.controller
+                ?.state
+                ?.value
+                ?.load is
+                com.alexandr5476.lifetracing.history.HistoryDetailLoad.Content
+        }
+        assertEquals(
+            sequence.id,
+            f
+                .host()
+                .sequenceHistoryMutationRouteSessions.activeSession!!
+                .executionId,
+        )
+        keyboard.awaitFocus(f.action(f.text(R.string.history_back)))
+        f.systemBack()
+        keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+        compose.runOnIdle { assertNull(f.host().sequenceHistoryMutationRouteSessions.activeSession) }
+        val exit =
+            compose
+                .onNodeWithTag(
+                    "history-back",
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        // Both calls run before outgoing Compose content can be disposed.
+        compose.runOnIdle {
+            exit()
+            retainedOlder()
+            exit()
+        }
+        f.dailyLanding()
+        assertEquals(before, f.store.durableFacts())
+        f.reopen { assertEquals(before, durableFacts()) }
+    }
+
+    @Test
+    fun historyProductionPagingFailureRetryAndExitKeepCanonicalBoundsAndRejectOldNativeActions() =
+        journey { f ->
+            val source =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Paged history", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = f.seedTime,
+                )
+            repeat(101) {
+                f.store.library.completeNoLiveActivityFromTemplate(
+                    source.id,
+                    f.seedTime,
+                    f.seedTime,
+                    ZoneId.systemDefault(),
+                )
+            }
+            val before = f.store.durableFacts()
+            f.launch()
+            val reads = AtomicInteger()
+            var fail = true
+            val queries = java.util.concurrent.CopyOnWriteArrayList<CompletedHistoryQuery>()
+            val scope =
+                kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+                )
+            val history =
+                com.alexandr5476.lifetracing.history.HistoryController(
+                    scope,
+                    { query ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            reads.incrementAndGet()
+                            queries += query
+                            if (fail) {
+                                fail = false
+                                error("Injected bounded read failure")
+                            }
+                            f.store.history.getCompletedRoots(query)
+                        }
+                    },
+                    readLatestDate = { context ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.history.getLatestCompletedPrimaryLocalDate(context.now, context.zoneId)
+                        }
+                    },
+                )
+            compose.runOnIdle { f.host().historyControllerOwner.get { history } }
+            try {
+                f.invoke(R.string.daily_history)
+                f.await { history.state.value.load is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Failure }
+                assertEquals(1, reads.get())
+                assertEquals(
+                    "Injected bounded read failure",
+                    (history.state.value.load as com.alexandr5476.lifetracing.history.HistoryRootsLoad.Failure).message,
+                )
+                val retry = compose.onNodeWithTag("history-retry")
+                val oldRetry = retry.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                retry.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(retry)
+                retry.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                f.await { history.state.value.load is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content }
+                assertEquals(
+                    100,
+                    (history.state.value.load as com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content)
+                        .roots.size,
+                )
+                val first =
+                    (history.state.value.load as com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content)
+                        .roots
+                        .first()
+                val record =
+                    f.text(
+                        R.string.history_activity_record,
+                        (first as com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot).executionId.value,
+                    )
+                val oldRoot =
+                    compose
+                        .onNode(hasContentDescription(record, substring = true))
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                val more = compose.onNodeWithTag("history-load-more")
+                val oldMore = more.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                more.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(more)
+                more.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                f.await {
+                    !history.state.value.canLoadMore &&
+                        history.state.value.load is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content
+                }
+                keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+                assertEquals(
+                    1,
+                    (history.state.value.load as com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content)
+                        .roots.size,
+                )
+                val count = reads.get()
+                compose.runOnIdle {
+                    oldRoot()
+                    oldMore()
+                    oldRetry()
+                }
+                assertEquals(count, reads.get())
+                assertNull(f.host().activityHistoryMutationRouteSessions.activeSession)
+                for (tag in listOf("history-older", "history-newer")) {
+                    val control = compose.onNodeWithTag(tag)
+                    control.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(control)
+                    control.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+                    f.await {
+                        history.state.value.load !is com.alexandr5476.lifetracing.history.HistoryRootsLoad.Loading
+                    }
+                    if (tag == "history-newer" && !history.state.value.canNavigateNewer) {
+                        keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+                    } else {
+                        control.assertIsFocused()
+                    }
+                }
+                assertEquals(
+                    100,
+                    (history.state.value.load as com.alexandr5476.lifetracing.history.HistoryRootsLoad.Content)
+                        .roots.size,
+                )
+                assertTrue(queries.all { it.limit == 101 })
+                assertEquals(queries[0], queries[1])
+                assertTrue(queries[2].continuation != null)
+                val older =
+                    compose
+                        .onNodeWithTag(
+                            "history-older",
+                        ).fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                val newer =
+                    compose
+                        .onNodeWithTag(
+                            "history-newer",
+                        ).fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                val exit =
+                    compose
+                        .onNodeWithTag(
+                            "history-back",
+                        ).fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                val beforeExit = reads.get()
+                compose.runOnIdle {
+                    exit()
+                    older()
+                    newer()
+                    oldMore()
+                    oldRetry()
+                }
+                f.dailyLanding()
+                assertEquals(beforeExit, reads.get())
+                assertEquals(before, f.store.durableFacts())
+            } finally {
+                history.close()
+                scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+            }
+        }
+
     private fun journey(body: (Fixture) -> Unit) =
         runBlocking {
             val app = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
@@ -1012,6 +1391,18 @@ class PrimaryExecutionJourneyTest {
         fun host() = requireNotNull(activity)
 
         private var resourceContext: android.content.Context? = null
+        private var originalAppearance: AppearancePreferences? = null
+
+        fun useProductionAppearance(
+            interfaceScale: Int,
+            textScale: Int,
+        ) = runBlocking {
+            val preferences = AppearancePreferencesRepository(app)
+            check(originalAppearance == null)
+            originalAppearance = preferences.preferences.first()
+            preferences.setInterfaceScalePercent(interfaceScale)
+            preferences.setTextScalePercent(textScale)
+        }
 
         fun text(
             id: Int,
@@ -1341,8 +1732,18 @@ class PrimaryExecutionJourneyTest {
         }
 
         override fun close() {
-            scenario?.close()
-            store.close()
+            try {
+                scenario?.close()
+                store.close()
+            } finally {
+                originalAppearance?.let { original ->
+                    runBlocking {
+                        val preferences = AppearancePreferencesRepository(app)
+                        preferences.setInterfaceScalePercent(original.interfaceScalePercent)
+                        preferences.setTextScalePercent(original.textScalePercent)
+                    }
+                }
+            }
         }
     }
 }

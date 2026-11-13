@@ -180,24 +180,26 @@ class HistoryScreenPresentationTest {
                         .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
                         .withLocale(language)
                         .format(first.atZone(berlin))
-                composeTestRule
-                    .onNodeWithText(
-                        "$clock (UTC+02:00, Europe/Berlin)",
-                    ).performScrollTo()
-                    .assertIsDisplayed()
-                composeTestRule
-                    .onNodeWithText(
-                        "$clock (UTC+01:00, Europe/Berlin)",
-                    ).performScrollTo()
-                    .assertIsDisplayed()
                 val configuration = android.content.res.Configuration(composeTestRule.activity.resources.configuration)
                 configuration.setLocale(language)
                 val resources = composeTestRule.activity.createConfigurationContext(configuration).resources
+                composeTestRule
+                    .onNodeWithText(
+                        resources.getString(R.string.history_completion_time, "$clock (UTC+02:00, Europe/Berlin)"),
+                    ).performScrollTo()
+                    .assertIsDisplayed()
+                composeTestRule
+                    .onNodeWithText(
+                        resources.getString(R.string.history_completion_time, "$clock (UTC+01:00, Europe/Berlin)"),
+                    ).performScrollTo()
+                    .assertIsDisplayed()
                 val missing = resources.getString(R.string.history_missing_value)
                 composeTestRule
                     .onAllNodesWithText(resources.getString(R.string.history_active_duration, missing))
                     .assertCountEquals(2)
-                composeTestRule.onNodeWithText("0:00").assertDoesNotExist()
+                composeTestRule
+                    .onAllNodesWithText(resources.getString(R.string.history_active_duration, "00:00"))
+                    .assertCountEquals(0)
             }
             composeTestRule.runOnIdle { detailMode.value = true }
             val childStart =

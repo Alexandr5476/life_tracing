@@ -36,6 +36,34 @@ import java.time.ZoneOffset
 @Suppress("LargeClass") // One controller fixture keeps the behavior matrix self-contained.
 class HistoryControllerTest {
     @Test
+    fun exitedRouteRejectsAllRetainedBrowsingActionsAndReentryDiscoversAgain() =
+        runBlocking {
+            var discoveries = 0
+            val fixture =
+                fixture(readLatestDate = {
+                    discoveries++
+                    TODAY
+                }) {
+                    (0..HISTORY_RESULT_LIMIT).map { root("root-$it") }
+                }
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            fixture.controller.onRouteExited()
+            val exited = fixture.controller.state.value
+            listOf(HistoryAction.Older, HistoryAction.Newer, HistoryAction.LoadMore, HistoryAction.Retry).forEach {
+                fixture.controller.dispatch(it)
+            }
+            yield()
+            assertEquals(1, fixture.queries.size)
+            assertEquals(exited, fixture.controller.state.value)
+            fixture.controller.onRouteEntered()
+            fixture.awaitQueries(2)
+            assertEquals(2, discoveries)
+            assertEquals(null, fixture.queries.last().continuation)
+            fixture.close()
+        }
+
+    @Test
     fun rediscoveryPreservesOriginalAttributionAndStoredDateAfterCurrentZoneChanges() =
         runBlocking {
             val berlin = java.time.ZoneId.of("Europe/Berlin")
@@ -798,6 +826,70 @@ class HistoryControllerTest {
 
             fixture.close()
             closed.scope.cancel()
+        }
+
+    @Test
+    fun clockRollbackCannotHideTheLatestPersistedPrimaryDate() =
+        runBlocking {
+            val latest = TODAY.plusDays(1)
+            var currentTime = NOW
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val queries = mutableListOf<CompletedHistoryQuery>()
+            val controller =
+                HistoryController(
+                    scope,
+                    readRoots = { query ->
+                        queries += query
+                        if (latest in query.dateRange.startDate..query.dateRange.endDate) {
+                            listOf(root("latest").copy(primaryLocalDate = latest))
+                        } else {
+                            emptyList()
+                        }
+                    },
+                    now = { currentTime },
+                    zoneId = { ZoneOffset.UTC },
+                    readLatestDate = { latest },
+                )
+            val fixture = RootFixture(scope, controller, queries)
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            fixture.controller.onRouteExited()
+            currentTime = NOW.minusSeconds(365L * 24 * 60 * 60)
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(latest, fixture.controller.state.value.newestDate)
+            fixture.controller.dispatch(HistoryAction.Older)
+            fixture.awaitLoad<HistoryRootsLoad.Empty>()
+            fixture.controller.dispatch(HistoryAction.Newer)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(
+                latest,
+                fixture.queries
+                    .last()
+                    .dateRange.endDate,
+            )
+            assertEquals(listOf("latest"), fixture.contentIds())
+            fixture.close()
+        }
+
+    @Test
+    fun hiddenBrowseCallbacksAreRejectedWhileCommittedDetailRefreshStillReloads() =
+        runBlocking {
+            var version = 0
+            val fixture = fixture { listOf(root("version-$version")) }
+            fixture.controller.onRouteEntered()
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            val publication = fixture.controller.state.value
+            val admission = HistoryNavigationAdmission(publication, { fixture.controller.state.value }, { false })
+            val older = admission.callback { fixture.controller.dispatch(HistoryAction.Older) }
+            version++
+            older()
+            fixture.controller.dispatch(HistoryAction.Refresh)
+            fixture.awaitLoad<HistoryRootsLoad.Content>()
+            assertEquals(2, fixture.queries.size)
+            assertEquals(listOf("version-1"), fixture.contentIds())
+            assertEquals(publication.window, fixture.controller.state.value.window)
+            fixture.close()
         }
 
     private fun fixture(

@@ -868,4 +868,14 @@
     <string name="plan_cancelled_empty">Нет отменённых планов</string>
     <string name="plan_cancelled_results">Загружено отменённых планов: %1$d</string>
     <string name="plan_lifecycle_pending">Применение изменения плана и обновление данных. Действия с планами временно недоступны.</string>
+    <string name="history_activity_record">Запись активности %1$s</string>
+    <string name="history_sequence_record">Запись последовательности %1$s</string>
+    <string name="history_open_record">Открыть подробности: %1$s</string>
+    <string name="history_older_period">Раньше: %1$s</string>
+    <string name="history_newer_period">Позже: %1$s</string>
+    <string name="history_results">Результатов на странице: %1$d</string>
+    <string name="history_detail_ready">Исторические подробности загружены</string>
+    <string name="history_timed_range">Начато: %1$s\nЗавершено: %2$s</string>
+    <string name="history_completion_time">Завершено: %1$s</string>
+    <string name="history_actual_field">%1$s — фактически: %2$s</string>
 </resources>
