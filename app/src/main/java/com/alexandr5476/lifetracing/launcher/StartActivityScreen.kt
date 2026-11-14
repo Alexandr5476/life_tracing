@@ -70,6 +70,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.LibraryTrackableKind
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.history.proposedNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.LifeTracingLinearProgressIndicator
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
@@ -1152,7 +1153,7 @@ private fun StartOptionsField(
     val invalidNumber =
         field.type == CustomFieldType.NUMBER &&
             !draft.missing &&
-            parseLauncherNumber(draft.numberText, field.displayPrecision) == null
+            draft.proposedNumber(field.displayPrecision) == null
     val missingLabel =
         stringResource(
             if (draft.missing) R.string.manual_history_restore_value else R.string.manual_history_set_missing,

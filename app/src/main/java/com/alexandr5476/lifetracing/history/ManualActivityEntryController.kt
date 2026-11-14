@@ -123,6 +123,9 @@ data class ManualEntryFieldDraft(
     val selectedOptionId: CategoryOptionId? = null,
     val text: String = "",
     val missing: Boolean = false,
+    // Ephemeral source precision, independent of the rounded text presented to the user.
+    val originalNumberScaled: Long? = null,
+    val numberWasEdited: Boolean = false,
 )
 
 data class ManualActivityEntryState(
@@ -419,7 +422,7 @@ class ManualActivityEntryController internal constructor(
     private fun editNumber(
         id: ActivityTemplateFieldId,
         text: String,
-    ) = editValue(id) { it.copy(numberText = text, missing = false) }
+    ) = editValue(id) { it.withNumberText(text) }
 
     private fun editText(
         id: ActivityTemplateFieldId,

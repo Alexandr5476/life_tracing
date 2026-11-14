@@ -1859,6 +1859,310 @@ class PrimaryExecutionJourneyTest {
     }
 
     @Test
+    fun untouchedManualNumberDefaultsAndRestorationStayExactAfterPhysicalReopen() = manualNumberDefaultsJourney(false)
+
+    @Test
+    fun explicitlyEditedManualNumberUsesInputPrecisionAfterPhysicalReopen() = manualNumberDefaultsJourney(true)
+
+    private fun manualNumberDefaultsJourney(edited: Boolean) =
+        journey { f ->
+            val defaults =
+                listOf(
+                    12555L,
+                    Long.MAX_VALUE,
+                    Long.MIN_VALUE,
+                    Long.MAX_VALUE - 1,
+                    Long.MIN_VALUE + 1,
+                    -12555L,
+                    0L,
+                    null,
+                )
+            val source =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Exact defaults",
+                        null,
+                        TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            defaults.mapIndexed { index, scaled ->
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("number-$index"),
+                                    index,
+                                    "Duplicate",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = if (index in 1..4) 0 else 1,
+                                    defaultNumberScaled = scaled,
+                                )
+                            },
+                    ),
+                    createdAt = f.seedTime,
+                )
+            val plan = f.store.plans.createActivityPlanFromTemplate(source.id, f.schedule(), f.seedTime)
+            val fields = source.fields.sortedBy { it.position }
+            val before = f.store.durableFacts()
+            f.launch()
+            f.invoke(R.string.daily_history)
+            f.invoke(R.string.manual_history_title)
+            val controller =
+                f
+                    .host()
+                    .manualActivityEntryRouteSessions.activeSession!!
+                    .controller
+            f.await { controller.state.value.catalog is ManualEntryLoad.Content }
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-activity-${source.id.value}")) }
+            f.await { controller.state.value.selected is ManualEntryLoad.Content }
+            val local =
+                LocalDateTime
+                    .ofInstant(
+                        f.seedTime,
+                        ZoneId.systemDefault(),
+                    ).minusDays(2)
+                    .withHour(12)
+                    .withMinute(0)
+                    .withSecond(0)
+                    .withNano(0)
+            inputHistoryText("manual-history-started", local.minusHours(1).toString().replace('T', ' '))
+            inputHistoryText("manual-history-completed", local.toString().replace('T', ' '))
+            fields.take(6).forEach { field ->
+                val tag = "manual-history-field-${field.id.value}-missing"
+                f.await { tryInvokeCurrent(hasTestTag(tag), focusBeforeScroll = true) }
+                f.await { tryInvokeCurrent(hasTestTag(tag), focusBeforeScroll = true) }
+            }
+            if (edited) {
+                val tag = "manual-history-field-${fields.first().id.value}-actual"
+                inputHistoryText(tag, "12")
+                inputHistoryText(tag, "12.6")
+            }
+            assertEquals(before, f.store.durableFacts())
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+            f.await { controller.state.value.command is ManualEntryCommand.Committed }
+            val committed = (controller.state.value.command as ManualEntryCommand.Committed).execution
+            f.await { f.host().manualActivityEntryRouteSessions.activeSession == null }
+            val day = local.minusHours(1).toLocalDate()
+            val root =
+                f.store.history
+                    .getCompletedRoots(CompletedHistoryQuery(HistoryDateRange(day, day), 10))
+                    .single()
+            assertEquals(committed.id, (root as CompletedActivityHistoryRoot).executionId)
+            f.reopen(historyDay = day) {
+                assertEquals(1L to 0L, executionCounts())
+                assertNull(live.getActiveSession())
+                assertEquals(source, authoring.getActivityTemplate(source.id))
+                assertEquals(plan, plans.getPlan(plan.id))
+                val execution = activity(committed.id)
+                // Command values follow schema order; canonical reads order by frozen Field ID.
+                assertEquals(
+                    committed.copy(values = committed.values.sortedBy { it.snapshotFieldId.value }),
+                    execution,
+                )
+                assertNull(execution.planEntryId)
+                assertEquals(ActivityCompletionReason.MANUAL_HISTORY_ENTRY, execution.completionReason)
+                val aggregate = activityCommands.getHistory(execution.id)!!
+                assertEquals(source.id, aggregate.snapshot.sourceTemplateId)
+                assertEquals(source.revision, aggregate.snapshot.sourceRevision)
+                assertEquals(source.statisticsSeriesId, aggregate.snapshot.statisticsSeriesId)
+                val detail = history.getActivityDetail(execution.id)!!
+                val stats = statistics.seriesDetail(source.statisticsSeriesId, StatisticsPeriod.AllTime).fields
+                fields.forEachIndexed { index, field ->
+                    val frozen = aggregate.snapshot.fields.single { it.sourceFieldId == field.id }
+                    val projected = detail.fields.single { it.id == frozen.id }
+                    val expected = if (edited && index == 0) 12600L else defaults[index]
+                    assertEquals(defaults[index], frozen.defaultNumberScaled)
+                    assertEquals(
+                        defaults[index]?.let {
+                            com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
+                                .Number(
+                                    it,
+                                )
+                        }
+                            ?: com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue.Missing,
+                        projected.configuredValue,
+                    )
+                    assertEquals(
+                        expected?.let { ActivityHistoryActualValue.Number(it) } ?: ActivityHistoryActualValue.Missing,
+                        projected.actualValue,
+                    )
+                    val number =
+                        (
+                            stats.single {
+                                it.field.id == StatisticsFieldId.Activity(field.id)
+                            } as StatisticsFieldDetail.Number
+                        ).statistics
+                    assertEquals(if (expected == null) 1L else 0L, number.missingCount)
+                    assertEquals(expected, number.values.minimumScaled)
+                    assertEquals(expected, number.values.maximumScaled)
+                    assertEquals(
+                        expected?.let { java.math.BigInteger.valueOf(it) } ?: java.math.BigInteger.ZERO,
+                        number.values.totalScaled,
+                    )
+                }
+            }
+        }
+
+    @Test
+    fun englishManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen() =
+        manualCategoryErrorJourney("en")
+
+    @Test
+    fun russianManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen() =
+        manualCategoryErrorJourney("ru")
+
+    private fun manualCategoryErrorJourney(language: String) =
+        journey { f ->
+            val source =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Category validation",
+                        null,
+                        TimeTrackingMode.NO_LIVE_TRACKING,
+                        null,
+                        fields =
+                            (0..1).map { index ->
+                                val option = DraftIdentity.New("option-$index")
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("category-$index"),
+                                    index,
+                                    "Duplicate",
+                                    CustomFieldType.CATEGORY,
+                                    defaultCategoryOption = option.takeIf { index == 0 },
+                                    categoryOptions = listOf(ActivityCategoryOptionDraft(option, 0, "Duplicate")),
+                                )
+                            },
+                    ),
+                    createdAt = f.seedTime,
+                )
+            val fields = source.fields.sortedBy { it.position }
+            val before = f.store.durableFacts()
+            f.launch()
+            f.applyAppearance(language, 1f, 100, 100)
+            f.invoke(R.string.daily_history)
+            f.invoke(R.string.manual_history_title)
+            val controller =
+                f
+                    .host()
+                    .manualActivityEntryRouteSessions.activeSession!!
+                    .controller
+            f.await { controller.state.value.catalog is ManualEntryLoad.Content }
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-activity-${source.id.value}")) }
+            f.await { controller.state.value.selected is ManualEntryLoad.Content }
+            val invalidField = fields[1]
+            f.await {
+                tryInvokeCurrent(
+                    hasTestTag("manual-history-field-${invalidField.id.value}-missing"),
+                    focusBeforeScroll = true,
+                )
+            }
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+            f.await {
+                controller.state.value.command ==
+                    ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_CATEGORY, invalidField.id)
+            }
+            keyboard.awaitFocus(compose.onNodeWithTag("manual-history-save"))
+            assertEquals(before, f.store.durableFacts())
+            val errorKey = androidx.compose.ui.semantics.SemanticsProperties.Error
+            for (unmerged in listOf(false, true)) {
+                val errors =
+                    compose
+                        .onAllNodes(
+                            SemanticsMatcher.keyIsDefined(errorKey),
+                            useUnmergedTree = unmerged,
+                        ).fetchSemanticsNodes()
+                assertEquals(1, errors.size)
+                assertEquals(
+                    "manual-history-field-${invalidField.id.value}-group",
+                    errors.single().config[androidx.compose.ui.semantics.SemanticsProperties.TestTag],
+                )
+                fields.forEach { field ->
+                    val config =
+                        compose
+                            .onNodeWithTag(
+                                "manual-history-field-${field.id.value}-group",
+                                useUnmergedTree = unmerged,
+                            ).fetchSemanticsNode()
+                            .config
+                    assertEquals(field.id == invalidField.id, config.contains(errorKey))
+                    if (field.id ==
+                        invalidField.id
+                    ) {
+                        assertEquals(f.text(R.string.manual_history_invalid_category), config[errorKey])
+                    }
+                }
+            }
+            val chosen = invalidField.categoryOptions.single()
+            f.await {
+                tryInvokeCurrent(
+                    hasTestTag("manual-history-option-${chosen.id.value}"),
+                    focusBeforeScroll = true,
+                )
+            }
+            assertEquals(ManualEntryCommand.Idle, controller.state.value.command)
+            for (unmerged in listOf(false, true)) {
+                fields.forEach { field ->
+                    assertFalse(
+                        compose
+                            .onNodeWithTag(
+                                "manual-history-field-${field.id.value}-group",
+                                useUnmergedTree = unmerged,
+                            ).fetchSemanticsNode()
+                            .config
+                            .contains(errorKey),
+                    )
+                }
+            }
+            assertEquals(before, f.store.durableFacts())
+            f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+            f.await { controller.state.value.command is ManualEntryCommand.Committed }
+            val execution = (controller.state.value.command as ManualEntryCommand.Committed).execution
+            f.await { f.host().manualActivityEntryRouteSessions.activeSession == null }
+            f.reopen(historyDay = execution.primaryLocalDate) {
+                assertEquals(1L to 0L, executionCounts())
+                // Compare every fact while accounting for canonical Field-value row ordering.
+                assertEquals(
+                    execution.copy(values = execution.values.sortedBy { it.snapshotFieldId.value }),
+                    activity(execution.id),
+                )
+                assertNull(execution.planEntryId)
+                assertEquals(ActivityCompletionReason.MANUAL_HISTORY_ENTRY, execution.completionReason)
+                val aggregate = activityCommands.getHistory(execution.id)!!
+                assertEquals(source.revision, aggregate.snapshot.sourceRevision)
+                val detail = history.getActivityDetail(execution.id)!!
+                val stats = statistics.seriesDetail(source.statisticsSeriesId, StatisticsPeriod.AllTime).fields
+                fields.forEach { field ->
+                    val frozen = aggregate.snapshot.fields.single { it.sourceFieldId == field.id }
+                    val actual =
+                        detail.fields
+                            .single {
+                                it.id == frozen.id
+                            }.actualValue as ActivityHistoryActualValue.Category
+                    assertEquals(
+                        field.categoryOptions.single().id,
+                        frozen.categoryOptions
+                            .single {
+                                it.id ==
+                                    actual.optionId
+                            }.sourceOptionId,
+                    )
+                    val category =
+                        (
+                            stats.single {
+                                it.field.id == StatisticsFieldId.Activity(field.id)
+                            } as StatisticsFieldDetail.Category
+                        ).statistics
+                    assertEquals(0L, category.missingCount)
+                    assertEquals(
+                        1L,
+                        category.values
+                            .single {
+                                it.id ==
+                                    StatisticsCategoryOptionId.ActivitySource(field.categoryOptions.single().id)
+                            }.count,
+                    )
+                }
+            }
+        }
+
+    @Test
     fun accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen() =
         manualEntryJourney(TimeTrackingMode.STOPWATCH)
 

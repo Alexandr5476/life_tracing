@@ -31,6 +31,7 @@ internal fun ActivityTemplate.initialEntryValues(): Map<ActivityTemplateFieldId,
                 formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision),
                 field.defaultCategoryOptionId,
                 field.defaultText.orEmpty(),
+                originalNumberScaled = field.defaultNumberScaled,
                 missing =
                     when (field.type) {
                         CustomFieldType.NUMBER -> field.defaultNumberScaled == null
@@ -38,6 +39,20 @@ internal fun ActivityTemplate.initialEntryValues(): Map<ActivityTemplateFieldId,
                         CustomFieldType.TEXT -> field.defaultText == null
                     },
             )
+    }
+
+/** A same-text native callback is not a material edit; real edits remain edits after restoration. */
+internal fun ManualEntryFieldDraft.withNumberText(text: String): ManualEntryFieldDraft =
+    copy(numberText = text, missing = false, numberWasEdited = numberWasEdited || numberText != text)
+
+internal fun ManualEntryFieldDraft.proposedNumber(displayPrecision: Int?): Long? =
+    if (!numberWasEdited &&
+        originalNumberScaled != null &&
+        numberText == formatLauncherNumber(originalNumberScaled, displayPrecision)
+    ) {
+        originalNumberScaled
+    } else {
+        parseLauncherNumber(numberText, displayPrecision)
     }
 
 @Suppress("ReturnCount")
@@ -53,7 +68,7 @@ internal fun ActivityTemplate.proposeEntryValues(
                 draft.missing -> ActivityEntryValue.Missing
                 field.type == CustomFieldType.NUMBER -> {
                     val number =
-                        parseLauncherNumber(draft.numberText, field.displayPrecision)
+                        draft.proposedNumber(field.displayPrecision)
                             ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_NUMBER, field.id)
                     ActivityEntryValue.Number(number)
                 }

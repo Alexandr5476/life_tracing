@@ -45,6 +45,156 @@ import java.time.ZoneOffset
 @Suppress("LargeClass") // One controller fixture keeps historical command and admission prerequisites explicit.
 class ManualActivityEntryControllerTest {
     @Test
+    fun untouchedRoundedNumberDefaultsRetainExactStorageIncludingLongBoundaries() =
+        runBlocking {
+            for (case in listOf(0, 1).flatMap { precision ->
+                listOf(12555L, -12555L, Long.MAX_VALUE, Long.MIN_VALUE, Long.MAX_VALUE - 1, Long.MIN_VALUE + 1).map {
+                    it to
+                        precision
+                }
+            }) {
+                val (scaled, precision) = case
+                val source = timedTemplate()
+                val number = source.fields.first().copy(defaultNumberScaled = scaled, displayPrecision = precision)
+                val fixture = fixture(source.copy(fields = listOf(number)))
+                try {
+                    fixture.select()
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertInstanceOf(ManualEntryCommand.Committed::class.java, fixture.controller.state.value.command)
+                    assertEquals(
+                        ActivityEntryValue.Number(scaled),
+                        fixture.timed
+                            .single()
+                            .values
+                            .single()
+                            .value,
+                    )
+                    assertEquals(source.revision, fixture.timed.single().expectedTemplateRevision)
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun missingRestorationAndUnchangedTextCallbackRetainExactNumberDefault() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields = listOf(source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1)),
+                    ),
+                )
+            try {
+                fixture.select()
+                assertEquals(
+                    "12.6",
+                    fixture.controller.state.value.values
+                        .getValue(NUMBER_ID)
+                        .numberText,
+                )
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12555),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun explicitNumberEditParsesDisplayedPrecisionEvenWhenRoundedTextIsRestored() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields = listOf(source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1)),
+                    ),
+                )
+            try {
+                fixture.select()
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12"))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12600),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun editedNumbersStillRejectExcessPrecisionAndOutOfRangeRoundedLongsBeforeWrite() =
+        runBlocking {
+            for ((text, precision) in listOf("12.55" to 1, "9223372036854776" to 0, "-9223372036854776" to 0)) {
+                val source = timedTemplate()
+                val field =
+                    source.fields.first().copy(
+                        defaultNumberScaled = Long.MAX_VALUE,
+                        displayPrecision = precision,
+                    )
+                val fixture = fixture(source.copy(fields = listOf(field)))
+                try {
+                    fixture.select()
+                    fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "1"))
+                    fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, text))
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertEquals(
+                        ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_NUMBER, NUMBER_ID),
+                        fixture.controller.state.value.command,
+                    )
+                    assertTrue(fixture.attemptedTimed.isEmpty())
+                    assertEquals(0, fixture.overlapChecks)
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun missingNumberDefaultRemainsDistinctFromExplicitZero() =
+        runBlocking {
+            for (present in listOf(false, true)) {
+                val source = timedTemplate()
+                val fixture =
+                    fixture(source.copy(fields = listOf(source.fields.first().copy(defaultNumberScaled = null))))
+                try {
+                    fixture.select()
+                    if (present) fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "0"))
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertEquals(
+                        if (present) ActivityEntryValue.Number(0) else ActivityEntryValue.Missing,
+                        fixture.timed
+                            .single()
+                            .values
+                            .single()
+                            .value,
+                    )
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
     fun rejectedSaveAndInputNeverReviveOrWriteAfterTransientRouteLoss() =
         runBlocking {
             val fixture = fixture(timedTemplate())

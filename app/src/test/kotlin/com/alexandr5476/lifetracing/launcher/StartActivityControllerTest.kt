@@ -933,6 +933,54 @@ class StartActivityControllerTest {
         }
 
     @Test
+    fun startOptionsPreserveExactDefaultsUntilNumberIsMateriallyEdited() =
+        runBlocking {
+            for (edited in listOf(false, true)) {
+                val harness = Harness()
+                val fieldId = ActivityTemplateFieldId("exact-number")
+                harness.templateReader = { id ->
+                    template(id.value).copy(
+                        fields =
+                            listOf(
+                                ActivityTemplateField(
+                                    fieldId,
+                                    0,
+                                    "Number",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = 1,
+                                    defaultNumberScaled = 12555,
+                                    createdAt = NOW,
+                                    updatedAt = NOW,
+                                ),
+                            ),
+                    )
+                }
+                val controller = harness.controller(this)
+                try {
+                    controller.awaitHome()
+                    controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+                    controller.awaitOptions()
+                    controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+                    controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+                    if (edited) {
+                        controller.dispatch(StartActivityAction.EditOptionNumber(fieldId, "12"))
+                        controller.dispatch(StartActivityAction.EditOptionNumber(fieldId, "12.6"))
+                    }
+                    controller.dispatch(StartActivityAction.SaveOptions)
+                    controller.awaitCommitted()
+                    val proposal = (harness.commands.single() as LauncherDurableCommand.StartOptionsTimed).proposal
+                    assertEquals(
+                        com.alexandr5476.lifetracing.domain.ActivityEntryValue
+                            .Number(if (edited) 12600 else 12555),
+                        proposal.values.single().value,
+                    )
+                } finally {
+                    controller.close()
+                }
+            }
+        }
+
+    @Test
     fun staleOptionsRequireReloadBeforeNewTemplateRevisionCanCommit() =
         runBlocking {
             val harness = Harness()

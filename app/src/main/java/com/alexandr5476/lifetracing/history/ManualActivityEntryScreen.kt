@@ -31,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
@@ -441,7 +442,21 @@ private fun Field(
                 else -> R.string.manual_history_present_value
             },
         )
-    Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+    val categoryError =
+        if (issue ==
+            ManualEntryIssue.INVALID_CATEGORY
+        ) {
+            stringResource(R.string.manual_history_invalid_category)
+        } else {
+            null
+        }
+    Column(
+        modifier =
+            Modifier.testTag("manual-history-field-${field.id.value}-group").semantics {
+                categoryError?.let { error(it) }
+            },
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    ) {
         Text(context, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmall)
         Text(type)
         if (field.type == CustomFieldType.NUMBER) {
