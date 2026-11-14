@@ -4,6 +4,7 @@ package com.alexandr5476.lifetracing
 
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -34,6 +36,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActivityCategoryOptionDraft
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
@@ -81,6 +87,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -88,6 +95,8 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Production NavDisplay and route owners over an isolated physical database and platform lease. */
 @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
@@ -1330,6 +1339,58 @@ class LibraryAccessibilityRouteTest {
                 f.reopenOrganization { assertEquals(canonical, authoring.getActivityTemplate(id)) }
             } finally {
                 scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+            }
+        }
+
+    @Test
+    fun pickerRecreationRetiresCallbackWithoutRestartingTheOldActivity() =
+        journey { f ->
+            val before = f.store.durableFacts()
+            f.launch()
+            f.enterLibrary()
+            f.invoke(R.string.library_new_sequence)
+            f.awaitSequenceEditor()
+            f.editorInput(R.string.sequence_editor_name).performTextReplacement("Foreground picker")
+            val session = f.host().sequenceTemplateEditorRouteSessions.activeSession
+            val draft = f.sequenceDraft()
+            f.invoke(R.string.sequence_editor_add_step)
+            val oldPicker =
+                compose
+                    .onNodeWithText(f.text(R.string.sequence_editor_add_local_step))
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            val original = f.host()
+            val originalStages = mutableListOf<Stage>()
+            val replacementStages = mutableListOf<Stage>()
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            val callback =
+                ActivityLifecycleCallback { activity, stage ->
+                    if (activity === original) originalStages += stage
+                    if (activity is MainActivity && activity !== original) replacementStages += stage
+                }
+            instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+            try {
+                f.recreate()
+                f.awaitSequenceEditor()
+                assertNotSame(original, f.host())
+                // The retiring Activity must not restart, and its replacement must not
+                // take another background/foreground round trip.
+                assertFalse(compose.runOnIdle { Stage.RESTARTED in originalStages })
+                assertFalse(compose.runOnIdle { Stage.STOPPED in replacementStages })
+                compose.onAllNodes(isDialog()).assertCountEquals(0)
+                assertSame(session, f.host().sequenceTemplateEditorRouteSessions.activeSession)
+                compose.runOnIdle { oldPicker() }
+                assertEquals(draft, f.sequenceDraft())
+                val name = f.editorInput(R.string.sequence_editor_name)
+                name.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
+                keyboard.sendKey(name, KeyEvent.KEYCODE_MOVE_END)
+                keyboard.sendKey(name, KeyEvent.KEYCODE_X)
+                name.assertTextContains("Foreground pickerx")
+                assertEquals(before, f.store.durableFacts())
+            } finally {
+                instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) }
             }
         }
 
@@ -3369,13 +3430,43 @@ class LibraryAccessibilityRouteTest {
         fun recreate() {
             val dialogOpen = compose.onAllNodes(isDialog()).fetchSemanticsNodes().isNotEmpty()
             if (dialogOpen) {
-                keyboard.awaitWindowFocus(compose.onNode(isDialog()))
-                // Release the stopped dialog's native window before destroying its Activity.
-                // Otherwise API 26/33 can retain its retired token as the input focus target.
-                scenario!!.moveToState(Lifecycle.State.CREATED)
+                val dialog = compose.onNode(isDialog())
+                keyboard.awaitWindowFocus(dialog)
+                val retiringView = (dialog.fetchSemanticsNode().root as ViewRootForTest).view
+                val original = host()
+                val instrumentation = InstrumentationRegistry.getInstrumentation()
+                val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+                val replacementCreated = CountDownLatch(1)
+                val callback =
+                    ActivityLifecycleCallback { candidate, stage ->
+                        if (candidate is MainActivity && candidate !== original && stage == Stage.CREATED) {
+                            replacementCreated.countDown()
+                        }
+                    }
+                instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+                try {
+                    scenario!!.moveToState(Lifecycle.State.STARTED)
+                    compose.waitUntil(10_000) {
+                        var released = false
+                        instrumentation.runOnMainSync {
+                            released = !retiringView.hasWindowFocus()
+                        }
+                        released
+                    }
+                    // A floating test Activity now owns native focus. Recreate while paused:
+                    // API 26 can ignore stopped recreation, and ActivityScenario.recreate()
+                    // would resume this Activity first, returning focus to the retiring picker.
+                    // Await the replacement before handing native focus back to the app.
+                    scenario!!.onActivity { it.recreate() }
+                    assertTrue("The paused Activity must be replaced", replacementCreated.await(10, TimeUnit.SECONDS))
+                    instrumentation.waitForIdleSync()
+                    scenario!!.moveToState(Lifecycle.State.RESUMED)
+                } finally {
+                    instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) }
+                }
+            } else {
+                scenario!!.recreate()
             }
-            scenario!!.recreate()
-            if (dialogOpen) scenario!!.moveToState(Lifecycle.State.RESUMED)
             scenario!!.onActivity { activity = it }
             compose.waitForIdle()
             if (dialogOpen) {
