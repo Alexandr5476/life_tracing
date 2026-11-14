@@ -35,10 +35,17 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryDetail
+import com.alexandr5476.lifetracing.domain.ActivityHistoryField
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
@@ -63,6 +70,79 @@ class HistoryAccessibilityPresentationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    fun detailDistinguishesMissingPresentEmptyAndNonemptyTextInEnglishAndRussian() {
+        val language = mutableStateOf("en")
+        val values = listOf<String?>(null, "", "Frozen text")
+        val detail =
+            ActivityHistoryDetail(
+                activity("text-states"),
+                END,
+                ZONE,
+                ActivityTemplateSettings(),
+                values.mapIndexed { index, value ->
+                    ActivityHistoryField(
+                        ActivitySnapshotFieldId("text-$index"),
+                        "Text $index",
+                        CustomFieldType.TEXT,
+                        null,
+                        null,
+                        false,
+                        value?.let {
+                            ActivityHistoryConfiguredValue.Text(
+                                it,
+                            )
+                        } ?: ActivityHistoryConfiguredValue.Missing,
+                        value?.let { ActivityHistoryActualValue.Text(it) } ?: ActivityHistoryActualValue.Missing,
+                        emptyList(),
+                    )
+                },
+            )
+        compose.setContent {
+            val context = LocalContext.current
+            val configuration =
+                Configuration(LocalConfiguration.current).apply {
+                    setLocale(Locale.forLanguageTag(language.value))
+                }
+            CompositionLocalProvider(
+                LocalContext provides context.createConfigurationContext(configuration),
+                LocalConfiguration provides configuration,
+            ) {
+                LifeTracingTheme {
+                    androidx.compose.foundation.layout
+                        .Column { ActivityDetail(detail) }
+                }
+            }
+        }
+        for (locale in listOf("en", "ru")) {
+            compose.runOnIdle { language.value = locale }
+            val context =
+                compose.activity.createConfigurationContext(
+                    Configuration(
+                        compose.activity.resources.configuration,
+                    ).apply { setLocale(Locale.forLanguageTag(locale)) },
+                )
+            val descriptions =
+                values.mapIndexed { index, value ->
+                    val presented =
+                        when (value) {
+                            null -> context.getString(R.string.history_missing_value)
+                            "" -> context.getString(R.string.manual_history_present_empty)
+                            else -> value
+                        }
+                    val actual = context.getString(R.string.history_actual_field, "Text $index", presented)
+                    val configured = context.getString(R.string.history_configured_value, presented)
+                    "$actual. $configured"
+                }
+            assertEquals(3, descriptions.toSet().size)
+            for (description in descriptions) {
+                for (unmerged in listOf(false, true)) {
+                    compose.onNode(hasContentDescription(description), useUnmergedTree = unmerged).assertExists()
+                }
+            }
+        }
+    }
 
     @Test
     fun duplicateNamesAndTimesKeepOneNativeActionPerExactTypedExecution() {

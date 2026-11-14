@@ -11,6 +11,28 @@ import org.junit.jupiter.api.Test
 
 class HistoryNavigationAdmissionTest {
     @Test
+    fun ownershipLossPermanentlyRevokesOldExecutionAndBackBeforeHiddenFrame() {
+        val publication = Any()
+        var owns = true
+        val stack = mutableListOf<androidx.navigation3.runtime.NavKey>(DailyRoot, HistoryRoot)
+        val old = HistoryNavigationAdmission(publication, { publication }, { owns })
+        val open = old.callback { stack.openActivityHistoryDetail("exact-activity") }
+        val back =
+            HistoryNavigationAdmission(publication, { publication }, { owns })
+                .callback { stack.removeAt(stack.lastIndex) }
+        owns = false
+        open()
+        back()
+        owns = true
+        open()
+        back()
+        assertEquals(listOf(DailyRoot, HistoryRoot), stack)
+        val fresh = HistoryNavigationAdmission(publication, { publication }, { owns })
+        fresh.callback { stack.openSequenceHistoryDetail("exact-sequence") }()
+        assertEquals(SequenceHistoryDetailRoot("exact-sequence"), stack.last())
+    }
+
+    @Test
     fun obsoleteAndEqualRematerializedPublicationsCannotNavigate() {
         val original = HistoryPresentationState(HistoryBrowseWindow(DATE, DATE))
         var current = original

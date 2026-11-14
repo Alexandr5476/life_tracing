@@ -353,7 +353,7 @@ private fun TimeInput(
     val input = LocalManualEntryAdmission.current.input(action)
     LifeTracingOutlinedTextField(
         value,
-        input,
+        { input(it) },
         enabled = enabled,
         isError = issue != null,
         modifier =
@@ -361,10 +361,7 @@ private fun TimeInput(
                 .fillMaxWidth()
                 .testTag("manual-history-$endpoint")
                 .semantics {
-                    setText {
-                        input(it.text)
-                        true
-                    }
+                    setText { enabled && input(it.text) }
                 },
         label = { Text(stringResource(label)) },
         supportingText = {
@@ -473,7 +470,7 @@ private fun Field(
                     }
                 LifeTracingOutlinedTextField(
                     if (field.type == CustomFieldType.NUMBER) draft.numberText else draft.text,
-                    input,
+                    { input(it) },
                     enabled = enabled,
                     isError = issue != null,
                     modifier =
@@ -483,10 +480,7 @@ private fun Field(
                             .testTag("manual-history-field-${field.id.value}-actual")
                             .semantics {
                                 stateDescription = presence
-                                setText {
-                                    input(it.text)
-                                    true
-                                }
+                                setText { enabled && input(it.text) }
                             },
                     label = { Text(stringResource(R.string.manual_history_actual_context, context)) },
                     supportingText = issue?.let { { IssueText(it) } },

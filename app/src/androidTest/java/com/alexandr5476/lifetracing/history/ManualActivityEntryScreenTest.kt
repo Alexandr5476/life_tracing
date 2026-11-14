@@ -5,7 +5,11 @@ import android.content.res.Configuration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -19,9 +23,12 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -40,13 +47,16 @@ import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -61,6 +71,154 @@ import java.util.Locale
 class ManualActivityEntryScreenTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @get:Rule
+    val keyboard = KeyboardInputFixture(compose)
+
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test
+    fun setTextReportsAdmissionInBothTreesAcrossStaleHiddenPendingAndDisposedInputs() {
+        val source = fieldTemplate().copy(timeTrackingMode = TimeTrackingMode.STOPWATCH)
+        var state by androidx.compose.runtime.mutableStateOf(
+            ManualActivityEntryState(
+                selected = ManualEntryLoad.Content(source),
+                values = source.fields.associate { it.id to ManualEntryFieldDraft(it.type) },
+            ),
+        )
+        var visible by androidx.compose.runtime.mutableStateOf(true)
+        var attached by androidx.compose.runtime.mutableStateOf(true)
+        var owns = true
+        val actions = mutableListOf<ManualActivityEntryAction>()
+        compose.setContent {
+            LifeTracingTheme {
+                if (attached) {
+                    ManualActivityEntryScreen(state, { action ->
+                        actions += action
+                        state =
+                            when (action) {
+                                is ManualActivityEntryAction.EditStarted -> state.copy(startedText = action.text)
+                                is ManualActivityEntryAction.EditCompleted -> state.copy(completedText = action.text)
+                                is ManualActivityEntryAction.EditNumber ->
+                                    state.copy(
+                                        values =
+                                            state.values +
+                                                (
+                                                    action.id to
+                                                        state.values.getValue(action.id).copy(numberText = action.text)
+                                                ),
+                                    )
+                                is ManualActivityEntryAction.EditText ->
+                                    state.copy(
+                                        values =
+                                            state.values +
+                                                (
+                                                    action.id to
+                                                        state.values
+                                                            .getValue(
+                                                                action.id,
+                                                            ).copy(text = action.text)
+                                                ),
+                                    )
+                                else -> error("Unexpected text action")
+                            }.copy(draftVersion = state.draftVersion + 1)
+                    }, {}, visible, { state }, { owns })
+                }
+            }
+        }
+        val tags =
+            listOf(
+                "manual-history-started",
+                "manual-history-completed",
+                "manual-history-field-number-actual",
+                "manual-history-field-text-actual",
+            )
+        for (tag in tags) {
+            for (unmerged in listOf(false, true)) {
+                val node = compose.onNodeWithTag(tag, useUnmergedTree = unmerged).performScrollTo()
+                val input = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    assertTrue(input(AnnotatedString("1")))
+                    assertTrue(input(AnnotatedString("12")))
+                }
+                val stale = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    state = state.copy(draftVersion = state.draftVersion + 1)
+                    assertFalse(stale(AnnotatedString("stale")))
+                }
+                val outgoing = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    owns = false
+                    assertFalse(outgoing(AnnotatedString("hidden")))
+                    owns = true
+                    assertFalse(outgoing(AnnotatedString("returned")))
+                }
+                node.performSemanticsAction(SemanticsActions.SetText) {
+                    assertTrue(it(AnnotatedString("current")))
+                }
+            }
+        }
+        compose.runOnIdle {
+            assertEquals("current", state.startedText)
+            assertEquals("current", state.completedText)
+            assertEquals("current", state.values.getValue(ActivityTemplateFieldId("number")).numberText)
+            assertEquals("current", state.values.getValue(ActivityTemplateFieldId("text")).text)
+            state =
+                state.copy(
+                    command =
+                        ManualEntryCommand.Invalid(
+                            ManualEntryIssue.INVALID_NUMBER,
+                            ActivityTemplateFieldId("number"),
+                        ),
+                )
+        }
+        for (unmerged in listOf(false, true)) {
+            compose.onNodeWithTag("manual-history-field-number-actual", useUnmergedTree = unmerged).assert(
+                SemanticsMatcher.keyIsDefined(SemanticsProperties.Error),
+            )
+            compose.onNodeWithTag("manual-history-field-text-actual", useUnmergedTree = unmerged).assert(
+                SemanticsMatcher.keyNotDefined(SemanticsProperties.Error),
+            )
+        }
+        keyboard.enter()
+        val started = compose.onNodeWithTag("manual-history-started").performScrollTo()
+        started.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(started)
+        started.performKeyInput { pressKey(Key.Tab) }
+        compose.onNodeWithTag("manual-history-completed").assertIsFocused()
+        for (pending in listOf(false, true)) {
+            compose.runOnIdle {
+                visible = pending
+                state = state.copy(command = if (pending) ManualEntryCommand.Committing else ManualEntryCommand.Idle)
+            }
+            for (tag in tags) {
+                for (unmerged in listOf(false, true)) {
+                    compose
+                        .onNodeWithTag(tag, useUnmergedTree = unmerged)
+                        .assertIsNotEnabled()
+                        .performSemanticsAction(SemanticsActions.SetText) {
+                            assertFalse(it(AnnotatedString("disabled")))
+                        }
+                }
+            }
+        }
+        compose.runOnIdle {
+            visible = true
+            state = state.copy(command = ManualEntryCommand.Idle)
+        }
+        val retained =
+            compose
+                .onNodeWithTag(
+                    tags.first(),
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.SetText]
+                .action!!
+        compose.runOnIdle { attached = false }
+        val count = actions.size
+        compose.runOnIdle {
+            assertFalse(retained(AnnotatedString("disposed")))
+            assertEquals(count, actions.size)
+        }
+    }
 
     @Test
     fun ambiguityChoicesShowBothOccurrencesAndConcreteOffsets() {

@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -41,7 +42,56 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 
+@Suppress("LargeClass") // One controller fixture keeps historical command and admission prerequisites explicit.
 class ManualActivityEntryControllerTest {
+    @Test
+    fun rejectedSaveAndInputNeverReviveOrWriteAfterTransientRouteLoss() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            try {
+                fixture.select()
+                fixture.editTimes("2026-01-15 10:00", "2026-01-15 11:00")
+                val controller = fixture.controller
+                val publication = controller.state.value
+                var owns = true
+                val old = ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                val save =
+                    ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                        .action(ManualActivityEntryAction.Save)
+                val input = old.input { ManualActivityEntryAction.EditStarted(it) }
+                owns = false
+                assertFalse(input("2026-01-15 10:00"))
+                save()
+                owns = true
+                save()
+                assertFalse(input("2026-01-15 10:01"))
+                assertTrue(fixture.attemptedTimed.isEmpty())
+                assertEquals(publication, controller.state.value)
+                val fresh =
+                    ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                assertTrue(fresh.input { ManualActivityEntryAction.EditStarted(it) }("2026-01-15 10:01"))
+                val current = controller.state.value
+                val next = ManualEntryAdmission(current, { controller.state.value }, { owns }, controller::dispatch)
+                assertTrue(next.input { ManualActivityEntryAction.EditCompleted(it) }("2026-01-15 11:00"))
+                val ready = controller.state.value
+                ManualEntryAdmission(ready, { controller.state.value }, { owns }, controller::dispatch)
+                    .action(ManualActivityEntryAction.Save)()
+                fixture.awaitCommitted()
+                assertEquals(1, fixture.attemptedTimed.size)
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                        .Template(TEMPLATE_ID),
+                    fixture.timed.single().source,
+                )
+                assertEquals(
+                    ActivityExecutionId("execution"),
+                    (controller.state.value.command as ManualEntryCommand.Committed).execution.id,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
     @Test
     fun selectionHydratesOnlySelectedTemplateAndMissingIsReversibleForEveryFieldType() =
         runBlocking {

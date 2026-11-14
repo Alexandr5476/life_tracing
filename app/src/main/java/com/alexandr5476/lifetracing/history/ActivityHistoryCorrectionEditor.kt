@@ -157,14 +157,11 @@ private fun CorrectionInput(
     val target = requester?.let { Modifier.focusRequester(it) } ?: Modifier
     LifeTracingOutlinedTextField(
         value,
-        input,
+        { input(it) },
         modifier =
             target.then(manualEntryInputTarget(enabled)).fillMaxWidth().testTag(tag).semantics {
                 if (presence != null) stateDescription = presence
-                setText {
-                    input(it.text)
-                    true
-                }
+                setText { enabled && input(it.text) }
             },
         label = { Text(label) },
         enabled = enabled,

@@ -53,20 +53,29 @@ internal class HistoryNavigationAdmission(
     private val publication: Any,
     private val current: () -> Any,
     private val ownsRoute: () -> Boolean,
-    private val onSubmitted: () -> Unit = {},
+    private val onInvalidated: () -> Unit = {},
 ) {
     var attached = true
     private var submitted = false
+
+    private fun ownsActionRoute(): Boolean {
+        if (!attached || submitted) return false
+        if (!ownsRoute()) {
+            // A rejected outgoing callback cannot revive when ownership returns before a hidden frame.
+            submitted = true
+            onInvalidated()
+        }
+        return !submitted
+    }
 
     fun callback(
         enabled: Boolean = true,
         block: () -> Unit,
     ): () -> Unit =
         {
-            val available = enabled && attached && !submitted
-            if (available && ownsRoute() && current() === publication) {
+            if (ownsActionRoute() && enabled && current() === publication) {
                 submitted = true
-                onSubmitted()
+                onInvalidated()
                 block()
             }
         }

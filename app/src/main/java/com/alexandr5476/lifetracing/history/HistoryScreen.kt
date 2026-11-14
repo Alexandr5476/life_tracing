@@ -1299,8 +1299,19 @@ private fun HistoryFieldContent(
 ) {
     val configuredText = historyConfigured(configured, labels, precision, unit)
     val actualText = historyActual(actual, precision, unit)
-    val actualDescription = stringResource(R.string.history_actual_field, name, actualText)
-    val configuredDescription = stringResource(R.string.history_configured_value, configuredText)
+    val emptyText = stringResource(R.string.manual_history_present_empty)
+    val actualAccessible =
+        if (actual is ActivityHistoryActualValue.Text && actual.value.isEmpty()) emptyText else actualText
+    val configuredAccessible =
+        if (configured is ActivityHistoryConfiguredValue.Text &&
+            configured.value.isEmpty()
+        ) {
+            emptyText
+        } else {
+            configuredText
+        }
+    val actualDescription = stringResource(R.string.history_actual_field, name, actualAccessible)
+    val configuredDescription = stringResource(R.string.history_configured_value, configuredAccessible)
     Column(
         Modifier.semantics(mergeDescendants = true) {
             contentDescription = "$actualDescription. $configuredDescription"

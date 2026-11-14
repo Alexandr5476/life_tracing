@@ -5,6 +5,25 @@ clarifications and the shared design controls. It changes presentation and route
 action admission only. Execution IDs, historical writers, snapshots, Plan
 fulfillment, Statistics and repository queries are unchanged.
 
+## PR42 review correction (W1, W2, S1)
+
+History and manual-entry admissions permanently revoke a publication when a callback
+observes lost route ownership, including before a hidden frame is rendered. Returning
+ownership cannot revive its retained callbacks; a fresh foreground publication owns
+new actions. Manual input cursors still admit consecutive current text events.
+Explicit historical editor SetText handlers return the actual admission result and
+reject disabled, hidden, disposed, pending and stale callbacks in both semantics trees.
+Activity detail descriptions distinguish Missing, present-empty Text and nonempty
+Text for configured and actual values using existing EN/RU resources. Visible stored
+Text, canonical readers, historical commands and durable semantics are unchanged.
+
+Three fail-first JVM regressions reproduced W1 against reviewed head
+`127cf6408545fb07dae205b103e4bd674dd752c4`. New production Compose cases are registered
+in the mandatory instrumentation inventory. Device fail-first/corrected execution,
+Controller full and gmd-full, API compatibility suites and independent exact-head
+GitHub CI remain Controller-owned. Compilation alone supplies no device execution
+or manual TalkBack/Switch Access evidence.
+
 ## Presentation
 
 History keeps the canonical newest-date discovery, adjacent 28-day windows,

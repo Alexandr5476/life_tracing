@@ -5,8 +5,10 @@ package com.alexandr5476.lifetracing.history
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -24,16 +26,27 @@ internal class ManualEntryAdmission(
     private val current: () -> ManualActivityEntryState,
     private val ownsRoute: () -> Boolean,
     private val dispatch: (ManualActivityEntryAction) -> Unit,
+    private val onRevoked: () -> Unit = {},
 ) {
     var attached = true
+    private var revoked = false
+
+    private fun ownsActionRoute(): Boolean {
+        if (!attached || revoked) return false
+        if (!ownsRoute()) {
+            // Permanent revocation also covers ownership loss observed before Compose renders hidden.
+            revoked = true
+            onRevoked()
+        }
+        return !revoked
+    }
 
     private fun available(state: ManualActivityEntryState): Boolean =
-        attached &&
-            ownsRoute() &&
+        ownsActionRoute() &&
             state.command !is ManualEntryCommand.Committing &&
             state.command !is ManualEntryCommand.Committed
 
-    fun canFocus(): Boolean = attached && ownsRoute()
+    fun canFocus(): Boolean = attached && !revoked && ownsRoute()
 
     fun back(block: () -> Unit): () -> Unit =
         {
@@ -46,7 +59,7 @@ internal class ManualEntryAdmission(
             if (available(state) && accepts(publication, state, action)) dispatch(action)
         }
 
-    fun input(action: (String) -> ManualActivityEntryAction): (String) -> Unit {
+    fun input(action: (String) -> ManualActivityEntryAction): (String) -> Boolean {
         var expected = publication
         return { text ->
             val state = current()
@@ -54,6 +67,9 @@ internal class ManualEntryAdmission(
             if (available(state) && accepts(expected, state, edit)) {
                 dispatch(edit)
                 expected = current()
+                true
+            } else {
+                false
             }
         }
     }
@@ -113,9 +129,12 @@ internal fun rememberManualEntryAdmission(
     val send by rememberUpdatedState(dispatch)
     // StateFlow publishes immutable objects; use reference identity rather than large form equality.
     val identity = ManualEntryPublication(state)
+    var revocationGeneration by remember { mutableStateOf(0L) }
     val admission =
-        remember(identity, visible) {
-            ManualEntryAdmission(state, { read() }, { visible && owner() }, { send(it) })
+        remember(identity, visible, revocationGeneration) {
+            ManualEntryAdmission(state, { read() }, { visible && owner() }, { send(it) }) {
+                revocationGeneration++
+            }
         }
     DisposableEffect(admission) { onDispose { admission.attached = false } }
     return admission

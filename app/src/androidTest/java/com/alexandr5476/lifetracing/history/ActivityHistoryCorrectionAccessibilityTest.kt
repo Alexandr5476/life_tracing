@@ -85,6 +85,102 @@ class ActivityHistoryCorrectionAccessibilityTest {
     }
 
     @Test
+    fun setTextReturnsFalseForUnavailableCorrectionAndTrueForRepeatedCurrentEditsInBothTrees() {
+        val gate = CompletableDeferred<Unit>()
+        val writes = AtomicInteger()
+        val controller =
+            controller(correct = {
+                writes.incrementAndGet()
+                gate.await()
+            })
+        val visible = mutableStateOf(true)
+        val attached = mutableStateOf(true)
+        var owns = true
+        compose.setContent {
+            LifeTracingTheme {
+                if (attached.value) {
+                    ActivityHistoryDetailRoute(
+                        ActivityHistoryMutationRouteSession(controller.executionId, controller),
+                        {},
+                        {},
+                        {},
+                        visible.value,
+                        { owns },
+                    )
+                }
+            }
+        }
+        click("history-correct")
+        val tags =
+            listOf(
+                "history-correction-started",
+                "history-correction-completed",
+                "history-correction-comment",
+                "history-correction-field-number",
+                "history-correction-field-text",
+            )
+        for (tag in tags) {
+            for (unmerged in listOf(false, true)) {
+                val node = compose.onNodeWithTag(tag, useUnmergedTree = unmerged).performScrollTo()
+                val input = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    assertTrue(input(AnnotatedString("1")))
+                    assertTrue(input(AnnotatedString("12")))
+                }
+                val stale = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    controller.dispatch(ActivityHistoryMutationAction.EditComment("$tag-$unmerged-newer"))
+                    assertFalse(stale(AnnotatedString("stale")))
+                }
+                val outgoing = node.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+                compose.runOnIdle {
+                    owns = false
+                    assertFalse(outgoing(AnnotatedString("hidden")))
+                    owns = true
+                    assertFalse(outgoing(AnnotatedString("returned")))
+                }
+                node.performSemanticsAction(SemanticsActions.SetText) { assertTrue(it(AnnotatedString("current"))) }
+            }
+        }
+        compose.runOnIdle { visible.value = false }
+        for (tag in tags) {
+            for (unmerged in listOf(false, true)) {
+                compose
+                    .onNodeWithTag(tag, useUnmergedTree = unmerged)
+                    .assertIsNotEnabled()
+                    .performSemanticsAction(SemanticsActions.SetText) { assertFalse(it(AnnotatedString("disabled"))) }
+            }
+        }
+        compose.runOnIdle { visible.value = true }
+        input("history-correction-started", "2026-01-15 11:00")
+        input("history-correction-completed", "2026-01-15 12:00")
+        input("history-correction-field-number", "0")
+        click("history-correction-save")
+        compose.waitUntil(5_000) { controller.state.value.isMutating }
+        for (tag in tags) {
+            for (unmerged in listOf(false, true)) {
+                compose
+                    .onNodeWithTag(tag, useUnmergedTree = unmerged)
+                    .assertIsNotEnabled()
+                    .performSemanticsAction(SemanticsActions.SetText) { assertFalse(it(AnnotatedString("pending"))) }
+            }
+        }
+        val retained =
+            compose
+                .onNodeWithTag(
+                    tags.first(),
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.SetText]
+                .action!!
+        compose.runOnIdle { attached.value = false }
+        compose.runOnIdle {
+            assertFalse(retained(AnnotatedString("disposed")))
+            assertEquals(1, writes.get())
+        }
+        gate.complete(Unit)
+    }
+
+    @Test
     fun nativeInputsKeepDuplicateFieldAndOptionIdentityAndMissingZeroEmptyDistinct() {
         val controller = controller()
         show(controller)

@@ -11,6 +11,26 @@ import java.time.Instant
 
 class ManualActivityEntryAdmissionTest {
     @Test
+    fun routeLossPermanentlyRevokesRetryAndBackUntilNewPublication() {
+        for (useBack in listOf(false, true)) {
+            val state =
+                ManualActivityEntryState(catalog = ManualEntryLoad.Failure(ManualEntryIssue.CATALOG_READ_FAILURE))
+            var owns = true
+            var calls = 0
+            val old = ManualEntryAdmission(state, { state }, { owns }, { calls++ })
+            val callback = if (useBack) old.back { calls++ } else old.action(ManualActivityEntryAction.RetryCatalog)
+            owns = false
+            callback()
+            owns = true
+            callback()
+            assertEquals(0, calls)
+            val fresh = ManualEntryAdmission(state, { state }, { owns }, { calls++ })
+            if (useBack) fresh.back { calls++ }() else fresh.action(ManualActivityEntryAction.RetryCatalog)()
+            assertEquals(1, calls)
+        }
+    }
+
+    @Test
     fun replacedCatalogCannotSelectEvenWhenDuplicateNamesMatchAndCurrentExactIdRemainsActionable() {
         val first = item("first")
         val second = item("second")
@@ -43,11 +63,11 @@ class ManualActivityEntryAdmissionTest {
         var visible = true
         val values = mutableListOf<String>()
         val admission =
-            ManualEntryAdmission(current, { current }, { visible }) {
+            ManualEntryAdmission(current, { current }, { visible }, dispatch = {
                 val text = (it as ManualActivityEntryAction.EditStarted).text
                 values += text
                 current = current.copy(startedText = text, draftVersion = current.draftVersion + 1)
-            }
+            })
         val edit = admission.input { ManualActivityEntryAction.EditStarted(it) }
         edit("2")
         edit("20")
@@ -70,11 +90,11 @@ class ManualActivityEntryAdmissionTest {
         var current = ManualActivityEntryState(catalog = ManualEntryLoad.Failure(ManualEntryIssue.CATALOG_READ_FAILURE))
         var owns = true
         var calls = 0
-        val retryOwner = ManualEntryAdmission(current, { current }, { owns }) { calls++ }
+        val retryOwner = ManualEntryAdmission(current, { current }, { owns }, { calls++ })
         val retry = retryOwner.action(ManualActivityEntryAction.RetryCatalog)
         current = current.copy(catalog = ManualEntryLoad.Content(listOf(row)), nextCatalogCursor = row)
         retry()
-        val pageOwner = ManualEntryAdmission(current, { current }, { owns }) { calls++ }
+        val pageOwner = ManualEntryAdmission(current, { current }, { owns }, { calls++ })
         val more = pageOwner.action(ManualActivityEntryAction.LoadMore)
         val back = pageOwner.back { calls++ }
         current = current.copy(catalog = ManualEntryLoad.Loading)

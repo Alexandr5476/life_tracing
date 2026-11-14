@@ -997,6 +997,7 @@
       "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
     "com.alexandr5476.lifetracing.history.HistoryAccessibilityPresentationTest": [
+      "detailDistinguishesMissingPresentEmptyAndNonemptyTextInEnglishAndRussian",
       "hiddenDeletionRetainsWriterAndTerminalRouteNeverRevivesDestructiveControls",
       "deletionConfirmationNativeFocusLabelsAndTargetsSurviveEnglishRussianScaleExtremes",
       "readOnlyDetailPublishesLoadingRetryUnavailableAndFrozenConfiguredActualValuesWithoutWrites",
@@ -1029,6 +1030,7 @@
       "timingValidationGenericAndStaleFailuresRemainVisibleInReview"
     ],
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
+      "setTextReportsAdmissionInBothTreesAcrossStaleHiddenPendingAndDisposedInputs",
       "actualFieldInteractionsPreserveZeroEmptyAndStableCategoryIdentityAcrossMissing",
       "ambiguityChoicesShowBothOccurrencesAndConcreteOffsets",
       "catalogCallbacksLoseOwnershipOnReplacementAndDisposal",
@@ -1521,6 +1523,7 @@
       "nativeUntouchedReschedulePreservesExactTargetTimestampsAndSnapshotAfterZoneTravel"
     ],
     "com.alexandr5476.lifetracing.history.ActivityHistoryCorrectionAccessibilityTest": [
+      "setTextReturnsFalseForUnavailableCorrectionAndTrueForRepeatedCurrentEditsInBothTrees",
       "committedReadFailureExposesReadOnlyRetryAndPendingBackKeepsTheSession",
       "hiddenDisposedAndReplacedRoutesRevokeRetainedNativeInputAndSaveActions",
       "localizedScaledNoLiveEditorKeepsNativeTargetsReachableWithoutStartOrWrites",

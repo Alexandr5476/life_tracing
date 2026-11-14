@@ -53,13 +53,16 @@ internal class ActivityCorrectionAdmission(
             if (accepts(publication, action)) dispatch(action)
         }
 
-    fun input(action: (String) -> ActivityHistoryMutationAction): (String) -> Unit {
+    fun input(action: (String) -> ActivityHistoryMutationAction): (String) -> Boolean {
         var expected = publication
         return { text ->
             val edit = action(text)
             if (accepts(expected, edit)) {
                 dispatch(edit)
                 expected = current()
+                true
+            } else {
+                false
             }
         }
     }
