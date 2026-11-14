@@ -1429,6 +1429,8 @@
       "russianLargeFontHistoryDuplicateRootsKeepExactNativeRoutesAndReturnFocus",
       "historyProductionPagingFailureRetryAndExitKeepCanonicalBoundsAndRejectOldNativeActions",
       "nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure",
+      "historyTextEditTransfersRecoveryFocusBeforeScrollingAndDispatching",
+      "historyNativeActionTransfersFocusBeforeScrollingAndDispatching",
       "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
       "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
       "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",

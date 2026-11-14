@@ -3,14 +3,25 @@
 package com.alexandr5476.lifetracing
 
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setText
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -34,6 +45,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
@@ -168,8 +180,105 @@ class PrimaryExecutionJourneyTest {
             assertEquals(2, clicks)
         }
 
+    @Test
+    fun historyTextEditTransfersRecoveryFocusBeforeScrollingAndDispatching() =
+        journey { f ->
+            f.launch()
+            val value = mutableStateOf("bad")
+            var inputFocused = false
+            var focusedWhenEdited = false
+            var saves = 0
+            compose.runOnUiThread {
+                f.host().setContent {
+                    Column(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
+                        OutlinedTextField(
+                            value.value,
+                            { value.value = it },
+                            modifier =
+                                Modifier
+                                    .testTag("history-fixture-input")
+                                    .onFocusChanged { inputFocused = it.isFocused }
+                                    .semantics {
+                                        // Like the history forms, semantic text dispatch only edits the draft.
+                                        setText {
+                                            focusedWhenEdited = inputFocused
+                                            value.value = it.text
+                                            true
+                                        }
+                                    },
+                        )
+                        Spacer(Modifier.height(440.dp))
+                        Button(onClick = { saves++ }, modifier = Modifier.testTag("history-fixture-save")) {
+                            Text("Save")
+                        }
+                    }
+                }
+            }
+            val recovery = reachable(compose.onNodeWithTag("history-fixture-save"))
+            recovery.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(recovery)
+
+            inputHistoryText("history-fixture-input", "0")
+
+            assertTrue("The input must own focus when its edit is dispatched", focusedWhenEdited)
+            compose.onNodeWithTag("history-fixture-input").assertIsFocused().assertIsDisplayed()
+            assertEquals("0", value.value)
+            assertEquals(0, saves)
+        }
+
+    @Test
+    fun historyNativeActionTransfersFocusBeforeScrollingAndDispatching() =
+        journey { f ->
+            f.launch()
+            var optionFocused = false
+            var saveFocused = false
+            var selections = 0
+            var saves = 0
+            compose.runOnUiThread {
+                f.host().setContent {
+                    Column(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
+                        Button(
+                            onClick = {
+                                assertTrue("The option must own focus when selected", optionFocused)
+                                selections++
+                            },
+                            modifier =
+                                Modifier
+                                    .testTag("history-fixture-option")
+                                    .onFocusChanged { optionFocused = it.isFocused },
+                        ) { Text("Category option") }
+                        Spacer(Modifier.height(440.dp))
+                        Button(
+                            onClick = {
+                                assertTrue("Save must own focus when invoked", saveFocused)
+                                saves++
+                            },
+                            modifier =
+                                Modifier
+                                    .testTag("history-fixture-save")
+                                    .onFocusChanged { saveFocused = it.isFocused },
+                        ) { Text("Save") }
+                    }
+                }
+            }
+            val recovery = reachable(compose.onNodeWithTag("history-fixture-save"))
+            recovery.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(recovery)
+
+            assertTrue(tryInvokeCurrent(hasTestTag("history-fixture-option"), focusBeforeScroll = true))
+            compose.onNodeWithTag("history-fixture-option").assertIsFocused().assertIsDisplayed()
+            assertEquals(1, selections)
+            assertEquals(0, saves)
+
+            assertTrue(tryInvokeCurrent(hasTestTag("history-fixture-save"), focusBeforeScroll = true))
+            compose.onNodeWithTag("history-fixture-save").assertIsFocused().assertIsDisplayed()
+            assertEquals(1, selections)
+            assertEquals(1, saves)
+        }
+
     private fun tryInvokeCurrent(
         matcher: SemanticsMatcher,
+        focusBeforeScroll: Boolean = false,
         beforeDispatch: () -> Unit = {},
     ): Boolean {
         val candidates = compose.onAllNodes(matcher).fetchSemanticsNodes()
@@ -177,7 +286,14 @@ class PrimaryExecutionJourneyTest {
         val candidate = candidates.single()
         var dispatched = false
         try {
-            val node = reachable(compose.onNode(matcher))
+            val target = compose.onNode(matcher)
+            // Historical form choices need the same focus transfer as text edits before scrolling.
+            // Keep semantic Save dispatch unfocused so its production recovery is still observed.
+            if (focusBeforeScroll) {
+                target.performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(target)
+            }
+            val node = reachable(target)
             beforeDispatch()
             node.performSemanticsAction(SemanticsActions.OnClick) { click ->
                 dispatched = true
@@ -192,6 +308,21 @@ class PrimaryExecutionJourneyTest {
             }
             return false
         }
+    }
+
+    private fun inputHistoryText(
+        tag: String,
+        text: String,
+    ) {
+        val input = compose.onNodeWithTag(tag)
+        // Recovery focus is asserted by each journey before editing resumes. Transfer ownership
+        // before scrolling so the old focused Save cannot relocate the viewport away from this input.
+        input.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(input)
+        reachable(input).assertIsFocused().performSemanticsAction(SemanticsActions.SetText) {
+            assertTrue(it(AnnotatedString(text)))
+        }
+        compose.waitForIdle()
     }
 
     // Fixed Material dialog actions have no scroll ancestor; their bodies do.
@@ -1339,10 +1470,7 @@ class PrimaryExecutionJourneyTest {
                     tag: String,
                     text: String,
                 ) {
-                    reachable(compose.onNodeWithTag(tag)).performSemanticsAction(SemanticsActions.SetText) {
-                        assertTrue(it(AnnotatedString(text)))
-                    }
-                    compose.waitForIdle()
+                    inputHistoryText(tag, text)
                 }
                 val changesFacts =
                     case !in setOf(CorrectionCase.COMMENT_ONLY, CorrectionCase.UNCHANGED, CorrectionCase.STALE)
@@ -1363,10 +1491,20 @@ class PrimaryExecutionJourneyTest {
                     keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
                     if (dst) {
                         val index = if (case == CorrectionCase.DST_SECOND) 1 else 0
-                        f.await { tryInvokeCurrent(hasTestTag("history-correction-completed-offset-$index")) }
+                        f.await {
+                            tryInvokeCurrent(
+                                hasTestTag("history-correction-completed-offset-$index"),
+                                focusBeforeScroll = true,
+                            )
+                        }
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
                         keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
-                        f.await { tryInvokeCurrent(hasTestTag("history-correction-started-offset-$index")) }
+                        f.await {
+                            tryInvokeCurrent(
+                                hasTestTag("history-correction-started-offset-$index"),
+                                focusBeforeScroll = true,
+                            )
+                        }
                         f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
                     }
                     assertEquals(
@@ -1377,11 +1515,22 @@ class PrimaryExecutionJourneyTest {
                     keyboard.awaitFocus(compose.onNodeWithTag("history-correction-save"))
                     input("history-correction-field-${fields[0].id.value}", "0")
                     input("history-correction-field-${fields[2].id.value}", "")
-                    f.await { tryInvokeCurrent(hasTestTag("history-correction-field-${fields[3].id.value}-missing")) }
-                    f.await { tryInvokeCurrent(hasTestTag("history-correction-field-${fields[4].id.value}-missing")) }
+                    f.await {
+                        tryInvokeCurrent(
+                            hasTestTag("history-correction-field-${fields[3].id.value}-missing"),
+                            focusBeforeScroll = true,
+                        )
+                    }
+                    f.await {
+                        tryInvokeCurrent(
+                            hasTestTag("history-correction-field-${fields[4].id.value}-missing"),
+                            focusBeforeScroll = true,
+                        )
+                    }
                     f.await {
                         tryInvokeCurrent(
                             hasTestTag("history-correction-option-${fields[1].categoryOptions.last().id.value}"),
+                            focusBeforeScroll = true,
                         )
                     }
                 }
@@ -1407,9 +1556,11 @@ class PrimaryExecutionJourneyTest {
                         null
                     }
                 val afterCompeting = if (competing != null) f.store.durableFacts() else null
-                val save = reachable(compose.onNodeWithTag("history-correction-save"))
-                val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                val save = compose.onNodeWithTag("history-correction-save")
                 save.performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(save)
+                reachable(save)
+                val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
                 save.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
                 f.await {
                     controller.state.value.isMutating ||
@@ -1878,10 +2029,7 @@ class PrimaryExecutionJourneyTest {
                     tag: String,
                     value: String,
                 ) {
-                    reachable(compose.onNodeWithTag(tag)).performSemanticsAction(SemanticsActions.SetText) { set ->
-                        assertTrue(set(AnnotatedString(value)))
-                    }
-                    compose.waitForIdle()
+                    inputHistoryText(tag, value)
                 }
                 if (mode !=
                     TimeTrackingMode.NO_LIVE_TRACKING
@@ -1912,19 +2060,39 @@ class PrimaryExecutionJourneyTest {
                     // Timestamp admission precedes Field validation, one endpoint at a time.
                     rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME))
                     assertEquals(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME, controller.state.value.completedIssue)
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-completed-offset-$overlapOffset")) }
+                    f.await {
+                        tryInvokeCurrent(
+                            hasTestTag("manual-history-completed-offset-$overlapOffset"),
+                            focusBeforeScroll = true,
+                        )
+                    }
                     compose.onNodeWithTag("manual-history-completed-offset-$overlapOffset").assertIsSelected()
                     rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME))
                     assertEquals(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME, controller.state.value.startedIssue)
-                    f.await { tryInvokeCurrent(hasTestTag("manual-history-started-offset-$overlapOffset")) }
+                    f.await {
+                        tryInvokeCurrent(
+                            hasTestTag("manual-history-started-offset-$overlapOffset"),
+                            focusBeforeScroll = true,
+                        )
+                    }
                     compose.onNodeWithTag("manual-history-started-offset-$overlapOffset").assertIsSelected()
                 }
                 rejectSave(ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_NUMBER, fields[0].id))
                 input("manual-history-field-${fields[0].id.value}-actual", "0")
                 input("manual-history-field-${fields[2].id.value}-actual", "")
-                f.await { tryInvokeCurrent(hasTestTag("manual-history-field-${fields[3].id.value}-missing")) }
+                f.await {
+                    tryInvokeCurrent(
+                        hasTestTag("manual-history-field-${fields[3].id.value}-missing"),
+                        focusBeforeScroll = true,
+                    )
+                }
                 val chosen = fields[1].categoryOptions.last()
-                f.await { tryInvokeCurrent(hasTestTag("manual-history-option-${chosen.id.value}")) }
+                f.await {
+                    tryInvokeCurrent(
+                        hasTestTag("manual-history-option-${chosen.id.value}"),
+                        focusBeforeScroll = true,
+                    )
+                }
                 compose.onNodeWithTag("manual-history-option-${chosen.id.value}").assertIsSelected()
                 compose
                     .onNodeWithTag(
@@ -1941,9 +2109,11 @@ class PrimaryExecutionJourneyTest {
                             .controller,
                     )
                 }
-                val save = reachable(compose.onNodeWithTag("manual-history-save"))
-                val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+                val save = compose.onNodeWithTag("manual-history-save")
                 save.performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(save)
+                reachable(save)
+                val retainedSave = save.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
                 save.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
                 if (existingOverlap) {
                     f.await {
