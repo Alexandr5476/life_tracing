@@ -1,28 +1,14 @@
 package com.alexandr5476.lifetracing.history
 
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
-import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
-import com.alexandr5476.lifetracing.domain.ActivityHistoryCategoryOption
-import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
-import com.alexandr5476.lifetracing.domain.ActivityHistoryCorrection
 import com.alexandr5476.lifetracing.domain.ActivityHistoryDetail
-import com.alexandr5476.lifetracing.domain.ActivityHistoryField
 import com.alexandr5476.lifetracing.domain.ActivityHistoryTimeCorrection
-import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
-import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
-import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
-import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CategoryExecutionValue
-import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
-import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.TextExecutionValue
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -34,13 +20,10 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
 import java.time.ZoneOffset
 
-class ActivityHistoryMutationControllerTest {
+class ActivityHistoryMutationControllerTest : ActivityHistoryMutationTestFixture() {
     @Test
     fun correctionUsesCanonicalTokenZoneSnapshotIdsAndPreservesMissingDistinctions() =
         runBlocking {
@@ -51,17 +34,17 @@ class ActivityHistoryMutationControllerTest {
             assertEquals("2026-01-15T10:00:00", draft.startedText)
             assertEquals("2026-01-15T11:00:00", draft.completedText)
 
-            fixture.controller.dispatch(ActivityHistoryMutationAction.EditNumber(NUMBER, "0"))
-            fixture.controller.dispatch(ActivityHistoryMutationAction.SetMissing(TEXT, false))
-            fixture.controller.dispatch(ActivityHistoryMutationAction.EditText(TEXT, ""))
-            fixture.controller.dispatch(ActivityHistoryMutationAction.SelectCategory(CATEGORY, OPTION_B))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditNumber(numberId, "0"))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.SetMissing(textId, false))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditText(textId, ""))
+            fixture.controller.dispatch(ActivityHistoryMutationAction.SelectCategory(categoryId, optionB))
             fixture.controller.dispatch(ActivityHistoryMutationAction.EditComment("changed"))
             fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
             fixture.awaitRefresh()
 
             val correction = fixture.corrections.single()
-            assertEquals(TOKEN, correction.expectedUpdatedAt)
-            assertEquals(BERLIN, correction.eventZoneId)
+            assertEquals(token, correction.expectedUpdatedAt)
+            assertEquals(berlin, correction.eventZoneId)
             assertEquals(
                 ActivityHistoryTimeCorrection.Timed(
                     Instant.parse("2026-01-15T09:00:00Z"),
@@ -71,9 +54,9 @@ class ActivityHistoryMutationControllerTest {
             )
             assertEquals(
                 listOf(
-                    NumberExecutionValue(NUMBER, 0),
-                    CategoryExecutionValue(CATEGORY, OPTION_B),
-                    TextExecutionValue(TEXT, ""),
+                    NumberExecutionValue(numberId, 0),
+                    CategoryExecutionValue(categoryId, optionB),
+                    TextExecutionValue(textId, ""),
                 ),
                 correction.values,
             )
@@ -107,6 +90,27 @@ class ActivityHistoryMutationControllerTest {
         }
 
     @Test
+    fun correctionEntryCannotReplaceAnOpenDraftOrPendingOverlap() =
+        runBlocking {
+            val fixture = fixture(detail(), overlaps = { _, _, _ -> true })
+            fixture.awaitLoaded()
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.EditComment("keep draft"))
+            val draft = fixture.controller.state.value.draft
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            assertSame(draft, fixture.controller.state.value.draft)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.Save)
+            withTimeout(2_000) { fixture.controller.state.first { it.overlapWarning } }
+            val pending = fixture.controller.state.value.draft
+            fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+            assertSame(pending, fixture.controller.state.value.draft)
+            fixture.controller.dispatch(ActivityHistoryMutationAction.ProceedOverlap)
+            fixture.awaitRefresh()
+            assertEquals("keep draft", fixture.corrections.single().shortComment)
+            fixture.close()
+        }
+
+    @Test
     fun currentNoOpStillUsesRepositoryValidationAndReloadsCanonicalDetail() =
         runBlocking {
             val fixture = fixture(detail())
@@ -116,8 +120,8 @@ class ActivityHistoryMutationControllerTest {
             fixture.awaitRefresh()
 
             assertEquals(1, fixture.correctAttempts)
-            assertEquals(TOKEN, fixture.corrections.single().expectedUpdatedAt)
-            assertEquals(TOKEN, (fixture.controller.state.value.load as HistoryDetailLoad.Content).value.updatedAt)
+            assertEquals(token, fixture.corrections.single().expectedUpdatedAt)
+            assertEquals(token, (fixture.controller.state.value.load as HistoryDetailLoad.Content).value.updatedAt)
             fixture.close()
         }
 
@@ -125,7 +129,7 @@ class ActivityHistoryMutationControllerTest {
     fun staleNoOpReloadsCompetingCanonicalDetail() =
         runBlocking {
             val loaded = detail()
-            val competing = loaded.copy(updatedAt = TOKEN.plusSeconds(1))
+            val competing = loaded.copy(updatedAt = token.plusSeconds(1))
             val reads = ArrayDeque(listOf(loaded, competing))
             val fixture =
                 fixture(
@@ -266,7 +270,7 @@ class ActivityHistoryMutationControllerTest {
             fixture.controller.dispatch(ActivityHistoryMutationAction.ProceedOverlap)
             fixture.awaitRefresh()
             assertEquals(1, fixture.correctAttempts)
-            assertEquals(TOKEN, fixture.corrections.single().expectedUpdatedAt)
+            assertEquals(token, fixture.corrections.single().expectedUpdatedAt)
             fixture.close()
         }
 
@@ -310,7 +314,7 @@ class ActivityHistoryMutationControllerTest {
                 noLive.awaitLoaded()
                 noLive.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
                 assertEquals(
-                    completedAt.atZone(BERLIN).offset,
+                    completedAt.atZone(berlin).offset,
                     noLive.controller.state.value.draft
                         ?.completedOffset,
                 )
@@ -366,7 +370,7 @@ class ActivityHistoryMutationControllerTest {
     fun staleCorrectionDropsDraftReloadsCanonicalAndNeverReplays() =
         runBlocking {
             val canonical = detail()
-            val fresh = canonical.copy(updatedAt = TOKEN.plusSeconds(1))
+            val fresh = canonical.copy(updatedAt = token.plusSeconds(1))
             val reads = ArrayDeque(listOf(canonical, fresh, fresh))
             val fixture =
                 fixture(canonical, read = { reads.removeFirst() }, correct = {
@@ -545,145 +549,4 @@ class ActivityHistoryMutationControllerTest {
             withTimeout(2_000) { deleting.controller.state.first { it.deleted } }
             deleting.close()
         }
-
-    private fun fixture(
-        initial: ActivityHistoryDetail,
-        read: suspend () -> ActivityHistoryDetail? = { initial },
-        correct: suspend (
-            com.alexandr5476.lifetracing.domain.ActivityExecutionId,
-            ActivityHistoryCorrection,
-            Instant,
-        ) -> Unit = { _, _, _ -> },
-        delete: suspend (
-            com.alexandr5476.lifetracing.domain.ActivityExecutionId,
-            Instant,
-            Instant,
-        ) -> Unit = { _, _, _ -> },
-        overlaps: suspend (Instant, Instant, ActivityExecutionId) -> Boolean = { _, _, _ -> false },
-    ): Fixture {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        lateinit var fixture: Fixture
-        val controller =
-            ActivityHistoryMutationController(
-                scope,
-                initial.root.executionId,
-                { read() },
-                { id, correction, at ->
-                    fixture.correctAttempts++
-                    fixture.corrections += correction
-                    correct(id, correction, at)
-                },
-                { id, expected, at ->
-                    fixture.deleteAttempts++
-                    delete(id, expected, at)
-                },
-                { COMMAND_AT },
-                { startedAt, completedAt, excludingExecutionId ->
-                    fixture.overlapCalls += OverlapCall(startedAt, completedAt, excludingExecutionId)
-                    overlaps(startedAt, completedAt, excludingExecutionId)
-                },
-            )
-        return Fixture(scope, controller).also { fixture = it }
-    }
-
-    private data class Fixture(
-        val scope: CoroutineScope,
-        val controller: ActivityHistoryMutationController,
-        val corrections: MutableList<ActivityHistoryCorrection> = mutableListOf(),
-        var correctAttempts: Int = 0,
-        var deleteAttempts: Int = 0,
-        val overlapCalls: MutableList<OverlapCall> = mutableListOf(),
-    ) {
-        suspend fun awaitLoaded() =
-            withTimeout(2_000) { controller.state.first { it.load is HistoryDetailLoad.Content } }
-
-        suspend fun awaitRefresh() = withTimeout(2_000) { controller.state.first { it.refreshGeneration > 0 } }
-
-        fun close() {
-            controller.close()
-            scope.cancel()
-        }
-    }
-
-    private data class OverlapCall(
-        val startedAt: Instant,
-        val completedAt: Instant,
-        val excludingExecutionId: ActivityExecutionId,
-    )
-
-    companion object {
-        private val BERLIN = ZoneId.of("Europe/Berlin")
-        private val TOKEN = Instant.parse("2026-01-15T12:00:00Z")
-        private val COMMAND_AT = Instant.parse("2026-12-01T12:00:00Z")
-        private val NUMBER = ActivitySnapshotFieldId("number")
-        private val CATEGORY = ActivitySnapshotFieldId("category")
-        private val TEXT = ActivitySnapshotFieldId("text")
-        private val OPTION_A = ActivitySnapshotCategoryOptionId("a")
-        private val OPTION_B = ActivitySnapshotCategoryOptionId("b")
-
-        private fun detail(
-            mode: TimeTrackingMode = TimeTrackingMode.STOPWATCH,
-            startedAt: Instant? = Instant.parse("2026-01-15T09:00:00Z"),
-            completedAt: Instant = Instant.parse("2026-01-15T10:00:00Z"),
-            planEntryId: PlanEntryId? = null,
-        ) = ActivityHistoryDetail(
-            CompletedActivityHistoryRoot(
-                com.alexandr5476.lifetracing.domain
-                    .ActivityExecutionId("execution"),
-                ActivitySnapshotId("snapshot"),
-                LocalDate.parse("2026-01-15"),
-                completedAt,
-                startedAt,
-                startedAt?.let { Duration.between(it, completedAt) },
-                planEntryId,
-                "Activity",
-                "comment",
-                mode,
-                null,
-                BERLIN,
-                null,
-            ),
-            TOKEN,
-            BERLIN,
-            ActivityTemplateSettings(),
-            listOf(
-                ActivityHistoryField(
-                    NUMBER,
-                    "Number",
-                    CustomFieldType.NUMBER,
-                    null,
-                    0,
-                    false,
-                    ActivityHistoryConfiguredValue.Number(5_000),
-                    ActivityHistoryActualValue.Missing,
-                    emptyList(),
-                ),
-                ActivityHistoryField(
-                    CATEGORY,
-                    "Category",
-                    CustomFieldType.CATEGORY,
-                    null,
-                    null,
-                    false,
-                    ActivityHistoryConfiguredValue.Category(OPTION_A),
-                    ActivityHistoryActualValue.Category(OPTION_A, "A"),
-                    listOf(
-                        ActivityHistoryCategoryOption(OPTION_A, "A"),
-                        ActivityHistoryCategoryOption(OPTION_B, "B"),
-                    ),
-                ),
-                ActivityHistoryField(
-                    TEXT,
-                    "Text",
-                    CustomFieldType.TEXT,
-                    null,
-                    null,
-                    false,
-                    ActivityHistoryConfiguredValue.Text("default"),
-                    ActivityHistoryActualValue.Missing,
-                    emptyList(),
-                ),
-            ),
-        )
-    }
 }

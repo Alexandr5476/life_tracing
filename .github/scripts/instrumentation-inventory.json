@@ -763,6 +763,7 @@
       "backgroundCatalogRemovalAndEditorReturnCannotReplayNavigationOrFocusRemovedRow",
       "deleteContentsArchivesBothKindsAndPreservesCanonicalHistoryAfterPhysicalReopen",
       "duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites",
+      "pickerRecreationRetiresCallbackWithoutRestartingTheOldActivity",
       "emptyDeletionAndSafeMovesToRootAndFolderReopenCanonicalSubtrees",
       "hiddenArchivedOccupancyAndStaleMoveDestinationRejectWithoutPartialWrites",
       "nativeExistingAuthoringPreservesEligibleSourcesMetadataAndFrozenHistoryOnReopen",
@@ -996,6 +997,19 @@
       "russianManipulationNativeTargetsSupportCombinedScaling",
       "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
+    "com.alexandr5476.lifetracing.history.HistoryAccessibilityPresentationTest": [
+      "lifecycleLossRevokesEveryHistoryCallbackWithoutChangingRouteOrPublication",
+      "detailDistinguishesMissingPresentEmptyAndNonemptyTextInEnglishAndRussian",
+      "hiddenDeletionRetainsWriterAndTerminalRouteNeverRevivesDestructiveControls",
+      "deletionConfirmationNativeFocusLabelsAndTargetsSurviveEnglishRussianScaleExtremes",
+      "readOnlyDetailPublishesLoadingRetryUnavailableAndFrozenConfiguredActualValuesWithoutWrites",
+      "duplicateNamesAndTimesKeepOneNativeActionPerExactTypedExecution",
+      "rootDescriptionsKeepEndpointOffsetsDatesStoredGroupingAndMissingVersusZero",
+      "reorderedRefreshRetainsNativeFocusButRevokesOldActionBeforeRecomposition",
+      "removedLoadMoreRecoversThroughLoadingFailureRetryAndEmptyWithoutReplayingActions",
+      "hiddenAndDisposedHistoryRejectsRetainedActionsAndCannotStealForegroundFocus",
+      "englishRussianScaleExtremesKeepDatesAndNativeTargetsReachable"
+    ],
     "com.alexandr5476.lifetracing.history.HistoryScreenPresentationTest": [
       "activityDetailUsesHistoricalZoneAndPreservesFrozenConfigurationAndValues",
       "ambiguousTimingReviewKeepsSelectedOffsetVisibleAndInProposal",
@@ -1018,12 +1032,21 @@
       "timingValidationGenericAndStaleFailuresRemainVisibleInReview"
     ],
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
+      "failedTerminalCatalogRetryRestoresSelectableLastPageAndRevokesRetry",
+      "setTextReportsAdmissionInBothTreesAcrossStaleHiddenPendingAndDisposedInputs",
       "actualFieldInteractionsPreserveZeroEmptyAndStableCategoryIdentityAcrossMissing",
       "ambiguityChoicesShowBothOccurrencesAndConcreteOffsets",
+      "catalogCallbacksLoseOwnershipOnReplacementAndDisposal",
+      "emptyLoadingFailureAndExhaustedCatalogExposeSeparateRecoveryStates",
       "expectedErrorsAndMissingPresentationHaveDistinctEnglishAndRussianResources",
       "gapAndStaleRecoveryRenderTypedLocalizedActions",
+      "hiddenRouteExposesDisabledNativeTargetsForEditingAndOverlapCommands",
+      "lifecycleResumeReenablesNativeControlsAndRevokesCallbacksFromBeforePause",
       "noLiveHasNoStartInput",
-      "timerTargetIsHumanReadable"
+      "repeatedImmediateReadFailureKeepsTheProductionRouteRetryActionable",
+      "replacingControllerWithEqualFailureContentKeepsCurrentRouteActionsAndRevokesOldCallbacks",
+      "timerTargetIsHumanReadable",
+      "unrelatedCatalogPublicationPreservesNativeInputFocusWithoutDispatchingAnyAction"
     ],
     "com.alexandr5476.lifetracing.history.SequenceHistoryMutationRepositoryIntegrationTest": [
       "productionControllerCloseGapPersistsMovedNoLiveChildWithoutTimedFacts",
@@ -1398,7 +1421,21 @@
       "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
+      "accessibleLastRootDeletionReturnsCanonicalEmptyHistoryAfterPhysicalReopen",
+      "committedDeletionHistoryReadFailureRetriesOnlyCanonicalRead",
+      "accessibleArchivedSourceDeletionLeavesTemplateUnchangedAfterPhysicalReopen",
+      "accessibleConcurrentDeletionRecoversUnavailableWithoutRepeatingWriter",
+      "accessibleDeletionFailureRequiresExplicitCurrentTargetRetry",
+      "accessiblePlanLinkedDeletionPreservesEntireFulfilledPlanAfterPhysicalReopen",
+      "accessibleStaleDeletionReloadRequiresNewConfirmationWithoutOverwriting",
+      "accessibleTimedDeletionKeepsIndistinguishableSiblingAfterPhysicalReopen",
+      "russianScaledNoLiveDeletionKeepsMissingDurationAfterPhysicalReopen",
+      "historyDuplicateRootsUseExactNativeRoutesAndRejectOutgoingCallbacksAcrossBackAndRecreation",
+      "russianLargeFontHistoryDuplicateRootsKeepExactNativeRoutesAndReturnFocus",
+      "historyProductionPagingFailureRetryAndExitKeepCanonicalBoundsAndRejectOldNativeActions",
       "nativeActionRefreshBeforeDispatchReacquiresWithoutReplayingDispatchedFailure",
+      "historyTextEditTransfersRecoveryFocusBeforeScrollingAndDispatching",
+      "historyNativeActionTransfersFocusBeforeScrollingAndDispatching",
       "dailyLauncherActivityPauseResumeFinishHistoryAndBackPreserveFrozenIdentityAfterReopen",
       "launcherSequencePausedWaitingBackReentryAndNormalCompletionKeepOccurrencesAfterReopen",
       "dailyPlanLiveActivityUsesNativePlanActionAndReturnsWithoutSecondStart",
@@ -1413,13 +1450,37 @@
       "russianLargeFontProductionActivityJourneyKeepsActionsReachable",
       "englishReducedScaleProductionActivityJourneyKeepsNativeTargets",
       "duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
-      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen"
+      "duplicatePlanWeekSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen",
+      "accessibleFirstDstOccurrenceSurvivesPhysicalReopen",
+      "accessibleHistoricalOverlapNeedsExplicitApprovalAndSurvivesPhysicalReopen",
+      "accessibleSecondDstOccurrenceSurvivesPhysicalReopen",
+      "accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen",
+      "untouchedManualNumberDefaultsAndRestorationStayExactAfterPhysicalReopen",
+      "explicitlyEditedManualNumberUsesInputPrecisionAfterPhysicalReopen",
+      "sameTextManualNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen",
+      "sameTextCorrectionNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen",
+      "englishManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen",
+      "russianManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen",
+      "accessibleTimerManualEntryKeepsTargetAndOvertimeIntervalAfterPhysicalReopen",
+      "manualCatalogReplacementAndStaleReviewKeepExactSourcesWithoutEagerHydrationOrWrites",
+      "russianScaledNoLiveManualEntryRetainsMissingDurationAfterPhysicalReopen",
+      "accessibleApprovedOverlapCorrectionSurvivesPhysicalReopen",
+      "accessibleCommentOnlyCorrectionReplacesSnapshotAfterPhysicalReopen",
+      "accessibleCommittedCorrectionReloadRetryNeverReplaysWriterAfterPhysicalReopen",
+      "accessibleCorrectionExplicitRetryPreservesDraftAfterOrdinarySaveFailure",
+      "accessibleFirstDstCorrectionSurvivesPhysicalReopen",
+      "accessibleSecondDstCorrectionSurvivesPhysicalReopen",
+      "accessibleStaleCorrectionPreservesCompetingFactsAfterPhysicalReopen",
+      "accessibleTimedCorrectionUsesExactDuplicateExecutionAndSurvivesPhysicalReopen",
+      "accessibleUnchangedCommentPreservesSnapshotAfterPhysicalReopen",
+      "russianScaledNoLiveCorrectionPreservesMissingDurationAfterPhysicalReopen"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",
       "captureFailureKeepsRemainingEvidenceAndCannotTriggerAnotherAttempt",
       "boundedReadReportsTruncationAndErrorsAndClosesItsStream",
       "deadlineReturnsWithoutWaitingForOpenAndClosesALateStream",
+      "deadlineReturnsWhileLiveProducerDrainsBeforeItsPipeCloses",
       "oversizedDiagnosticsRetainOriginalCauseAndLateFocusEvidenceInTheExportedFailure",
       "unicodeDiagnosticsAreLoggedWithoutLossAndLoggingFailureCannotReplaceTheAssertion",
       "largeDiagnosticsRetainTheirTailAcrossFiniteTransportCapacity",
@@ -1429,6 +1490,8 @@
       "missingLazyTargetRetainsOriginalCauseAndFocusedViewportWithoutInvokingActions"
     ],
     "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
+      "independentFixturesRetainFreshNativeFailureEvidenceWithoutRelaxingWindowAdmission",
+      "rejectedBackgroundEntryPreservesForegroundInputModeAndFailureEvidence",
       "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
       "visibleImeCloseStillDismissesThroughItsFocusedWindow"
     ],
@@ -1470,6 +1533,19 @@
       "nativeGapPrecisionAndOverlapChoicesPersistOnlyExplicitDistinctOccurrences",
       "nativePendingSaveDisablesEditingAndRepeatedActivationWhileCloseRetainsAcceptedWriter",
       "nativeUntouchedReschedulePreservesExactTargetTimestampsAndSnapshotAfterZoneTravel"
+    ],
+    "com.alexandr5476.lifetracing.history.ActivityHistoryCorrectionAccessibilityTest": [
+      "setTextReturnsFalseForUnavailableCorrectionAndTrueForRepeatedCurrentEditsInBothTrees",
+      "committedReadFailureExposesReadOnlyRetryAndPendingBackKeepsTheSession",
+      "hiddenDisposedAndReplacedRoutesRevokeRetainedNativeInputAndSaveActions",
+      "localizedScaledNoLiveEditorKeepsNativeTargetsReachableWithoutStartOrWrites",
+      "nativeInputsKeepDuplicateFieldAndOptionIdentityAndMissingZeroEmptyDistinct",
+      "originalOverlapOffsetsRemainSelectedUntilEachEndpointIsEdited",
+      "overlapCancelRevokesApprovalAndDuplicateProceedRunsOnlyOneWriter",
+      "pendingSessionFirstCompositionRestoresNativeBackFocusAfterCanonicalReload",
+      "restoringMissingCategoryRequiresAnOwnedChoiceAndAssociatesItsNativeError",
+      "resumedRouteReenablesControlsAndRevokesCallbacksCapturedBeforePause",
+      "staleDeletedTargetRequiresCanonicalRecoveryAndHasNoCorrectionControls"
     ]
   },
   "startup": {

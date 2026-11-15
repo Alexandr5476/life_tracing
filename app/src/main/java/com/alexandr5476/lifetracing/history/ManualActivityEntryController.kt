@@ -72,6 +72,7 @@ sealed interface ManualEntryCommand {
 
     data class Invalid(
         val issue: ManualEntryIssue,
+        val fieldId: ActivityTemplateFieldId? = null,
     ) : ManualEntryCommand
 
     data class Overlap(
@@ -122,12 +123,19 @@ data class ManualEntryFieldDraft(
     val selectedOptionId: CategoryOptionId? = null,
     val text: String = "",
     val missing: Boolean = false,
+    // Ephemeral source precision, independent of the rounded text presented to the user.
+    val originalNumberScaled: Long? = null,
+    val numberWasEdited: Boolean = false,
 )
 
 data class ManualActivityEntryState(
     val catalog: ManualEntryLoad<List<ReusableActivityCatalogItem>> = ManualEntryLoad.Idle,
     val nextCatalogCursor: ReusableActivityCatalogItem? = null,
+    val catalogPageNumber: Int = 1,
+    val catalogReplacing: Boolean = false,
     val selected: ManualEntryLoad<ActivityTemplate> = ManualEntryLoad.Idle,
+    val selectedTemplateId: ActivityTemplateId? = null,
+    val entryZoneId: ZoneId = ZoneId.systemDefault(),
     val startedText: String = "",
     val completedText: String = "",
     val startedAmbiguity: ManualTimeAmbiguity? = null,
@@ -137,8 +145,11 @@ data class ManualActivityEntryState(
     val values: Map<ActivityTemplateFieldId, ManualEntryFieldDraft> = emptyMap(),
     val command: ManualEntryCommand = ManualEntryCommand.Idle,
     internal val draftVersion: Long = 0,
+    // Fast Loading -> identical Failure cycles must still publish fresh action ownership.
+    internal val publicationVersion: Long = 0,
 ) {
     val canLoadMore: Boolean get() = nextCatalogCursor != null
+    val blocksExit: Boolean get() = command is ManualEntryCommand.Committing || command is ManualEntryCommand.Committed
 }
 
 sealed interface ManualActivityEntryAction {
@@ -215,6 +226,9 @@ class ManualActivityEntryController internal constructor(
     private var mutation: Job? = null
     private var mutationInFlight = false
     private var catalogRequestCursor: ReusableActivityCatalogItem? = null
+
+    // One bounded displayed page survives continuation Loading/Failure; successful pages replace it.
+    private var displayedCatalogPage: List<ReusableActivityCatalogItem>? = null
     private var staleTemplateId: ActivityTemplateId? = null
     private var closed = false
 
@@ -224,7 +238,8 @@ class ManualActivityEntryController internal constructor(
 
     fun dispatch(action: ManualActivityEntryAction) {
         if (closed) return
-        if (mutableState.value.command is ManualEntryCommand.Committing) return
+        if (mutableState.value.blocksExit) return
+        mutableState.update { it.copy(publicationVersion = it.publicationVersion + 1) }
         when (action) {
             ManualActivityEntryAction.RetryCatalog -> loadCatalog(catalogRequestCursor)
             ManualActivityEntryAction.LoadMore -> mutableState.value.nextCatalogCursor?.let(::loadCatalog)
@@ -251,6 +266,25 @@ class ManualActivityEntryController internal constructor(
         }
     }
 
+    /** Refresh presentation on resume; Save still resolves against the current zone itself. */
+    fun refreshZoneContext() {
+        if (closed || mutableState.value.blocksExit) return
+        val zone = zoneId()
+        mutableState.update {
+            if (it.entryZoneId == zone) {
+                it
+            } else {
+                it.copy(
+                    entryZoneId = zone,
+                    startedAmbiguity = null,
+                    completedAmbiguity = null,
+                    command = it.command.dropOverlap(),
+                    draftVersion = it.draftVersion + 1,
+                )
+            }
+        }
+    }
+
     fun close() {
         closed = true
         mutation?.cancel()
@@ -258,9 +292,9 @@ class ManualActivityEntryController internal constructor(
 
     private fun loadCatalog(cursor: ReusableActivityCatalogItem?) {
         if (mutableState.value.catalog is ManualEntryLoad.Loading) return
-        val retainedPage = (mutableState.value.catalog as? ManualEntryLoad.Content)?.value
+        val retainedPage = displayedCatalogPage
         catalogRequestCursor = cursor
-        mutableState.update { it.copy(catalog = ManualEntryLoad.Loading) }
+        mutableState.update { it.copy(catalog = ManualEntryLoad.Loading, catalogReplacing = cursor != null) }
         scope.launch {
             try {
                 val page = readCatalog(cursor)
@@ -268,8 +302,21 @@ class ManualActivityEntryController internal constructor(
                 if (!closed) {
                     val shown = retainedPage.takeIf { cursor != null && page.isEmpty() && !it.isNullOrEmpty() } ?: page
                     val next = page.lastOrNull().takeIf { page.size == pageSize && it != cursor }
+                    displayedCatalogPage = shown
                     mutableState.update {
-                        it.copy(catalog = ManualEntryLoad.Content(shown), nextCatalogCursor = next)
+                        it.copy(
+                            catalog = ManualEntryLoad.Content(shown),
+                            nextCatalogCursor = next,
+                            catalogPageNumber =
+                                if (cursor ==
+                                    null
+                                ) {
+                                    1
+                                } else {
+                                    it.catalogPageNumber + if (page.isEmpty()) 0 else 1
+                                },
+                            catalogReplacing = false,
+                        )
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -290,7 +337,9 @@ class ManualActivityEntryController internal constructor(
     private fun select(id: ActivityTemplateId) {
         if (mutationInFlight || mutableState.value.selected is ManualEntryLoad.Loading) return
         staleTemplateId = null
-        mutableState.update { it.copy(selected = ManualEntryLoad.Loading, command = ManualEntryCommand.Idle) }
+        mutableState.update {
+            it.copy(selected = ManualEntryLoad.Loading, selectedTemplateId = id, command = ManualEntryCommand.Idle)
+        }
         scope.launch {
             try {
                 val template = readTemplate(id)
@@ -324,10 +373,16 @@ class ManualActivityEntryController internal constructor(
         return ManualActivityEntryState(
             catalog = mutableState.value.catalog,
             nextCatalogCursor = mutableState.value.nextCatalogCursor,
+            catalogPageNumber = mutableState.value.catalogPageNumber,
+            catalogReplacing = mutableState.value.catalogReplacing,
             selected = ManualEntryLoad.Content(this),
+            selectedTemplateId = id,
+            entryZoneId = zoneId(),
             startedText = timestamp,
             completedText = timestamp,
             values = initialEntryValues(),
+            draftVersion = mutableState.value.draftVersion + 1,
+            publicationVersion = mutableState.value.publicationVersion,
         )
     }
 
@@ -371,7 +426,7 @@ class ManualActivityEntryController internal constructor(
     private fun editNumber(
         id: ActivityTemplateFieldId,
         text: String,
-    ) = editValue(id) { it.copy(numberText = text, missing = false) }
+    ) = editValue(id) { it.withNumberText(text) }
 
     private fun editText(
         id: ActivityTemplateFieldId,
@@ -392,7 +447,11 @@ class ManualActivityEntryController internal constructor(
         id: ActivityTemplateFieldId,
         transform: (ManualEntryFieldDraft) -> ManualEntryFieldDraft,
     ) = mutableState.update { state ->
-        state.copy(values = state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values)
+        state.copy(
+            values = state.values[id]?.let { state.values + (id to transform(it)) } ?: state.values,
+            command = if (state.command is ManualEntryCommand.Invalid) ManualEntryCommand.Idle else state.command,
+            draftVersion = state.draftVersion + 1,
+        )
     }
 
     @Suppress("LongMethod")
@@ -476,38 +535,27 @@ class ManualActivityEntryController internal constructor(
         mutableState.update { state ->
             state.copy(
                 startedAmbiguity =
-                    if (point ==
-                        TimePoint.STARTED
-                    ) {
+                    if (point == TimePoint.STARTED && (ambiguity != null || clearAmbiguity)) {
                         ambiguity
-                    } else if (clearAmbiguity &&
-                        point == TimePoint.STARTED
-                    ) {
-                        null
                     } else {
                         state.startedAmbiguity
                     },
                 completedAmbiguity =
-                    if (point ==
-                        TimePoint.COMPLETED
-                    ) {
+                    if (point == TimePoint.COMPLETED && (ambiguity != null || clearAmbiguity)) {
                         ambiguity
-                    } else if (clearAmbiguity &&
-                        point == TimePoint.COMPLETED
-                    ) {
-                        null
                     } else {
                         state.completedAmbiguity
                     },
                 startedIssue = if (point == TimePoint.STARTED) issue else state.startedIssue,
                 completedIssue = if (point == TimePoint.COMPLETED) issue else state.completedIssue,
-                command = ManualEntryCommand.Invalid(issue),
+                command = ManualEntryCommand.Invalid(issue, fieldId),
             )
         }
     }
 
     private fun buildProposal(template: ActivityTemplate): ManualEntryProposal {
         val commandAt = now()
+        refreshZoneContext()
         val zone = zoneId()
         val state = mutableState.value
         val completed = resolveTime(state.completedText, zone, state.completedAmbiguity, TimePoint.COMPLETED)
@@ -525,9 +573,11 @@ class ManualActivityEntryController internal constructor(
                 completedIssue = null,
             )
         }
-        if (completed.instant > commandAt) throw ManualEntryIssueException(ManualEntryIssue.FUTURE_COMPLETION)
+        if (completed.instant > commandAt) {
+            throw ManualEntryIssueException(ManualEntryIssue.FUTURE_COMPLETION, TimePoint.COMPLETED)
+        }
         if (started != null && started.instant > completed.instant) {
-            throw ManualEntryIssueException(ManualEntryIssue.REVERSED_INTERVAL)
+            throw ManualEntryIssueException(ManualEntryIssue.REVERSED_INTERVAL, TimePoint.STARTED)
         }
         val overrides =
             when (val proposed = template.proposeEntryValues(state.values)) {
@@ -538,6 +588,7 @@ class ManualActivityEntryController internal constructor(
                         TemplateEntryValueIssue.INVALID_NUMBER -> ManualEntryIssue.INVALID_NUMBER
                         TemplateEntryValueIssue.INVALID_CATEGORY -> ManualEntryIssue.INVALID_CATEGORY
                     },
+                    fieldId = proposed.fieldId,
                 )
             }
         return ManualEntryProposal(
@@ -611,6 +662,7 @@ class ManualActivityEntryController internal constructor(
         val point: TimePoint? = null,
         val ambiguity: ManualTimeAmbiguity? = null,
         val clearAmbiguity: Boolean = false,
+        val fieldId: ActivityTemplateFieldId? = null,
     ) : IllegalArgumentException()
 }
 

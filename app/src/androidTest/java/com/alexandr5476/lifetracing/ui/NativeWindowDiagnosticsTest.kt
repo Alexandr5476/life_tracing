@@ -53,6 +53,8 @@ class NativeWindowDiagnosticsTest {
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
+                "dumpsys SurfaceFlinger",
+                "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
             ),
@@ -60,7 +62,7 @@ class NativeWindowDiagnosticsTest {
         )
         commands.forEach { assertTrue(focusReport.contains("focus trace for $it")) }
         assertTrue(focus.capture().contains("already attempted"))
-        assertEquals(5, commands.size)
+        assertEquals(7, commands.size)
     }
 
     @Test
@@ -90,10 +92,14 @@ class NativeWindowDiagnosticsTest {
         assertTrue(focusReport.contains("unavailable input state"))
         assertTrue(focusReport.contains("retained dumpsys window displays"))
         assertTrue(focusReport.contains("retained dumpsys window windows"))
+        assertTrue(focusReport.contains("retained dumpsys SurfaceFlinger"))
+        assertTrue(
+            focusReport.contains("retained dumpsys activity service com.android.systemui/.SystemUIService WMShell"),
+        )
         assertTrue(focusReport.contains("retained dumpsys power"))
         assertTrue(focusReport.contains("retained logcat"))
         focus.capture()
-        assertEquals(5, calls)
+        assertEquals(7, calls)
     }
 
     @Test
@@ -106,6 +112,8 @@ class NativeWindowDiagnosticsTest {
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
+                "dumpsys SurfaceFlinger",
+                "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
             )
@@ -283,11 +291,13 @@ class NativeWindowDiagnosticsTest {
     @Test
     fun boundedReadReportsTruncationAndErrorsAndClosesItsStream() {
         val closed = AtomicInteger()
+        val remainingAtClose = AtomicInteger(-1)
         val shell =
             BoundedDiagnosticShell(
                 open = {
                     object : ByteArrayInputStream("0123456789".toByteArray()) {
                         override fun close() {
+                            remainingAtClose.set(available())
                             closed.incrementAndGet()
                             super.close()
                         }
@@ -300,9 +310,53 @@ class NativeWindowDiagnosticsTest {
         assertTrue(report.contains("01234567"))
         assertFalse(report.contains("012345678"))
         assertEquals(1, closed.get())
+        assertEquals("Truncation must drain the producer before closing its pipe", 0, remainingAtClose.get())
         val failure = BoundedDiagnosticShell(open = { throw IOException("pipe unavailable") }).read("failed command")
         assertTrue(failure.contains("ERROR"))
         assertTrue(failure.contains("pipe unavailable"))
+    }
+
+    @Test
+    fun deadlineReturnsWhileLiveProducerDrainsBeforeItsPipeCloses() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val prematureClose = AtomicInteger()
+        val shell =
+            BoundedDiagnosticShell(
+                open = {
+                    object : ByteArrayInputStream("late output".toByteArray()) {
+                        override fun read(
+                            bytes: ByteArray,
+                            offset: Int,
+                            length: Int,
+                        ): Int {
+                            entered.countDown()
+                            check(release.await(5, TimeUnit.SECONDS))
+                            return super.read(bytes, offset, length)
+                        }
+
+                        override fun close() {
+                            if (available() > 0) prematureClose.incrementAndGet()
+                            closed.countDown()
+                            super.close()
+                        }
+                    }
+                },
+                timeoutMillis = 50,
+                start = { task ->
+                    Thread(task, "diagnostic-live-producer-test").apply { isDaemon = true }.start()
+                    assertTrue(entered.await(5, TimeUnit.SECONDS))
+                },
+            )
+        try {
+            assertTrue(shell.read("slow command").contains("TIMEOUT"))
+            assertEquals("A live producer must keep its reader after the caller deadline", 1L, closed.count)
+        } finally {
+            release.countDown()
+        }
+        assertTrue("The drained pipe must eventually close", closed.await(5, TimeUnit.SECONDS))
+        assertEquals(0, prematureClose.get())
     }
 
     @Test

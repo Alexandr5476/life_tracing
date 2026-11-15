@@ -31,8 +31,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -40,7 +43,245 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 
+@Suppress("LargeClass") // One controller fixture keeps historical command and admission prerequisites explicit.
 class ManualActivityEntryControllerTest {
+    @Test
+    fun untouchedRoundedNumberDefaultsRetainExactStorageIncludingLongBoundaries() =
+        runBlocking {
+            for (case in listOf(0, 1).flatMap { precision ->
+                listOf(12555L, -12555L, Long.MAX_VALUE, Long.MIN_VALUE, Long.MAX_VALUE - 1, Long.MIN_VALUE + 1).map {
+                    it to
+                        precision
+                }
+            }) {
+                val (scaled, precision) = case
+                val source = timedTemplate()
+                val number = source.fields.first().copy(defaultNumberScaled = scaled, displayPrecision = precision)
+                val fixture = fixture(source.copy(fields = listOf(number)))
+                try {
+                    fixture.select()
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertInstanceOf(ManualEntryCommand.Committed::class.java, fixture.controller.state.value.command)
+                    assertEquals(
+                        ActivityEntryValue.Number(scaled),
+                        fixture.timed
+                            .single()
+                            .values
+                            .single()
+                            .value,
+                    )
+                    assertEquals(source.revision, fixture.timed.single().expectedTemplateRevision)
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun sameTextNumberInputFromMissingIsAnExplicitEdit() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields =
+                            listOf(
+                                source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1),
+                            ),
+                    ),
+                )
+            try {
+                fixture.select()
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12600),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+                assertEquals(
+                    12555L,
+                    (fixture.controller.state.value.selected as ManualEntryLoad.Content)
+                        .value.fields
+                        .single()
+                        .defaultNumberScaled,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun missingRestorationAndUnchangedTextCallbackRetainExactNumberDefault() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields = listOf(source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1)),
+                    ),
+                )
+            try {
+                fixture.select()
+                assertEquals(
+                    "12.6",
+                    fixture.controller.state.value.values
+                        .getValue(NUMBER_ID)
+                        .numberText,
+                )
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12555),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun explicitNumberEditParsesDisplayedPrecisionEvenWhenRoundedTextIsRestored() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields = listOf(source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1)),
+                    ),
+                )
+            try {
+                fixture.select()
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12"))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12600),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
+    fun editedNumbersStillRejectExcessPrecisionAndOutOfRangeRoundedLongsBeforeWrite() =
+        runBlocking {
+            for ((text, precision) in listOf("12.55" to 1, "9223372036854776" to 0, "-9223372036854776" to 0)) {
+                val source = timedTemplate()
+                val field =
+                    source.fields.first().copy(
+                        defaultNumberScaled = if (text.startsWith("-")) Long.MIN_VALUE else Long.MAX_VALUE,
+                        displayPrecision = precision,
+                    )
+                val fixture = fixture(source.copy(fields = listOf(field)))
+                try {
+                    fixture.select()
+                    fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                    fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, text))
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertEquals(
+                        ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_NUMBER, NUMBER_ID),
+                        fixture.controller.state.value.command,
+                    )
+                    assertTrue(fixture.attemptedTimed.isEmpty())
+                    assertEquals(0, fixture.overlapChecks)
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun missingNumberDefaultRemainsDistinctFromExplicitZero() =
+        runBlocking {
+            for (present in listOf(false, true)) {
+                val source = timedTemplate()
+                val fixture =
+                    fixture(source.copy(fields = listOf(source.fields.first().copy(defaultNumberScaled = null))))
+                try {
+                    fixture.select()
+                    if (present) fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "0"))
+                    fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                    assertEquals(
+                        if (present) ActivityEntryValue.Number(0) else ActivityEntryValue.Missing,
+                        fixture.timed
+                            .single()
+                            .values
+                            .single()
+                            .value,
+                    )
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun rejectedSaveAndInputNeverReviveOrWriteAfterTransientRouteLoss() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            try {
+                fixture.select()
+                fixture.editTimes("2026-01-15 10:00", "2026-01-15 11:00")
+                val controller = fixture.controller
+                val publication = controller.state.value
+                var owns = true
+                val old = ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                val save =
+                    ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                        .action(ManualActivityEntryAction.Save)
+                val input = old.input { ManualActivityEntryAction.EditStarted(it) }
+                owns = false
+                assertFalse(input("2026-01-15 10:00"))
+                save()
+                owns = true
+                save()
+                assertFalse(input("2026-01-15 10:01"))
+                assertTrue(fixture.attemptedTimed.isEmpty())
+                assertEquals(publication, controller.state.value)
+                val fresh =
+                    ManualEntryAdmission(publication, { controller.state.value }, { owns }, controller::dispatch)
+                assertTrue(fresh.input { ManualActivityEntryAction.EditStarted(it) }("2026-01-15 10:01"))
+                val current = controller.state.value
+                val next = ManualEntryAdmission(current, { controller.state.value }, { owns }, controller::dispatch)
+                assertTrue(next.input { ManualActivityEntryAction.EditCompleted(it) }("2026-01-15 11:00"))
+                val ready = controller.state.value
+                ManualEntryAdmission(ready, { controller.state.value }, { owns }, controller::dispatch)
+                    .action(ManualActivityEntryAction.Save)()
+                fixture.awaitCommitted()
+                assertEquals(1, fixture.attemptedTimed.size)
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.ActivityEntrySource
+                        .Template(TEMPLATE_ID),
+                    fixture.timed.single().source,
+                )
+                assertEquals(
+                    ActivityExecutionId("execution"),
+                    (controller.state.value.command as ManualEntryCommand.Committed).execution.id,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
     @Test
     fun selectionHydratesOnlySelectedTemplateAndMissingIsReversibleForEveryFieldType() =
         runBlocking {
@@ -251,11 +492,6 @@ class ManualActivityEntryControllerTest {
             )
 
             fixture.controller.dispatch(ManualActivityEntryAction.SelectStartedOffset(ZoneOffset.ofHours(2)))
-            fixture.controller.dispatch(ManualActivityEntryAction.Save)
-            fixture.awaitCommitted()
-            assertEquals(Instant.parse("2026-10-25T00:45:00Z"), fixture.timed.single().startedAt)
-            assertEquals(Instant.parse("2026-10-25T01:30:00Z"), fixture.timed.single().completedAt)
-
             fixture.controller.dispatch(ManualActivityEntryAction.EditStarted("2026-10-25 02:40"))
             assertNull(fixture.controller.state.value.startedAmbiguity)
             assertEquals(
@@ -263,6 +499,14 @@ class ManualActivityEntryControllerTest {
                 fixture.controller.state.value.completedAmbiguity
                     ?.selectedOffset,
             )
+            fixture.controller.dispatch(ManualActivityEntryAction.EditStarted("2026-10-25 02:45"))
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            assertEquals(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME, invalidIssue(fixture))
+            fixture.controller.dispatch(ManualActivityEntryAction.SelectStartedOffset(ZoneOffset.ofHours(2)))
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitted()
+            assertEquals(Instant.parse("2026-10-25T00:45:00Z"), fixture.timed.single().startedAt)
+            assertEquals(Instant.parse("2026-10-25T01:30:00Z"), fixture.timed.single().completedAt)
             fixture.close()
         }
 
@@ -330,6 +574,100 @@ class ManualActivityEntryControllerTest {
             assertTrue(!fixture.controller.state.value.canLoadMore)
             assertEquals(listOf<Int?>(null, 49, 99), fixture.catalogAfterIndexes)
             fixture.close()
+        }
+
+    @Test
+    fun failedContinuationRetryRetainsOnlyTheLastPageOrReplacesItWithNewResults() =
+        runBlocking {
+            for (count in listOf(100, 150)) {
+                val fixture = fixture(timedTemplate(), catalogItemCount = count, catalogFailureAtRead = 3)
+                try {
+                    fixture.awaitCatalog()
+                    fixture.select()
+                    val selected = fixture.controller.state.value.selected
+                    fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+                    val lastPage = (fixture.controller.state.value.catalog as ManualEntryLoad.Content).value
+                    assertEquals((50 until 100).map { ActivityTemplateId("catalog-$it") }, lastPage.map { it.id })
+                    assertEquals(2, fixture.controller.state.value.catalogPageNumber)
+                    fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+                    val failed = fixture.controller.state.value
+                    assertInstanceOf(ManualEntryLoad.Failure::class.java, failed.catalog)
+                    assertSame(selected, failed.selected)
+                    val retry =
+                        ManualEntryAdmission(
+                            failed,
+                            { fixture.controller.state.value },
+                            { true },
+                            fixture.controller::dispatch,
+                        ).action(ManualActivityEntryAction.RetryCatalog)
+                    retry()
+                    val recovered = fixture.controller.state.value
+                    val shown = (recovered.catalog as ManualEntryLoad.Content).value
+                    if (count == 100) {
+                        assertSame(lastPage, shown)
+                        assertEquals(2, recovered.catalogPageNumber)
+                        assertFalse(recovered.canLoadMore)
+                    } else {
+                        assertEquals((100 until 150).map { ActivityTemplateId("catalog-$it") }, shown.map { it.id })
+                        assertEquals(3, recovered.catalogPageNumber)
+                        assertTrue(recovered.canLoadMore)
+                    }
+                    assertSame(selected, recovered.selected)
+                    assertEquals(listOf(TEMPLATE_ID), fixture.templateReads)
+                    assertEquals(listOf<Int?>(null, 49, 99, 99), fixture.catalogAfterIndexes)
+                    retry()
+                    assertSame(recovered, fixture.controller.state.value)
+                    val target = shown[23].id
+                    fixture.currentTemplate = fixture.currentTemplate.copy(id = target)
+                    ManualEntryAdmission(
+                        recovered,
+                        { fixture.controller.state.value },
+                        { true },
+                        fixture.controller::dispatch,
+                    ).action(ManualActivityEntryAction.Select(target))()
+                    assertEquals(target, fixture.controller.state.value.selectedTemplateId)
+                    assertEquals(listOf(TEMPLATE_ID, target), fixture.templateReads)
+                    retry()
+                    assertEquals(4, fixture.catalogReads)
+                    assertTrue(fixture.attemptedTimed.isEmpty())
+                    assertTrue(fixture.noLive.isEmpty())
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun initialCatalogFailureRetriesFromTheBeginningWithoutHydratingOrWriting() =
+        runBlocking {
+            val fixture = fixture(timedTemplate(), catalogItemCount = 100, catalogFailureAtRead = 1)
+            try {
+                val failed = fixture.controller.state.value
+                assertInstanceOf(ManualEntryLoad.Failure::class.java, failed.catalog)
+                val retry =
+                    ManualEntryAdmission(
+                        failed,
+                        { fixture.controller.state.value },
+                        { true },
+                        fixture.controller::dispatch,
+                    ).action(ManualActivityEntryAction.RetryCatalog)
+                retry()
+                val recovered = fixture.controller.state.value
+                assertEquals(
+                    (0 until 50).map { ActivityTemplateId("catalog-$it") },
+                    (recovered.catalog as ManualEntryLoad.Content).value.map { it.id },
+                )
+                assertEquals(1, recovered.catalogPageNumber)
+                assertTrue(recovered.canLoadMore)
+                retry()
+                assertEquals(listOf<Int?>(null, null), fixture.catalogAfterIndexes)
+                assertSame(recovered, fixture.controller.state.value)
+                assertTrue(fixture.templateReads.isEmpty())
+                assertTrue(fixture.attemptedTimed.isEmpty())
+                assertTrue(fixture.noLive.isEmpty())
+            } finally {
+                fixture.close()
+            }
         }
 
     @Test
@@ -469,6 +807,144 @@ class ManualActivityEntryControllerTest {
             fixture.close()
         }
 
+    @Test
+    fun committedCommandRejectsSaveAndEditsWhileReturnDeliveryIsPending() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitted()
+            val committed = fixture.controller.state.value
+            fixture.controller.dispatch(ManualActivityEntryAction.EditCompleted("2026-09-16 10:00"))
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.controller.dispatch(ManualActivityEntryAction.ProceedOverlap)
+            assertEquals(committed, fixture.controller.state.value)
+            assertEquals(1, fixture.timed.size)
+            fixture.close()
+        }
+
+    @Test
+    fun canonicalValidationAssociatesTheSourceFieldAndEachTimestampEndpoint() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "invalid"))
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            assertEquals(NUMBER_ID, (fixture.controller.state.value.command as ManualEntryCommand.Invalid).fieldId)
+            fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "0"))
+            fixture.editTimes("2026-12-01 11:00", "2027-01-01 00:00")
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            assertEquals(ManualEntryIssue.FUTURE_COMPLETION, fixture.controller.state.value.completedIssue)
+            fixture.editTimes("2026-12-01 11:00", "2026-12-01 10:00")
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            assertEquals(ManualEntryIssue.REVERSED_INTERVAL, fixture.controller.state.value.startedIssue)
+            assertTrue(fixture.timed.isEmpty())
+            fixture.close()
+        }
+
+    @Test
+    fun resumedZoneContextClearsOffsetAuthorityAndRevalidatesWithoutWriting() =
+        runBlocking {
+            val fixture = fixture(timedTemplate(TimeTrackingMode.NO_LIVE_TRACKING), zone = BERLIN)
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.EditCompleted("2026-10-25 02:30"))
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.controller.dispatch(ManualActivityEntryAction.SelectCompletedOffset(ZoneOffset.ofHours(2)))
+            fixture.zone = ZoneOffset.UTC
+            fixture.controller.refreshZoneContext()
+            assertEquals(ZoneOffset.UTC, fixture.controller.state.value.entryZoneId)
+            assertNull(fixture.controller.state.value.completedAmbiguity)
+            assertTrue(fixture.noLive.isEmpty())
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitted()
+            assertEquals(Instant.parse("2026-10-25T02:30:00Z"), fixture.noLive.single().completedAt)
+            fixture.close()
+        }
+
+    @Test
+    fun reselectingTheSameSourcePublishesNewDraftAuthorityEvenWhenItsVisibleValuesAreEqual() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.select()
+            val previous = fixture.controller.state.value
+            fixture.select()
+            val selected = fixture.controller.state.value
+            assertEquals(previous.values, selected.values)
+            assertEquals(previous.startedText, selected.startedText)
+            assertTrue(selected.draftVersion > previous.draftVersion)
+            assertTrue(fixture.timed.isEmpty())
+            fixture.close()
+        }
+
+    @Test
+    fun failedSaveRetainsTheDraftAndExplicitRetryCommitsOnlyOneExecution() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.select()
+            fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "0"))
+            val draft = fixture.controller.state.value.values
+            fixture.writerFailure = IllegalStateException("Writer failure")
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitFailure()
+            assertEquals(
+                ManualEntryCommand.Failure(ManualEntryIssue.SAVE_FAILURE),
+                fixture.controller.state.value.command,
+            )
+            assertEquals(draft, fixture.controller.state.value.values)
+            assertTrue(fixture.timed.isEmpty())
+            fixture.writerFailure = null
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitCommitted()
+            assertEquals(2, fixture.attemptedTimed.size)
+            assertEquals(1, fixture.timed.size)
+            fixture.close()
+        }
+
+    @Test
+    fun repeatedCatalogFailurePublishesCurrentRecoveryAuthority() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.catalogReadFailure = IllegalStateException("Catalog read failure")
+            fixture.controller.dispatch(ManualActivityEntryAction.RetryCatalog)
+            val previous = fixture.controller.state.value
+            assertTrue(previous.catalog is ManualEntryLoad.Failure)
+            fixture.controller.dispatch(ManualActivityEntryAction.RetryCatalog)
+            assertNotEquals(previous, fixture.controller.state.value)
+            assertEquals(3, fixture.catalogReads)
+            fixture.close()
+        }
+
+    @Test
+    fun repeatedSourceFailurePublishesCurrentRecoveryAuthority() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.templateReadFailure = IllegalStateException("Source read failure")
+            fixture.controller.dispatch(ManualActivityEntryAction.Select(TEMPLATE_ID))
+            val previous = fixture.controller.state.value
+            assertTrue(previous.selected is ManualEntryLoad.Failure)
+            fixture.controller.dispatch(ManualActivityEntryAction.Select(TEMPLATE_ID))
+            assertNotEquals(previous, fixture.controller.state.value)
+            assertEquals(listOf(TEMPLATE_ID, TEMPLATE_ID), fixture.templateReads)
+            fixture.close()
+        }
+
+    @Test
+    fun repeatedSaveFailurePublishesCurrentRecoveryAuthority() =
+        runBlocking {
+            val fixture = fixture(timedTemplate())
+            fixture.select()
+            fixture.writerFailure = IllegalStateException("Writer failure")
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitFailure()
+            val previous = fixture.controller.state.value
+            fixture.controller.dispatch(ManualActivityEntryAction.Save)
+            fixture.awaitFailure()
+            assertNotEquals(previous, fixture.controller.state.value)
+            assertEquals(2, fixture.attemptedTimed.size)
+            assertTrue(fixture.timed.isEmpty())
+            fixture.close()
+        }
+
     private fun invalidIssue(fixture: Fixture) =
         (fixture.controller.state.value.command as ManualEntryCommand.Invalid).issue
 
@@ -479,17 +955,15 @@ class ManualActivityEntryControllerTest {
         timedWriteGate: CompletableDeferred<Unit>? = null,
         catalogPages: Boolean = false,
         catalogItemCount: Int? = null,
+        catalogFailureAtRead: Int? = null,
     ): Fixture {
-        val fixture = Fixture(template, timedWriteGate, zone, catalogPages, catalogItemCount)
+        val fixture = Fixture(template, timedWriteGate, zone, catalogPages, catalogItemCount, catalogFailureAtRead)
         fixture.overlap = overlap
         fixture.controller =
             ManualActivityEntryController(
                 fixture.scope,
                 fixture::readCatalog,
-                { id ->
-                    fixture.templateReads += id
-                    fixture.currentTemplate.takeIf { it.id == id }
-                },
+                { id -> fixture.readTemplate(id) },
                 { _, _ ->
                     fixture.overlapChecks++
                     fixture.overlap
@@ -521,6 +995,7 @@ class ManualActivityEntryControllerTest {
         var zone: ZoneId,
         val catalogPages: Boolean,
         val catalogItemCount: Int?,
+        val catalogFailureAtRead: Int?,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         lateinit var controller: ManualActivityEntryController
@@ -531,9 +1006,17 @@ class ManualActivityEntryControllerTest {
         var overlapChecks = 0
         var overlap = false
         var writerFailure: RuntimeException? = null
+        var catalogReadFailure: RuntimeException? = null
+        var templateReadFailure: RuntimeException? = null
         val attemptedTimed = mutableListOf<ManualEntryProposal>()
         val timed = mutableListOf<ManualEntryProposal>()
         val noLive = mutableListOf<ManualEntryProposal>()
+
+        fun readTemplate(id: ActivityTemplateId): ActivityTemplate? {
+            templateReads += id
+            templateReadFailure?.let { throw it }
+            return currentTemplate.takeIf { it.id == id }
+        }
 
         suspend fun readCatalog(after: ReusableActivityCatalogItem?): List<ReusableActivityCatalogItem> {
             catalogReads++
@@ -544,6 +1027,8 @@ class ManualActivityEntryControllerTest {
                     ?.removePrefix("catalog-")
                     ?.toIntOrNull()
             catalogAfterIndexes += afterIndex
+            catalogReadFailure?.let { throw it }
+            if (catalogReads == catalogFailureAtRead) error("One-time catalog failure")
             if (!catalogPages && catalogItemCount == null) return listOf(catalogItem(TEMPLATE_ID, currentTemplate))
             val start = (afterIndex ?: -1) + 1
             val end = minOf(start + MANUAL_ACTIVITY_CATALOG_PAGE_SIZE, catalogItemCount ?: Int.MAX_VALUE)

@@ -430,7 +430,7 @@ class PlanScheduleAccessibilityTest {
             f.visible.value =
                 true
         }
-        compose.waitUntil { f.controller.state.value.week is PlanLoad.Content }
+        compose.waitUntil(10_000) { f.controller.state.value.week is PlanLoad.Content }
         compose.onNodeWithTag("plan-schedule-form").assertDoesNotExist()
         assertTrue(f.commands.isEmpty())
     }
@@ -442,14 +442,14 @@ class PlanScheduleAccessibilityTest {
         val gate = CompletableDeferred<Unit>()
         f.commitGate = gate
         activate("plan-schedule-save")
-        compose.waitUntil { f.controller.state.value.isMutating && f.commands.size == 1 }
+        compose.waitUntil(10_000) { f.controller.state.value.isMutating && f.commands.size == 1 }
         compose.onNodeWithTag("plan-schedule-save").assertIsNotEnabled()
         compose.onNodeWithTag("plan-schedule-date").assertIsNotEnabled()
         val form = f.form
         compose.runOnIdle { f.controller.dispatch(PlanAction.SubmitForm(form.formId, form.inputRevision)) }
         activate("plan-schedule-close")
         gate.complete(Unit)
-        compose.waitUntil { !f.controller.state.value.isMutating }
+        compose.waitUntil(10_000) { !f.controller.state.value.isMutating }
         assertEquals(1, f.commands.size)
         val plan = f.rows().single().plan
         f.reopen()
@@ -476,7 +476,7 @@ class PlanScheduleAccessibilityTest {
                         .action!!
                 }
         activate("plan-add", accessibility = true)
-        compose.waitUntil {
+        compose.waitUntil(10_000) {
             f.controller.state.value.catalog
                 ?.loading == false
         }
@@ -485,7 +485,7 @@ class PlanScheduleAccessibilityTest {
         assertEquals(catalogState, f.controller.state.value)
         val result = compose.onNodeWithTag(catalogResultTag(f.activitySource.id)).performScrollTo()
         result.performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-        compose.waitUntil { f.controller.state.value.form != null }
+        compose.waitUntil(10_000) { f.controller.state.value.form != null }
         assertEquals(selected.toString(), f.form.date)
         edit("date", "raw-date")
         val owned = f.controller.state.value
@@ -538,7 +538,7 @@ class PlanScheduleAccessibilityTest {
                 }
             }
         }
-        compose.waitUntil { f.controller.state.value.week is PlanLoad.Content }
+        compose.waitUntil(10_000) { f.controller.state.value.week is PlanLoad.Content }
         keyboard.enter()
         return f
     }
@@ -548,7 +548,7 @@ class PlanScheduleAccessibilityTest {
         source: ReusablePlanCatalogItem,
     ) {
         compose.onNodeWithTag("plan-add").performScrollTo().performClick()
-        compose.waitUntil {
+        compose.waitUntil(10_000) {
             f.controller.state.value.catalog
                 ?.loading == false
         }
@@ -556,7 +556,7 @@ class PlanScheduleAccessibilityTest {
         keyboard.enter(result)
         result.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.sendKey(result, KeyEvent.KEYCODE_ENTER)
-        compose.waitUntil { f.controller.state.value.form != null }
+        compose.waitUntil(10_000) { f.controller.state.value.form != null }
         keyboard.enter(compose.onNodeWithTag("plan-schedule-date"))
         keyboard.awaitFocus(compose.onNodeWithTag("plan-schedule-date"))
     }
@@ -576,12 +576,12 @@ class PlanScheduleAccessibilityTest {
             activate(if (weekDelta > 0) "plan-next-week" else "plan-previous-week")
         }
         assertEquals(week, f.controller.state.value.weekStart)
-        compose.waitUntil {
+        compose.waitUntil(10_000) {
             val read = (f.controller.state.value.week as? PlanLoad.Content)?.value
             read?.weekStart == week && read.dayPresence.any { it.date == date }
         }
         activate("plan-day-$date")
-        compose.waitUntil {
+        compose.waitUntil(10_000) {
             val read = (f.controller.state.value.week as? PlanLoad.Content)?.value
             read?.selectedDate == date && read.selectedDayPlans.any { it.plan.id == id }
         }
@@ -635,7 +635,8 @@ class PlanScheduleAccessibilityTest {
         val count = f.commands.size
         f.clock = f.clock.plusSeconds(1)
         activate("plan-schedule-save", accessibility)
-        compose.waitUntil { f.commands.size == count + 1 && !f.controller.state.value.isMutating }
+        // Room commit and canonical recovery run on Dispatchers.Default, outside Compose idling.
+        compose.waitUntil(10_000) { f.commands.size == count + 1 && !f.controller.state.value.isMutating }
         assertNull(f.controller.state.value.mutationFailure)
         assertNull(f.controller.state.value.recoveryFailure)
     }

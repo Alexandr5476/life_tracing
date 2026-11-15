@@ -933,6 +933,81 @@ class StartActivityControllerTest {
         }
 
     @Test
+    @Suppress("LongMethod") // Each transition establishes its own source, draft and command prerequisites.
+    fun startOptionsPreserveExactDefaultsUntilNumberIsMateriallyEdited() =
+        runBlocking {
+            for (transition in listOf("passive", "restore", "edit", "missing-input", "max", "min")) {
+                val harness = Harness()
+                val fieldId = ActivityTemplateFieldId("exact-number")
+                harness.templateReader = { id ->
+                    template(id.value).copy(
+                        fields =
+                            listOf(
+                                ActivityTemplateField(
+                                    fieldId,
+                                    0,
+                                    "Number",
+                                    CustomFieldType.NUMBER,
+                                    displayPrecision = if (transition in listOf("max", "min")) 0 else 1,
+                                    defaultNumberScaled =
+                                        when (transition) {
+                                            "max" -> Long.MAX_VALUE
+                                            "min" -> Long.MIN_VALUE
+                                            else -> 12555
+                                        },
+                                    createdAt = NOW,
+                                    updatedAt = NOW,
+                                ),
+                            ),
+                    )
+                }
+                val controller = harness.controller(this)
+                try {
+                    controller.awaitHome()
+                    controller.dispatch(StartActivityAction.OpenOptions(ActivityTemplateId("activity")))
+                    controller.awaitOptions()
+                    controller.dispatch(StartActivityAction.EditOptionStart("2026-08-20T08:00"))
+                    controller.dispatch(StartActivityAction.EditOptionEnd("2026-08-20T09:00"))
+                    val displayed =
+                        (controller.state.value.options as LauncherLoad.Content)
+                            .value.values
+                            .getValue(
+                                fieldId,
+                            ).numberText
+                    if (transition == "edit") {
+                        controller.dispatch(StartActivityAction.EditOptionNumber(fieldId, "12"))
+                    }
+                    if (transition != "passive") {
+                        controller.dispatch(StartActivityAction.SetOptionMissing(fieldId, true))
+                    }
+                    if (transition in listOf("restore", "edit")) {
+                        controller.dispatch(StartActivityAction.SetOptionMissing(fieldId, false))
+                    }
+                    controller.dispatch(StartActivityAction.EditOptionNumber(fieldId, displayed))
+                    controller.dispatch(StartActivityAction.SaveOptions)
+                    if (transition in listOf("max", "min")) {
+                        withTimeout(2_000) {
+                            controller.state.first {
+                                (it.options as? LauncherLoad.Content)?.value?.issue == StartOptionsIssue.INVALID_NUMBER
+                            }
+                        }
+                        assertTrue(harness.commands.isEmpty())
+                        continue
+                    }
+                    controller.awaitCommitted()
+                    val proposal = (harness.commands.single() as LauncherDurableCommand.StartOptionsTimed).proposal
+                    assertEquals(
+                        com.alexandr5476.lifetracing.domain.ActivityEntryValue
+                            .Number(if (transition in listOf("edit", "missing-input")) 12600 else 12555),
+                        proposal.values.single().value,
+                    )
+                } finally {
+                    controller.close()
+                }
+            }
+        }
+
+    @Test
     fun staleOptionsRequireReloadBeforeNewTemplateRevisionCanCommit() =
         runBlocking {
             val harness = Harness()

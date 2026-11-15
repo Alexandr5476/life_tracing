@@ -1559,3 +1559,191 @@ for callback authority and regression scope. Controller must retain device
 fail-first/corrected evidence and run unfiltered API 26/31/33/35/36 plus exact-head
 CI. Host APK packaging does not execute native or physical-reopen assertions and
 does not certify TalkBack or Switch Access.
+
+## PR 42 native-window diagnostic continuation (2026-11-15)
+
+The Controller's `review-fix-13-521c5f1bd75648078dfb9ed49a95cb2f/attempt-1`
+`gmd-full` data XML reports 634 testcases, five skips and zero failures. App execution
+stopped at 282 cases: 83 native keyboard admission failures followed by one
+unfinished testcase during a SurfaceFlinger abort. The first admission failure
+was `PrimaryExecutionJourneyTest#sameTextCorrectionNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen`.
+Its acknowledged 225-frame diagnostic reconstructed all 229,553 bytes, SHA-256
+`a8dcb8046fa2c77877add0b6ec37baf954abb3dc040769b42d7b237267411d82`.
+WindowManager named the current app window as focused, while InputDispatcher
+had no focused window and retained a `NO_WINDOW` focus request for an older
+window. The current app surface was drawn but hidden. Nineteen minutes later,
+SurfaceFlinger reported its 4,096-layer limit and aborted. This later abort does
+not establish the cause of the first focus-delivery failure.
+
+The authorized unchanged-tree repair probe
+`721d3881c94048f19aeaa01c3728f8f2/tree-1/attempt-1` reproduced native admission
+failure after 68 passing cases; all remaining 16 cases failed admission, with no
+new domain assertion failure. Its first failure was
+`SequenceStepAccessibilityTest#nativePickerReportsLoadingFailureEmptyAndCancellationWithoutWrites`.
+The full retained report was 230,710 bytes, SHA-256
+`54d02d685fb485fb4dd1ed4708794fa466c565754787f1ae9e56dd4aa357c4fa`.
+It again showed WindowManager's current app focus but no InputDispatcher focused
+window and an older `NO_WINDOW` request. Thus an isolated pass of either Number
+route would not resolve the full-suite failure.
+
+The first-failure collector now also reads `dumpsys SurfaceFlinger` and the
+SystemUI WMShell dump. These capture bounded compositor and transition evidence
+missing from the original report. Both use the existing five-second/65,536-byte
+per-command limits, explicit result status, once-per-process admission and
+acknowledged artifact/logcat transport. No focus requirement, fixture action,
+assertion, production behavior, retry or device-reset policy changes. The pure
+collector regressions fail before this addition (two of eight tests) and pass
+with it. The Android regression exercises the real read-only commands and
+artifact transport using its existing instrumentation identity. The original
+native-focus failure and later platform abort remain unresolved; this is an
+evidence repair, not a root-cause fix or a full-suite PASS.
+
+The authorized expanded probe used:
+
+```text
+D:\controller\.runtime\agent-tools\repair-probe.cmd --scope-file D:\controller\.runtime\codex-runs\wf-398f7187fe5e54ba94cffe76d7f38d75\5b1bd0e94310145117da71ca\scratch\scope-primary-and-diagnostics.json
+```
+
+`721d3881c94048f19aeaa01c3728f8f2/tree-2/attempt-1` passed all **120** cases,
+with zero failures, errors or skips (743.576 seconds of test execution).
+It includes every original failing identity, the complete Primary journey class
+and all nine diagnostic cases. Both Number native SetText/physical-reopen routes
+passed. The XML SHA-256 is
+`ad64450022654a709fa7840d5ff03b5de014b7baa80e80de3da96c846466e4d1`.
+The native diagnostic test obtained COMPLETE SurfaceFlinger and WMShell reads,
+including Layer Hierarchy and ShellTransitions state. Its 869,652-byte report
+was reconstructed from all 850 acknowledged frames, SHA-256
+`57b0c28f6b51ad9ec0924f927d4f0c56664b3fffd8e2eab0b0d84509ae23a804`.
+Device cleanup reported safe with no owned live processes. The eight pure host
+tests, app ktlint/Detekt and AndroidTest APK assembly also passed.
+
+This scoped PASS validates the diagnostic addition and the selected behavior;
+it does not show that additional reads fix focus delivery. They run after a
+failure, except in the explicit diagnostic regression. The baseline and expanded
+scopes differ, and the unfiltered failure remains unresolved. No further same-scope
+PASS was sought. Instrumentation identities are unchanged by this continuation;
+all complete Controller-owned local and independent CI gates remain required.
+
+## PR42 per-fixture native diagnostic ownership (2026-11-15)
+
+Controller `review-fix-16-01084479b1ab4f82a30e4584cefe30e5/attempt-1`
+reported 76 keyboard-window admission failures and one unfinished testcase after
+139 passing app cases. The first complete 263-frame report reconstructs all
+268,981 bytes, SHA-256
+`50b4f837b902159a41ba4f3de6c14988fdb695f84df5a50078689582b7997b71`.
+WindowManager selected MainActivity, but InputDispatcher had no focused window,
+reported `NOT_VISIBLE` for that exact window and its surface was hidden. About
+nineteen minutes later, SurfaceFlinger rejected layers at its 4,096-layer limit;
+window creation then failed with `bad array lengths`. This later failure does
+not establish the cause of the original hidden surface.
+
+Subsequent testcase reports contained only 497–511 bytes because the shared
+KeyboardInputFixture companion had exhausted its process-wide diagnostic budget.
+SystemUI and native-focus collectors now belong to each fixture instance. Each
+still captures at most once per fixture with the existing five-second/65,536-byte
+per-command bounds, explicit status, acknowledged logcat and artifact transport.
+Native focus admission, original causes, test actions and production behavior are
+unchanged. There is no retry, focus forcing, platform dismissal or device reset.
+
+The registered two-fixture regression uses a foreground dialog to make an attached
+background root inadmissible. Both fixtures must reject that root without invoking
+the foreground command and retain their own bounded input/window evidence.
+Before the repair, the authorized 78-case scope passed all 77 original targets
+and failed this regression on the second fixture's suppressed evidence. The
+initial probe was invalidated by concurrent candidate edits and is not credited.
+
+The corrected scope also includes the last passing testcase before the original
+failure, `dailyNoLivePlanZeroReturnsToDailyAndRetainsFrozenFieldAfterReopen`, to
+exercise that adjacent close/reopen boundary. The authorized corrected
+`fbad2c18ef9f471d8f7d4ca70172e48c/tree-2/attempt-1` probe passed all 79 cases
+with zero failures, errors or skips. Its XML SHA-256 is
+`539818443ba5649ded61de9218c2d99e00ffc770d7707ae70373c1e9df0e509a`.
+The regression retained two independent snapshots: 276,616 bytes in 271 frames
+(SHA-256 `6dd5dea976618e03a4f073067ceb59d39e0b19093222f35a2aaba43accd8bd5a`)
+and 269,344 bytes in 264 frames
+(SHA-256 `48392c073cd1d7b95e8d768313e6c289a0b22d09a6aa99818ea90a3f304f69e7`).
+All frames reconstructed without loss. Eight pure diagnostic-helper tests,
+app ktlint/Detekt and AndroidTest APK assembly also passed.
+
+This scoped pass validates only the selected behavior and evidence collection.
+The original unfiltered focus failure
+and later compositor exhaustion remain unresolved; complete Controller local and
+independent exact-head CI gates remain required.
+
+## PR42 repeated native admission failure investigation (2026-11-15)
+
+Controller `review-fix-16-a89edec0dddf44b1b86211ffbc4a5046/attempt-1`
+failed after 74 passing app cases. Its 76 completed failures all stop in
+KeyboardInputFixture native window admission; the 77th testcase was interrupted
+by a system restart. Every completed failure now has its own diagnostic capture.
+All 76 captures report no InputDispatcher focused window and a `NO_WINDOW` focus
+request. The first capture reconstructs all 308,659 bytes from 302 frames,
+SHA-256 `0f007d7a90250b38efc895c4a617bde5998e4504444634420274f35ad07ad831`.
+WindowManager selects ComponentActivity while its drawn surface remains hidden;
+WMShell reports no pending or active transition. Input and SurfaceFlinger reads
+reach their explicit 65,536-byte limit. SurfaceFlinger's reported layer-history
+size grows from 1,148 to 3,942 across these captures; this is not a count of live
+layers or proof of the earlier run's 4,096-layer abort. The final testcase log
+records service/process restart without retaining the initiating crash stack.
+
+The authorized unchanged-tree probe
+`6a62f0fdf475452bb5ed26b3cd8a7fa1/tree-1/attempt-1` selects every one of the
+189 received testcase identities, including all failures, all predecessors and
+adjacent completed cases. Its XML confirms the same identities in the same order:
+189 passed, zero failures, errors or skips (968.4 seconds including execution
+overhead; 910.781 summed testcase seconds). XML SHA-256:
+`29936a9f7fdcea37b625771182dfcbe82d6e50367426f6581d44f5fa0108b2fb`.
+Thus this bounded replay does not reproduce or explain the unfiltered failure.
+Fixture start/reopen/close and adjacent durable assertions were rechecked without
+finding a justified repository repair. Native admission, animation settings,
+actions, production behavior and assertions remain unchanged. The original
+unfiltered failure and its triggering cause remain unresolved; this investigation
+does not establish CI PASS or close the stability obligation.
+
+## PR42 input-state preservation before native admission (2026-11-15)
+
+The shared keyboard fixture's `enter` changed display touch mode and requested
+View focus before admitting the intended native window. A rejected background
+entry could therefore change another foreground window's input state and record
+the fixture-modified state in its diagnostic capture. This is independently
+reproducible with an attached Activity behind a focused dialog; it does not
+establish the cause of the original unfiltered window/input/compositor failure.
+
+The registered regression establishes actual touch mode, rejects background
+entry while a dialog owns native focus, and checks unchanged foreground input
+mode, zero commands and original `touchMode=true` diagnostic evidence. A fresh
+admitted foreground entry must then execute exactly one native Enter command.
+Its fixture closes before restoring the original display mode, including on
+assertion failure. There are no arbitrary sleeps or automatic command retries.
+
+Before the fixture repair, authorized probe
+`6a62f0fdf475452bb5ed26b3cd8a7fa1/tree-2/attempt-1` passed all 77 original
+targets and the three existing keyboard-fixture cases, and failed only the new
+foreground-input-mode assertion (81 cases; 538.6 seconds). The rejected entry's
+capture reports `touchMode=false`: all 279,991 bytes reconstruct from 274 frames,
+SHA-256 `c6e78894b47017f903d24a70f8c6d066feeaf6f8d565061ab70ef70d75cf5e9f`.
+
+`enter` now uses the existing native admission before recording/changing touch
+mode or requesting View focus, and retains its post-entry admission check.
+`sendKey`, `closeKeyboard` and `awaitFocus` already admit their native target
+before changing focus/input. The sibling Plan DST focus test now uses this same
+fixture instead of its direct pre-admission mode change; its selected-offset,
+focus and no-command assertions remain. Native admission, diagnostic read bounds,
+failure causes, platform animation settings and production behavior are preserved.
+The original unfiltered failure and its triggering cause remain unresolved.
+
+The corrected authorized
+`6a62f0fdf475452bb5ed26b3cd8a7fa1/tree-3/attempt-1` probe passed all 89 cases
+with zero failures, errors or skips (624.0 seconds including execution overhead).
+The exact registered scope contains all original failures, all keyboard-fixture
+cases, the six Plan DST presentation cases and the original History lifecycle and
+terminal-catalog-retry regressions. XML SHA-256:
+`93626916e2986a14c709f6c26c0650961f192c87b8871a68a8e98fd333d6c28c`.
+The new regression's rejected-entry capture preserves `touchMode=true` and
+`focusedView=null`, followed by successful admitted native Enter. Its 277,008 bytes
+reconstruct from all 271 frames, SHA-256
+`92f253f1426241642537e8099e930985c994a2083df4577ab6834f42e09903f1`.
+Controller cleanup reports no owned processes remaining. App ktlint, Detekt and
+AndroidTest APK assembly pass. A forced focused JVM rerun passes all 39 History
+navigation-admission and manual-entry controller cases. This validates the input-state/evidence repair;
+the original unfiltered stability obligation and independent CI gates remain open.

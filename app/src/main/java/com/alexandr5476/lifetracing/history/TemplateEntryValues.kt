@@ -19,6 +19,7 @@ internal sealed interface TemplateEntryValues {
 
     data class Invalid(
         val issue: TemplateEntryValueIssue,
+        val fieldId: ActivityTemplateFieldId? = null,
     ) : TemplateEntryValues
 }
 
@@ -30,6 +31,7 @@ internal fun ActivityTemplate.initialEntryValues(): Map<ActivityTemplateFieldId,
                 formatLauncherNumber(field.defaultNumberScaled, field.displayPrecision),
                 field.defaultCategoryOptionId,
                 field.defaultText.orEmpty(),
+                originalNumberScaled = field.defaultNumberScaled,
                 missing =
                     when (field.type) {
                         CustomFieldType.NUMBER -> field.defaultNumberScaled == null
@@ -39,27 +41,42 @@ internal fun ActivityTemplate.initialEntryValues(): Map<ActivityTemplateFieldId,
             )
     }
 
+/** Same-text callbacks preserve Present values; input from Missing is always an explicit edit. */
+internal fun ManualEntryFieldDraft.withNumberText(text: String): ManualEntryFieldDraft =
+    copy(numberText = text, missing = false, numberWasEdited = numberWasEdited || missing || numberText != text)
+
+internal fun ManualEntryFieldDraft.proposedNumber(displayPrecision: Int?): Long? =
+    if (!numberWasEdited &&
+        originalNumberScaled != null &&
+        numberText == formatLauncherNumber(originalNumberScaled, displayPrecision)
+    ) {
+        originalNumberScaled
+    } else {
+        parseLauncherNumber(numberText, displayPrecision)
+    }
+
 @Suppress("ReturnCount")
 internal fun ActivityTemplate.proposeEntryValues(
     drafts: Map<ActivityTemplateFieldId, ManualEntryFieldDraft>,
 ): TemplateEntryValues {
     val values = mutableListOf<ActivityEntryValueOverride>()
     for (field in fields.filter { it.deletedAt == null }) {
-        val draft = drafts[field.id] ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.MISSING_DRAFT)
+        val draft =
+            drafts[field.id] ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.MISSING_DRAFT, field.id)
         val value =
             when {
                 draft.missing -> ActivityEntryValue.Missing
                 field.type == CustomFieldType.NUMBER -> {
                     val number =
-                        parseLauncherNumber(draft.numberText, field.displayPrecision)
-                            ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_NUMBER)
+                        draft.proposedNumber(field.displayPrecision)
+                            ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_NUMBER, field.id)
                     ActivityEntryValue.Number(number)
                 }
                 field.type == CustomFieldType.CATEGORY -> {
                     val selected =
                         draft.selectedOptionId?.takeIf { id ->
                             field.categoryOptions.any { it.id == id && !it.isArchived }
-                        } ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_CATEGORY)
+                        } ?: return TemplateEntryValues.Invalid(TemplateEntryValueIssue.INVALID_CATEGORY, field.id)
                     ActivityEntryValue.Category(ActivityEntryOptionReference.Template(selected))
                 }
                 else -> ActivityEntryValue.Text(draft.text)

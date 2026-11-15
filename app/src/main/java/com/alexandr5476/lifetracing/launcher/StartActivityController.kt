@@ -32,6 +32,7 @@ import com.alexandr5476.lifetracing.domain.StaleLauncherTargetException
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.history.ManualEntryFieldDraft
+import com.alexandr5476.lifetracing.history.withNumberText
 import com.alexandr5476.lifetracing.runtime.RuntimeMutationGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -450,7 +451,7 @@ class StartActivityController internal constructor(
             is StartActivityAction.ChooseOptionEndOffset -> editOptions { it.copy(completedOffset = action.offset) }
             is StartActivityAction.EditOptionNumber ->
                 editOptionValue(action.fieldId) {
-                    it.copy(numberText = action.text, missing = false)
+                    it.withNumberText(action.text)
                 }
             is StartActivityAction.EditOptionText ->
                 editOptionValue(action.fieldId) {
