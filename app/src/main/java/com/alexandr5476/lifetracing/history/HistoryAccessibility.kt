@@ -5,6 +5,7 @@ package com.alexandr5476.lifetracing.history
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,6 +23,9 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRoot
 import com.alexandr5476.lifetracing.domain.CompletedHistoryRootKind
@@ -58,12 +62,20 @@ internal class HistoryNavigationAdmission(
     var attached = true
     private var submitted = false
 
+    fun revoke() {
+        if (!submitted) {
+            submitted = true
+            onInvalidated()
+        }
+    }
+
+    fun canFocus(): Boolean = attached && !submitted && ownsRoute()
+
     private fun ownsActionRoute(): Boolean {
         if (!attached || submitted) return false
         if (!ownsRoute()) {
             // A rejected outgoing callback cannot revive when ownership returns before a hidden frame.
-            submitted = true
-            onInvalidated()
+            revoke()
         }
         return !submitted
     }
@@ -74,8 +86,7 @@ internal class HistoryNavigationAdmission(
     ): () -> Unit =
         {
             if (ownsActionRoute() && enabled && current() === publication) {
-                submitted = true
-                onInvalidated()
+                revoke()
                 block()
             }
         }
@@ -93,18 +104,39 @@ internal fun rememberHistoryAdmission(
     ownsRoute: () -> Boolean,
     visible: Boolean,
 ): HistoryNavigationAdmission {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+    val interactive = visible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val readCurrent by rememberUpdatedState(current)
     val owner by rememberUpdatedState(ownsRoute)
     var submittedGeneration by remember { mutableStateOf(0L) }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val admission =
-        remember(HistoryPublicationKey(publication), visible, configuration, density, submittedGeneration) {
-            HistoryNavigationAdmission(publication, { readCurrent() }, { visible && owner() }) {
+        remember(
+            HistoryPublicationKey(publication),
+            interactive,
+            lifecycle,
+            configuration,
+            density,
+            submittedGeneration,
+        ) {
+            HistoryNavigationAdmission(publication, { readCurrent() }, {
+                interactive && owner() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            }) {
                 submittedGeneration++
             }
         }
     DisposableEffect(admission) { onDispose { admission.attached = false } }
+    DisposableEffect(lifecycle, admission) {
+        // Observe pause synchronously, even if StateFlow coalesces pause/resume before composition.
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_PAUSE) admission.revoke()
+            }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     return admission
 }
 

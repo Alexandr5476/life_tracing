@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -576,6 +577,100 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun failedContinuationRetryRetainsOnlyTheLastPageOrReplacesItWithNewResults() =
+        runBlocking {
+            for (count in listOf(100, 150)) {
+                val fixture = fixture(timedTemplate(), catalogItemCount = count, catalogFailureAtRead = 3)
+                try {
+                    fixture.awaitCatalog()
+                    fixture.select()
+                    val selected = fixture.controller.state.value.selected
+                    fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+                    val lastPage = (fixture.controller.state.value.catalog as ManualEntryLoad.Content).value
+                    assertEquals((50 until 100).map { ActivityTemplateId("catalog-$it") }, lastPage.map { it.id })
+                    assertEquals(2, fixture.controller.state.value.catalogPageNumber)
+                    fixture.controller.dispatch(ManualActivityEntryAction.LoadMore)
+                    val failed = fixture.controller.state.value
+                    assertInstanceOf(ManualEntryLoad.Failure::class.java, failed.catalog)
+                    assertSame(selected, failed.selected)
+                    val retry =
+                        ManualEntryAdmission(
+                            failed,
+                            { fixture.controller.state.value },
+                            { true },
+                            fixture.controller::dispatch,
+                        ).action(ManualActivityEntryAction.RetryCatalog)
+                    retry()
+                    val recovered = fixture.controller.state.value
+                    val shown = (recovered.catalog as ManualEntryLoad.Content).value
+                    if (count == 100) {
+                        assertSame(lastPage, shown)
+                        assertEquals(2, recovered.catalogPageNumber)
+                        assertFalse(recovered.canLoadMore)
+                    } else {
+                        assertEquals((100 until 150).map { ActivityTemplateId("catalog-$it") }, shown.map { it.id })
+                        assertEquals(3, recovered.catalogPageNumber)
+                        assertTrue(recovered.canLoadMore)
+                    }
+                    assertSame(selected, recovered.selected)
+                    assertEquals(listOf(TEMPLATE_ID), fixture.templateReads)
+                    assertEquals(listOf<Int?>(null, 49, 99, 99), fixture.catalogAfterIndexes)
+                    retry()
+                    assertSame(recovered, fixture.controller.state.value)
+                    val target = shown[23].id
+                    fixture.currentTemplate = fixture.currentTemplate.copy(id = target)
+                    ManualEntryAdmission(
+                        recovered,
+                        { fixture.controller.state.value },
+                        { true },
+                        fixture.controller::dispatch,
+                    ).action(ManualActivityEntryAction.Select(target))()
+                    assertEquals(target, fixture.controller.state.value.selectedTemplateId)
+                    assertEquals(listOf(TEMPLATE_ID, target), fixture.templateReads)
+                    retry()
+                    assertEquals(4, fixture.catalogReads)
+                    assertTrue(fixture.attemptedTimed.isEmpty())
+                    assertTrue(fixture.noLive.isEmpty())
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
+    fun initialCatalogFailureRetriesFromTheBeginningWithoutHydratingOrWriting() =
+        runBlocking {
+            val fixture = fixture(timedTemplate(), catalogItemCount = 100, catalogFailureAtRead = 1)
+            try {
+                val failed = fixture.controller.state.value
+                assertInstanceOf(ManualEntryLoad.Failure::class.java, failed.catalog)
+                val retry =
+                    ManualEntryAdmission(
+                        failed,
+                        { fixture.controller.state.value },
+                        { true },
+                        fixture.controller::dispatch,
+                    ).action(ManualActivityEntryAction.RetryCatalog)
+                retry()
+                val recovered = fixture.controller.state.value
+                assertEquals(
+                    (0 until 50).map { ActivityTemplateId("catalog-$it") },
+                    (recovered.catalog as ManualEntryLoad.Content).value.map { it.id },
+                )
+                assertEquals(1, recovered.catalogPageNumber)
+                assertTrue(recovered.canLoadMore)
+                retry()
+                assertEquals(listOf<Int?>(null, null), fixture.catalogAfterIndexes)
+                assertSame(recovered, fixture.controller.state.value)
+                assertTrue(fixture.templateReads.isEmpty())
+                assertTrue(fixture.attemptedTimed.isEmpty())
+                assertTrue(fixture.noLive.isEmpty())
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
     fun overlapProceedResamplesCommandTimeAndZoneChangeRestartsChecking() =
         runBlocking {
             val fixture = fixture(timedTemplate(), zone = BERLIN, overlap = true)
@@ -860,8 +955,9 @@ class ManualActivityEntryControllerTest {
         timedWriteGate: CompletableDeferred<Unit>? = null,
         catalogPages: Boolean = false,
         catalogItemCount: Int? = null,
+        catalogFailureAtRead: Int? = null,
     ): Fixture {
-        val fixture = Fixture(template, timedWriteGate, zone, catalogPages, catalogItemCount)
+        val fixture = Fixture(template, timedWriteGate, zone, catalogPages, catalogItemCount, catalogFailureAtRead)
         fixture.overlap = overlap
         fixture.controller =
             ManualActivityEntryController(
@@ -899,6 +995,7 @@ class ManualActivityEntryControllerTest {
         var zone: ZoneId,
         val catalogPages: Boolean,
         val catalogItemCount: Int?,
+        val catalogFailureAtRead: Int?,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         lateinit var controller: ManualActivityEntryController
@@ -923,7 +1020,6 @@ class ManualActivityEntryControllerTest {
 
         suspend fun readCatalog(after: ReusableActivityCatalogItem?): List<ReusableActivityCatalogItem> {
             catalogReads++
-            catalogReadFailure?.let { throw it }
             val afterIndex =
                 after
                     ?.id
@@ -931,6 +1027,8 @@ class ManualActivityEntryControllerTest {
                     ?.removePrefix("catalog-")
                     ?.toIntOrNull()
             catalogAfterIndexes += afterIndex
+            catalogReadFailure?.let { throw it }
+            if (catalogReads == catalogFailureAtRead) error("One-time catalog failure")
             if (!catalogPages && catalogItemCount == null) return listOf(catalogItem(TEMPLATE_ID, currentTemplate))
             val start = (afterIndex ?: -1) + 1
             val end = minOf(start + MANUAL_ACTIVITY_CATALOG_PAGE_SIZE, catalogItemCount ?: Int.MAX_VALUE)

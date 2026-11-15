@@ -22,9 +22,9 @@ internal class SystemUiWindowDiagnostics(
     fun capture(windows: String): String {
         if (!obstruction.containsMatchIn(windows)) return ""
         if (!attempted.compareAndSet(false, true)) {
-            return "\nSystemUI diagnostic capture already attempted in this process."
+            return "\nSystemUI diagnostic capture already attempted for this fixture."
         }
-        return "\nRead-only SystemUI evidence (one attempt per instrumentation process):\n" +
+        return "\nRead-only SystemUI evidence (one attempt per fixture):\n" +
             listOf(
                 "dumpsys activity lastanr",
                 "dumpsys dropbox --print system_app_anr",
@@ -43,9 +43,9 @@ internal class NativeFocusDiagnostics(
 
     fun capture(): String {
         if (!attempted.compareAndSet(false, true)) {
-            return "\nNative focus diagnostic capture already attempted in this process."
+            return "\nNative focus diagnostic capture already attempted for this fixture."
         }
-        return "\nRead-only native focus evidence (one attempt per instrumentation process):\n" +
+        return "\nRead-only native focus evidence (one attempt per fixture):\n" +
             listOf(
                 "dumpsys input",
                 "dumpsys window displays",

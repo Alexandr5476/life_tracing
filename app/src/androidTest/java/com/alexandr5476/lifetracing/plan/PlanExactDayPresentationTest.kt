@@ -3,7 +3,6 @@ package com.alexandr5476.lifetracing.plan
 import android.content.res.Configuration
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -27,6 +26,7 @@ import com.alexandr5476.lifetracing.domain.CancelledPlanPage
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.ReusablePlanCatalogItem
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +45,9 @@ import java.util.Locale
 @RunWith(AndroidJUnit4::class)
 class PlanExactDayPresentationTest {
     @get:Rule val compose = createComposeRule()
+
+    @get:Rule val keyboard = KeyboardInputFixture(compose)
+
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
@@ -119,25 +122,18 @@ class PlanExactDayPresentationTest {
     }
 
     @Test
-    @Suppress("DEPRECATION") // Instrumentation restores the input mode changed by this keyboard fixture.
     fun selectingAnOverlapOccurrenceRetainsKeyboardFocus() {
         withForm { _, commands ->
             val first = context.getString(R.string.plan_first_occurrence, "02:30", "UTC+02:00")
             val choice = compose.onNodeWithContentDescription(first).performScrollTo()
-            val dialogView = (choice.fetchSemanticsNode().root as ViewRootForTest).view
-            val wasInTouchMode = compose.runOnIdle { dialogView.isInTouchMode }
-            try {
-                compose.runOnIdle { assertTrue(dialogView.requestFocusFromTouch()) }
-                choice.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
-                choice
-                    .assertIsFocused()
-                    .performClick()
-                    .assertIsSelected()
-                    .assertIsFocused()
-                compose.runOnIdle { assertTrue(commands.isEmpty()) }
-            } finally {
-                compose.runOnIdle { InstrumentationRegistry.getInstrumentation().setInTouchMode(wasInTouchMode) }
-            }
+            keyboard.enter(choice)
+            choice.performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+            choice
+                .assertIsFocused()
+                .performClick()
+                .assertIsSelected()
+                .assertIsFocused()
+            compose.runOnIdle { assertTrue(commands.isEmpty()) }
         }
     }
 

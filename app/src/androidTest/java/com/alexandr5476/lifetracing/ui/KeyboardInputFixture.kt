@@ -37,6 +37,10 @@ class KeyboardInputFixture(
     private var previousTouchMode: Boolean? = null
     private val screenFlags = mutableMapOf<View, Boolean>()
 
+    // A rule owns its capture budget; later testcases need fresh platform evidence.
+    private val systemUiDiagnostics = SystemUiWindowDiagnostics { nativeDiagnosticShell().read(it) }
+    private val nativeFocusDiagnostics = NativeFocusDiagnostics { nativeDiagnosticShell().read(it) }
+
     override fun before() = wakeDisplay()
 
     private fun wakeDisplay() {
@@ -69,7 +73,8 @@ class KeyboardInputFixture(
     }
 
     fun enter(target: SemanticsNodeInteraction = compose.onRoot()) {
-        val view = attachedView(target)
+        // Reject foreign windows before changing touch mode or focus, preserving failure evidence.
+        val view = keyboardView(target)
         compose.runOnIdle {
             if (previousTouchMode == null) previousTouchMode = view.isInTouchMode
             assertTrue("The attached Compose view must accept keyboard focus", view.requestFocusFromTouch())
@@ -176,11 +181,6 @@ class KeyboardInputFixture(
         }
         previousTouchMode?.let { InstrumentationRegistry.getInstrumentation().setInTouchMode(it) }
         previousTouchMode = null
-    }
-
-    private companion object {
-        val systemUiDiagnostics = SystemUiWindowDiagnostics { nativeDiagnosticShell().read(it) }
-        val nativeFocusDiagnostics = NativeFocusDiagnostics { nativeDiagnosticShell().read(it) }
     }
 }
 

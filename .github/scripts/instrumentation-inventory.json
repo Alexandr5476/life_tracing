@@ -998,6 +998,7 @@
       "nativeMoveThenPointerDragUsesTheCurrentSourceContainer"
     ],
     "com.alexandr5476.lifetracing.history.HistoryAccessibilityPresentationTest": [
+      "lifecycleLossRevokesEveryHistoryCallbackWithoutChangingRouteOrPublication",
       "detailDistinguishesMissingPresentEmptyAndNonemptyTextInEnglishAndRussian",
       "hiddenDeletionRetainsWriterAndTerminalRouteNeverRevivesDestructiveControls",
       "deletionConfirmationNativeFocusLabelsAndTargetsSurviveEnglishRussianScaleExtremes",
@@ -1031,6 +1032,7 @@
       "timingValidationGenericAndStaleFailuresRemainVisibleInReview"
     ],
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
+      "failedTerminalCatalogRetryRestoresSelectableLastPageAndRevokesRetry",
       "setTextReportsAdmissionInBothTreesAcrossStaleHiddenPendingAndDisposedInputs",
       "actualFieldInteractionsPreserveZeroEmptyAndStableCategoryIdentityAcrossMissing",
       "ambiguityChoicesShowBothOccurrencesAndConcreteOffsets",
@@ -1487,6 +1489,8 @@
       "missingLazyTargetRetainsOriginalCauseAndFocusedViewportWithoutInvokingActions"
     ],
     "com.alexandr5476.lifetracing.ui.KeyboardInputFixtureTest": [
+      "independentFixturesRetainFreshNativeFailureEvidenceWithoutRelaxingWindowAdmission",
+      "rejectedBackgroundEntryPreservesForegroundInputModeAndFailureEvidence",
       "hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog",
       "visibleImeCloseStillDismissesThroughItsFocusedWindow"
     ],

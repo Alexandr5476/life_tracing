@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
@@ -33,6 +34,10 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
@@ -54,6 +59,9 @@ import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -310,6 +318,109 @@ class HistoryAccessibilityPresentationTest {
         compose.onNodeWithText(text(R.string.history_read_failure)).assert(
             SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite),
         )
+    }
+
+    @Test
+    fun lifecycleLossRevokesEveryHistoryCallbackWithoutChangingRouteOrPublication() {
+        class HistoryOwner : LifecycleOwner {
+            val registry = LifecycleRegistry(this)
+            override val lifecycle: Lifecycle get() = registry
+        }
+        val owner = compose.runOnIdle { HistoryOwner().also { it.registry.currentState = Lifecycle.State.RESUMED } }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var reads = 0
+        val roots =
+            listOf(activity("exact-activity"), sequence("exact-sequence")) +
+                (0 until 99).map { activity("other-$it") }
+        val controller =
+            HistoryController(scope, { query ->
+                assertEquals(101, query.limit)
+                reads++
+                roots
+            }, { END }, { ZONE })
+        val destinations = mutableListOf<String>()
+        try {
+            compose.setContent {
+                CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+                    LifeTracingTheme {
+                        HistoryRoute(
+                            controller,
+                            onBack = { destinations += "back" },
+                            onAddCompletedActivity = { destinations += "manual-session" },
+                            onOpenActivity = { destinations += "activity:${it.executionId.value}" },
+                            onOpenSequence = { destinations += "sequence:${it.executionId.value}" },
+                            ownsRoute = { true },
+                        )
+                    }
+                }
+            }
+            keyboard.enter()
+            val tags =
+                listOf(
+                    "history-back",
+                    "history-older",
+                    "history-add-completed-activity",
+                    "history-activity-exact-activity",
+                    "history-sequence-exact-sequence",
+                    "history-load-more",
+                )
+            val retained =
+                tags.map {
+                    compose
+                        .onNodeWithTag(it)
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action!!
+                }
+            val publication = compose.runOnIdle { controller.state.value }
+            // Activate in the pause UI turn, before a disabled frame can be composed.
+            compose.runOnIdle {
+                owner.registry.currentState = Lifecycle.State.STARTED
+                retained.forEach { it() }
+                assertSame(publication, controller.state.value)
+                assertEquals(1, reads)
+                assertTrue(destinations.isEmpty())
+            }
+            tags.forEach { compose.onNodeWithTag(it).assertIsNotEnabled() }
+            compose.runOnIdle { owner.registry.currentState = Lifecycle.State.RESUMED }
+            tags.forEach { compose.onNodeWithTag(it).assertIsEnabled() }
+            keyboard.awaitFocus(compose.onNodeWithTag("history-back"))
+            compose.runOnIdle {
+                retained.forEach { it() }
+                assertSame(publication, controller.state.value)
+                assertEquals(1, reads)
+                assertTrue(destinations.isEmpty())
+            }
+            // Fresh publications admit all native actions and retain exact typed record identity.
+            tags.forEach { tag ->
+                compose.onNodeWithTag(tag).performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+                compose.waitForIdle()
+            }
+            compose.runOnIdle {
+                assertEquals(3, reads)
+                assertEquals(
+                    listOf("back", "manual-session", "activity:exact-activity", "sequence:exact-sequence"),
+                    destinations,
+                )
+            }
+            // Pause must revoke even an uninvoked callback when resume precedes recomposition.
+            val uninvoked =
+                compose
+                    .onNodeWithTag("history-add-completed-activity")
+                    .fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            compose.runOnIdle {
+                owner.registry.currentState = Lifecycle.State.STARTED
+                owner.registry.currentState = Lifecycle.State.RESUMED
+                uninvoked()
+                assertEquals(4, destinations.size)
+            }
+            compose.onNodeWithTag("history-add-completed-activity").assertIsEnabled()
+        } finally {
+            controller.close()
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
     }
 
     @Test

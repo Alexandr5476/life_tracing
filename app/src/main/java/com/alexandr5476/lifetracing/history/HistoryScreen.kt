@@ -220,13 +220,17 @@ internal fun HistoryScreen(
     readCurrent: () -> HistoryPresentationState = { state },
     ownsRoute: () -> Boolean = { isRouteVisible },
 ) {
-    val admission = rememberHistoryAdmission(state, readCurrent, ownsRoute, isRouteVisible)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+    val interactive = isRouteVisible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+    val owner = { ownsRoute() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+    val admission = rememberHistoryAdmission(state, readCurrent, owner, interactive)
     val focus =
         rememberHistoryFocus(
-            isRouteVisible,
+            interactive,
             state.load is HistoryRootsLoad.Loading,
             state.load is HistoryRootsLoad.Failure || state.discoveryFailure != null,
-            ownsRoute,
+            owner,
         )
     LifeTracingAccessibleTargets {
         CompositionLocalProvider(LocalHistoryAdmission provides admission, LocalHistoryFocus provides focus) {
@@ -245,6 +249,7 @@ private fun HistoryScreenContent(
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit,
 ) {
     val admission = LocalHistoryAdmission.current
+    val enabled = admission.canFocus()
     val focus = LocalHistoryFocus.current
     val back = admission.callback(block = onBack)
     val add = admission.callback(block = onAddCompletedActivity)
@@ -282,14 +287,22 @@ private fun HistoryScreenContent(
                 )
                 TextButton(
                     onClick = back,
-                    modifier = historyFocusTarget(focus.back).historyActionSemantics(back).testTag("history-back"),
+                    enabled = enabled,
+                    modifier =
+                        historyFocusTarget(focus.back, enabled)
+                            .historyActionSemantics(back)
+                            .testTag("history-back"),
                 ) {
                     Text(stringResource(R.string.history_back))
                 }
             }
             LifeTracingPrimaryButton(
                 onClick = add,
-                modifier = historyFocusTarget().historyActionSemantics(add).testTag("history-add-completed-activity"),
+                enabled = enabled,
+                modifier =
+                    historyFocusTarget(enabled = enabled)
+                        .historyActionSemantics(add)
+                        .testTag("history-add-completed-activity"),
             ) { Text(stringResource(R.string.manual_history_title)) }
             Text(
                 historyDateRange(state.window.startDate, state.window.endDate),
@@ -302,13 +315,17 @@ private fun HistoryScreenContent(
             ) {
                 LifeTracingSecondaryButton(
                     onClick = older,
-                    modifier = historyFocusTarget().historyActionSemantics(older, olderLabel).testTag("history-older"),
+                    enabled = enabled,
+                    modifier =
+                        historyFocusTarget(enabled = enabled)
+                            .historyActionSemantics(older, olderLabel)
+                            .testTag("history-older"),
                 ) { Text(olderLabel) }
                 LifeTracingSecondaryButton(
                     onClick = newer,
-                    enabled = state.canNavigateNewer,
+                    enabled = enabled && state.canNavigateNewer,
                     modifier =
-                        historyFocusTarget(enabled = state.canNavigateNewer)
+                        historyFocusTarget(enabled = enabled && state.canNavigateNewer)
                             .historyActionSemantics(newer, newerLabel)
                             .testTag("history-newer"),
                 ) { Text(newerLabel) }
@@ -316,13 +333,13 @@ private fun HistoryScreenContent(
             when (val load = state.load) {
                 HistoryRootsLoad.Loading -> HistoryCard { HistoryReadStatus(R.string.history_loading) }
                 HistoryRootsLoad.Empty -> {
-                    state.discoveryFailure?.let { FailureCard(onRetry = retry) }
+                    state.discoveryFailure?.let { FailureCard(onRetry = retry, enabled = enabled) }
                         ?: HistoryCard { HistoryReadStatus(R.string.history_empty) }
                 }
-                is HistoryRootsLoad.Failure -> FailureCard(onRetry = retry)
+                is HistoryRootsLoad.Failure -> FailureCard(onRetry = retry, enabled = enabled)
                 is HistoryRootsLoad.Content ->
                     {
-                        state.discoveryFailure?.let { FailureCard(onRetry = retry) }
+                        state.discoveryFailure?.let { FailureCard(onRetry = retry, enabled = enabled) }
                         Text(
                             stringResource(R.string.history_results, load.roots.size),
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -343,8 +360,9 @@ private fun HistoryScreenContent(
                         if (state.canLoadMore) {
                             LifeTracingSecondaryButton(
                                 onClick = more,
+                                enabled = enabled,
                                 modifier =
-                                    historyFocusTarget()
+                                    historyFocusTarget(enabled = enabled)
                                         .historyActionSemantics(
                                             more,
                                         ).testTag("history-load-more"),
@@ -365,6 +383,7 @@ private fun HistoryRootRow(
     onOpenSequence: (CompletedSequenceHistoryRoot) -> Unit,
 ) {
     val identity = root.identity()
+    val enabled = LocalHistoryAdmission.current.canFocus()
     val record =
         stringResource(
             if (root is CompletedActivityHistoryRoot) {
@@ -385,7 +404,7 @@ private fun HistoryRootRow(
     val openLabel = stringResource(R.string.history_open_record, record)
     HistoryCard(
         modifier =
-            historyFocusTarget()
+            historyFocusTarget(enabled = enabled)
                 .semantics { contentDescription = description }
                 .historyActionSemantics(open, openLabel)
                 .testTag(
@@ -395,6 +414,7 @@ private fun HistoryRootRow(
                     },
                 ),
         onClick = open,
+        enabled = enabled,
     ) {
         when (root) {
             is CompletedActivityHistoryRoot -> {
@@ -1401,6 +1421,7 @@ private fun HistoryCard(
     modifier: Modifier = Modifier,
     container: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surfaceContainerLow,
     onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     val cardModifier = modifier.fillMaxWidth()
@@ -1413,6 +1434,7 @@ private fun HistoryCard(
     } else {
         Card(
             onClick = onClick,
+            enabled = enabled,
             modifier = cardModifier,
             border = border,
             colors = colors,

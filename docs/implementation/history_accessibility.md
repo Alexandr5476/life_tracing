@@ -24,6 +24,38 @@ Controller full and gmd-full, API compatibility suites and independent exact-hea
 GitHub CI remain Controller-owned. Compilation alone supplies no device execution
 or manual TalkBack/Switch Access evidence.
 
+## Review follow-up: foreground lifecycle and catalog continuation
+
+History navigation now observes RESUMED ownership and checks the live lifecycle
+at activation. Pause permanently revokes issued callbacks without exiting the
+route or clearing canonical browsing state. Native controls and focus follow the
+effective foreground boundary. The shared History admission also guards retained
+detail navigation callbacks.
+
+Manual catalog continuation retains only its latest successfully displayed page
+through read failures. An empty terminal retry restores that exact bounded page
+and page number, clears continuation, and makes the old Retry inapplicable.
+Nonempty continuation replaces the page. Selection and source hydration remain
+independent; canonical readers, writers and durable historical semantics are unchanged.
+
+The catalog regression failed against audited head 2317057538d614aeed9e088bc3ff6f08d4e38b30
+before the fix; initial-failure retry already passed. New registered production-route
+Compose regressions cover lifecycle revocation and keyboard catalog recovery.
+Their device execution, full compatibility gates and exact-head CI remain
+Controller-owned. No manual TalkBack or Switch Access walkthrough was performed.
+
+Local verification passed 135 selected domain tests, seven Activity mapper tests
+and 418 app tests covering History, navigation, timestamps, Plan, runtime, launcher,
+Library, Statistics and Daily, with no failures, errors or skips. App ktlint,
+Detekt and lint passed; production and instrumentation APKs assembled. Both new
+instrumentation identities are registered and git diff --check passed.
+
+The follow-up review covered route/session ownership, canonical cursor bounds,
+source freshness, exact Activity/Sequence IDs, frozen Field/option identities,
+timezone/DST and overlap validation, mutation admission, immutable snapshots,
+Plan/Statistics consequences and committed-result/recreation delivery. No reader,
+writer, transaction, schema or durable-state change was needed.
+
 ## Presentation
 
 History keeps the canonical newest-date discovery, adjacent 28-day windows,

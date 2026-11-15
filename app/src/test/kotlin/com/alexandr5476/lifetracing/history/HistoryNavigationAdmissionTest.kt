@@ -33,6 +33,26 @@ class HistoryNavigationAdmissionTest {
     }
 
     @Test
+    fun observedPauseRevokesEveryIssuedActionEvenWithoutActivationUntilResume() {
+        val publication = Any()
+        var resumed = true
+        var calls = 0
+        var invalidations = 0
+        val old = HistoryNavigationAdmission(publication, { publication }, { resumed }) { invalidations++ }
+        val callbacks = List(6) { old.callback { calls++ } }
+        resumed = false
+        old.revoke()
+        callbacks.forEach { it() }
+        resumed = true
+        callbacks.forEach { it() }
+        assertEquals(0, calls)
+        assertEquals(1, invalidations)
+        val fresh = HistoryNavigationAdmission(publication, { publication }, { resumed })
+        fresh.callback { calls++ }()
+        assertEquals(1, calls)
+    }
+
+    @Test
     fun obsoleteAndEqualRematerializedPublicationsCannotNavigate() {
         val original = HistoryPresentationState(HistoryBrowseWindow(DATE, DATE))
         var current = original

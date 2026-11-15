@@ -226,6 +226,9 @@ class ManualActivityEntryController internal constructor(
     private var mutation: Job? = null
     private var mutationInFlight = false
     private var catalogRequestCursor: ReusableActivityCatalogItem? = null
+
+    // One bounded displayed page survives continuation Loading/Failure; successful pages replace it.
+    private var displayedCatalogPage: List<ReusableActivityCatalogItem>? = null
     private var staleTemplateId: ActivityTemplateId? = null
     private var closed = false
 
@@ -289,7 +292,7 @@ class ManualActivityEntryController internal constructor(
 
     private fun loadCatalog(cursor: ReusableActivityCatalogItem?) {
         if (mutableState.value.catalog is ManualEntryLoad.Loading) return
-        val retainedPage = (mutableState.value.catalog as? ManualEntryLoad.Content)?.value
+        val retainedPage = displayedCatalogPage
         catalogRequestCursor = cursor
         mutableState.update { it.copy(catalog = ManualEntryLoad.Loading, catalogReplacing = cursor != null) }
         scope.launch {
@@ -299,6 +302,7 @@ class ManualActivityEntryController internal constructor(
                 if (!closed) {
                     val shown = retainedPage.takeIf { cursor != null && page.isEmpty() && !it.isNullOrEmpty() } ?: page
                     val next = page.lastOrNull().takeIf { page.size == pageSize && it != cursor }
+                    displayedCatalogPage = shown
                     mutableState.update {
                         it.copy(
                             catalog = ManualEntryLoad.Content(shown),

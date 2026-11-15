@@ -493,6 +493,83 @@ class ManualActivityEntryScreenTest {
         compose.runOnIdle { assertEquals(emptyList<ManualActivityEntryAction>(), actions) }
     }
 
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test
+    fun failedTerminalCatalogRetryRestoresSelectableLastPageAndRevokesRetry() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val source = template(TimeTrackingMode.NO_LIVE_TRACKING)
+        val rows =
+            (0 until 100).map { index ->
+                ReusableActivityCatalogItem(
+                    ActivityTemplateId("page-$index"),
+                    "Duplicate",
+                    TimeTrackingMode.NO_LIVE_TRACKING,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                )
+            }
+        val cursors = mutableListOf<ActivityTemplateId?>()
+        val templateReads = mutableListOf<ActivityTemplateId>()
+        val controller =
+            ManualActivityEntryController(
+                scope,
+                { cursor ->
+                    cursors += cursor?.id
+                    if (cursors.size == 3) error("One-time continuation failure")
+                    val start = cursor?.let { rows.indexOf(it) + 1 } ?: 0
+                    rows.drop(start).take(MANUAL_ACTIVITY_CATALOG_PAGE_SIZE)
+                },
+                { id ->
+                    templateReads += id
+                    source.copy(id = id)
+                },
+                { _, _ -> error("No overlap query before Save") },
+                { error("No writer before Save") },
+                { error("No writer before Save") },
+            )
+        try {
+            compose.setContent { LifeTracingTheme { ManualActivityEntryRoute(controller, {}, {}) } }
+            compose.onNodeWithTag("manual-history-activity-page-0").performScrollTo().performClick()
+            val selected = compose.runOnIdle { controller.state.value.selected }
+            repeat(2) { compose.onNodeWithTag("manual-history-load-more").performScrollTo().performClick() }
+            val retry = compose.onNodeWithTag("manual-history-catalog-retry")
+            retry.performScrollTo().assertIsEnabled()
+            val oldRetry = retry.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            retry.performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithTag("manual-history-catalog-retry").assertDoesNotExist()
+            compose.onNodeWithTag("manual-history-load-more").assertDoesNotExist()
+            compose.runOnIdle {
+                val state = controller.state.value
+                assertEquals(rows.subList(50, 100), (state.catalog as ManualEntryLoad.Content).value)
+                assertEquals(2, state.catalogPageNumber)
+                assertFalse(state.canLoadMore)
+                assertTrue(selected === state.selected)
+                assertEquals(listOf(rows[0].id), templateReads)
+                oldRetry()
+                assertEquals(listOf(null, rows[49].id, rows[99].id, rows[99].id), cursors)
+            }
+            val target = compose.onNodeWithTag("manual-history-activity-page-73")
+            target.performScrollTo().assertIsEnabled()
+            keyboard.enter(target)
+            target.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(target)
+            target.performKeyInput { pressKey(Key.Enter) }
+            target.assertIsSelected()
+            compose.runOnIdle {
+                oldRetry()
+                assertEquals(rows[73].id, controller.state.value.selectedTemplateId)
+                assertEquals(listOf(rows[0].id, rows[73].id), templateReads)
+                assertEquals(4, cursors.size)
+            }
+        } finally {
+            controller.close()
+            scope.cancel()
+        }
+    }
+
     @Test
     fun repeatedImmediateReadFailureKeepsTheProductionRouteRetryActionable() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
