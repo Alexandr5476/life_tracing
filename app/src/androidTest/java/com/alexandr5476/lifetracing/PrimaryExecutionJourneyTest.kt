@@ -1998,6 +1998,7 @@ class PrimaryExecutionJourneyTest {
             f.launch()
             f.invoke(R.string.daily_history)
             f.invoke(R.string.manual_history_title)
+            f.await { f.host().manualActivityEntryRouteSessions.activeSession != null }
             val controller =
                 f
                     .host()
@@ -2171,6 +2172,7 @@ class PrimaryExecutionJourneyTest {
             f.applyAppearance(language, 1f, 100, 100)
             f.invoke(R.string.daily_history)
             f.invoke(R.string.manual_history_title)
+            f.await { f.host().manualActivityEntryRouteSessions.activeSession != null }
             val controller =
                 f
                     .host()
@@ -3798,6 +3800,13 @@ class PrimaryExecutionJourneyTest {
         fun action(label: String) = compose.onNode(hasText(label) and hasClickAction())
 
         fun invoke(id: Int) {
+            if (id == R.string.manual_history_title) {
+                // Add is publication-owned. Its native OnClick may return true while rejecting
+                // a callback superseded by the initial History read, before a session exists.
+                val history = host().historyControllerOwner.get { error("History route must already exist") }
+                await { history.state.value.load !is HistoryRootsLoad.Loading }
+                compose.waitForIdle()
+            }
             await {
                 tryInvokeCurrent(
                     hasText(text(id)) and hasClickAction() and

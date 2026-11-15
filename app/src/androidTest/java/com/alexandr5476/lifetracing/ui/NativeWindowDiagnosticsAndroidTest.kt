@@ -20,6 +20,11 @@ class NativeWindowDiagnosticsAndroidTest {
         assertTrue(failure.contains("unavailable"))
         assertTrue(failure.contains("command_exit=7"))
 
+        // API26's UiAutomationConnection crashes on EPIPE if a capped reader closes early.
+        val oversized = shell.read("dd if=/dev/zero bs=4096 count=32")
+        assertTrue(oversized.substringBefore('\n'), oversized.startsWith("status=TRUNCATED"))
+        assertTrue(shell.read("printf producer-drained").contains("producer-drained"))
+
         // Select the diagnostic path without causing, dismissing or relying on an actual ANR.
         val report =
             SystemUiWindowDiagnostics(shell::read).capture(

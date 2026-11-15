@@ -10,7 +10,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /** Read the first obstructing SystemUI report, without dismissing it or retrying a testcase. */
 internal class SystemUiWindowDiagnostics(
@@ -260,14 +259,9 @@ internal class BoundedDiagnosticShell(
     }
 
     fun read(command: String): String {
-        val cancelled = AtomicBoolean()
-        val opened = AtomicReference<InputStream?>()
         val task =
             FutureTask {
-                val stream = open(command)
-                opened.set(stream)
-                try {
-                    if (cancelled.get()) return@FutureTask "status=CANCELLED"
+                open(command).use { stream ->
                     val bytes = ByteArray(maximumBytes + 1)
                     var count = 0
                     while (count < bytes.size) {
@@ -276,25 +270,29 @@ internal class BoundedDiagnosticShell(
                         count += size
                     }
                     val status = if (count > maximumBytes) "TRUNCATED at $maximumBytes bytes" else "COMPLETE"
+                    if (count > maximumBytes) {
+                        // Android 8's UiAutomation pump treats a closed reader as fatal EPIPE.
+                        // Keep storage capped while draining the producer before closing its pipe.
+                        val drain = ByteArray(8_192)
+                        while (stream.read(drain) >= 0) {
+                            // Discard overflow; only the bounded prefix belongs in the report.
+                        }
+                    }
                     "status=$status\n" + String(bytes, 0, minOf(count, maximumBytes), Charsets.UTF_8)
-                } finally {
-                    if (opened.compareAndSet(stream, null)) stream.close()
                 }
             }
         return try {
             start(task)
             task.get(timeoutMillis, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
+            // A caller deadline must not close a live native pipe either. The daemon reader
+            // keeps its bounded buffer and owns closure when the producer eventually ends.
             "status=TIMEOUT after $timeoutMillis ms"
         } catch (failure: ExecutionException) {
             "status=ERROR ${failure.cause ?: failure}"
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             "status=INTERRUPTED"
-        } finally {
-            cancelled.set(true)
-            runCatching { opened.getAndSet(null)?.close() }
-            task.cancel(true)
         }
     }
 }
