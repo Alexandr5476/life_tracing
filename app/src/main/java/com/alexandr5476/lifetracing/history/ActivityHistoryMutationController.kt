@@ -203,7 +203,7 @@ class ActivityHistoryMutationController internal constructor(
                     copy(
                         numberText = action.text,
                         missing = false,
-                        numberWasEdited = numberWasEdited || numberText != action.text,
+                        numberWasEdited = numberWasEdited || missing || numberText != action.text,
                     )
                 }
             is ActivityHistoryMutationAction.EditText ->

@@ -1455,6 +1455,8 @@
       "accessibleTimedManualEntryRetainsExactValuesAndProvenanceAfterPhysicalReopen",
       "untouchedManualNumberDefaultsAndRestorationStayExactAfterPhysicalReopen",
       "explicitlyEditedManualNumberUsesInputPrecisionAfterPhysicalReopen",
+      "sameTextManualNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen",
+      "sameTextCorrectionNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen",
       "englishManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen",
       "russianManualCategoryErrorTargetsOnlyInvalidDuplicateFieldAndRecoversAfterReopen",
       "accessibleTimerManualEntryKeepsTargetAndOvertimeIntervalAfterPhysicalReopen",

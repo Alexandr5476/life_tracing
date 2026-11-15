@@ -26,6 +26,64 @@ import java.time.ZoneOffset
 
 class ActivityCorrectionAdmissionTest : ActivityHistoryMutationTestFixture() {
     @Test
+    fun sameTextNumberInputFromMissingParsesInsteadOfRestoringHiddenPrecision() =
+        runBlocking {
+            for ((scaled, precision, expected) in listOf(
+                Triple(12555L, 1, 12600L),
+                Triple(-12555L, 1, -12600L),
+                Triple(0L, 1, 0L),
+                Triple(Long.MAX_VALUE, 0, null),
+                Triple(Long.MIN_VALUE, 0, null),
+            )) {
+                val initial =
+                    detail().let { detail ->
+                        detail.copy(
+                            fields =
+                                detail.fields.map { field ->
+                                    if (field.id == numberId) {
+                                        field.copy(
+                                            displayPrecision = precision,
+                                            actualValue = ActivityHistoryActualValue.Number(scaled),
+                                        )
+                                    } else {
+                                        field
+                                    }
+                                },
+                        )
+                    }
+                val fixture = fixture(initial)
+                try {
+                    fixture.awaitLoaded()
+                    fixture.controller.dispatch(ActivityHistoryMutationAction.BeginCorrection)
+                    val text =
+                        fixture.controller.state.value.draft!!
+                            .values
+                            .getValue(numberId)
+                            .numberText
+                    fixture.admission().action(ActivityHistoryMutationAction.SetMissing(numberId, true))()
+                    assertTrue(
+                        fixture.admission().input { ActivityHistoryMutationAction.EditNumber(numberId, it) }(text),
+                    )
+                    fixture.admission().action(ActivityHistoryMutationAction.Save)()
+                    if (expected == null) {
+                        assertEquals(ActivityHistoryMutationIssue.INVALID_NUMBER, fixture.controller.state.value.issue)
+                        assertEquals(0, fixture.correctAttempts)
+                        assertTrue(fixture.overlapCalls.isEmpty())
+                    } else {
+                        fixture.awaitRefresh()
+                        val correction = fixture.corrections.single()
+                        val values = correction.values.filterIsInstance<NumberExecutionValue>()
+                        assertEquals(expected, values.single().scaledValue)
+                        assertEquals(initial.root.shortComment, correction.shortComment)
+                        assertEquals(initial.updatedAt, correction.expectedUpdatedAt)
+                    }
+                } finally {
+                    fixture.close()
+                }
+            }
+        }
+
+    @Test
     fun nativeInputAcceptsConsecutiveEventsButCancelRevokesEveryOldEditorCallback() =
         runBlocking {
             val fixture = fixture(detail())
@@ -409,6 +467,8 @@ class ActivityCorrectionAdmissionTest : ActivityHistoryMutationTestFixture() {
             assertEquals(ActivityHistoryMutationIssue.INVALID_NUMBER, fixture.controller.state.value.issue)
             assertEquals(0, fixture.correctAttempts)
             fixture.admission().input { ActivityHistoryMutationAction.EditNumber(numberId, it) }("12.6")
+            fixture.admission().action(ActivityHistoryMutationAction.SetMissing(numberId, true))()
+            fixture.admission().action(ActivityHistoryMutationAction.SetMissing(numberId, false))()
             fixture.admission().action(ActivityHistoryMutationAction.Save)()
             fixture.awaitRefresh()
             assertEquals(

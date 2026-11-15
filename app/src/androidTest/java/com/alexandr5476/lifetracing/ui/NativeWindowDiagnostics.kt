@@ -50,6 +50,8 @@ internal class NativeFocusDiagnostics(
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
+                "dumpsys SurfaceFlinger",
+                "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
             ).joinToString("\n") { command ->

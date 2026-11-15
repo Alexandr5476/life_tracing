@@ -27,8 +27,11 @@ Zero, empty Text and Missing remain distinct. EN/RU status/recovery strings, wra
 actions and shared physical minimum targets support app/system scaling.
 
 Untouched actual Numbers retain their exact stored scaled integer even when frozen
-display precision rounds their text. Missing/restore and an unchanged native text
-event preserve that fact. Explicit Number edits still use the existing parser and
+display precision rounds their text. Explicit Missing/restore and same-text native
+events while already Present preserve that fact. A Number text event received while
+Missing is an explicit edit even if it equals the rounded display text; it restores
+Present and must pass parsing/range validation. Earlier material edits remain edits
+after presence toggles. Explicit Number edits still use the existing parser and
 frozen precision. The regression reproduced 12555 becoming 12600 during comment-only
 Save before the fix. Unchanged Short Comment preserves its original representation;
 actual comment edits still use immutable snapshot replacement through the existing

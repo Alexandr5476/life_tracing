@@ -1174,7 +1174,12 @@ class PrimaryExecutionJourneyTest {
     fun accessibleCorrectionExplicitRetryPreservesDraftAfterOrdinarySaveFailure() =
         correctionJourney(CorrectionCase.SAVE_FAILURE)
 
+    @Test
+    fun sameTextCorrectionNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen() =
+        correctionJourney(CorrectionCase.NUMBER_INPUT)
+
     private enum class CorrectionCase {
+        NUMBER_INPUT,
         TIMED,
         NO_LIVE,
         DST_FIRST,
@@ -1247,7 +1252,21 @@ class PrimaryExecutionJourneyTest {
                                         displayPrecision = 0,
                                         defaultNumberScaled = 9000,
                                     ),
-                                ),
+                                ) +
+                                    if (case == CorrectionCase.NUMBER_INPUT) {
+                                        listOf(Long.MAX_VALUE, Long.MIN_VALUE).mapIndexed { index, value ->
+                                            ActivityFieldDraft(
+                                                DraftIdentity.New("boundary-$index"),
+                                                5 + index,
+                                                "Duplicate",
+                                                CustomFieldType.NUMBER,
+                                                displayPrecision = 0,
+                                                defaultNumberScaled = value,
+                                            )
+                                        }
+                                    } else {
+                                        emptyList()
+                                    },
                         ),
                         createdAt = f.seedTime,
                     )
@@ -1473,7 +1492,13 @@ class PrimaryExecutionJourneyTest {
                     inputHistoryText(tag, text)
                 }
                 val changesFacts =
-                    case !in setOf(CorrectionCase.COMMENT_ONLY, CorrectionCase.UNCHANGED, CorrectionCase.STALE)
+                    case !in
+                        setOf(
+                            CorrectionCase.COMMENT_ONLY,
+                            CorrectionCase.UNCHANGED,
+                            CorrectionCase.STALE,
+                            CorrectionCase.NUMBER_INPUT,
+                        )
                 val fields = originalSnapshot.fields.sortedBy { it.position }
                 if (changesFacts) {
                     if (noLive) {
@@ -1534,7 +1559,42 @@ class PrimaryExecutionJourneyTest {
                         )
                     }
                 }
-                if (case != CorrectionCase.UNCHANGED) input("history-correction-comment", "Corrected comment")
+                if (case == CorrectionCase.NUMBER_INPUT) {
+                    fields.takeLast(2).forEach { field ->
+                        val tag = "history-correction-field-${field.id.value}"
+                        f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                        val text =
+                            controller.state.value.draft!!
+                                .values
+                                .getValue(field.id)
+                                .numberText
+                        input(tag, text)
+                        assertTrue(
+                            !controller.state.value.draft!!
+                                .values
+                                .getValue(field.id)
+                                .missing,
+                        )
+                        f.await { tryInvokeCurrent(hasTestTag("history-correction-save")) }
+                        assertEquals(ActivityHistoryMutationIssue.INVALID_NUMBER, controller.state.value.issue)
+                        assertEquals(field.id, controller.state.value.issueFieldId)
+                        assertEquals(0, writes.get())
+                        assertEquals(stableBefore, f.store.durableFacts())
+                        f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                    }
+                    val tag = "history-correction-field-${fields[0].id.value}"
+                    f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                    input(tag, "12.6")
+                    assertTrue(
+                        !controller.state.value.draft!!
+                            .values
+                            .getValue(fields[0].id)
+                            .missing,
+                    )
+                }
+                if (case !in setOf(CorrectionCase.UNCHANGED, CorrectionCase.NUMBER_INPUT)) {
+                    input("history-correction-comment", "Corrected comment")
+                }
                 val competing =
                     if (case == CorrectionCase.STALE) {
                         f.store.activityCommands
@@ -1754,7 +1814,7 @@ class PrimaryExecutionJourneyTest {
                     assertNull(saved.planEntryId)
                     assertEquals(entry.deletedAt, saved.deletedAt)
                     assertEquals(entry.completionReason, saved.completionReason)
-                    if (case == CorrectionCase.UNCHANGED) {
+                    if (case in setOf(CorrectionCase.UNCHANGED, CorrectionCase.NUMBER_INPUT)) {
                         assertEquals(originalSnapshot, snapshot)
                     } else {
                         assertTrue(originalSnapshot.id != snapshot.id)
@@ -1840,7 +1900,27 @@ class PrimaryExecutionJourneyTest {
                         )
                     }
                     if (!changesFacts) {
-                        assertEquals(ActivityHistoryActualValue.Number(12555), canonical.fields[0].actualValue)
+                        val expected = if (case == CorrectionCase.NUMBER_INPUT) 12600L else 12555L
+                        assertEquals(ActivityHistoryActualValue.Number(expected), canonical.fields[0].actualValue)
+                    }
+                    if (case == CorrectionCase.NUMBER_INPUT) {
+                        assertEquals(originalSnapshot.id, saved.snapshotId)
+                        assertEquals(originalSnapshot.shortComment, snapshot.shortComment)
+                        val number =
+                            this.statistics.numberFieldStatistics(
+                                source.statisticsSeriesId,
+                                StatisticsFieldId.Activity(source.fields.single { it.position == 0 }.id),
+                                StatisticsPeriod.AllTime,
+                            )
+                        assertEquals(12555L, number.values.minimumScaled)
+                        assertEquals(12600L, number.values.maximumScaled)
+                        assertEquals(java.math.BigInteger.valueOf(25155), number.values.totalScaled)
+                        fields.takeLast(2).forEach { field ->
+                            assertEquals(
+                                ActivityHistoryActualValue.Missing,
+                                canonical.fields.single { it.id == field.id }.actualValue,
+                            )
+                        }
                     }
                     val statistics = statistics.activitySeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
                     assertEquals(2L + if (case == CorrectionCase.OVERLAP) 1L else 0L, statistics.executionCount)
@@ -1859,13 +1939,27 @@ class PrimaryExecutionJourneyTest {
     }
 
     @Test
-    fun untouchedManualNumberDefaultsAndRestorationStayExactAfterPhysicalReopen() = manualNumberDefaultsJourney(false)
+    fun untouchedManualNumberDefaultsAndRestorationStayExactAfterPhysicalReopen() =
+        manualNumberDefaultsJourney(ManualNumberCase.UNTOUCHED)
 
     @Test
-    fun explicitlyEditedManualNumberUsesInputPrecisionAfterPhysicalReopen() = manualNumberDefaultsJourney(true)
+    fun explicitlyEditedManualNumberUsesInputPrecisionAfterPhysicalReopen() =
+        manualNumberDefaultsJourney(ManualNumberCase.EDITED)
 
-    private fun manualNumberDefaultsJourney(edited: Boolean) =
+    @Test
+    fun sameTextManualNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen() =
+        manualNumberDefaultsJourney(ManualNumberCase.FROM_MISSING)
+
+    private enum class ManualNumberCase {
+        UNTOUCHED,
+        EDITED,
+        FROM_MISSING,
+    }
+
+    private fun manualNumberDefaultsJourney(case: ManualNumberCase) =
         journey { f ->
+            val edited = case != ManualNumberCase.UNTOUCHED
+            val fromMissing = case == ManualNumberCase.FROM_MISSING
             val defaults =
                 listOf(
                     12555L,
@@ -1929,10 +2023,44 @@ class PrimaryExecutionJourneyTest {
                 f.await { tryInvokeCurrent(hasTestTag(tag), focusBeforeScroll = true) }
                 f.await { tryInvokeCurrent(hasTestTag(tag), focusBeforeScroll = true) }
             }
+            if (fromMissing) {
+                fields.slice(1..4).forEach { field ->
+                    val tag = "manual-history-field-${field.id.value}"
+                    f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                    val text =
+                        controller.state.value.values
+                            .getValue(field.id)
+                            .numberText
+                    inputHistoryText("$tag-actual", text)
+                    assertTrue(
+                        !controller.state.value.values
+                            .getValue(field.id)
+                            .missing,
+                    )
+                    f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
+                    assertEquals(
+                        ManualEntryCommand.Invalid(ManualEntryIssue.INVALID_NUMBER, field.id),
+                        controller.state.value.command,
+                    )
+                    assertEquals(before, f.store.durableFacts())
+                    // Leave this invalid input Missing; an explicit edit must remain edited after toggles.
+                    f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                }
+            }
             if (edited) {
-                val tag = "manual-history-field-${fields.first().id.value}-actual"
-                inputHistoryText(tag, "12")
-                inputHistoryText(tag, "12.6")
+                val field = fields.first()
+                val tag = "manual-history-field-${field.id.value}"
+                if (fromMissing) {
+                    f.await { tryInvokeCurrent(hasTestTag("$tag-missing"), focusBeforeScroll = true) }
+                } else {
+                    inputHistoryText("$tag-actual", "12")
+                }
+                inputHistoryText("$tag-actual", "12.6")
+                assertTrue(
+                    !controller.state.value.values
+                        .getValue(field.id)
+                        .missing,
+                )
             }
             assertEquals(before, f.store.durableFacts())
             f.await { tryInvokeCurrent(hasTestTag("manual-history-save")) }
@@ -1967,7 +2095,12 @@ class PrimaryExecutionJourneyTest {
                 fields.forEachIndexed { index, field ->
                     val frozen = aggregate.snapshot.fields.single { it.sourceFieldId == field.id }
                     val projected = detail.fields.single { it.id == frozen.id }
-                    val expected = if (edited && index == 0) 12600L else defaults[index]
+                    val expected =
+                        when {
+                            fromMissing && index in 1..4 -> null
+                            edited && index == 0 -> 12600L
+                            else -> defaults[index]
+                        }
                     assertEquals(defaults[index], frozen.defaultNumberScaled)
                     assertEquals(
                         defaults[index]?.let {

@@ -1559,3 +1559,67 @@ for callback authority and regression scope. Controller must retain device
 fail-first/corrected evidence and run unfiltered API 26/31/33/35/36 plus exact-head
 CI. Host APK packaging does not execute native or physical-reopen assertions and
 does not certify TalkBack or Switch Access.
+
+## PR 42 native-window diagnostic continuation (2026-11-15)
+
+The Controller's `review-fix-13-521c5f1bd75648078dfb9ed49a95cb2f/attempt-1`
+`gmd-full` data XML reports 634 testcases, five skips and zero failures. App execution
+stopped at 282 cases: 83 native keyboard admission failures followed by one
+unfinished testcase during a SurfaceFlinger abort. The first admission failure
+was `PrimaryExecutionJourneyTest#sameTextCorrectionNumberInputFromMissingParsesAndRejectsOverflowAfterPhysicalReopen`.
+Its acknowledged 225-frame diagnostic reconstructed all 229,553 bytes, SHA-256
+`a8dcb8046fa2c77877add0b6ec37baf954abb3dc040769b42d7b237267411d82`.
+WindowManager named the current app window as focused, while InputDispatcher
+had no focused window and retained a `NO_WINDOW` focus request for an older
+window. The current app surface was drawn but hidden. Nineteen minutes later,
+SurfaceFlinger reported its 4,096-layer limit and aborted. This later abort does
+not establish the cause of the first focus-delivery failure.
+
+The authorized unchanged-tree repair probe
+`721d3881c94048f19aeaa01c3728f8f2/tree-1/attempt-1` reproduced native admission
+failure after 68 passing cases; all remaining 16 cases failed admission, with no
+new domain assertion failure. Its first failure was
+`SequenceStepAccessibilityTest#nativePickerReportsLoadingFailureEmptyAndCancellationWithoutWrites`.
+The full retained report was 230,710 bytes, SHA-256
+`54d02d685fb485fb4dd1ed4708794fa466c565754787f1ae9e56dd4aa357c4fa`.
+It again showed WindowManager's current app focus but no InputDispatcher focused
+window and an older `NO_WINDOW` request. Thus an isolated pass of either Number
+route would not resolve the full-suite failure.
+
+The first-failure collector now also reads `dumpsys SurfaceFlinger` and the
+SystemUI WMShell dump. These capture bounded compositor and transition evidence
+missing from the original report. Both use the existing five-second/65,536-byte
+per-command limits, explicit result status, once-per-process admission and
+acknowledged artifact/logcat transport. No focus requirement, fixture action,
+assertion, production behavior, retry or device-reset policy changes. The pure
+collector regressions fail before this addition (two of eight tests) and pass
+with it. The Android regression exercises the real read-only commands and
+artifact transport using its existing instrumentation identity. The original
+native-focus failure and later platform abort remain unresolved; this is an
+evidence repair, not a root-cause fix or a full-suite PASS.
+
+The authorized expanded probe used:
+
+```text
+D:\controller\.runtime\agent-tools\repair-probe.cmd --scope-file D:\controller\.runtime\codex-runs\wf-398f7187fe5e54ba94cffe76d7f38d75\5b1bd0e94310145117da71ca\scratch\scope-primary-and-diagnostics.json
+```
+
+`721d3881c94048f19aeaa01c3728f8f2/tree-2/attempt-1` passed all **120** cases,
+with zero failures, errors or skips (743.576 seconds of test execution).
+It includes every original failing identity, the complete Primary journey class
+and all nine diagnostic cases. Both Number native SetText/physical-reopen routes
+passed. The XML SHA-256 is
+`ad64450022654a709fa7840d5ff03b5de014b7baa80e80de3da96c846466e4d1`.
+The native diagnostic test obtained COMPLETE SurfaceFlinger and WMShell reads,
+including Layer Hierarchy and ShellTransitions state. Its 869,652-byte report
+was reconstructed from all 850 acknowledged frames, SHA-256
+`57b0c28f6b51ad9ec0924f927d4f0c56664b3fffd8e2eab0b0d84509ae23a804`.
+Device cleanup reported safe with no owned live processes. The eight pure host
+tests, app ktlint/Detekt and AndroidTest APK assembly also passed.
+
+This scoped PASS validates the diagnostic addition and the selected behavior;
+it does not show that additional reads fix focus delivery. They run after a
+failure, except in the explicit diagnostic regression. The baseline and expanded
+scopes differ, and the unfiltered failure remains unresolved. No further same-scope
+PASS was sought. Instrumentation identities are unchanged by this continuation;
+all complete Controller-owned local and independent CI gates remain required.

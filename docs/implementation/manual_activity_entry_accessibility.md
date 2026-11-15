@@ -42,9 +42,11 @@ by schema section 13.3; there is no required-Field metadata or new required poli
 Draft edits, focus, announcements and recomposition do not persist anything.
 
 Untouched Number defaults retain their exact configured scaled Long separately from
-rounded display text. Missing/Present restoration and same-text native callbacks
-preserve it; a material Number text edit permanently switches that draft to the
-existing precision/range parser, even if the rounded text is later restored. The
+rounded display text. Explicit Missing/Present restoration and same-text native
+callbacks while already Present preserve it. A Number text event received while
+Missing explicitly edits the value, including when it equals the retained rounded
+text. Any explicit edit permanently switches that draft to the existing
+precision/range parser, even if rounded text or presence is later restored. The
 shared Start Activity time-entry options use the same rule. This is ephemeral
 draft state only; source revision checks and transactional writers are unchanged.
 Category validation exposes the existing localized Error on the exact Field-ID
@@ -52,7 +54,7 @@ group in both semantics trees, following the correction editor precedent.
 
 Review-fix regressions cover 12555 at precision 1, negative values, signed-Long
 boundaries, explicit 12.6 input (12600), Missing versus zero, and duplicate-named
-Category groups with EN/RU errors and recovery. Four registered production-route
+Category groups with EN/RU errors and recovery. Five registered production-route
 journeys assert canonical History/Statistics and provenance after physical database
 reopen. Their device execution and fail-first Category evidence remain
 Controller-owned; local APK compilation is not execution evidence. Controller must

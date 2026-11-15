@@ -53,6 +53,8 @@ class NativeWindowDiagnosticsTest {
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
+                "dumpsys SurfaceFlinger",
+                "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
             ),
@@ -60,7 +62,7 @@ class NativeWindowDiagnosticsTest {
         )
         commands.forEach { assertTrue(focusReport.contains("focus trace for $it")) }
         assertTrue(focus.capture().contains("already attempted"))
-        assertEquals(5, commands.size)
+        assertEquals(7, commands.size)
     }
 
     @Test
@@ -90,10 +92,14 @@ class NativeWindowDiagnosticsTest {
         assertTrue(focusReport.contains("unavailable input state"))
         assertTrue(focusReport.contains("retained dumpsys window displays"))
         assertTrue(focusReport.contains("retained dumpsys window windows"))
+        assertTrue(focusReport.contains("retained dumpsys SurfaceFlinger"))
+        assertTrue(
+            focusReport.contains("retained dumpsys activity service com.android.systemui/.SystemUIService WMShell"),
+        )
         assertTrue(focusReport.contains("retained dumpsys power"))
         assertTrue(focusReport.contains("retained logcat"))
         focus.capture()
-        assertEquals(5, calls)
+        assertEquals(7, calls)
     }
 
     @Test
@@ -106,6 +112,8 @@ class NativeWindowDiagnosticsTest {
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
+                "dumpsys SurfaceFlinger",
+                "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
             )

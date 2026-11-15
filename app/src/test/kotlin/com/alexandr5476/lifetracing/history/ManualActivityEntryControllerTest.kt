@@ -77,6 +77,45 @@ class ManualActivityEntryControllerTest {
         }
 
     @Test
+    fun sameTextNumberInputFromMissingIsAnExplicitEdit() =
+        runBlocking {
+            val source = timedTemplate()
+            val fixture =
+                fixture(
+                    source.copy(
+                        fields =
+                            listOf(
+                                source.fields.first().copy(defaultNumberScaled = 12555, displayPrecision = 1),
+                            ),
+                    ),
+                )
+            try {
+                fixture.select()
+                fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "12.6"))
+                fixture.controller.dispatch(ManualActivityEntryAction.SetPresent(NUMBER_ID))
+                fixture.controller.dispatch(ManualActivityEntryAction.Save)
+                assertEquals(
+                    ActivityEntryValue.Number(12600),
+                    fixture.timed
+                        .single()
+                        .values
+                        .single()
+                        .value,
+                )
+                assertEquals(
+                    12555L,
+                    (fixture.controller.state.value.selected as ManualEntryLoad.Content)
+                        .value.fields
+                        .single()
+                        .defaultNumberScaled,
+                )
+            } finally {
+                fixture.close()
+            }
+        }
+
+    @Test
     fun missingRestorationAndUnchangedTextCallbackRetainExactNumberDefault() =
         runBlocking {
             val source = timedTemplate()
@@ -148,13 +187,13 @@ class ManualActivityEntryControllerTest {
                 val source = timedTemplate()
                 val field =
                     source.fields.first().copy(
-                        defaultNumberScaled = Long.MAX_VALUE,
+                        defaultNumberScaled = if (text.startsWith("-")) Long.MIN_VALUE else Long.MAX_VALUE,
                         displayPrecision = precision,
                     )
                 val fixture = fixture(source.copy(fields = listOf(field)))
                 try {
                     fixture.select()
-                    fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, "1"))
+                    fixture.controller.dispatch(ManualActivityEntryAction.SetMissing(NUMBER_ID))
                     fixture.controller.dispatch(ManualActivityEntryAction.EditNumber(NUMBER_ID, text))
                     fixture.controller.dispatch(ManualActivityEntryAction.Save)
                     assertEquals(

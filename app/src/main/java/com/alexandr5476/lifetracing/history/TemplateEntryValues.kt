@@ -41,9 +41,9 @@ internal fun ActivityTemplate.initialEntryValues(): Map<ActivityTemplateFieldId,
             )
     }
 
-/** A same-text native callback is not a material edit; real edits remain edits after restoration. */
+/** Same-text callbacks preserve Present values; input from Missing is always an explicit edit. */
 internal fun ManualEntryFieldDraft.withNumberText(text: String): ManualEntryFieldDraft =
-    copy(numberText = text, missing = false, numberWasEdited = numberWasEdited || numberText != text)
+    copy(numberText = text, missing = false, numberWasEdited = numberWasEdited || missing || numberText != text)
 
 internal fun ManualEntryFieldDraft.proposedNumber(displayPrecision: Int?): Long? =
     if (!numberWasEdited &&
