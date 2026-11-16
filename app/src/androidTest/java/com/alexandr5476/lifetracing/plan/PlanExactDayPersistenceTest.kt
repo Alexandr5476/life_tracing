@@ -25,17 +25,24 @@ import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
+import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.executePlanMutation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -53,6 +60,45 @@ import java.util.UUID
 class PlanExactDayPersistenceTest(
     private val sequence: Boolean,
 ) {
+    @Test
+    fun reopeningWaitsForObsoleteNonCancellableRepositoryRead() =
+        runBlocking {
+            Fixture(sequence).use { fixture ->
+                fixture.ready()
+                val original = fixture.seed("2026-10-25T02:30:27.123", 1)
+                val before = fixture.store.durableFacts()
+                val oldStore = fixture.store
+                val entered = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val finished = CompletableDeferred<Unit>()
+                fixture.readWeek = { query ->
+                    // Synchronous Room calls cannot be interrupted by cancelling their coroutine.
+                    withContext(NonCancellable) {
+                        entered.complete(Unit)
+                        release.await()
+                        oldStore.reads.getWeek(query).also { finished.complete(Unit) }
+                    }
+                }
+                fixture.controller.dispatch(PlanAction.Refresh)
+                try {
+                    withTimeout(5_000) { entered.await() }
+                    val reopening = async(start = CoroutineStart.UNDISPATCHED) { fixture.reopen() }
+                    assertFalse(reopening.isCompleted)
+                    assertFalse(finished.isCompleted)
+                    assertTrue(fixture.store === oldStore)
+                    release.complete(Unit)
+                    withTimeout(5_000) { reopening.await() }
+                    assertTrue(finished.isCompleted)
+                    assertTrue(fixture.store !== oldStore)
+                    assertEquals(original, fixture.store.plans.getPlan(original.id))
+                    assertEquals(before, fixture.store.durableFacts())
+                    assertTrue(fixture.commands.isEmpty())
+                } finally {
+                    release.complete(Unit)
+                }
+            }
+        }
+
     @Test
     fun unsupportedPrecisionKeepsAllFactsAndAllowsExactMillisecondCorrection() =
         runBlocking {
@@ -397,7 +443,10 @@ class PlanExactDayPersistenceTest(
         var store = PlanSchedulingStore(context, name, CurrentZoneIdProvider { zone })
         val signal = MutableStateFlow(0L)
         val commands = mutableListOf<PlanMutation>()
-        private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        private val controllerJob = SupervisorJob()
+        private val scope = CoroutineScope(controllerJob + Dispatchers.Default)
+
+        @Volatile var readWeek: suspend (WeekPlanQuery) -> WeekPlanRead = { store.reads.getWeek(it) }
         private val activity =
             store.authoring.createActivityTemplate(
                 ActivityTemplateDraft(
@@ -457,7 +506,7 @@ class PlanExactDayPersistenceTest(
         val controller =
             PlanController(
                 scope,
-                { store.reads.getWeek(it) },
+                { readWeek(it) },
                 { _, _, _ -> listOf(ReusablePlanCatalogItem(source, "Template", null, null)) },
                 { store.reads.getCancelledPage(it) },
                 {
@@ -613,16 +662,16 @@ class PlanExactDayPersistenceTest(
             assertEquals(plan.actionIdentity(), store.reads.getFocusedAction(plan.id).identity)
         }
 
-        fun reopen() {
+        suspend fun reopen() {
             controller.close()
-            scope.cancel()
+            withTimeout(5_000) { controllerJob.cancelAndJoin() }
             store.close()
             store = PlanSchedulingStore(context, name, CurrentZoneIdProvider { zone })
         }
 
         override fun close() {
             controller.close()
-            scope.cancel()
+            runBlocking { withTimeout(5_000) { controllerJob.cancelAndJoin() } }
             store.close()
             context.deleteDatabase(name)
         }

@@ -67,6 +67,10 @@ internal class SequenceHistoryAdmission(
     fun isCurrent(): Boolean =
         attached && !revoked && ownsRoute() && current() === publication && !publication.isMutating
 
+    /** Read-only presentation authority carries no command admission or dispatch. */
+    fun isShowing(detail: SequenceHistoryDetail): Boolean =
+        isCurrent() && (publication.load as? HistoryDetailLoad.Content)?.value === detail
+
     fun enabled(action: SequenceHistoryMutationAction): Boolean =
         isCurrent() &&
             (action == SequenceHistoryMutationAction.Retry || canonicalValid) &&

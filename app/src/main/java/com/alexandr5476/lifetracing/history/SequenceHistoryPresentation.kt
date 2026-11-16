@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -40,6 +41,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -61,9 +63,10 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
+import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import java.time.Duration
 import java.time.ZoneId
 
@@ -143,15 +146,21 @@ internal fun SequenceDetail(
     onTiming: (() -> Unit)? = null,
 ) {
     val focus = LocalHistoryFocus.current
-    val navigation = remember { SequenceNavigationFocus() }
+    val lease = rememberSequenceHistoryNavigation(detail, onTiming != null, issue != null)
+    val navigation = remember(lease) { SequenceNavigationFocus(lease) }
     CompositionLocalProvider(LocalSequenceNavigationFocus provides navigation) {
-        LaunchedEffect(SequenceDetailReference(detail)) {
-            navigation.pending = null
+        LaunchedEffect(SequenceDetailReference(detail), onDeleteChild != null, onRemoveOccurrence != null) {
             // Virtualization alone is not removal. Check the focused key only on canonical replacement.
             val owner = focus.lazyOwner
             val retained =
                 when {
                     owner == null -> true
+                    focus.sequenceOwner != null ->
+                        detail.represents(
+                            requireNotNull(focus.sequenceOwner),
+                            onDeleteChild != null,
+                            onRemoveOccurrence != null,
+                        )
                     owner.startsWith("occurrence:") ->
                         detail.occurrences.any {
                             "occurrence:${it.occurrenceId.value}" ==
@@ -227,28 +236,40 @@ internal fun SequenceDetail(
     }
 }
 
-private class SequenceNavigationFocus {
-    var pending by mutableStateOf<String?>(null)
+private class SequenceNavigationFocus(
+    val lease: SequenceHistoryNavigation,
+) {
+    var pending by mutableStateOf<SequenceNavigationRequest?>(null)
     val requester = FocusRequester()
 }
 
-private val LocalSequenceNavigationFocus = staticCompositionLocalOf { SequenceNavigationFocus() }
+private class SequenceNavigationRequest(
+    val key: String,
+)
+
+private val LocalSequenceNavigationFocus = staticCompositionLocalOf<SequenceNavigationFocus?> { null }
 
 @Composable
 private fun sequenceSummaryFocus(allowJump: Boolean = true): Modifier {
     val navigation = LocalSequenceNavigationFocus.current
+    val lease = navigation?.lease
+    val available = lease?.isCurrent() != false
     val identity = LocalHistoryLazyIdentity.current
-    val pending = allowJump && identity != null && navigation.pending == identity
-    LaunchedEffect(pending) {
-        if (pending) {
+    val request = navigation?.pending
+    val pending = allowJump && identity != null && request?.key == identity
+    var attached by remember { mutableStateOf(false) }
+    LaunchedEffect(navigation, request, pending) {
+        if (pending && available) {
             withFrameNanos { }
-            if (navigation.pending == identity) {
+            if (attached && lease?.isCurrent() == true && navigation.pending === request) {
                 navigation.requester.requestFocus()
                 navigation.pending = null
             }
         }
     }
-    return historyFocusTarget(if (pending) navigation.requester else null)
+    return historyFocusTarget(if (pending) navigation?.requester else null, available)
+        .onFocusTargetAttachmentChanged { attached = it }
+        .focusProperties { canFocus = lease?.canFocus() != false }
 }
 
 /** Section/ordinal navigation scrolls only. No admission, reload or historical command is dispatched. */
@@ -261,22 +282,38 @@ private fun SequenceSectionNavigation(
 ) {
     val scope = rememberCoroutineScope()
     var ordinal by remember { mutableStateOf("") }
-    val navigation = LocalSequenceNavigationFocus.current
+    val navigation = requireNotNull(LocalSequenceNavigationFocus.current)
+    val lease = navigation.lease
+    val available = scope.isActive && lease.isCurrent()
+    val controlFocus =
+        historyFocusTarget(enabled = available).focusProperties {
+            canFocus =
+                scope.isActive &&
+                lease.canFocus()
+        }
+    val goEnabled = available && ordinal.toIntOrNull()?.let { it in 1..detail.occurrences.size } == true
 
     // Section offsets use only collection sizes and optional prefix items; no collection scan.
     fun go(key: String) {
+        if (!scope.isActive || !lease.isCurrent()) return
         val index = if (key == "occurrence") ordinal.toIntOrNull()?.minus(1) else null
         if (key == "occurrence" && (index == null || index !in detail.occurrences.indices)) return
-        scope.launch {
+        navigation.pending = null
+        lease.launch(scope) {
+            withFrameNanos { }
+            if (!lease.isCurrent()) return@launch
             val fieldsIndex = 2 + (if (hasTiming) 1 else 0) + (if (hasIssue) 1 else 0)
             val occurrencesIndex = fieldsIndex + 2 + (if (detail.fields.isEmpty()) 1 else detail.fields.size)
             navigation.pending =
-                when (key) {
-                    "fields" -> "sequence:fields-heading"
-                    "intervals" -> "sequence:intervals-heading"
-                    else -> "occurrence:${detail.occurrences[requireNotNull(index)].occurrenceId.value}"
-                }
-            state.scrollToItem(
+                SequenceNavigationRequest(
+                    when (key) {
+                        "fields" -> "sequence:fields-heading"
+                        "intervals" -> "sequence:intervals-heading"
+                        else -> "occurrence:${detail.occurrences[requireNotNull(index)].occurrenceId.value}"
+                    },
+                )
+            // Synchronous request: no scroll-mutex suspension can run past the authority check.
+            state.requestScrollToItem(
                 when (key) {
                     "fields" -> fieldsIndex
                     "intervals" -> occurrencesIndex + detail.occurrences.size
@@ -286,22 +323,39 @@ private fun SequenceSectionNavigation(
         }
     }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        TextButton(onClick = {
-            go("fields")
-        }, modifier = historyFocusTarget()) { Text(stringResource(R.string.history_sequence_fields)) }
-        TextButton(onClick = {
-            go("intervals")
-        }, modifier = historyFocusTarget()) { Text(stringResource(R.string.history_intervals)) }
+        TextButton(
+            onClick = { go("fields") },
+            enabled = available,
+            modifier = controlFocus.historyActionSemantics({ go("fields") }).testTag("sequence-history-section-fields"),
+        ) { Text(stringResource(R.string.history_sequence_fields)) }
+        TextButton(
+            onClick = { go("intervals") },
+            enabled = available,
+            modifier =
+                historyFocusTarget(enabled = available)
+                    .focusProperties { canFocus = scope.isActive && lease.canFocus() }
+                    .historyActionSemantics({ go("intervals") })
+                    .testTag("sequence-history-section-intervals"),
+        ) { Text(stringResource(R.string.history_intervals)) }
         LifeTracingOutlinedTextField(
             value = ordinal,
-            onValueChange = { ordinal = it },
+            onValueChange = { if (scope.isActive && lease.isCurrent()) ordinal = it },
+            enabled = available,
             label = { Text(stringResource(R.string.sequence_history_go_position, detail.occurrences.size)) },
-            modifier = historyFocusTarget().fillMaxWidth().testTag("sequence-history-go-position"),
+            modifier =
+                historyFocusTarget(enabled = available)
+                    .focusProperties { canFocus = scope.isActive && lease.canFocus() }
+                    .fillMaxWidth()
+                    .testTag("sequence-history-go-position"),
         )
         TextButton(
             onClick = { go("occurrence") },
-            enabled = ordinal.toIntOrNull()?.let { it in 1..detail.occurrences.size } == true,
-            modifier = historyFocusTarget().testTag("sequence-history-go"),
+            enabled = goEnabled,
+            modifier =
+                historyFocusTarget(enabled = goEnabled)
+                    .focusProperties { canFocus = goEnabled && scope.isActive && lease.canFocus() }
+                    .historyActionSemantics({ go("occurrence") })
+                    .testTag("sequence-history-go"),
         ) { Text(stringResource(R.string.sequence_history_go)) }
     }
 }
@@ -342,123 +396,171 @@ private fun SequenceOccurrence(
     onRemoveOccurrence: ((SequenceOccurrenceId) -> Unit)?,
 ) {
     HistoryCard(Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
-        SequenceReadOnlySummary("sequence-occurrence-summary-${occurrence.occurrenceId.value}") {
-            Text(
-                stringResource(R.string.history_occurrence, occurrence.runtimePosition + 1, occurrence.activity.title),
-                Modifier.semantics { heading() },
-                style = MaterialTheme.typography.titleMedium,
-            )
-            occurrence.activity.shortComment?.let { Text(it) }
-            Text(stringResource(R.string.sequence_history_occurrence_id, occurrence.occurrenceId.value))
-            Text(stringResource(R.string.sequence_history_runtime_position, occurrence.runtimePosition))
-            Text(stringResource(R.string.sequence_history_activity_snapshot_id, occurrence.activitySnapshotId.value))
-            Text(stringResource(occurrenceStatusResource(occurrence.status)))
-            Text(
-                stringResource(
-                    R.string.sequence_history_source_id,
-                    occurrence.sourceSequenceSnapshotNodeId?.value ?: stringResource(R.string.history_missing_value),
-                ),
-            )
-            occurrence.repeatSourceSnapshotNodeId?.let {
+        SequenceOccurrenceFocus(occurrence, SequenceHistoryFocusElement.Summary) {
+            SequenceReadOnlySummary("sequence-occurrence-summary-${occurrence.occurrenceId.value}") {
                 Text(
-                    stringResource(R.string.sequence_history_repeat_id, it.value),
+                    stringResource(
+                        R.string.history_occurrence,
+                        occurrence.runtimePosition + 1,
+                        occurrence.activity.title,
+                    ),
+                    Modifier.semantics { heading() },
+                    style = MaterialTheme.typography.titleMedium,
                 )
-            }
-            occurrence.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
-            Text(
-                stringResource(
-                    if (occurrence.isRuntimeAdded) {
-                        R.string.history_runtime_added
-                    } else {
-                        R.string.sequence_history_not_runtime_added
-                    },
-                ),
-            )
-            Text(
-                stringResource(
-                    R.string.sequence_history_completion_reason,
-                    stringResource(completionReasonResource(occurrence.completionReason)),
-                ),
-            )
-            occurrence.enteredAt?.let {
+                occurrence.activity.shortComment?.let { Text(it) }
+                Text(stringResource(R.string.sequence_history_occurrence_id, occurrence.occurrenceId.value))
+                Text(stringResource(R.string.sequence_history_runtime_position, occurrence.runtimePosition))
                 Text(
-                    stringResource(R.string.history_entered, exactHistoricalTimestamp(it, zoneId)),
+                    stringResource(R.string.sequence_history_activity_snapshot_id, occurrence.activitySnapshotId.value),
                 )
-            }
-            occurrence.completedAt?.let {
-                Text(stringResource(R.string.history_occurrence_completed, exactHistoricalTimestamp(it, zoneId)))
-            }
-            if (occurrence.child == null || occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) {
-                Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
+                Text(stringResource(occurrenceStatusResource(occurrence.status)))
+                Text(
+                    stringResource(
+                        R.string.sequence_history_source_id,
+                        occurrence.sourceSequenceSnapshotNodeId?.value ?: stringResource(
+                            R.string.history_missing_value,
+                        ),
+                    ),
+                )
+                occurrence.repeatSourceSnapshotNodeId?.let {
+                    Text(
+                        stringResource(R.string.sequence_history_repeat_id, it.value),
+                    )
+                }
+                occurrence.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
+                Text(
+                    stringResource(
+                        if (occurrence.isRuntimeAdded) {
+                            R.string.history_runtime_added
+                        } else {
+                            R.string.sequence_history_not_runtime_added
+                        },
+                    ),
+                )
+                Text(
+                    stringResource(
+                        R.string.sequence_history_completion_reason,
+                        stringResource(completionReasonResource(occurrence.completionReason)),
+                    ),
+                )
+                occurrence.enteredAt?.let {
+                    Text(
+                        stringResource(R.string.history_entered, exactHistoricalTimestamp(it, zoneId)),
+                    )
+                }
+                occurrence.completedAt?.let {
+                    Text(stringResource(R.string.history_occurrence_completed, exactHistoricalTimestamp(it, zoneId)))
+                }
+                if (occurrence.child == null || occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) {
+                    Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
+                }
             }
         }
         if (occurrence.child == null || occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) {
-            occurrence.activity.mainValue?.let { SequenceActivityField(it, configuredOnly = true) }
+            occurrence.activity.mainValue?.let {
+                SequenceOccurrenceFocus(
+                    occurrence,
+                    SequenceHistoryFocusElement.ConfiguredField(occurrence.activitySnapshotId, it.id),
+                ) {
+                    SequenceActivityField(it, configuredOnly = true)
+                }
+            }
         }
         if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) {
-            SequenceReadOnlySummary("sequence-deleted-${occurrence.occurrenceId.value}") {
-                Text(stringResource(R.string.history_deleted_child))
-                Text(stringResource(R.string.sequence_history_deleted_detail))
-                occurrence.childMutationFacts?.let {
-                    Text(stringResource(R.string.sequence_history_deleted_child_id, it.executionId.value))
+            SequenceOccurrenceFocus(occurrence, SequenceHistoryFocusElement.Tombstone) {
+                SequenceReadOnlySummary("sequence-deleted-${occurrence.occurrenceId.value}") {
+                    Text(stringResource(R.string.history_deleted_child))
+                    Text(stringResource(R.string.sequence_history_deleted_detail))
+                    occurrence.childMutationFacts?.let {
+                        Text(stringResource(R.string.sequence_history_deleted_child_id, it.executionId.value))
+                    }
                 }
             }
         } else {
             occurrence.child?.let { child ->
-                SequenceReadOnlySummary("sequence-child-${child.executionId.value}") {
-                    Text(stringResource(R.string.sequence_history_child_id, child.executionId.value))
-                    Text(stringResource(R.string.sequence_history_zone, child.originalZoneId.id))
-                    Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
-                    child.startedAt?.let {
+                SequenceOccurrenceFocus(occurrence, SequenceHistoryFocusElement.Child(child.executionId)) {
+                    SequenceReadOnlySummary("sequence-child-${child.executionId.value}") {
+                        Text(stringResource(R.string.sequence_history_child_id, child.executionId.value))
+                        Text(stringResource(R.string.sequence_history_zone, child.originalZoneId.id))
+                        Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
+                        child.startedAt?.let {
+                            Text(
+                                stringResource(
+                                    R.string.history_child_started,
+                                    exactHistoricalTimestamp(it, child.originalZoneId),
+                                ),
+                            )
+                        }
+                        child.completedAt?.let {
+                            Text(
+                                stringResource(
+                                    R.string.history_child_completed,
+                                    exactHistoricalTimestamp(it, child.originalZoneId),
+                                ),
+                            )
+                        }
                         Text(
                             stringResource(
-                                R.string.history_child_started,
-                                exactHistoricalTimestamp(it, child.originalZoneId),
+                                R.string.history_actual_duration,
+                                child.activeDuration?.let(::sequenceDurationText)
+                                    ?: stringResource(R.string.history_missing_value),
                             ),
                         )
                     }
-                    child.completedAt?.let {
-                        Text(
-                            stringResource(
-                                R.string.history_child_completed,
-                                exactHistoricalTimestamp(it, child.originalZoneId),
-                            ),
-                        )
-                    }
-                    Text(
-                        stringResource(
-                            R.string.history_actual_duration,
-                            child.activeDuration?.let(::sequenceDurationText)
-                                ?: stringResource(R.string.history_missing_value),
-                        ),
-                    )
                 }
                 child.fields.forEach { field ->
-                    androidx.compose.runtime.key(field.id) { SequenceActivityField(field) }
+                    SequenceOccurrenceFocus(
+                        occurrence,
+                        SequenceHistoryFocusElement.ChildField(child.executionId, field.id),
+                    ) {
+                        SequenceActivityField(field)
+                    }
                 }
             }
         }
         if (occurrence.childMutationFacts != null && !occurrence.isDeletedFromHistory) {
             if (onDeleteChild != null && occurrence.status == RuntimeOccurrenceStatus.COMPLETED) {
-                SequenceSecondaryButton(
-                    { onDeleteChild(occurrence.occurrenceId) },
-                    Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
+                SequenceOccurrenceFocus(
+                    occurrence,
+                    SequenceHistoryFocusElement.DeleteChild(requireNotNull(occurrence.childMutationFacts).executionId),
                 ) {
-                    Text(stringResource(R.string.sequence_history_delete_child))
+                    SequenceSecondaryButton(
+                        { onDeleteChild(occurrence.occurrenceId) },
+                        Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
+                    ) {
+                        Text(stringResource(R.string.sequence_history_delete_child))
+                    }
                 }
             }
             if (onRemoveOccurrence != null &&
                 occurrence.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION)
             ) {
-                SequenceSecondaryButton(
-                    { onRemoveOccurrence(occurrence.occurrenceId) },
-                    Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
+                SequenceOccurrenceFocus(
+                    occurrence,
+                    SequenceHistoryFocusElement.RemoveOccurrence(
+                        requireNotNull(occurrence.childMutationFacts).executionId,
+                    ),
                 ) {
-                    Text(stringResource(R.string.sequence_history_remove_occurrence))
+                    SequenceSecondaryButton(
+                        { onRemoveOccurrence(occurrence.occurrenceId) },
+                        Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
+                    ) {
+                        Text(stringResource(R.string.sequence_history_remove_occurrence))
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SequenceOccurrenceFocus(
+    occurrence: SequenceHistoryOccurrence,
+    element: SequenceHistoryFocusElement,
+    content: @Composable () -> Unit,
+) {
+    val identity = SequenceHistoryFocusIdentity(occurrence.occurrenceId, element)
+    key(identity) { CompositionLocalProvider(LocalSequenceHistoryFocusIdentity provides identity, content = content) }
 }
 
 @Composable

@@ -204,7 +204,7 @@ internal fun SequenceHistoryDetailRoute(
                 interactive,
                 state.load is HistoryDetailLoad.Loading,
                 state.load is HistoryDetailLoad.Failure,
-                owner,
+                remember(admission) { admission::isCurrent },
                 backEnabled = !state.isMutating,
             )
         val load =

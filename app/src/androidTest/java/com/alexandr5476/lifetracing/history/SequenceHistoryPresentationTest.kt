@@ -6,15 +6,23 @@ package com.alexandr5476.lifetracing.history
 
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -87,6 +95,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -563,6 +572,257 @@ class SequenceHistoryPresentationTest {
         scroll("sequence:root")
         compose.onNodeWithText("Reloaded root").assertExists()
         compose.onNodeWithText("Frozen root").assertDoesNotExist()
+    }
+
+    @Test
+    fun removedChildSummaryRecoversWithRetainedTombstoneOccurrence() {
+        nestedRemovalRecovers("sequence-child-child-o0") { current ->
+            current.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION, child = null)
+        }
+    }
+
+    @Test
+    fun removedChildFieldRecoversWithRetainedPerformedOccurrence() {
+        nestedRemovalRecovers("sequence-history-field-frozen-child-field") { current ->
+            current.copy(child = requireNotNull(current.child).copy(fields = emptyList()))
+        }
+    }
+
+    private fun nestedRemovalRecovers(
+        tag: String,
+        replace: (SequenceHistoryOccurrence) -> SequenceHistoryOccurrence,
+    ) {
+        val publication =
+            mutableStateOf(
+                SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail())),
+                referentialEqualityPolicy(),
+            )
+        var actions = 0
+        compose.setContent { TestTheme { CanonicalSurface(publication) { actions++ } } }
+        val back = compose.onNodeWithText(compose.activity.getString(R.string.history_back))
+        keyboard.enter(back)
+        scroll("occurrence:o0")
+        val delete = compose.onNodeWithTag("sequence-history-delete-child-o0").performScrollTo()
+        val staleAction = requireNotNull(delete.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        val target = compose.onNodeWithTag(tag).performScrollTo()
+        target.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(target)
+        compose.runOnIdle {
+            val canonical = (publication.value.load as HistoryDetailLoad.Content).value
+            publication.value =
+                publication.value.copy(
+                    load =
+                        HistoryDetailLoad.Content(
+                            canonical.copy(
+                                updatedAt = canonical.updatedAt.plusMillis(1),
+                                occurrences = listOf(replace(canonical.occurrences.single())),
+                            ),
+                        ),
+                )
+        }
+        target.assertDoesNotExist()
+        keyboard.awaitFocus(back)
+        compose.runOnIdle {
+            staleAction()
+            assertEquals(0, actions)
+        }
+        scroll("occurrence:o0")
+        compose.onNodeWithTag("sequence-occurrence-summary-o0").assertExists()
+        if (tag.startsWith("sequence-child")) {
+            compose.onNodeWithTag("sequence-deleted-o0").performScrollTo().assertExists()
+        }
+    }
+
+    @Composable
+    private fun CanonicalSurface(
+        publication: State<SequenceHistoryMutationState>,
+        dispatch: (SequenceHistoryMutationAction) -> Unit,
+    ) {
+        val state = publication.value
+        val canonical = (state.load as HistoryDetailLoad.Content).value
+        val admission =
+            rememberSequenceHistoryAdmission(
+                canonical.root.executionId,
+                state,
+                { publication.value },
+                { true },
+                true,
+                dispatch,
+            )
+        val focus = rememberHistoryFocus(true, false, false, remember(admission) { admission::isCurrent })
+        CompositionLocalProvider(LocalHistoryFocus provides focus, LocalSequenceHistoryAdmission provides admission) {
+            SequenceHistoryDetailSurface(state, { admission.action(it)() }, {}, state.load, {}, true, false) {}
+        }
+    }
+
+    @Test
+    fun nestedFocusSurvivesCanonicalReplacementAndOffscreenDisposalDoesNotRecover() {
+        val canonical = mutableStateOf(detail(List(100) { occurrence(it) }), referentialEqualityPolicy())
+        val focus = HistoryFocus()
+        compose.setContent {
+            TestTheme {
+                Column(Modifier.fillMaxSize()) {
+                    TextButton({}, Modifier.testTag("outside-detail-focus")) { Text("Outside detail") }
+                    Box(Modifier.weight(1f)) {
+                        CompositionLocalProvider(LocalHistoryFocus provides focus) {
+                            SequenceDetail(canonical.value)
+                        }
+                    }
+                }
+            }
+        }
+        scroll("occurrence:o0")
+        val child = compose.onNodeWithTag("sequence-child-child-o0").performScrollTo()
+        keyboard.enter(child)
+        child.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(child)
+        compose.runOnIdle {
+            canonical.value = canonical.value.copy(root = canonical.value.root.copy(title = "Unrelated root change"))
+        }
+        child.assertIsFocused()
+        // Hand native focus to an attached target outside the lazy layout. History deliberately
+        // retains its last semantic owner so ordinary disposal must not mark that owner removed.
+        val outside = compose.onNodeWithTag("outside-detail-focus")
+        outside.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(outside)
+        compose.runOnIdle { assertEquals("occurrence:o0", focus.lazyOwner) }
+        scroll("occurrence:o99")
+        child.assertDoesNotExist()
+        outside.assertIsFocused()
+        compose.runOnIdle { assertEquals(null, focus.removed) }
+        scroll("occurrence:o0")
+        child.assertExists()
+    }
+
+    @Test
+    fun queuedOrdinalJumpCannotUseReplacedCanonicalListOrRemovedFocusTarget() {
+        queuedCanonicalReplacement(afterScrollFrame = true)
+    }
+
+    @Test
+    fun queuedOrdinalJumpIsDiscardedBeforeScrollOnCanonicalReplacement() {
+        queuedCanonicalReplacement(afterScrollFrame = false)
+    }
+
+    private fun queuedCanonicalReplacement(afterScrollFrame: Boolean) {
+        val publication =
+            mutableStateOf(
+                SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail(List(50) { occurrence(it) }))),
+                referentialEqualityPolicy(),
+            )
+        var actions = 0
+        compose.setContent { TestTheme { CanonicalSurface(publication) { actions++ } } }
+        scroll("sequence:navigation")
+        compose.onNodeWithTag("sequence-history-go-position").performTextReplacement("50")
+        val go = compose.onNodeWithTag("sequence-history-go")
+        val click = requireNotNull(go.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        val list = compose.onNodeWithTag("sequence-history-detail-list")
+        val before = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { click() }
+        if (afterScrollFrame) compose.mainClock.advanceTimeByFrame()
+        compose.runOnUiThread {
+            val canonical = (publication.value.load as HistoryDetailLoad.Content).value
+            publication.value =
+                publication.value.copy(
+                    load =
+                        HistoryDetailLoad.Content(
+                            canonical.copy(occurrences = listOf(occurrence(0))),
+                        ),
+                )
+        }
+        compose.mainClock.autoAdvance = true
+        selectedKey = null
+        val back = text(R.string.history_back)
+        keyboard.enter(back)
+        back.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(back)
+        compose.onNodeWithTag("sequence-occurrence-summary-o49").assertDoesNotExist()
+        if (!afterScrollFrame) {
+            assertEquals(before, list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value())
+        }
+        compose.runOnIdle { assertEquals(0, actions) }
+    }
+
+    @Test
+    fun ordinalNavigationUsesCanonicalOrderDespiteUnrelatedRuntimePositions() {
+        val selected =
+            detail(listOf(occurrence(80).copy(runtimePosition = 3), occurrence(10).copy(runtimePosition = 999)))
+        compose.setContent { TestTheme { SequenceDetail(selected) } }
+        scroll("sequence:navigation")
+        compose.onNodeWithTag("sequence-history-go-position").performTextReplacement("2")
+        val go = compose.onNodeWithTag("sequence-history-go").performScrollTo()
+        keyboard.enter(go)
+        go.performSemanticsAction(SemanticsActions.OnClick)
+        keyboard.awaitFocus(compose.onNodeWithTag("sequence-occurrence-summary-o10"))
+    }
+
+    @Test
+    fun capturedReadOnlySectionActionCannotReviveAfterHiddenRoundTrip() {
+        val selected = detail(List(20) { occurrence(it) })
+        val visible = mutableStateOf(true)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var reads = 0
+        var writes = 0
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                selected.root.executionId,
+                {
+                    reads++
+                    selected
+                },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        val session = SequenceHistoryMutationRouteSession(selected.root.executionId, controller)
+        try {
+            compose.setContent {
+                TestTheme { SequenceHistoryDetailRoute(session, {}, {}, visible.value, { visible.value }) }
+            }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            scroll("sequence:navigation")
+            selectedKey = null
+            val section = text(R.string.history_intervals)
+            val click = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+            val inputFocus =
+                requireNotNull(
+                    compose
+                        .onNodeWithTag("sequence-history-go-position")
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.RequestFocus]
+                        .action,
+                )
+            val list = compose.onNodeWithTag("sequence-history-detail-list")
+            val position = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+            compose.runOnIdle {
+                visible.value = false
+                click()
+                assertFalse(inputFocus())
+                visible.value = true
+                click()
+                assertFalse(inputFocus())
+            }
+            compose.waitForIdle()
+            assertEquals(
+                position,
+                list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(),
+            )
+            compose.runOnIdle {
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+            }
+            section.performClick()
+            keyboard.awaitFocus(
+                compose.onNode(
+                    hasText(compose.activity.getString(R.string.history_intervals)) and
+                        SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+                ),
+            )
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test

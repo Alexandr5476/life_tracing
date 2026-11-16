@@ -746,7 +746,7 @@ internal fun sequenceAdmissionDetail() =
         emptyList(),
     )
 
-private object SequenceAdmissionFacts {
+internal object SequenceAdmissionFacts {
     fun detail(): SequenceHistoryDetail {
         val target = occurrence(TARGET, 0, minute(0), minute(10), CHILD_TARGET, deleted = false)
         val tombstone = occurrence(LATER, 1, minute(10), minute(20), CHILD_LATER, deleted = true)

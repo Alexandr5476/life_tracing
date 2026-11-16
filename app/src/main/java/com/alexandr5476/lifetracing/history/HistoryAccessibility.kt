@@ -158,6 +158,7 @@ internal class HistoryFocus {
     var recoveryTarget: FocusRequester? = null
     var owner: Any? = null
     var lazyOwner: String? = null
+    var sequenceOwner: SequenceHistoryFocusIdentity? = null
     var removed by mutableStateOf<Any?>(null)
     var awaitingRead by mutableStateOf(false)
     var recovering = false
@@ -178,7 +179,8 @@ internal fun rememberHistoryFocus(
     backEnabled: Boolean = true,
 ): HistoryFocus {
     val focus = remember { HistoryFocus() }
-    val owner by rememberUpdatedState(ownsRoute)
+    // A deferred request retains its initiating authority; it cannot borrow a later publication.
+    val authorized = ownsRoute
     val window = LocalWindowInfo.current
     val mode = LocalInputModeManager.current.inputMode
     val foreground = visible && window.isWindowFocused
@@ -188,17 +190,17 @@ internal fun rememberHistoryFocus(
         focus.landingPending = visible
     }
     // Availability changes retry a pending native landing after a session first appears while saving.
-    LaunchedEffect(visible, window.isWindowFocused, mode, focus.landingPending, backEnabled) {
-        if (foreground && owner()) {
+    LaunchedEffect(visible, window.isWindowFocused, mode, focus.landingPending, backEnabled, ownsRoute) {
+        if (foreground && authorized()) {
             withFrameNanos { }
-            if (owner() && focus.landingPending) focus.landingPending = !focus.back.requestFocus()
+            if (authorized() && focus.landingPending) focus.landingPending = !focus.back.requestFocus()
         }
     }
-    LaunchedEffect(visible, window.isWindowFocused, mode, focus.removed, loading, failed) {
+    LaunchedEffect(visible, window.isWindowFocused, mode, focus.removed, loading, failed, ownsRoute) {
         val needsRecovery = focus.removed != null || focus.awaitingRead && !loading
-        if (foreground && owner() && needsRecovery) {
+        if (foreground && authorized() && needsRecovery) {
             withFrameNanos { }
-            if (owner()) {
+            if (authorized()) {
                 focus.recovering = true
                 (if (failed) focus.retry else focus.recoveryTarget ?: focus.back).requestFocus()
                 focus.recovering = false
@@ -218,6 +220,7 @@ internal fun historyFocusTarget(
 ): Modifier {
     val focus = LocalHistoryFocus.current
     val lazyIdentity = LocalHistoryLazyIdentity.current
+    val sequenceIdentity = LocalSequenceHistoryFocusIdentity.current
     val token = remember { Any() }
     LaunchedEffect(enabled) {
         if (!enabled && focus.owner === token) focus.removed = token
@@ -231,6 +234,7 @@ internal fun historyFocusTarget(
                 focus.landingPending = false
                 focus.owner = token
                 focus.lazyOwner = lazyIdentity
+                focus.sequenceOwner = sequenceIdentity
                 if (!focus.recovering && focus.removed == null) focus.awaitingRead = false
             }
         }

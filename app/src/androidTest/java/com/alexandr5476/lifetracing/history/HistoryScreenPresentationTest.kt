@@ -1,16 +1,24 @@
 package com.alexandr5476.lifetracing.history
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -285,21 +293,167 @@ class HistoryScreenPresentationTest {
         }
     }
 
-    private fun admissionRoute(write: suspend () -> Unit = {}): SequenceAdmissionRouteFixture {
+    @Test
+    fun sequenceReadOnlyNavigationDisablesHiddenControlsAndRevokesCapturedSection() {
+        val f = admissionRoute()
+        sequenceItem("sequence:navigation", "sequence-history-go-position").performTextReplacement("1")
+        composeTestRule.onNodeWithTag("sequence-history-go").assertIsEnabled()
+        val section = sequenceItem("sequence:navigation", "sequence-history-section-intervals")
+        val click = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        val before = sequenceScrollPosition()
+        composeTestRule.runOnIdle { f.visible.value = false }
+        section.assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("sequence-history-go-position").assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("sequence-history-go").assertIsNotEnabled()
+        composeTestRule.runOnIdle { click() }
+        assertEquals(before, sequenceScrollPosition())
+        composeTestRule.runOnIdle { f.visible.value = true }
+        section.assertIsEnabled()
+        composeTestRule.runOnIdle { click() }
+        assertEquals(before, sequenceScrollPosition())
+        section.performClick()
+        keyboard.awaitFocus(
+            composeTestRule.onNode(
+                hasText(
+                    text(R.string.history_intervals),
+                ) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+            ),
+        )
+        composeTestRule.runOnIdle {
+            assertEquals(1, f.reads)
+            assertEquals(0, f.writes)
+            assertEquals(null, f.controller.state.value.timingDraft)
+        }
+    }
+
+    @Test
+    fun sequenceReadOnlyNavigationRevokesPausedDisposedAndReplacedSessions() {
+        val f = admissionRoute()
+        val section = sequenceItem("sequence:navigation", "sequence-history-section-intervals")
+        val paused = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        val before = sequenceScrollPosition()
+        composeTestRule.runOnIdle {
+            f.lifecycle.registry.currentState = Lifecycle.State.STARTED
+            f.lifecycle.registry.currentState = Lifecycle.State.RESUMED
+            paused()
+        }
+        assertEquals(before, sequenceScrollPosition())
+        val disposed = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        composeTestRule.runOnIdle { f.present.value = false }
+        composeTestRule.runOnIdle {
+            disposed()
+            f.present.value = true
+        }
+        sequenceItem("sequence:navigation", "sequence-history-section-intervals").assertIsEnabled()
+        val replaced = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        composeTestRule.runOnIdle {
+            val old = f.session.value
+            f.session.value = SequenceHistoryMutationRouteSession(old.executionId, f.createController())
+            replaced()
+        }
+        sequenceItem("sequence:navigation", "sequence-history-section-intervals").assertIsEnabled()
+        val replacementPosition = sequenceScrollPosition()
+        composeTestRule.runOnIdle {
+            paused()
+            disposed()
+            replaced()
+        }
+        assertEquals(replacementPosition, sequenceScrollPosition())
+        section.performClick()
+        keyboard.awaitFocus(
+            composeTestRule.onNode(
+                hasText(
+                    text(R.string.history_intervals),
+                ) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+            ),
+        )
+        composeTestRule.runOnIdle { assertEquals(0, f.writes) }
+    }
+
+    @Test
+    fun sequenceQueuedReadOnlyJumpLosesHiddenRouteBeforeScrollAndCannotStealFocusOnReturn() {
+        val f = admissionRoute(foregroundTarget = true)
+        val section = sequenceItem("sequence:navigation", "sequence-history-section-intervals")
+        val click = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        val before = sequenceScrollPosition()
+        val foreground = composeTestRule.onNodeWithTag("foreground-focus")
+        keyboard.enter(foreground)
+        foreground.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(foreground)
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.runOnIdle {
+            click()
+            f.visible.value = false
+        }
+        composeTestRule.mainClock.autoAdvance = true
+        keyboard.awaitFocus(foreground)
+        assertEquals(before, sequenceScrollPosition())
+        composeTestRule.runOnIdle { f.visible.value = true }
+        keyboard.enter(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        keyboard.awaitFocus(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        assertEquals(before, sequenceScrollPosition())
+        composeTestRule.runOnIdle {
+            assertEquals(0, f.writes)
+            assertEquals(1, f.reads)
+        }
+    }
+
+    @Test
+    fun sequenceQueuedReadOnlyJumpCannotScrollReplacementSessionWithSameExecution() {
+        val f = admissionRoute()
+        val section = sequenceItem("sequence:navigation", "sequence-history-section-intervals")
+        val click = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.runOnIdle {
+            click()
+            val old = f.session.value
+            f.session.value = SequenceHistoryMutationRouteSession(old.executionId, f.createController())
+        }
+        composeTestRule.mainClock.autoAdvance = true
+        sequenceItem("sequence:navigation", "sequence-history-section-intervals").assertIsEnabled()
+        keyboard.enter(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        keyboard.awaitFocus(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        composeTestRule.runOnIdle {
+            assertEquals(0, f.writes)
+            assertEquals(2, f.reads)
+        }
+    }
+
+    private fun sequenceScrollPosition(): Float =
+        composeTestRule
+            .onNodeWithTag("sequence-history-detail-list")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.VerticalScrollAxisRange]
+            .value()
+
+    private fun admissionRoute(
+        write: suspend () -> Unit = {},
+        foregroundTarget: Boolean = false,
+    ): SequenceAdmissionRouteFixture {
         val f = SequenceAdmissionRouteFixture(sequenceMutationDetail(), write)
         admissionScopes += f.scope
         composeTestRule.setContent {
             CompositionLocalProvider(LocalLifecycleOwner provides f.lifecycle) {
                 LifeTracingTheme {
-                    val current = f.session.value
-                    if (f.present.value) {
-                        SequenceHistoryDetailRoute(
-                            current,
-                            {},
-                            { f.refreshes++ },
-                            f.visible.value,
-                            { f.visible.value && f.session.value === current },
-                        )
+                    val route: @Composable () -> Unit = {
+                        val current = f.session.value
+                        if (f.present.value) {
+                            SequenceHistoryDetailRoute(
+                                current,
+                                {},
+                                { f.refreshes++ },
+                                f.visible.value,
+                                { f.visible.value && f.session.value === current },
+                            )
+                        }
+                    }
+                    if (foregroundTarget) {
+                        Column(Modifier.fillMaxSize()) {
+                            TextButton({}, Modifier.testTag("foreground-focus")) { Text("Foreground route") }
+                            Box(Modifier.weight(1f)) { route() }
+                        }
+                    } else {
+                        route()
                     }
                 }
             }
@@ -317,6 +471,7 @@ class HistoryScreenPresentationTest {
         val present = mutableStateOf(true)
         val lifecycle = SequenceAdmissionLifecycle()
         var failReads = false
+        var reads = 0
         var writes = 0
         var refreshes = 0
         val controller = createController()
@@ -326,7 +481,10 @@ class HistoryScreenPresentationTest {
             SequenceHistoryMutationController(
                 scope,
                 detail.root.executionId,
-                { if (failReads) error("read failure") else detail },
+                {
+                    reads++
+                    if (failReads) error("read failure") else detail
+                },
                 { _, _, _ -> error("unexpected timing writer") },
                 { _, _, _ ->
                     writes++
