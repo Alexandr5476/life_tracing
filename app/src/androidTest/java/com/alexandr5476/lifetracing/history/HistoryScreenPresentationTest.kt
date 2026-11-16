@@ -7,10 +7,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
@@ -21,8 +24,16 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.text.AnnotatedString
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
@@ -57,12 +68,16 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -78,9 +93,252 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicInteger
 
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
 class HistoryScreenPresentationTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule val keyboard = KeyboardInputFixture(composeTestRule)
+
+    private val admissionScopes = mutableListOf<CoroutineScope>()
+
+    @After
+    fun closeAdmissionScopes() {
+        admissionScopes.forEach { it.cancel() }
+    }
+
+    @Test
+    fun sequenceDisposedRouteCannotReviveCapturedNativeControls() {
+        val f = admissionRoute()
+        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.runOnIdle { f.present.value = false }
+        button.assertDoesNotExist()
+        composeTestRule.runOnIdle {
+            click()
+            f.present.value = true
+        }
+        button.performScrollTo().assertIsEnabled()
+        composeTestRule.runOnIdle {
+            click()
+            assertEquals(null, f.controller.state.value.timingDraft)
+        }
+        button.performClick()
+        composeTestRule.runOnIdle { assertTrue(f.controller.state.value.timingDraft != null) }
+    }
+
+    @Test
+    fun sequenceNativeActionsStayRevokedAfterHiddenForegroundRoundTripBeforeFrame() {
+        val f = admissionRoute()
+        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.runOnIdle {
+            f.visible.value = false
+            click()
+            f.visible.value = true
+            click()
+            assertEquals(null, f.controller.state.value.timingDraft)
+        }
+        keyboard.enter(button)
+        button.performScrollTo().assertIsEnabled().performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        keyboard.awaitFocus(button)
+        button.performKeyInput { pressKey(Key.Enter) }
+        composeTestRule.runOnIdle { assertTrue(f.controller.state.value.timingDraft != null) }
+    }
+
+    @Test
+    fun sequencePauseResumeBeforeFrameRevokesCapturedNativeAction() {
+        val f = admissionRoute()
+        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.runOnIdle {
+            f.lifecycle.registry.currentState = Lifecycle.State.STARTED
+            f.lifecycle.registry.currentState = Lifecycle.State.RESUMED
+            click()
+            assertEquals(null, f.controller.state.value.timingDraft)
+        }
+        button.assertIsEnabled().performClick()
+        composeTestRule.runOnIdle { assertTrue(f.controller.state.value.timingDraft != null) }
+    }
+
+    @Test
+    fun sequencePublicationCancellationAndSessionReplacementRevokeNativeControls() {
+        val f = admissionRoute()
+        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        button.performClick()
+        composeTestRule.runOnIdle {
+            f.controller.dispatch(SequenceHistoryMutationAction.Cancel)
+            click()
+        }
+        composeTestRule.runOnIdle { assertEquals(null, f.controller.state.value.timingDraft) }
+        val current =
+            button
+                .performScrollTo()
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.runOnIdle {
+            val old = f.session.value
+            f.session.value = SequenceHistoryMutationRouteSession(old.executionId, f.createController())
+            current()
+            assertEquals(null, old.controller.state.value.timingDraft)
+        }
+        button.performScrollTo().performClick()
+        composeTestRule.runOnIdle { assertTrue(f.session.value.controller.state.value.timingDraft != null) }
+    }
+
+    @Test
+    fun sequenceNativeTimestampAcceptsRepeatedEventsAndRejectsReviewedOrDisposedEditor() {
+        val f = admissionRoute()
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        val field = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended").performScrollTo()
+        val edit = field.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
+        composeTestRule.runOnIdle {
+            assertTrue(edit(AnnotatedString("2026-07-01T10:30:00")))
+            assertTrue(edit(AnnotatedString("2026-07-01T10:31:00")))
+            assertEquals(
+                "2026-07-01T10:31:00",
+                f.controller.state.value.timingDraft!!
+                    .timestamps[SequenceHistoryTimestampTarget.RootEndedAt]
+                    ?.text,
+            )
+            f.controller.dispatch(SequenceHistoryMutationAction.Cancel)
+            assertFalse(edit(AnnotatedString("stale")))
+        }
+        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        val fresh =
+            field
+                .performScrollTo()
+                .fetchSemanticsNode()
+                .config[SemanticsActions.SetText]
+                .action!!
+        composeTestRule.runOnIdle { f.visible.value = false }
+        field.assertIsNotEnabled()
+        composeTestRule.runOnIdle {
+            assertFalse(fresh(AnnotatedString("hidden")))
+            f.visible.value = true
+        }
+        field.assertIsEnabled()
+    }
+
+    @Test
+    fun sequencePendingWriterDisablesNativeBackAndDuplicateConfirmation() {
+        val gate = CompletableDeferred<Unit>()
+        val f = admissionRoute(write = { gate.await() })
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        val confirm = composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo()
+        val click = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        val back =
+            composeTestRule
+                .onNodeWithText(text(R.string.history_back))
+                .performScrollTo()
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        confirm.performScrollTo().performClick()
+        composeTestRule.runOnIdle {
+            click()
+            back()
+            assertTrue(f.controller.state.value.isMutating)
+            assertEquals(1, f.writes)
+        }
+        confirm.assertIsNotEnabled()
+        composeTestRule.onNodeWithText(text(R.string.history_back)).performScrollTo().assertIsNotEnabled()
+        composeTestRule.runOnIdle { gate.complete(Unit) }
+        composeTestRule.onNodeWithText(text(R.string.history_back)).assertIsEnabled()
+    }
+
+    @Test
+    fun sequenceCommittedReadFailureOffersNativeReadOnlyRetry() {
+        val f = admissionRoute()
+        composeTestRule.runOnIdle { f.write = { f.failReads = true } }
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        val click =
+            composeTestRule
+                .onNodeWithTag("sequence-history-confirm-delete-child")
+                .performScrollTo()
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.runOnIdle { click() }
+        val retry = composeTestRule.onNodeWithTag("history-retry").performScrollTo().assertIsEnabled()
+        val oldRetry = retry.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        retry.performClick()
+        retry.assertIsEnabled()
+        composeTestRule.runOnIdle {
+            f.failReads = false
+            oldRetry()
+            assertTrue(f.controller.state.value.load is HistoryDetailLoad.Failure)
+            click()
+        }
+        keyboard.enter(retry)
+        retry.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        keyboard.awaitFocus(retry)
+        retry.performKeyInput { pressKey(Key.Enter) }
+        composeTestRule.runOnIdle {
+            assertEquals(1, f.writes)
+            assertEquals(1L, f.controller.state.value.refreshGeneration)
+            assertTrue(f.controller.state.value.load is HistoryDetailLoad.Content)
+            assertEquals(1, f.refreshes)
+        }
+    }
+
+    private fun admissionRoute(write: suspend () -> Unit = {}): SequenceAdmissionRouteFixture {
+        val f = SequenceAdmissionRouteFixture(sequenceMutationDetail(), write)
+        admissionScopes += f.scope
+        composeTestRule.setContent {
+            CompositionLocalProvider(LocalLifecycleOwner provides f.lifecycle) {
+                LifeTracingTheme {
+                    val current = f.session.value
+                    if (f.present.value) {
+                        SequenceHistoryDetailRoute(
+                            current,
+                            {},
+                            { f.refreshes++ },
+                            f.visible.value,
+                            { f.visible.value && f.session.value === current },
+                        )
+                    }
+                }
+            }
+        }
+        composeTestRule.waitUntil(2_000) { f.controller.state.value.load is HistoryDetailLoad.Content }
+        return f
+    }
+
+    private class SequenceAdmissionRouteFixture(
+        val detail: SequenceHistoryDetail,
+        var write: suspend () -> Unit,
+    ) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val visible = mutableStateOf(true)
+        val present = mutableStateOf(true)
+        val lifecycle = SequenceAdmissionLifecycle()
+        var failReads = false
+        var writes = 0
+        var refreshes = 0
+        val controller = createController()
+        val session = mutableStateOf(SequenceHistoryMutationRouteSession(detail.root.executionId, controller))
+
+        fun createController() =
+            SequenceHistoryMutationController(
+                scope,
+                detail.root.executionId,
+                { if (failReads) error("read failure") else detail },
+                { _, _, _ -> error("unexpected timing writer") },
+                { _, _, _ ->
+                    writes++
+                    write()
+                },
+                { _, _, _ -> error("unexpected structural writer") },
+            )
+    }
+
+    private class SequenceAdmissionLifecycle : LifecycleOwner {
+        val registry = LifecycleRegistry.createUnsafe(this).apply { currentState = Lifecycle.State.RESUMED }
+        override val lifecycle: Lifecycle get() = registry
+    }
 
     @Test
     fun repeatedHourDetailShowsEachEndpointsHistoricalOffset() {

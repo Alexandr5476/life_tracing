@@ -57,6 +57,7 @@ data class SequenceHistoryMutationState(
     val isMutating: Boolean = false,
     val issue: SequenceHistoryMutationIssue? = null,
     val refreshGeneration: Long = 0,
+    val publication: Long = 0,
 )
 
 sealed interface SequenceHistoryMutationAction {
@@ -130,6 +131,8 @@ class SequenceHistoryMutationController internal constructor(
 
     fun dispatch(action: SequenceHistoryMutationAction) {
         if (closed || mutableState.value.isMutating) return
+        // Keep immediate equal-looking recovery results observable without reviving old controls.
+        mutableState.update { it.copy(publication = it.publication + 1) }
         when (action) {
             SequenceHistoryMutationAction.Retry -> reload()
             SequenceHistoryMutationAction.BeginTiming -> beginTiming()
@@ -208,7 +211,9 @@ class SequenceHistoryMutationController internal constructor(
             mutableState.update {
                 it.copy(
                     load =
-                        detail?.let(HistoryDetailLoad<SequenceHistoryDetail>::Content)
+                        detail
+                            ?.takeIf { detail -> detail.hasValidSequenceIdentity(executionId) }
+                            ?.let(HistoryDetailLoad<SequenceHistoryDetail>::Content)
                             ?: HistoryDetailLoad.Unavailable,
                     isMutating = false,
                     issue = issue,

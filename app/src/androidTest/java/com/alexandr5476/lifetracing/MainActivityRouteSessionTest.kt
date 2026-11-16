@@ -31,6 +31,7 @@ import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.SequenceHistoryCommandRepository
 import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
@@ -87,6 +88,7 @@ import com.alexandr5476.lifetracing.history.ManualActivityEntryAction
 import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
 import com.alexandr5476.lifetracing.history.ManualEntryLoad
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationController
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
@@ -138,6 +140,148 @@ class MainActivityRouteSessionTest {
                     commands.softDeleteHistory(root.executionId, stale.updatedAt, commandNow.plusSeconds(1))
                 }
             }
+    }
+
+    @Test
+    fun sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation() {
+        val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
+        val live = LiveSessionRepository.create(composeTestRule.activity)
+        clearLiveSession(live)
+        val at = Instant.now().minusSeconds(600)
+        val activity =
+            authoring.createActivityTemplate(
+                ActivityTemplateDraft("History step ${System.nanoTime()}", null, TimeTrackingMode.STOPWATCH, null),
+                createdAt = at,
+            )
+        val sequence =
+            authoring.createSequenceTemplate(
+                SequenceTemplateDraft(
+                    "History route ${System.nanoTime()}",
+                    null,
+                    nodes =
+                        listOf(
+                            SequenceNodeDraft.Step(
+                                ActivityStepDraft(
+                                    DraftIdentity.New("step"),
+                                    0,
+                                    StepActivityDraft.FromTemplate(activity.id),
+                                ),
+                            ),
+                        ),
+                ),
+                createdAt = at.plusMillis(1),
+            )
+        val startedAt = at.plusMillis(2)
+        val started =
+            LibraryRepository.create(composeTestRule.activity).startSequenceFromTemplate(
+                sequence.id,
+                startedAt,
+                startedAt,
+                ZoneOffset.UTC,
+                sequence.revision,
+            )
+        live.endSequenceEarly(started.execution.id, at.plusSeconds(60))
+        val history = HistoryReadRepository.create(composeTestRule.activity)
+        val canonical = requireNotNull(history.getSequenceDetail(started.execution.id))
+        val commands = SequenceHistoryCommandRepository.create(composeTestRule.activity)
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val writes = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                started.execution.id,
+                { id -> withContext(Dispatchers.IO) { history.getSequenceDetail(id) } },
+                { id, correction, time ->
+                    entered.complete(Unit)
+                    release.await()
+                    withContext(Dispatchers.IO) {
+                        writes.incrementAndGet()
+                        commands.correctTiming(id, correction, time)
+                    }
+                },
+                { _, _, _ -> error("unused deletion") },
+                { _, _, _ -> error("unused removal") },
+            )
+        try {
+            composeTestRule.runOnUiThread {
+                composeTestRule.activity.sequenceHistoryMutationRouteSessions.acquire(
+                    started.execution.id,
+                ) { controller }
+            }
+            composeTestRule.onNodeWithText(composeTestRule.activity.getString(R.string.daily_history)).performClick()
+            val tag = "history-sequence-${started.execution.id.value}"
+            composeTestRule.waitUntil(
+                5_000,
+            ) { composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+            composeTestRule.onNodeWithTag(tag).performScrollTo().performClick()
+            composeTestRule.waitUntil(5_000) {
+                composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.load is HistoryDetailLoad.Content
+            }
+            composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+            composeTestRule
+                .onNodeWithTag("sequence-history-timestamp-root-ended")
+                .performScrollTo()
+                .performTextReplacement(
+                    canonical.root.completedAt
+                        .plusMillis(1)
+                        .atOffset(ZoneOffset.UTC)
+                        .toLocalDateTime()
+                        .toString(),
+                )
+            composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+            composeTestRule.waitUntil(5_000) { entered.isCompleted }
+            val session = requireNotNull(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
+            recreateActivity()
+            assertSame(session, composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
+            composeTestRule
+                .onNodeWithText(
+                    composeTestRule.activity.getString(R.string.history_back),
+                ).performScrollTo()
+                .assertIsNotEnabled()
+            release.complete(Unit)
+            composeTestRule.waitUntil(5_000) {
+                controller.state.value.refreshGeneration == 1L &&
+                    !controller.state.value.isMutating
+            }
+            composeTestRule.waitForIdle()
+            var duplicateDeliveries = 0
+            composeTestRule.runOnUiThread { session.deliverRefresh(1) { duplicateDeliveries++ } }
+            assertEquals(0, duplicateDeliveries)
+            recreateActivity()
+            assertSame(session, composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
+            composeTestRule.runOnUiThread { session.deliverRefresh(1) { duplicateDeliveries++ } }
+            assertEquals(0, duplicateDeliveries)
+            assertEquals(1, writes.get())
+            composeTestRule
+                .onNodeWithText(
+                    composeTestRule.activity.getString(R.string.history_back),
+                ).performScrollTo()
+                .performClick()
+            composeTestRule.waitUntil(5_000) {
+                composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession ==
+                    null
+            }
+            composeTestRule.onNodeWithTag(tag).performScrollTo().performClick()
+            composeTestRule.waitUntil(5_000) {
+                composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
+                    ?.controller
+                    ?.state
+                    ?.value
+                    ?.load is HistoryDetailLoad.Content
+            }
+            composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+            assertTrue(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession !== session)
+            composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().assertIsEnabled()
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test

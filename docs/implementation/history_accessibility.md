@@ -248,3 +248,97 @@ The authorized probe again rejected execution with "No active repair-probe lease
 Neither failing device journey has been re-executed for this patch; the supplied
 assertion failures remain open for Controller verification. No direct device task
 or manual accessibility-service walkthrough was performed.
+
+## Sequence History mutation ownership (S1)
+
+`SequenceHistoryAdmission` is the native action boundary for the existing detail,
+timing draft/review/overlap, child deletion, structural mode/placement/review,
+Retry and Back. It checks the live RESUMED foreground route, exact retained
+session/controller and execution identity, publication reference, current phase,
+typed target and writer lock. Session-keyed composition isolates retained controls
+and focus. Pause events revoke synchronously; navigation snapshot observation,
+activation-time ownership checks and disposal permanently revoke older authority.
+Foreground reentry issues fresh callbacks. Each timestamp input advances only its
+own expected-publication cursor; buttons and offset choices cannot borrow it.
+Material pointer/keyboard actions and native semantics use the same guarded
+callbacks; disabled controls retain native disabled semantics.
+
+Canonical loading rejects mismatched/nonterminal roots and malformed occurrence,
+child and interval identities before creating mutation controls. Validation uses
+only the selected canonical aggregate and temporary identity sets. Admission
+retains references and a validity flag, never an aggregate copy. Publication checks
+use reference identity in constant time; typed target checks use the selected
+aggregate. No new reader, global History/Statistics query, persisted state or writer
+was introduced. Existing resolver, proposal builder, policies, optimistic tokens
+and transactional commands retain their semantics.
+
+System and native Back consume the current transient or block while a writer/read
+completion is pending. Safe exit drains the same retained session generation gate
+used by Compose refresh delivery before releasing the exact session. A committed
+read failure keeps its generation and permits read-only Retry. Generation delivery
+is independent of RESUMED ownership and survives Activity recreation.
+
+`SequenceHistoryAdmissionTest` covers publication replacement, identity and phase
+rejection, target disambiguation, revocation, independent text cursors, obsolete
+offsets, dismissed reviews/warnings, incomplete placement, duplicate confirmation,
+Back/session ownership, refresh draining, stale rejection and postcommit recovery.
+New production-route native semantics/keyboard tests in
+`HistoryScreenPresentationTest` and a MainActivity recreation test are registered
+in the mandatory instrumentation inventory. Device execution and independent
+GitHub CI remain Controller-owned. Manual accessibility-service certification was
+not performed. Full editor descriptions/focus design and large-Sequence rendering
+remain deferred.
+
+An additional fail-first JVM regression reproduced StateFlow conflating an immediate
+Retry/read failure with the preceding identical failure. Sequence dispatch now
+advances a non-durable publication counter, following Activity correction, while
+reference identity remains the authorization check. A repeated-failure native Retry
+regression covers fresh keyboard recovery and rejection of the retained Retry.
+Committed refresh generations and writer behavior are unchanged.
+
+Local verification passed 179 History/navigation JVM tests, including 17 admission
+regressions, with no failures, errors or skips. App ktlint, Detekt and Android lint
+passed; debug and app/data instrumentation APKs assembled. All eight new device
+test identities are registered; inventory/source identity validation and
+`git diff --check` passed. Instrumentation compilation supplies no device-execution
+or accessibility-service certification evidence. Durable command/repository,
+domain, schema, snapshot, Plan and Statistics implementations are unchanged.
+
+## API 33 fixture repair
+
+The canonical `gmd-api33-app` run reached three S1 testcase failures. The recreation
+fixture supplied a backdated Sequence start with a later persisted creation time;
+starting its first occurrence then violated the existing updated/creation invariant.
+The fixture now uses one explicit instant for both start and creation, retaining
+its past terminal event and correction. The two Sequence Enter-key cases now enter
+native keyboard mode and await the intended control's focus through the shared
+`KeyboardInputFixture`. Stale-action, single-writer and refresh assertions remain
+intact. Both Enter activations in the affected class were corrected together;
+production admission and durable behavior are unchanged by this repair.
+
+The Controller's subsequent API 33 causal run executed all three affected tests.
+The recreation test passed. Both keyboard tests reached native window admission
+and failed because the same `Application Not Responding: com.android.systemui`
+window owned input focus; the intended ComponentActivity remained the focused app.
+Their preceding stale-action assertions completed, but native keyboard activation
+was blocked in that execution. The full diagnostic captures reconstructed
+from acknowledged logcat frames matched the reported byte counts and SHA-256
+hashes (316245 bytes, `63cacb159ce3ab132b23e32ed32302a2ba7b5721b3495ff632feb02309b17a3d`;
+346046 bytes, `997b642a582d2b6f7673cfcfa1e4f39426ab7cd28365b1f0531e53e6619d0a2c`).
+Both identify SystemUI PID 825 and the same ANR dialog window `9b0d710`.
+
+After restoring the probe binding, an authorized containing-class experiment ran
+all 55 tests in `MainActivityRouteSessionTest` and `HistoryScreenPresentationTest`.
+It reproduced the same two SystemUI window-admission failures; the other 53 tests
+passed. The canonical artifacts and this first probe were preserved separately.
+Controller then completed its authorized `cleanManagedDevices` and setup recovery.
+With identical application source and the same class scope, a second real probe
+passed all 55 tests with no failures, errors or skips, including both keyboard
+regressions and Sequence session recreation. These are retained as `tree-1` and
+`tree-2` under repair-probe lease `b4c01c8a537649fc800a09d8b3f841ac`.
+
+This comparison identifies the device's SystemUI obstruction as the immediate
+cause of those native admission failures. No application assertions or focus
+guards were changed for the experiment; the underlying SystemUI startup issue was
+not repaired in the repository. The class-scoped diagnostic PASS supplies no full
+API 33 suite or independent GitHub CI PASS credit. Controller retains those gates.

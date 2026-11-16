@@ -814,6 +814,7 @@
       "productionSequenceEditorRetainsInvalidTextAcrossRecreationThenDiscardsOrCommitsCleanly",
       "realRepositoryStaleHistoryCorrectionReloadsCanonicalWithoutPartialReplacement",
       "restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState",
+      "sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation",
       "sequencePlanStartUsesProductionRouteAndReturnsToUsableDailyRuntime",
       "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation"
     ],
@@ -1026,7 +1027,14 @@
       "productionPlanLinkedActivityDetailShowsDeleteWithoutCorrection",
       "readDeletionAndStructuralFailuresHaveDistinctActiveSurfaceMessages",
       "repeatedHourDetailShowsEachEndpointsHistoricalOffset",
+      "sequenceCommittedReadFailureOffersNativeReadOnlyRetry",
       "sequenceDetailShowsCanonicalGraphStatesProvenanceAndTombstoneInOrder",
+      "sequenceDisposedRouteCannotReviveCapturedNativeControls",
+      "sequenceNativeActionsStayRevokedAfterHiddenForegroundRoundTripBeforeFrame",
+      "sequenceNativeTimestampAcceptsRepeatedEventsAndRejectsReviewedOrDisposedEditor",
+      "sequencePauseResumeBeforeFrameRevokesCapturedNativeAction",
+      "sequencePendingWriterDisablesNativeBackAndDuplicateConfirmation",
+      "sequencePublicationCancellationAndSessionReplacementRevokeNativeControls",
       "sequenceTimingCorrectionUsesControllerDraftAndCancelWritesNothing",
       "timingEditorPresentsSyntaxDstNoChangeAndExplicitOffsetStates",
       "timingValidationGenericAndStaleFailuresRemainVisibleInReview"
