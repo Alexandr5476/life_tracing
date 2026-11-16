@@ -253,8 +253,8 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             timingBefore.root.completedAt.plusSeconds(1),
             timingBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(timing)?.root?.completedAt == timingBefore.root.completedAt.plusSeconds(1)
         }
@@ -411,12 +411,12 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             earlierStart,
             overlapBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").assertIsDisplayed().performClick()
         assertEquals(overlapBefore.updatedAt, history.getSequenceDetail(overlap)?.updatedAt)
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(overlap)?.updatedAt != overlapBefore.updatedAt }
         val overlapAfter = requireNotNull(history.getSequenceDetail(overlap))
         assertEquals(java.time.Duration.ofSeconds(20), overlapAfter.root.activeDuration)
@@ -438,8 +438,8 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             midnight.minusSeconds(30),
             movedBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(moved)?.root?.primaryLocalDate == utcDate.minusDays(1)
         }
@@ -502,9 +502,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             overlappingStart,
             original.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.updatedAt != original.updatedAt }
 
         val beforeStructural = requireNotNull(history.getSequenceDetail(execution))
@@ -518,7 +518,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         resolveOwnerlessIntervals()
         composeTestRule
             .onNodeWithText(
-                composeTestRule.activity.getString(R.string.history_overlap_warning),
+                composeTestRule.activity.getString(R.string.sequence_history_overlap_warning),
             ).performScrollTo()
             .assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
@@ -602,8 +602,8 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             before.root.completedAt.plusSeconds(1),
             before.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(
             5_000,
         ) { plans.getPlan(plan.id)?.fulfilledAt == before.root.completedAt.plusSeconds(1) }
@@ -711,6 +711,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         instant: Instant,
         zoneId: ZoneId,
     ) {
+        composeTestRule
+            .onNodeWithTag("sequence-history-timing-list")
+            .performScrollToKey(tag.removePrefix("sequence-history-timestamp-"))
         composeTestRule
             .onNodeWithTag(tag)
             .performScrollTo()

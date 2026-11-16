@@ -45,7 +45,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.setText
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -68,7 +67,6 @@ import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
-import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.historicalTimestamp
@@ -77,11 +75,8 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeFormatterBuilder
 import java.time.format.FormatStyle
-import java.time.temporal.ChronoField
 
 @Composable
 fun HistoryRoute(
@@ -638,40 +633,6 @@ private fun ActivityHistoryMutationSurface(
 }
 
 @Composable
-private fun OffsetChoices(
-    offsets: List<ZoneOffset>,
-    selected: ZoneOffset?,
-    enabled: Boolean = true,
-    onSelect: (ZoneOffset) -> Unit,
-) {
-    if (offsets.size != 2) return
-    Text(stringResource(R.string.manual_history_ambiguous_time), color = MaterialTheme.colorScheme.error)
-    offsets.forEachIndexed { index, offset ->
-        val available = enabled && requireNotNull(LocalSequenceHistoryAdmission.current).isCurrent()
-        val click = { onSelect(offset) }
-        TextButton(
-            onClick = click,
-            enabled = available,
-            modifier = if (available) Modifier.historyActionSemantics(click) else Modifier,
-        ) {
-            Text(
-                (if (selected == offset) "✓ " else "") +
-                    stringResource(
-                        if (index ==
-                            0
-                        ) {
-                            R.string.manual_history_first_occurrence
-                        } else {
-                            R.string.manual_history_second_occurrence
-                        },
-                        "UTC${if (offset == ZoneOffset.UTC) "+00:00" else offset.id}",
-                    ),
-            )
-        }
-    }
-}
-
-@Composable
 private fun SequenceHistoryMutationSurface(
     detail: SequenceHistoryDetail,
     state: SequenceHistoryMutationState,
@@ -686,90 +647,9 @@ private fun SequenceHistoryMutationSurface(
         state.structuralProposal != null && !state.structuralProposal.isConfirmable ->
             OwnerlessPlacementChooser(detail, state, onAction)
         state.structuralProposal != null -> StructuralReview(detail, occurrenceDescriptors, state, onAction)
-        state.timingProposal != null -> TimingReview(detail, occurrenceDescriptors, state, onAction)
-        state.timingDraft != null -> TimingEditor(detail, occurrenceDescriptors, state, onAction)
+        state.timingProposal != null -> Column(Modifier.fillMaxSize()) { SequenceTimingReview(detail, state, onAction) }
+        state.timingDraft != null -> Column(Modifier.fillMaxSize()) { SequenceTimingEditor(detail, state, onAction) }
         else -> state.issue?.let { SequenceMutationIssue(it) }
-    }
-}
-
-@Composable
-private fun TimingEditor(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val draft = requireNotNull(state.timingDraft)
-    Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
-    Text(stringResource(R.string.history_event_zone, detail.originalZoneId.id))
-    draft.timestamps.forEach { (target, value) ->
-        val admission = requireNotNull(LocalSequenceHistoryAdmission.current)
-        val input = remember(admission, target) { admission.input(target) }
-        val enabled = admission.enabled(SequenceHistoryMutationAction.EditTimestamp(target, value.text))
-        LifeTracingOutlinedTextField(
-            value.text,
-            { input(it) },
-            Modifier
-                .fillMaxWidth()
-                .testTag("sequence-history-timestamp-${timestampTargetKey(target)}")
-                .semantics { setText { enabled && input(it.text) } },
-            label = { Text(timestampTargetLabel(occurrenceDescriptors, target)) },
-            enabled = enabled,
-        )
-        OffsetChoices(value.validOffsets, value.selectedOffset, enabled = !state.isMutating) {
-            onAction(SequenceHistoryMutationAction.SelectTimestampOffset(target, it))
-        }
-    }
-    if (state.noTimingChanges) {
-        Text(stringResource(R.string.sequence_history_no_timing_changes))
-    }
-    state.issue?.let { SequenceMutationIssue(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        SequenceSecondaryButton(
-            onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
-            enabled = !state.isMutating,
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        SequencePrimaryButton(
-            onClick = { onAction(SequenceHistoryMutationAction.ReviewTiming) },
-            enabled = !state.isMutating,
-            modifier = Modifier.testTag("sequence-history-review-timing"),
-        ) { Text(stringResource(R.string.sequence_history_review_timing)) }
-    }
-}
-
-@Composable
-private fun TimingReview(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val proposal = requireNotNull(state.timingProposal)
-    Text(stringResource(R.string.sequence_history_timing_review), style = MaterialTheme.typography.headlineSmall)
-    ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
-    state.issue?.let { SequenceMutationIssue(it) }
-    if (state.overlapWarning) {
-        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            SequenceSecondaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-cancel"),
-            ) { Text(stringResource(R.string.manual_history_cancel)) }
-            SequencePrimaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.ProceedOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-proceed"),
-            ) { Text(stringResource(R.string.history_overlap_proceed)) }
-        }
-    } else {
-        ReviewActions(
-            isMutating = state.isMutating,
-            confirmLabel = R.string.history_save_correction,
-            confirmTag = "sequence-history-confirm-timing",
-            onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-            onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmTiming) },
-        )
     }
 }
 
@@ -931,7 +811,7 @@ private fun StructuralReview(
     ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
     state.issue?.let { SequenceMutationIssue(it) }
     if (state.overlapWarning) {
-        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
+        Text(stringResource(R.string.sequence_history_overlap_warning), color = MaterialTheme.colorScheme.error)
         Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
             SequenceSecondaryButton(
                 onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
@@ -1112,7 +992,7 @@ private fun mutationPreviewInterval(
     "${mutationPreviewInstant(startedAt, zoneId)} – " +
         (endedAt?.let { mutationPreviewInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value))
 
-private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
+internal fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     when (target) {
         SequenceHistoryTimestampTarget.RootStartedAt -> "root-started"
         SequenceHistoryTimestampTarget.RootEndedAt -> "root-ended"
@@ -1138,7 +1018,13 @@ internal fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
             SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE -> R.string.sequence_history_child_deletion_failure
             SequenceHistoryMutationIssue.STRUCTURAL_FAILURE -> R.string.sequence_history_structural_failure
         }
-    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
+    Text(
+        stringResource(resource),
+        Modifier.semantics {
+            liveRegion = LiveRegionMode.Polite
+        },
+        color = MaterialTheme.colorScheme.error,
+    )
 }
 
 @Composable
@@ -1373,23 +1259,16 @@ private fun mutationPreviewInstant(
         LocalConfiguration.current.locales[0],
     )
 
+@Suppress("UnusedParameter")
 internal fun mutationPreviewInstantText(
     instant: Instant,
     zoneId: ZoneId,
     locale: java.util.Locale,
 ): String {
-    val zoned = instant.atZone(zoneId)
-    val formatted =
-        DateTimeFormatterBuilder()
-            .appendLocalized(FormatStyle.MEDIUM, FormatStyle.MEDIUM)
-            .appendFraction(ChronoField.MILLI_OF_SECOND, 3, 3, true)
-            .toFormatter(locale)
-            .format(zoned)
-    return if (zoneId.rules.getValidOffsets(zoned.toLocalDateTime()).size > 1) {
-        "$formatted ${zoned.offset.id}"
-    } else {
-        formatted
-    }
+    // Exact, reversible endpoint text includes seconds, fractions, actual offset and ZoneId.
+    // locale remains in this API for existing structural callers.
+    return com.alexandr5476.lifetracing.ui
+        .exactHistoricalTimestamp(instant, zoneId)
 }
 
 @Composable

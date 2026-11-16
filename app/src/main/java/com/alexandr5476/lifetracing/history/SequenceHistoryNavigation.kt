@@ -103,3 +103,57 @@ internal fun rememberSequenceHistoryNavigation(
     }
     return lease
 }
+
+/** Navigation ordinals select existing typed targets only; they never become correction identities. */
+internal enum class SequenceTimingSection { TIMESTAMPS, ROOT, OCCURRENCES, CHILDREN, INTERVALS }
+
+internal class SequenceTimingDestinations(
+    private val detail: SequenceHistoryDetail,
+    targets: List<SequenceHistoryTimestampTarget>,
+) {
+    val positions = targets.withIndex().associate { it.value to it.index }
+
+    fun count(section: SequenceTimingSection): Int =
+        when (section) {
+            SequenceTimingSection.TIMESTAMPS -> positions.size
+            SequenceTimingSection.ROOT -> 2
+            SequenceTimingSection.OCCURRENCES, SequenceTimingSection.CHILDREN -> detail.occurrences.size
+            SequenceTimingSection.INTERVALS -> detail.intervals.size
+        }
+
+    fun index(
+        section: SequenceTimingSection,
+        ordinal: Int,
+    ): Int? {
+        if (ordinal !in 1..count(section)) return null
+        val position = ordinal - 1
+        return when (section) {
+            SequenceTimingSection.TIMESTAMPS -> position
+            SequenceTimingSection.ROOT ->
+                positions[
+                    if (position ==
+                        0
+                    ) {
+                        SequenceHistoryTimestampTarget.RootStartedAt
+                    } else {
+                        SequenceHistoryTimestampTarget.RootEndedAt
+                    },
+                ]
+            SequenceTimingSection.OCCURRENCES ->
+                detail.occurrences[position].occurrenceId.let {
+                    positions[SequenceHistoryTimestampTarget.OccurrenceEnteredAt(it)]
+                        ?: positions[SequenceHistoryTimestampTarget.OccurrenceCompletedAt(it)]
+                }
+            SequenceTimingSection.CHILDREN ->
+                detail.occurrences[position].occurrenceId.let {
+                    positions[SequenceHistoryTimestampTarget.ChildStartedAt(it)]
+                        ?: positions[SequenceHistoryTimestampTarget.ChildCompletedAt(it)]
+                }
+            SequenceTimingSection.INTERVALS ->
+                detail.intervals[position].id.let {
+                    positions[SequenceHistoryTimestampTarget.IntervalStartedAt(it)]
+                        ?: positions[SequenceHistoryTimestampTarget.IntervalEndedAt(it)]
+                }
+        }
+    }
+}

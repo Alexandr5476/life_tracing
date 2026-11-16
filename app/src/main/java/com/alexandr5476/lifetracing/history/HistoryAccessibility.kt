@@ -163,6 +163,8 @@ internal class HistoryFocus {
     var awaitingRead by mutableStateOf(false)
     var recovering = false
     var landingPending by mutableStateOf(true)
+
+    fun needsRecovery(loading: Boolean): Boolean = removed != null || awaitingRead && !loading
 }
 
 internal val LocalHistoryLazyIdentity = staticCompositionLocalOf<String?> { null }
@@ -197,10 +199,10 @@ internal fun rememberHistoryFocus(
         }
     }
     LaunchedEffect(visible, window.isWindowFocused, mode, focus.removed, loading, failed, ownsRoute) {
-        val needsRecovery = focus.removed != null || focus.awaitingRead && !loading
+        val needsRecovery = focus.needsRecovery(loading)
         if (foreground && authorized() && needsRecovery) {
             withFrameNanos { }
-            if (authorized()) {
+            if (authorized() && focus.needsRecovery(loading)) {
                 focus.recovering = true
                 (if (failed) focus.retry else focus.recoveryTarget ?: focus.back).requestFocus()
                 focus.recovering = false

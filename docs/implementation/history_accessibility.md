@@ -664,3 +664,9 @@ source/inventory comparison matched all ten ExactDay methods and twenty
 parameterized identities without duplicates. `git diff --check` passed. The new
 gated device regression and the original lock failure remain pending Controller
 execution; no runtime repair result or full-suite/CI PASS is inferred.
+
+## Sequence timing correction accessibility (S3)
+
+See [Sequence timing correction evidence](sequence_history_timing_accessibility.md)
+for native timing controls, typed error/offset authority, lazy owner navigation,
+committed read recovery, complexity reasoning and Controller verification limits.

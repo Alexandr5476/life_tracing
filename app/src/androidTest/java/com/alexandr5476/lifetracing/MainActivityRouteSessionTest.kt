@@ -236,8 +236,8 @@ class MainActivityRouteSessionTest {
                         .toLocalDateTime()
                         .toString(),
                 )
-            composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+            composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
             composeTestRule.waitUntil(5_000) { entered.isCompleted }
             val session = requireNotNull(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
             recreateActivity()
@@ -279,7 +279,7 @@ class MainActivityRouteSessionTest {
             composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
             composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
             assertTrue(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession !== session)
-            composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().assertIsEnabled()
+            composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().assertIsEnabled()
         } finally {
             scope.cancel()
         }

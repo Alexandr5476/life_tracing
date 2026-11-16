@@ -25,6 +25,42 @@ import kotlin.coroutines.CoroutineContext
 
 class SequenceHistoryNavigationTest {
     @Test
+    fun timingOwnerOrdinalsResolveExactExistingTargetsAndMissingEndpointsStayMissing() {
+        val detail = SequenceAdmissionFacts.detail()
+        val targets =
+            SequenceHistoryProposalBuilder
+                .timingDraft(detail)
+                .timestamps.keys
+                .toList()
+        val navigation = SequenceTimingDestinations(detail, targets)
+        assertEquals(
+            SequenceHistoryTimestampTarget.RootEndedAt,
+            targets[navigation.index(SequenceTimingSection.ROOT, 2)!!],
+        )
+        assertEquals(
+            SequenceHistoryTimestampTarget.OccurrenceEnteredAt(detail.occurrences.first().occurrenceId),
+            targets[navigation.index(SequenceTimingSection.OCCURRENCES, 1)!!],
+        )
+        assertEquals(
+            SequenceHistoryTimestampTarget.ChildStartedAt(detail.occurrences[2].occurrenceId),
+            targets[navigation.index(SequenceTimingSection.CHILDREN, 3)!!],
+        )
+        assertEquals(
+            SequenceHistoryTimestampTarget.IntervalStartedAt(detail.intervals.last().id),
+            targets[navigation.index(SequenceTimingSection.INTERVALS, detail.intervals.size)!!],
+        )
+        assertEquals(null, navigation.index(SequenceTimingSection.OCCURRENCES, 2))
+        assertEquals(null, navigation.index(SequenceTimingSection.CHILDREN, 4))
+        assertEquals(null, navigation.index(SequenceTimingSection.TIMESTAMPS, 0))
+        assertEquals(null, navigation.index(SequenceTimingSection.TIMESTAMPS, targets.size + 1))
+        val reviewed = listOf(SequenceHistoryTimestampTarget.ChildCompletedAt(detail.occurrences[2].occurrenceId))
+        val reviewNavigation = SequenceTimingDestinations(detail, reviewed)
+        assertEquals(0, reviewNavigation.index(SequenceTimingSection.CHILDREN, 3))
+        assertEquals(null, reviewNavigation.index(SequenceTimingSection.CHILDREN, 1))
+        assertEquals(null, reviewNavigation.index(SequenceTimingSection.ROOT, 2))
+    }
+
+    @Test
     fun nativeFocusPropertiesDoNotObserveRetiringPublicationsButRequestsStayGuarded() {
         val initial = Any()
         val publication = mutableStateOf(initial)

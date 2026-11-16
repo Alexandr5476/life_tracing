@@ -174,6 +174,17 @@ class SequenceHistoryProposalBuilderTest {
     }
 
     @Test
+    fun reviewTimestampAlwaysNamesActualOffsetAndZone() {
+        val instant = Instant.parse("2026-01-01T10:00:10.123Z")
+        for (locale in listOf(Locale.US, Locale.forLanguageTag("ru"))) {
+            val preview = mutationPreviewInstantText(instant, BERLIN, locale)
+            assertTrue(preview.contains("Europe/Berlin"))
+            assertTrue(preview.contains("+01:00"))
+            assertTrue(preview.contains(".123"))
+        }
+    }
+
+    @Test
     fun mutationPreviewPreservesSecondAndMillisecondPrecision() {
         val detail = detail()
         val target = SequenceHistoryTimestampTarget.RootEndedAt
@@ -332,10 +343,11 @@ class SequenceHistoryProposalBuilderTest {
                 .first { it.before == targetEnd && it.after == targetStart }
 
         assertTrue(proposal.isConfirmable)
-        assertEquals(
-            mutationPreviewInstantText(move.before, zone, Locale.US).substringBeforeLast(' '),
-            mutationPreviewInstantText(move.after, zone, Locale.US).substringBeforeLast(' '),
-        )
+        val beforePreview = java.time.ZonedDateTime.parse(mutationPreviewInstantText(move.before, zone, Locale.US))
+        val afterPreview = java.time.ZonedDateTime.parse(mutationPreviewInstantText(move.after, zone, Locale.US))
+        assertEquals(beforePreview.toLocalDateTime(), afterPreview.toLocalDateTime())
+        assertEquals(move.before, beforePreview.toInstant())
+        assertEquals(move.after, afterPreview.toInstant())
         assertFalse(
             mutationPreviewInstantText(move.before, zone, Locale.US) ==
                 mutationPreviewInstantText(move.after, zone, Locale.US),

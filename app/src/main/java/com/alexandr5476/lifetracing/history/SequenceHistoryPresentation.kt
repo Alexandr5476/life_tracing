@@ -85,7 +85,12 @@ internal fun SequenceHistoryDetailSurface(
     val listState = rememberLazyListState()
     val focus = LocalHistoryFocus.current
     LaunchedEffect(state.hasSequenceTransient()) {
-        if (state.hasSequenceTransient() && focus.lazyOwner != null) focus.removed = focus.owner
+        if (state.hasSequenceTransient() &&
+            state.timingDraft == null &&
+            focus.lazyOwner != null
+        ) {
+            focus.removed = focus.owner
+        }
     }
     LaunchedEffect(load is HistoryDetailLoad.Loading) {
         if (load is HistoryDetailLoad.Loading && focus.lazyOwner != null) focus.awaitingRead = true
@@ -99,7 +104,12 @@ internal fun SequenceHistoryDetailSurface(
                     historyFocusTarget(LocalHistoryFocus.current.back, backEnabled)
                         .then(if (backEnabled) Modifier.historyActionSemantics(onBack) else Modifier),
             ) { Text(stringResource(R.string.history_back)) }
-            if (load is HistoryDetailLoad.Content && !state.hasSequenceTransient()) {
+            if (state.committedMutation != null) {
+                SequenceCommittedStatus(state)
+            }
+            if (load is HistoryDetailLoad.Content && (state.timingDraft != null || state.timingProposal != null)) {
+                Column(Modifier.weight(1f).fillMaxWidth()) { mutationContent(load.value) }
+            } else if (load is HistoryDetailLoad.Content && !state.hasSequenceTransient()) {
                 SequenceDetail(
                     load.value,
                     onDeleteChild = { onAction(SequenceHistoryMutationAction.RequestChildDeletion(it)) },

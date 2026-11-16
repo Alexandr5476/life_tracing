@@ -60,7 +60,12 @@ data class SequenceHistoryTimestampDraft(
 data class SequenceHistoryTimingDraft(
     val expectedUpdatedAt: Instant,
     val timestamps: Map<SequenceHistoryTimestampTarget, SequenceHistoryTimestampDraft>,
-)
+) {
+    // A draft is a non-durable publication. StateFlow must not compare every endpoint per keystroke.
+    override fun equals(other: Any?): Boolean = this === other
+
+    override fun hashCode(): Int = System.identityHashCode(this)
+}
 
 data class SequenceHistoryTimingProposal(
     val correction: SequenceHistoryTimingCorrection,
@@ -210,7 +215,7 @@ object SequenceHistoryProposalBuilder {
             add(SequenceHistoryTimestampTarget.IntervalStartedAt(interval.id), interval.startedAt)
             add(SequenceHistoryTimestampTarget.IntervalEndedAt(interval.id), interval.endedAt)
         }
-        return SequenceHistoryTimingDraft(detail.updatedAt, values)
+        return SequenceHistoryTimingDraft(detail.updatedAt, SequenceHistoryTimestampMap.from(values))
     }
 
     fun timing(

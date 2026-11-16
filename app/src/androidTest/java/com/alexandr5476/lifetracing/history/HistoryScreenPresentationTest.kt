@@ -24,6 +24,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -32,12 +33,14 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.Lifecycle
@@ -861,9 +864,143 @@ class HistoryScreenPresentationTest {
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_active_duration, "10:00")).assertDoesNotExist()
-        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).assertIsDisplayed().performClick()
         sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().assertIsDisplayed()
         assertEquals(0, timingCommands)
+    }
+
+    @Test
+    fun timingFieldErrorFocusAndDstSelectionKeepExactNativeTarget() {
+        val detail = sequenceMutationDetail().copy(originalZoneId = ZoneId.of("Europe/Berlin"))
+        val controller = setSequenceMutationDetail(detail, correct = { _, _, _ -> error("unexpected write") })
+        sequenceItem("sequence:timing", "sequence-history-timing").performClick()
+        val end = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended")
+        end.performScrollTo().performTextReplacement("invalid")
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performClick()
+        end.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.Error, text(R.string.manual_history_invalid_datetime)),
+        )
+        keyboard.enter(composeTestRule.onNodeWithTag("sequence-timing-error-target"))
+        composeTestRule.onNodeWithTag("sequence-timing-error-target").performClick()
+        keyboard.awaitFocus(end)
+        val publication = controller.state.value.publication
+        end.performTextReplacement("2026-10-25T02:30:27.123")
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performClick()
+        val choice =
+            composeTestRule.onNode(
+                hasText(text(R.string.sequence_history_root_ended), substring = true) and
+                    hasText(text(R.string.manual_history_second_occurrence, "UTC+01:00")),
+            )
+        choice.performScrollTo().performClick()
+        choice.assertIsSelected()
+        choice.assert(hasText(text(R.string.sequence_history_root_ended), substring = true))
+        choice.assert(hasText(detail.root.executionId.value, substring = true))
+        assertTrue(controller.state.value.publication > publication)
+        assertEquals(
+            java.time.ZoneOffset.ofHours(1),
+            controller.state.value.timingDraft!!
+                .timestamps
+                .getValue(
+                    SequenceHistoryTimestampTarget.RootEndedAt,
+                ).selectedOffset,
+        )
+        assertEquals(0L, controller.state.value.refreshGeneration)
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performSemanticsAction(SemanticsActions.OnClick)
+        keyboard.awaitFocus(composeTestRule.onNodeWithText(text(R.string.sequence_history_timing_review)))
+        val oldSave =
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-confirm-timing",
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.onNodeWithText(text(R.string.history_back)).performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.runOnIdle { oldSave() }
+        assertEquals(null, controller.state.value.timingDraft)
+        assertEquals(0L, controller.state.value.refreshGeneration)
+    }
+
+    @Test
+    fun approvingOverlapRetiresPressedProceedBeforeSaveIsAvailable() {
+        val base = sequenceMutationDetail()
+        val detail =
+            base.copy(
+                intervals =
+                    base.intervals +
+                        base.intervals.first().copy(
+                            id = SequenceIntervalId("overlapping-pause"),
+                            kind = SequenceIntervalKind.EXPLICIT_PAUSE,
+                            occurrenceId = null,
+                        ),
+            )
+        var writes = 0
+        val controller = setSequenceMutationDetail(detail, correct = { _, _, _ -> writes++ })
+        sequenceItem("sequence:timing", "sequence-history-timing").performClick()
+        val oldEnd =
+            controller.state.value.timingDraft!!.timestamps.getValue(
+                SequenceHistoryTimestampTarget.RootEndedAt,
+            )
+        composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended").performScrollTo().performTextReplacement(
+            LocalDateTime.parse(oldEnd.text).plusSeconds(1).toString(),
+        )
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performSemanticsAction(SemanticsActions.OnClick)
+        val proceed = composeTestRule.onNodeWithTag("sequence-history-overlap-proceed")
+        val center = proceed.fetchSemanticsNode().boundsInRoot.center
+        composeTestRule.onRoot().performTouchInput { down(center) }
+        try {
+            proceed.performSemanticsAction(SemanticsActions.OnClick)
+            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed()
+            assertFalse(controller.state.value.overlapWarning)
+        } finally {
+            composeTestRule.onRoot().performTouchInput { up() }
+        }
+        composeTestRule.runOnIdle {
+            assertEquals(0, writes)
+            assertEquals(0L, controller.state.value.refreshGeneration)
+            assertTrue(controller.state.value.timingProposal != null)
+        }
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-history-confirm-timing",
+            ).performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitUntil(2_000) { writes == 1 && controller.state.value.refreshGeneration == 1L }
+    }
+
+    @Test
+    fun timingEditorWithOnlyRootBoundariesDisablesEmptyOwnerSections() {
+        val base = sequenceMutationDetail()
+        val detail =
+            base.copy(
+                root = base.root.copy(activeDuration = Duration.ZERO, pauseDuration = base.root.wallDuration),
+                updatedAt = base.updatedAt.plusSeconds(1),
+                occurrences = emptyList(),
+                intervals = emptyList(),
+            )
+        val controller = setSequenceMutationDetail(detail, correct = { _, _, _ -> error("unexpected writer") })
+        sequenceItem("sequence:timing", "sequence-history-timing").performClick()
+        assertEquals(
+            setOf(SequenceHistoryTimestampTarget.RootStartedAt, SequenceHistoryTimestampTarget.RootEndedAt),
+            controller.state.value.timingDraft!!
+                .timestamps.keys,
+        )
+        composeTestRule.onNodeWithTag("sequence-timing-section").performSemanticsAction(SemanticsActions.OnClick)
+        for (resource in listOf(
+            R.string.sequence_timing_section_occurrences,
+            R.string.sequence_timing_section_children,
+            R.string.sequence_timing_section_intervals,
+        )) {
+            composeTestRule
+                .onNodeWithText(
+                    text(R.string.sequence_timing_empty_section, text(resource)),
+                ).assertIsNotEnabled()
+        }
+        composeTestRule.onNodeWithText(text(R.string.sequence_timing_section_root)).performClick()
+        composeTestRule.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("2")
+        composeTestRule.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").performSemanticsAction(SemanticsActions.OnClick)
+        assertTrue(controller.state.value.noTimingChanges)
+        assertEquals(0L, controller.state.value.refreshGeneration)
     }
 
     @Test
@@ -874,29 +1011,31 @@ class HistoryScreenPresentationTest {
         val end = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended")
 
         end.performScrollTo().performTextReplacement("not-a-date")
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithText(text(R.string.manual_history_invalid_datetime)).assertIsDisplayed()
 
         end.performScrollTo().performTextReplacement("2026-03-29T02:30:00")
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithText(text(R.string.manual_history_nonexistent_time)).assertIsDisplayed()
 
         end.performScrollTo().performTextReplacement("2026-10-25T02:30:00")
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
         composeTestRule
             .onAllNodesWithText(text(R.string.manual_history_ambiguous_time))[0]
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(text(R.string.manual_history_second_occurrence, "UTC+01:00"))
-            .performScrollTo()
+            .onNode(
+                hasText(text(R.string.sequence_history_root_ended), substring = true) and
+                    hasText(text(R.string.manual_history_second_occurrence, "UTC+01:00")),
+            ).performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithText(text(R.string.sequence_history_timing_review)).assertIsDisplayed()
 
-        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).assertIsDisplayed().performClick()
         sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
         composeTestRule.onNodeWithText(text(R.string.sequence_history_no_timing_changes)).assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertDoesNotExist()
     }
@@ -919,14 +1058,18 @@ class HistoryScreenPresentationTest {
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(text(R.string.manual_history_first_occurrence, "UTC+02:00"), substring = true)
-            .performScrollTo()
+            .onNode(
+                hasText(text(R.string.sequence_history_root_ended), substring = true) and
+                    hasText(text(R.string.manual_history_first_occurrence, "UTC+02:00")),
+            ).performScrollTo()
             .assertIsDisplayed()
         composeTestRule
-            .onNodeWithText(text(R.string.manual_history_second_occurrence, "UTC+01:00"), substring = true)
-            .performScrollTo()
+            .onNode(
+                hasText(text(R.string.sequence_history_root_ended), substring = true) and
+                    hasText(text(R.string.manual_history_second_occurrence, "UTC+01:00")),
+            ).performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
 
         val proposal = requireNotNull(controller.state.value.timingProposal).correction
         assertEquals(earlierOccurrence, detail.root.completedAt)
@@ -941,7 +1084,7 @@ class HistoryScreenPresentationTest {
                 mutationPreviewTime(Instant.parse("2026-10-25T01:30:00Z"), berlin),
                 substring = true,
             ).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(2_000) { committed != null }
         assertEquals(Instant.parse("2026-10-25T01:30:00Z"), committed?.endedAt)
     }
@@ -963,15 +1106,19 @@ class HistoryScreenPresentationTest {
             .onNodeWithTag("sequence-history-timestamp-root-ended")
             .performScrollTo()
             .performTextReplacement(LocalDateTime.parse(draft.text).plusSeconds(1).toString())
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
 
         fun confirmFailure(
             expectedIssue: SequenceHistoryMutationIssue,
             expectedMessage: Int,
         ) {
-            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
             composeTestRule.waitUntil(2_000) { controller.state.value.issue == expectedIssue }
-            composeTestRule.onNodeWithText(text(expectedMessage)).performScrollTo().assertIsDisplayed()
+            if (expectedIssue == SequenceHistoryMutationIssue.STALE) {
+                composeTestRule.waitUntil(2_000) { controller.state.value.load is HistoryDetailLoad.Content }
+                composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:issue")
+            }
+            composeTestRule.onNodeWithText(text(expectedMessage)).assertIsDisplayed()
         }
 
         confirmFailure(SequenceHistoryMutationIssue.INVALID_PROPOSAL, R.string.sequence_history_invalid_proposal)
@@ -1171,8 +1318,8 @@ class HistoryScreenPresentationTest {
             .onNodeWithTag("sequence-history-timestamp-root-ended")
             .performScrollTo()
             .performTextReplacement(LocalDateTime.parse(draft.text).plusSeconds(1).toString())
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(2_000) { controller.state.value.isMutating }
         composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsNotEnabled()
         gate.complete(Unit)

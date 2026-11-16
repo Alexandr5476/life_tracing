@@ -32,6 +32,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -1014,6 +1015,290 @@ class SequenceHistoryPresentationTest {
                 assertTrue(bounds.right <= viewport.right + 1)
             }
         }
+    }
+
+    @Test
+    fun largeTimingEditorUsesBoundedNativeInputsAndReadOnlyEarlyMiddleLateNavigation() {
+        val selected =
+            detail(
+                List(10_000) { index ->
+                    occurrence(index).let { row ->
+                        if (index == 5_000) {
+                            row.copy(
+                                sourceSequenceSnapshotNodeId = null,
+                                repeatSourceSnapshotNodeId = null,
+                                repeatIteration = null,
+                                isRuntimeAdded = true,
+                            )
+                        } else {
+                            row
+                        }
+                    }
+                },
+            )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var reads = 0
+        var writes = 0
+        val visible = mutableStateOf(true)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                selected.root.executionId,
+                {
+                    reads++
+                    selected
+                },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        val session = SequenceHistoryMutationRouteSession(selected.root.executionId, controller)
+        try {
+            compose.setContent {
+                TestTheme {
+                    SequenceHistoryDetailRoute(
+                        session,
+                        {},
+                        {},
+                        visible.value,
+                        { visible.value },
+                    )
+                }
+            }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            scroll("sequence:timing")
+            compose.onNodeWithTag("sequence-history-timing").performClick()
+            val targets =
+                controller.state.value.timingDraft!!
+                    .timestamps.keys
+                    .toList()
+            for (index in listOf(0, targets.size / 2, targets.lastIndex)) {
+                compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement((index + 1).toString())
+                compose.onNodeWithTag("sequence-timing-go").performClick()
+                val field = compose.onNodeWithTag("sequence-history-timestamp-${timestampTargetKey(targets[index])}")
+                field.assertIsDisplayed()
+                assertTrue(compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size < 15)
+            }
+            compose.onNodeWithTag("sequence-timing-section").performSemanticsAction(SemanticsActions.OnClick)
+            compose
+                .onNodeWithText(
+                    compose.activity.getString(R.string.sequence_timing_section_occurrences),
+                ).performClick()
+            compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("1")
+            compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
+            compose
+                .onNodeWithTag("sequence-history-timestamp-occurrence-o0-entered")
+                .assert(
+                    hasContentDescription(
+                        compose.activity.getString(R.string.history_repeat_iteration, 1),
+                        substring = true,
+                    ),
+                ).assert(
+                    hasContentDescription(compose.activity.getString(R.string.history_source_step), substring = true),
+                )
+            compose.onNodeWithTag("sequence-timing-section").performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithText(compose.activity.getString(R.string.sequence_timing_section_children)).performClick()
+            compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("5001")
+            compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
+            compose
+                .onNodeWithTag("sequence-history-timestamp-child-o5000-started")
+                .assertIsDisplayed()
+                .assert(hasContentDescription("Europe/Berlin", substring = true))
+                .assert(hasContentDescription("Asia/Tokyo", substring = true))
+                .assert(hasContentDescription("child-o5000", substring = true))
+                .assert(
+                    hasContentDescription(compose.activity.getString(R.string.history_runtime_added), substring = true),
+                )
+            val child = compose.onNodeWithTag("sequence-history-timestamp-child-o5000-started")
+            keyboard.enter(child)
+            child.performSemanticsAction(SemanticsActions.RequestFocus)
+            compose.onRoot().performKeyInput { pressKey(Key.F6) }
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-timing-section"))
+            compose.onRoot().performKeyInput {
+                keyDown(Key.ShiftLeft)
+                pressKey(Key.F6)
+                keyUp(Key.ShiftLeft)
+            }
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-history-review-timing"))
+            assertEquals(null, controller.state.value.timingProposal)
+            val oldFocus =
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-review-timing",
+                    ).fetchSemanticsNode()
+                    .config[SemanticsActions.RequestFocus]
+                    .action!!
+            compose.onNodeWithTag("sequence-timing-section").performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-timing-section"))
+            compose.runOnIdle {
+                visible.value = false
+                assertFalse(oldFocus())
+                visible.value = true
+                assertFalse(oldFocus())
+            }
+            compose
+                .onNodeWithTag(
+                    "sequence-history-review-timing",
+                ).performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-history-review-timing"))
+            compose.runOnIdle {
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+            }
+        } finally {
+            controller.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun largeTimingReviewKeepsExactNativeFactsAndActionsReadableAtEnglishRussianScaleExtremes() {
+        val selected = detail(List(10_000) { occurrence(it) })
+        val original = SequenceHistoryProposalBuilder.timingDraft(selected)
+        val edited =
+            original.copy(
+                timestamps =
+                    original.timestamps.mapValues { (_, value) ->
+                        value.copy(
+                            text =
+                                java.time.LocalDateTime
+                                    .parse(value.text)
+                                    .plusSeconds(1)
+                                    .toString(),
+                        )
+                    },
+            )
+        val proposal =
+            (
+                SequenceHistoryProposalBuilder.timing(
+                    selected,
+                    edited,
+                ) as SequenceHistoryTimingBuildResult.Ready
+            ).proposal
+        val publication =
+            SequenceHistoryMutationState(
+                load = HistoryDetailLoad.Content(selected),
+                timingDraft = edited,
+                timingProposal = proposal,
+                overlapWarning = proposal.hasIntervalOverlap,
+            )
+        val scale = mutableStateOf(0)
+        val reviewing = mutableStateOf(false)
+        val editorPublication =
+            SequenceHistoryMutationState(load = HistoryDetailLoad.Content(selected), timingDraft = original)
+        val targets = original.timestamps.keys.toList()
+        val cases =
+            listOf(
+                Triple(Locale.US, .9f, .9f),
+                Triple(Locale.US, 1.2f, 1.3f),
+                Triple(Locale.forLanguageTag("ru"), .9f, .9f),
+                Triple(Locale.forLanguageTag("ru"), 1.2f, 1.3f),
+            )
+        var actions = 0
+        compose.setContent {
+            val (locale, interfaceScale, textScale) = cases[scale.value]
+            val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale) }
+            val context = LocalContext.current.createConfigurationContext(configuration)
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+                LocalDensity provides Density(density.density * interfaceScale, 1.5f * textScale / interfaceScale),
+            ) {
+                TestTheme {
+                    val current = if (reviewing.value) publication else editorPublication
+                    val admission =
+                        rememberSequenceHistoryAdmission(
+                            selected.root.executionId,
+                            current,
+                            { current },
+                            { true },
+                            true,
+                            { actions++ },
+                        )
+                    CompositionLocalProvider(LocalSequenceHistoryAdmission provides admission) {
+                        Column(Modifier.fillMaxSize()) {
+                            if (reviewing.value) {
+                                SequenceTimingReview(selected, current) { actions++ }
+                            } else {
+                                SequenceTimingEditor(selected, current) { actions++ }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (case in cases.indices) {
+            compose.runOnIdle {
+                scale.value = case
+                reviewing.value = false
+            }
+            for (index in listOf(0, targets.size / 2, targets.lastIndex)) {
+                compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement((index + 1).toString())
+                compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-timestamp-${timestampTargetKey(targets[index])}",
+                    ).assertIsDisplayed()
+                assertTrue(compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size < 15)
+                compose.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed()
+                compose
+                    .onNodeWithText(
+                        compose.activity
+                            .createConfigurationContext(
+                                Configuration(compose.activity.resources.configuration).apply {
+                                    setLocale(cases[case].first)
+                                },
+                            ).getString(R.string.manual_history_cancel),
+                    ).assertIsDisplayed()
+            }
+            compose.runOnIdle { reviewing.value = true }
+            for (index in listOf(
+                0,
+                proposal.changes.size / 2,
+                proposal.changes.size / 2 + 2,
+                proposal.changes.lastIndex,
+            )) {
+                compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement((index + 1).toString())
+                compose.onNodeWithTag("sequence-timing-go").performClick()
+                val change = proposal.changes[index] as SequenceHistoryPreviewChange.Timestamp
+                val previewZone =
+                    if (change.target is SequenceHistoryTimestampTarget.ChildStartedAt ||
+                        change.target is SequenceHistoryTimestampTarget.ChildCompletedAt
+                    ) {
+                        ZoneId.of("Asia/Tokyo")
+                    } else {
+                        zone
+                    }
+                val summary = compose.onNodeWithTag("sequence-history-change-${timestampTargetKey(change.target)}")
+                summary
+                    .assertIsDisplayed()
+                    .assert(
+                        hasText(exactHistoricalTimestamp(change.before, previewZone), substring = true),
+                    ).assert(hasText(exactHistoricalTimestamp(change.after, previewZone), substring = true))
+                summary.performSemanticsAction(SemanticsActions.RequestFocus)
+                compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+                assertTrue(
+                    compose.onAllNodes(hasTestTag("sequence-history-timing-review-list")).fetchSemanticsNodes().size ==
+                        1,
+                )
+                val rows =
+                    compose
+                        .onAllNodes(
+                            SemanticsMatcher("timing review row") {
+                                it.config
+                                    .getOrElse(
+                                        SemanticsProperties.TestTag,
+                                    ) { "" }
+                                    .startsWith("sequence-history-change-")
+                            },
+                        ).fetchSemanticsNodes()
+                assertTrue(rows.size < 10)
+                compose.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed()
+                compose.onNodeWithTag("sequence-history-overlap-cancel").assertIsDisplayed()
+            }
+        }
+        compose.runOnIdle { assertEquals(0, actions) }
     }
 
     @Composable
