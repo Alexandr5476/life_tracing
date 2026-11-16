@@ -29,12 +29,14 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -47,6 +49,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -67,6 +71,7 @@ import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 import java.time.ZoneOffset
 
 /** Index references the canonical collections; no per-target occurrence search or repository access. */
@@ -130,54 +135,146 @@ private fun timingLabel(
     context.interval(target)?.let {
         parts += stringResource(intervalKindResource(it.kind))
         parts += stringResource(R.string.sequence_timing_interval_id, it.id.value)
+        if (it.occurrenceId == null) parts += stringResource(R.string.sequence_history_ownerless)
     }
     return parts.joinToString(". ")
 }
 
-/** Pending focus retains the exact read-only lease that initiated it. */
-private class TimingJump(
+/** One request binds a typed target (null is the review warning), index and originating lease. */
+internal class TimingJump(
+    val target: SequenceHistoryTimestampTarget?,
     val index: Int,
     val lease: SequenceHistoryNavigation,
-)
+    val scope: CoroutineScope,
+) {
+    var scrolled by mutableStateOf(false)
+}
 
-private class TimingNavigation {
-    var pending by mutableStateOf<TimingJump?>(null)
+/** Read-only navigation with no suspending scroll continuation past the authority check. */
+internal class TimingNavigation(
+    private val lease: SequenceHistoryNavigation,
+    private val indexOf: (SequenceHistoryTimestampTarget?) -> Int?,
+) {
+    private var request by mutableStateOf<TimingJump?>(null)
+    private var attached = true
+    val pending: TimingJump? get() = request?.takeIf(::isPending)
     val requester = FocusRequester()
 
+    fun cancelPending() {
+        request = null
+    }
+
+    fun dispose() {
+        attached = false
+        cancelPending()
+    }
+
+    fun isPending(jump: TimingJump): Boolean {
+        val current =
+            attached &&
+                request === jump &&
+                jump.lease === lease &&
+                jump.scope.isActive &&
+                lease.isCurrent() &&
+                indexOf(jump.target) == jump.index
+        if (!current && request === jump) cancelPending()
+        return current
+    }
+
     fun go(
-        index: Int,
-        list: LazyListState,
-        lease: SequenceHistoryNavigation,
+        target: SequenceHistoryTimestampTarget?,
         scope: CoroutineScope,
+        requestScroll: (Int) -> Unit,
     ) {
-        if (!lease.isCurrent()) return
-        val request = TimingJump(index, lease)
-        pending = request
+        if (!attached || !scope.isActive || !lease.isCurrent()) return
+        val index = indexOf(target) ?: return
+        val jump = TimingJump(target, index, lease, scope)
+        request = jump
         lease.launch(scope) {
-            if (lease.isCurrent() && pending === request) list.scrollToItem(index)
+            try {
+                withFrameNanos { }
+                if (isPending(jump)) {
+                    requestScroll(index)
+                    if (isPending(jump)) jump.scrolled = true
+                }
+            } finally {
+                if (!scope.isActive || !lease.isCurrent()) {
+                    if (request === jump) cancelPending()
+                }
+            }
         }
     }
+
+    fun focus(
+        jump: TimingJump,
+        attached: Boolean,
+        available: Boolean,
+        requestFocus: () -> Boolean,
+    ): Boolean {
+        val ready = isPending(jump) && jump.scrolled
+        if (!ready || !attached || !available) return false
+        val focused = requestFocus()
+        if (focused && request === jump) cancelPending()
+        return focused
+    }
+}
+
+private class TimingOwnerReference(
+    private val owner: Any,
+) {
+    override fun equals(other: Any?): Boolean = other is TimingOwnerReference && owner === other.owner
+
+    override fun hashCode(): Int = System.identityHashCode(owner)
+}
+
+@Composable
+private fun rememberTimingNavigation(
+    lease: SequenceHistoryNavigation,
+    destinations: SequenceTimingDestinations,
+    owner: Any,
+    prefix: Int = 0,
+): TimingNavigation {
+    val reference = TimingOwnerReference(owner)
+    val currentOwner by rememberUpdatedState(reference)
+    val currentDestinations by rememberUpdatedState(destinations)
+    val navigation =
+        remember(lease, destinations, reference, prefix) {
+            TimingNavigation(lease) { target ->
+                when {
+                    currentOwner != reference || currentDestinations !== destinations -> null
+                    target == null -> 0.takeIf { prefix == 1 }
+                    else -> destinations.positions[target]?.plus(prefix)
+                }
+            }
+        }
+    DisposableEffect(navigation) { onDispose { navigation.dispose() } }
+    return navigation
 }
 
 @Composable
 private fun timingFocus(
     navigation: TimingNavigation,
-    index: Int,
+    target: SequenceHistoryTimestampTarget?,
     enabled: Boolean,
     lease: SequenceHistoryNavigation,
 ): Modifier {
     val focus = LocalHistoryFocus.current
-    val request = navigation.pending?.takeIf { it.index == index }
+    val window = LocalWindowInfo.current
+    val mode = LocalInputModeManager.current.inputMode
+    val request = navigation.pending?.takeIf { it.target == target && it.scrolled }
     var attached by remember { mutableStateOf(false) }
-    LaunchedEffect(request, enabled, attached) {
-        if (request != null && enabled && attached) {
+    LaunchedEffect(navigation, request, enabled, attached, window.isWindowFocused, mode) {
+        val available = enabled && attached && window.isWindowFocused
+        if (request != null && available) {
             withFrameNanos { }
-            if (attached && request.lease.isCurrent() && navigation.pending === request) {
-                focus.removed = null
-                focus.awaitingRead = false
-                focus.landingPending = false
-                navigation.requester.requestFocus()
-                navigation.pending = null
+            navigation.focus(request, attached, enabled && window.isWindowFocused) {
+                navigation.requester.requestFocus().also { focused ->
+                    if (focused) {
+                        focus.removed = null
+                        focus.awaitingRead = false
+                        focus.landingPending = false
+                    }
+                }
             }
         }
     }
@@ -197,7 +294,7 @@ private fun timingKeyboard(
     val focus = LocalHistoryFocus.current
     return Modifier.onPreviewKeyEvent { event ->
         if (event.type == KeyEventType.KeyDown && event.key == Key.F6 && lease.isCurrent()) {
-            navigation.pending = null
+            navigation.cancelPending()
             focus.removed = null
             focus.awaitingRead = false
             focus.landingPending = false
@@ -228,7 +325,6 @@ private fun TimingNavigator(
     lease: SequenceHistoryNavigation,
     keyboard: Modifier,
     navigationFocus: FocusRequester,
-    listOffset: Int = 0,
 ) {
     var ordinal by remember { mutableStateOf("") }
     var section by remember { mutableStateOf(SequenceTimingSection.TIMESTAMPS) }
@@ -320,7 +416,9 @@ private fun TimingNavigator(
                     if (ordinal == submittedOrdinal && section == submittedSection && lease.isCurrent()) {
                         val index = submittedOrdinal.toIntOrNull()?.let { destinations.index(submittedSection, it) }
                         unavailable = index == null
-                        if (index != null) navigation.go(index + listOffset, list, lease, scope)
+                        if (index != null) {
+                            navigation.go(destinations.target(index), scope) { list.requestScrollToItem(it) }
+                        }
                     }
                 },
                 enabled = enabled && ordinal.toIntOrNull()?.let { it in 1..count } == true,
@@ -346,12 +444,13 @@ internal fun ColumnScope.SequenceTimingEditor(
     val context = remember(SequenceDetailReference(detail)) { TimingContext(detail) }
     // Target membership/order is fixed for an editor lifetime. Keystrokes never rebuild this list.
     val targets = remember(SequenceDetailReference(detail)) { draft.timestamps.keys.toList() }
-    val destinations = remember(targets) { SequenceTimingDestinations(detail, targets) }
+    val destinations =
+        remember(SequenceDetailReference(detail), targets) { SequenceTimingDestinations(detail, targets) }
     val positions = destinations.positions
     val list = rememberLazyListState()
-    val navigation = remember { TimingNavigation() }
     val scope = rememberCoroutineScope()
     val lease = rememberSequenceHistoryNavigation(detail, hasTiming = true, hasIssue = state.issue != null)
+    val navigation = rememberTimingNavigation(lease, destinations, draft)
     val enabled = lease.isCurrent()
     val navigationFocus = remember { FocusRequester() }
     val primaryFocus = remember { FocusRequester() }
@@ -361,10 +460,12 @@ internal fun ColumnScope.SequenceTimingEditor(
         focus.removed = null
         focus.awaitingRead = false
         focus.landingPending = false
-        if (targets.isNotEmpty()) navigation.go(0, list, lease, scope)
+        if (targets.isNotEmpty()) navigation.go(targets.first(), scope) { list.requestScrollToItem(it) }
     }
     LaunchedEffect(state.invalidTimestampTarget, state.publication) {
-        state.invalidTimestampTarget?.let(positions::get)?.let { navigation.go(it, list, lease, scope) }
+        state.invalidTimestampTarget?.takeIf { it in positions }?.let { target ->
+            navigation.go(target, scope) { list.requestScrollToItem(it) }
+        }
     }
     TimingNavigator(destinations, list, navigation, lease, keyboard, navigationFocus)
     LazyColumn(
@@ -423,7 +524,7 @@ internal fun ColumnScope.SequenceTimingEditor(
                     Modifier
                         .fillMaxWidth()
                         .testTag("sequence-history-timestamp-${timestampTargetKey(target)}")
-                        .then(timingFocus(navigation, index, enabled, lease))
+                        .then(timingFocus(navigation, target, enabled, lease))
                         .semantics {
                             contentDescription = inputDescription
                             setText { enabled && input(it.text) }
@@ -503,7 +604,7 @@ internal fun ColumnScope.SequenceTimingEditor(
     if (state.issue != null && state.invalidTimestampTarget == null) SequenceMutationIssue(state.issue)
     state.invalidTimestampTarget?.let { target ->
         SequenceSecondaryButton(
-            { positions[target]?.let { navigation.go(it, list, lease, scope) } },
+            { navigation.go(target, scope) { list.requestScrollToItem(it) } },
             enabled = enabled,
             modifier = Modifier.testTag("sequence-timing-error-target").focusProperties { canFocus = lease.canFocus() },
         ) { Text(stringResource(R.string.sequence_timing_go_error)) }
@@ -538,10 +639,18 @@ internal fun ColumnScope.SequenceTimingReview(
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
     val proposal = requireNotNull(state.timingProposal)
+    val destinations =
+        remember(TimingOwnerReference(proposal), SequenceDetailReference(detail)) {
+            SequenceTimingDestinations(
+                detail,
+                proposal.changes.map { (it as SequenceHistoryPreviewChange.Timestamp).target },
+            )
+        }
+    val prefix = if (state.overlapWarning) 1 else 0
     val context = remember(SequenceDetailReference(detail)) { TimingContext(detail) }
     val list = rememberLazyListState()
-    val navigation = remember { TimingNavigation() }
     val lease = rememberSequenceHistoryNavigation(detail, hasTiming = true, hasIssue = state.issue != null)
+    val navigation = rememberTimingNavigation(lease, destinations, proposal, prefix)
     val enabled = lease.isCurrent()
     val navigationFocus = remember { FocusRequester() }
     val primaryFocus = remember { FocusRequester() }
@@ -549,14 +658,17 @@ internal fun ColumnScope.SequenceTimingReview(
     val heading = remember { FocusRequester() }
     val focus = LocalHistoryFocus.current
     val scope = rememberCoroutineScope()
-    val prefix = if (state.overlapWarning) 1 else 0
     LaunchedEffect(state.overlapWarning) {
         withFrameNanos { }
         if (lease.isCurrent()) {
             focus.removed = null
             focus.awaitingRead = false
             focus.landingPending = false
-            if (state.overlapWarning) navigation.go(0, list, lease, scope) else heading.requestFocus()
+            if (state.overlapWarning) {
+                navigation.go(null, scope) { list.requestScrollToItem(it) }
+            } else {
+                heading.requestFocus()
+            }
         }
     }
     Text(
@@ -569,14 +681,7 @@ internal fun ColumnScope.SequenceTimingReview(
             }.focusable(enabled),
         style = MaterialTheme.typography.titleMedium,
     )
-    val destinations =
-        remember(proposal) {
-            SequenceTimingDestinations(
-                detail,
-                proposal.changes.map { (it as SequenceHistoryPreviewChange.Timestamp).target },
-            )
-        }
-    TimingNavigator(destinations, list, navigation, lease, keyboard, navigationFocus, prefix)
+    TimingNavigator(destinations, list, navigation, lease, keyboard, navigationFocus)
     LazyColumn(
         Modifier
             .weight(1f)
@@ -591,7 +696,7 @@ internal fun ColumnScope.SequenceTimingReview(
                 Text(
                     stringResource(R.string.sequence_history_overlap_warning),
                     Modifier
-                        .then(timingFocus(navigation, 0, enabled, lease))
+                        .then(timingFocus(navigation, null, enabled, lease))
                         .semantics { liveRegion = LiveRegionMode.Polite }
                         .focusable(enabled),
                     color = MaterialTheme.colorScheme.error,
@@ -603,7 +708,7 @@ internal fun ColumnScope.SequenceTimingReview(
             change,
             ->
             timestampTargetKey((change as SequenceHistoryPreviewChange.Timestamp).target)
-        }) { index, fact ->
+        }) { _, fact ->
             val change = fact as SequenceHistoryPreviewChange.Timestamp
             val child = context.occurrence(change.target)?.child
             val zone =
@@ -623,7 +728,7 @@ internal fun ColumnScope.SequenceTimingReview(
                 ),
                 Modifier
                     .testTag("sequence-history-change-${timestampTargetKey(change.target)}")
-                    .then(timingFocus(navigation, index + prefix, enabled, lease))
+                    .then(timingFocus(navigation, change.target, enabled, lease))
                     .focusable(enabled),
             )
         }

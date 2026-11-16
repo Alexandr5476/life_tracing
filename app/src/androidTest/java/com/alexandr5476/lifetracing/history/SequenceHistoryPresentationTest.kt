@@ -6,17 +6,23 @@ package com.alexandr5476.lifetracing.history
 
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
@@ -48,6 +54,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
+import androidx.lifecycle.Lifecycle
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
@@ -88,6 +95,7 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
+import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CompletableDeferred
@@ -95,6 +103,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -1299,6 +1308,531 @@ class SequenceHistoryPresentationTest {
             }
         }
         compose.runOnIdle { assertEquals(0, actions) }
+    }
+
+    @Test
+    fun replacementNativeAttachmentObserverReceivesCurrentStateWithoutReattachment() {
+        val observer = mutableStateOf(0)
+        val showing = mutableStateOf(true)
+        val events = listOf(mutableListOf<Boolean>(), mutableListOf<Boolean>())
+        compose.setContent {
+            val current = observer.value
+            if (showing.value) {
+                Box(Modifier.fillMaxSize().onFocusTargetAttachmentChanged { events[current] += it })
+            }
+        }
+        compose.runOnIdle {
+            assertEquals(listOf(true), events[0])
+            assertTrue(events[1].isEmpty())
+            observer.value = 1
+        }
+        compose.runOnIdle {
+            assertEquals("Updating the callback must not detach the native node", listOf(true), events[0])
+            assertEquals(listOf(true), events[1])
+            showing.value = false
+        }
+        compose.runOnIdle { assertEquals(listOf(true, false), events[1]) }
+    }
+
+    @Test
+    fun intervalTimingEditorAndReviewDistinguishExactOwnersAndOwnerlessInEnglishAndRussian() {
+        val performed = occurrence(0)
+        val unperformed = occurrence(1, RuntimeOccurrenceStatus.SKIPPED)
+        val notStarted = occurrence(2, RuntimeOccurrenceStatus.NOT_STARTED)
+        val selected =
+            detail(listOf(performed, unperformed, notStarted)).copy(
+                intervals =
+                    listOf(
+                        SequenceInterval(
+                            SequenceIntervalId("owned"),
+                            SequenceIntervalKind.ACTIVE_STEP,
+                            start,
+                            end,
+                            performed.occurrenceId,
+                        ),
+                        SequenceInterval(
+                            SequenceIntervalId("countdown"),
+                            SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                            start,
+                            end,
+                            unperformed.occurrenceId,
+                        ),
+                        SequenceInterval(
+                            SequenceIntervalId("not-started-countdown"),
+                            SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                            start,
+                            end,
+                            notStarted.occurrenceId,
+                        ),
+                        SequenceInterval(
+                            SequenceIntervalId("ownerless"),
+                            SequenceIntervalKind.EXPLICIT_PAUSE,
+                            start,
+                            end,
+                            null,
+                        ),
+                    ),
+            )
+        val original = SequenceHistoryProposalBuilder.timingDraft(selected)
+        val intervalTargets =
+            original.timestamps.keys.filter {
+                it is SequenceHistoryTimestampTarget.IntervalStartedAt ||
+                    it is SequenceHistoryTimestampTarget.IntervalEndedAt
+            }
+        val edited =
+            original.copy(
+                timestamps =
+                    original.timestamps.mapValues { (target, value) ->
+                        if (target in intervalTargets) {
+                            value.copy(
+                                text =
+                                    java.time.LocalDateTime
+                                        .parse(value.text)
+                                        .plusSeconds(1)
+                                        .toString(),
+                            )
+                        } else {
+                            value
+                        }
+                    },
+            )
+        val proposal =
+            (
+                SequenceHistoryProposalBuilder.timing(
+                    selected,
+                    edited,
+                ) as SequenceHistoryTimingBuildResult.Ready
+            ).proposal
+        val reviewing = mutableStateOf(false)
+        val russian = mutableStateOf(false)
+        var actions = 0
+        compose.setContent {
+            val locale = if (russian.value) Locale.forLanguageTag("ru") else Locale.US
+            val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale) }
+            val context = LocalContext.current.createConfigurationContext(configuration)
+            CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                TestTheme {
+                    val state =
+                        remember(reviewing.value) {
+                            SequenceHistoryMutationState(
+                                load = HistoryDetailLoad.Content(selected),
+                                timingDraft = original,
+                                timingProposal = proposal.takeIf { reviewing.value },
+                            )
+                        }
+                    val admission =
+                        rememberSequenceHistoryAdmission(
+                            selected.root.executionId,
+                            state,
+                            { state },
+                            { true },
+                            true,
+                            { actions++ },
+                        )
+                    CompositionLocalProvider(LocalSequenceHistoryAdmission provides admission) {
+                        Column(Modifier.fillMaxSize()) {
+                            if (reviewing.value) {
+                                SequenceTimingReview(selected, state) { actions++ }
+                            } else {
+                                SequenceTimingEditor(selected, state) { actions++ }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        keyboard.enter(compose.onNodeWithTag("sequence-timing-section"))
+        for (ru in listOf(false, true)) {
+            compose.runOnIdle { russian.value = ru }
+            val resources =
+                compose.activity.createConfigurationContext(
+                    Configuration(compose.activity.resources.configuration).apply {
+                        setLocale(if (ru) Locale.forLanguageTag("ru") else Locale.US)
+                    },
+                )
+            for (review in listOf(false, true)) {
+                compose.runOnIdle { reviewing.value = review }
+                val targets =
+                    if (review) {
+                        proposal.changes.map { (it as SequenceHistoryPreviewChange.Timestamp).target }
+                    } else {
+                        original.timestamps.keys.toList()
+                    }
+                for (target in intervalTargets) {
+                    val intervalId =
+                        when (target) {
+                            is SequenceHistoryTimestampTarget.IntervalStartedAt -> target.intervalId
+                            is SequenceHistoryTimestampTarget.IntervalEndedAt -> target.intervalId
+                            else -> error("Interval endpoint required")
+                        }
+                    val interval = selected.intervals.single { it.id == intervalId }
+                    compose
+                        .onNodeWithTag(
+                            "sequence-timing-ordinal",
+                        ).performTextReplacement((targets.indexOf(target) + 1).toString())
+                    compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
+                    val node =
+                        compose.onNodeWithTag(
+                            "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(target)}",
+                        )
+                    node.assertIsDisplayed()
+                    keyboard.awaitFocus(node)
+                    val expected =
+                        mutableListOf(
+                            resources.getString(
+                                if (target is SequenceHistoryTimestampTarget.IntervalStartedAt) {
+                                    R.string.sequence_timing_interval_started
+                                } else {
+                                    R.string.sequence_timing_interval_ended
+                                },
+                            ),
+                            resources.getString(intervalKindResource(interval.kind)),
+                            resources.getString(R.string.sequence_timing_interval_id, interval.id.value),
+                            resources.getString(
+                                R.string.sequence_history_execution_id,
+                                selected.root.executionId.value,
+                            ),
+                        )
+                    val owner = interval.occurrenceId
+                    expected +=
+                        if (owner == null) {
+                            resources.getString(R.string.sequence_history_ownerless)
+                        } else {
+                            resources.getString(R.string.sequence_timing_occurrence_id, owner.value)
+                        }
+                    expected.forEach { text ->
+                        node.assert(
+                            if (review) {
+                                hasText(
+                                    text,
+                                    substring = true,
+                                )
+                            } else {
+                                hasContentDescription(text, substring = true)
+                            },
+                        )
+                    }
+                    if (review) {
+                        val change =
+                            proposal.changes.filterIsInstance<SequenceHistoryPreviewChange.Timestamp>().single {
+                                it.target ==
+                                    target
+                            }
+                        node.assert(hasText(exactHistoricalTimestamp(change.before, zone), substring = true))
+                        node.assert(hasText(exactHistoricalTimestamp(change.after, zone), substring = true))
+                        val comparison =
+                            resources
+                                .getString(
+                                    R.string.sequence_timing_before_after,
+                                    "",
+                                    exactHistoricalTimestamp(change.before, zone),
+                                    exactHistoricalTimestamp(change.after, zone),
+                                ).removePrefix(". ")
+                        node.assert(hasText(comparison, substring = true))
+                    }
+                    val rendered =
+                        if (review) {
+                            node.fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
+                        } else {
+                            node.fetchSemanticsNode().config[SemanticsProperties.ContentDescription].joinToString()
+                        }
+                    if (owner == null) {
+                        selected.occurrences.forEach {
+                            assertFalse(
+                                rendered.contains(
+                                    resources.getString(R.string.sequence_timing_occurrence_id, it.occurrenceId.value),
+                                ),
+                            )
+                        }
+                    } else {
+                        assertFalse(rendered.contains(resources.getString(R.string.sequence_history_ownerless)))
+                    }
+                }
+            }
+        }
+        for (owner in listOf(unperformed, notStarted)) {
+            assertEquals(null, owner.enteredAt)
+            assertEquals(null, owner.completedAt)
+            assertEquals(null, owner.child)
+            assertFalse(SequenceHistoryTimestampTarget.ChildCompletedAt(owner.occurrenceId) in original.timestamps)
+            assertFalse(SequenceHistoryTimestampTarget.OccurrenceEnteredAt(owner.occurrenceId) in original.timestamps)
+        }
+        compose.runOnIdle { assertEquals(0, actions) }
+    }
+
+    @Test
+    fun timingEditorQueuedJumpRejectsForegroundSessionPublicationCanonicalAndStageLoss() {
+        queuedTimingJump(review = false, afterScroll = false)
+    }
+
+    @Test
+    fun timingReviewQueuedJumpRejectsForegroundSessionPublicationCanonicalAndProposalLoss() {
+        queuedTimingJump(review = true, afterScroll = false)
+    }
+
+    @Test
+    fun timingReviewPendingFocusCannotTransferToReplacedProposalOrDismissedStage() {
+        queuedTimingJump(review = true, afterScroll = true)
+    }
+
+    @Test
+    fun timingEditorPendingFocusCannotSurviveAuthorityLossOrStageDismissal() {
+        queuedTimingJump(review = false, afterScroll = true)
+    }
+
+    private fun queuedTimingJump(
+        review: Boolean,
+        afterScroll: Boolean,
+    ) {
+        val selected = detail(List(50) { occurrence(it) })
+        val draft = SequenceHistoryProposalBuilder.timingDraft(selected)
+        val edited =
+            draft.copy(
+                timestamps =
+                    draft.timestamps.mapValues { (_, value) ->
+                        value.copy(
+                            text =
+                                java.time.LocalDateTime
+                                    .parse(value.text)
+                                    .plusSeconds(1)
+                                    .toString(),
+                        )
+                    },
+            )
+        val proposal =
+            (
+                SequenceHistoryProposalBuilder.timing(
+                    selected,
+                    edited,
+                ) as SequenceHistoryTimingBuildResult.Ready
+            ).proposal
+        val initial =
+            SequenceHistoryMutationState(
+                load = HistoryDetailLoad.Content(selected),
+                timingDraft = draft,
+                timingProposal = proposal.takeIf { review },
+            )
+        val publication = mutableStateOf(initial, referentialEqualityPolicy())
+        val visible = mutableStateOf(true)
+        val session = Any()
+        val activeSession = mutableStateOf(session, referentialEqualityPolicy())
+        val showing = mutableStateOf(true)
+        var actions = 0
+        compose.setContent {
+            TestTheme {
+                val state = publication.value
+                val canonical = (state.load as HistoryDetailLoad.Content).value
+                val admission =
+                    rememberSequenceHistoryAdmission(
+                        canonical.root.executionId,
+                        state,
+                        { publication.value },
+                        { visible.value && activeSession.value === session && showing.value },
+                        visible.value,
+                        { actions++ },
+                    )
+                Column(Modifier.fillMaxSize()) {
+                    TextButton({}, Modifier.testTag("timing-foreign-focus")) { Text("Foreground control") }
+                    CompositionLocalProvider(LocalSequenceHistoryAdmission provides admission) {
+                        if (showing.value) {
+                            if (review) {
+                                SequenceTimingReview(canonical, state) { actions++ }
+                            } else {
+                                SequenceTimingEditor(canonical, state) { actions++ }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val targets =
+            if (review) {
+                proposal.changes.map { (it as SequenceHistoryPreviewChange.Timestamp).target }
+            } else {
+                draft.timestamps.keys.toList()
+            }
+        val listTag = if (review) "sequence-history-timing-review-list" else "sequence-history-timing-list"
+        for (loss in listOf(
+            "foreground",
+            "session",
+            "publication",
+            "canonical",
+            "proposal",
+            "equal-proposal",
+            "stage",
+            "pause",
+        )) {
+            compose.runOnIdle {
+                visible.value = true
+                activeSession.value = session
+                showing.value = true
+                publication.value = initial.copy(publication = publication.value.publication + 1)
+            }
+            // Start every case at the root with an independent current publication.
+            compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("1")
+            compose.onNodeWithTag("sequence-timing-go").performClick()
+            compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement(targets.size.toString())
+            val click =
+                requireNotNull(
+                    compose
+                        .onNodeWithTag(
+                            "sequence-timing-go",
+                        ).fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action,
+                )
+            val list = compose.onNodeWithTag(listTag)
+            val before = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+            val foreign = compose.onNodeWithTag("timing-foreign-focus")
+            keyboard.enter(foreign)
+            val focusForeign = requireNotNull(foreign.fetchSemanticsNode().config[SemanticsActions.RequestFocus].action)
+            compose.mainClock.autoAdvance = false
+            compose.runOnIdle { click() }
+            if (afterScroll) compose.mainClock.advanceTimeByFrame()
+            if (loss == "pause") {
+                compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+                compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+            } else {
+                compose.runOnUiThread {
+                    when (loss) {
+                        "foreground" -> visible.value = false
+                        "session" -> activeSession.value = Any()
+                        "publication" ->
+                            publication.value =
+                                publication.value.copy(publication = publication.value.publication + 1)
+                        "canonical" ->
+                            publication.value =
+                                publication.value.copy(load = HistoryDetailLoad.Content(selected.copy()))
+                        "proposal" ->
+                            publication.value =
+                                if (review) {
+                                    publication.value.copy(
+                                        timingProposal = proposal.copy(changes = proposal.changes.reversed()),
+                                    )
+                                } else {
+                                    publication.value.copy(timingDraft = draft.copy())
+                                }
+                        "equal-proposal" ->
+                            publication.value =
+                                if (review) {
+                                    publication.value.copy(timingProposal = proposal.copy())
+                                } else {
+                                    publication.value.copy(timingDraft = draft.copy())
+                                }
+                        "stage" -> showing.value = false
+                    }
+                    androidx.compose.runtime.snapshots.Snapshot
+                        .sendApplyNotifications()
+                    if (loss == "foreground") visible.value = true // No frame between hide and reentry.
+                }
+            }
+            // Establish competing native focus before releasing the queued scroll/focus frames.
+            compose.runOnUiThread { focusForeign() }
+            compose.mainClock.autoAdvance = true
+            keyboard.awaitFocus(foreign)
+            if (!afterScroll && loss != "stage") {
+                assertEquals(
+                    before,
+                    list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(),
+                )
+            }
+            if (loss == "stage") compose.onNodeWithTag(listTag).assertDoesNotExist()
+            if (loss in listOf("canonical", "proposal", "equal-proposal")) {
+                // The replacement itself must be usable, including a distinct but equal canonical/proposal.
+                compose.onNodeWithTag("sequence-timing-go").performClick()
+                val replacementTarget = if (review && loss == "proposal") targets.first() else targets.last()
+                val replacement =
+                    compose.onNodeWithTag(
+                        "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(
+                            replacementTarget,
+                        )}",
+                    )
+                replacement.assertIsDisplayed()
+                keyboard.awaitFocus(replacement)
+            }
+            compose.runOnIdle {
+                showing.value = true
+                activeSession.value = session
+                publication.value = initial.copy(publication = publication.value.publication + 1)
+            }
+            // A retained callback cannot borrow the new publication, even after foreground reentry.
+            foreign.performSemanticsAction(SemanticsActions.RequestFocus)
+            compose.runOnIdle { click() }
+            keyboard.awaitFocus(foreign)
+            compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement(targets.size.toString())
+            compose.onNodeWithTag("sequence-timing-go").performClick()
+            val target =
+                compose.onNodeWithTag(
+                    "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(targets.last())}",
+                )
+            target.assertIsDisplayed()
+            keyboard.awaitFocus(target)
+            compose.runOnIdle { assertEquals(0, actions) }
+        }
+    }
+
+    @Test
+    fun timingSynchronousScrollDoesNotWaitForContendedScrollOrCompleteAfterRevocation() {
+        class ScrollHarness(
+            val list: LazyListState,
+            val scope: CoroutineScope,
+        ) {
+            val lease = SequenceHistoryNavigation({ true })
+            val navigation = TimingNavigation(lease) { 90 }
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+
+            fun contend() {
+                scope.launch {
+                    list.scroll(MutatePriority.PreventUserInput) {
+                        entered.complete(Unit)
+                        release.await()
+                    }
+                }
+            }
+
+            fun go() {
+                navigation.go(SequenceHistoryTimestampTarget.RootEndedAt, scope) { list.requestScrollToItem(it) }
+            }
+        }
+        val generation = mutableStateOf(0)
+        var harness: ScrollHarness? = null
+        compose.setContent {
+            TestTheme {
+                key(generation.value) {
+                    val list = rememberLazyListState()
+                    val scope = rememberCoroutineScope()
+                    val current = remember { ScrollHarness(list, scope) }
+                    androidx.compose.runtime.SideEffect { harness = current }
+                    LazyColumn(Modifier.fillMaxSize(), state = list) {
+                        items(1_000) { Text("Row $it", Modifier.testTag("contended-row-$it")) }
+                    }
+                }
+            }
+        }
+        for (revoke in listOf(true, false)) {
+            compose.runOnIdle { generation.value++ }
+            val current = compose.runOnIdle { requireNotNull(harness).also { it.contend() } }
+            compose.waitUntil { current.entered.isCompleted }
+            compose.mainClock.autoAdvance = false
+            compose.runOnIdle { current.go() }
+            if (revoke) compose.runOnIdle { current.lease.revoke() }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.autoAdvance = true
+            if (revoke) {
+                compose.runOnIdle { current.release.complete(Unit) }
+                compose.onNodeWithTag("contended-row-0").assertIsDisplayed()
+                compose.runOnIdle { assertEquals(null, current.navigation.pending) }
+            } else {
+                // The mutex holder remains gated while the synchronous request reaches the target.
+                compose.onNodeWithTag("contended-row-90").assertIsDisplayed()
+                compose.runOnIdle {
+                    assertEquals(90, current.list.firstVisibleItemIndex)
+                    assertFalse(current.release.isCompleted)
+                    current.release.complete(Unit)
+                }
+            }
+        }
     }
 
     @Composable

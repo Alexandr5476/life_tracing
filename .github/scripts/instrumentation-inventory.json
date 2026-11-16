@@ -1590,7 +1590,14 @@
       "unavailableCanonicalReadKeepsBackAndStatusReachable",
       "unperformedOccurrencesKeepConfiguredMainValueWithoutInventingChildFacts",
       "largeTimingEditorUsesBoundedNativeInputsAndReadOnlyEarlyMiddleLateNavigation",
-      "largeTimingReviewKeepsExactNativeFactsAndActionsReadableAtEnglishRussianScaleExtremes"
+      "largeTimingReviewKeepsExactNativeFactsAndActionsReadableAtEnglishRussianScaleExtremes",
+      "replacementNativeAttachmentObserverReceivesCurrentStateWithoutReattachment",
+      "intervalTimingEditorAndReviewDistinguishExactOwnersAndOwnerlessInEnglishAndRussian",
+      "timingEditorQueuedJumpRejectsForegroundSessionPublicationCanonicalAndStageLoss",
+      "timingReviewQueuedJumpRejectsForegroundSessionPublicationCanonicalAndProposalLoss",
+      "timingReviewPendingFocusCannotTransferToReplacedProposalOrDismissedStage",
+      "timingEditorPendingFocusCannotSurviveAuthorityLossOrStageDismissal",
+      "timingSynchronousScrollDoesNotWaitForContendedScrollOrCompleteAfterRevocation"
     ]
   },
   "startup": {

@@ -71,14 +71,15 @@ internal fun rememberSequenceHistoryNavigation(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val lifecycleState by lifecycle.currentStateFlow.collectAsState()
     val resumed = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
-    val canonical by rememberUpdatedState(detail)
+    val reference = SequenceDetailReference(detail)
+    val canonical by rememberUpdatedState(reference)
     var generation by remember { mutableStateOf(0L) }
     val lease =
-        remember(SequenceDetailReference(detail), admission, lifecycle, resumed, hasTiming, hasIssue, generation) {
+        remember(reference, admission, lifecycle, resumed, hasTiming, hasIssue, generation) {
             SequenceHistoryNavigation({
                 resumed &&
                     lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-                    canonical === detail &&
+                    canonical == reference &&
                     (admission?.isShowing(detail) != false)
             }) { generation++ }
         }
@@ -109,9 +110,11 @@ internal enum class SequenceTimingSection { TIMESTAMPS, ROOT, OCCURRENCES, CHILD
 
 internal class SequenceTimingDestinations(
     private val detail: SequenceHistoryDetail,
-    targets: List<SequenceHistoryTimestampTarget>,
+    private val targets: List<SequenceHistoryTimestampTarget>,
 ) {
     val positions = targets.withIndex().associate { it.value to it.index }
+
+    fun target(index: Int): SequenceHistoryTimestampTarget = targets[index]
 
     fun count(section: SequenceTimingSection): Int =
         when (section) {

@@ -201,3 +201,148 @@ Attempt 1 reached zero tests because UTP could not create its instrumentation
 launch script under `/sdcard` (Operation not permitted); Controller automatically
 retried and attempt 2 completed the tests. This targeted diagnostic PASS does not
 replace the full canonical check, cross-API gates or independent exact-head CI.
+
+## S3C1 deferred timing navigation and ownerless context (2026-11-16)
+
+Baseline: `b76a889b22b27548623fde85a4b0f9967c0d0107`. This correction follows
+S3C1 and the S1/S2C1/S3 authorities above. No separate Parent Contract file is
+tracked. Historical correction input, targets, immutable proposals, optimistic
+tokens, transactional writers and canonical recovery keep their existing model.
+
+All timing jump paths (initial editor landing, validation landing, error action,
+ordinal navigation and overlap warning) now use synchronous `requestScrollToItem`
+after the queued frame and a fresh authority check. The resolved Foundation 1.10.0
+artifact exposes a non-suspending `void requestScrollToItem(int, int)`; local bytecode
+inspection confirms it calls `snapToItemIndexInternal` synchronously, with scroll
+cancellation launched separately. There is no scroll-mutex continuation carrying
+a previously admitted position into a later publication.
+
+One pending request retains its typed endpoint (or the existing review warning),
+resolved position, originating lease and coroutine scope. Supersession, revocation,
+owner/index replacement, scope cancellation and stage disposal discard its focus
+authority. Native focus starts only after scroll admission, then rechecks the
+exact pending token, target membership, lease, live scope, attachment and focused
+native window after its frame. A declined native focus request stays retryable on
+attachment/window/input-mode change; successful focus consumes the request.
+Navigation still has no mutation dispatcher or repository reader.
+
+Read-only canonical and timing-owner remembered state now use identity tokens.
+Structural equality must neither retain an old equal-looking canonical/proposal
+nor reject its fresh replacement authority. Editor destinations are also keyed
+by exact canonical identity; review destinations use exact canonical and proposal
+identity. The existing once-built position and context indexes remain shared.
+Navigation and row context lookup remain O(1), with no collection search per row,
+additional historical copy, queued-request collection or new History/Statistics
+scan. Lazy composition and the unchanged O(log N) immutable timestamp update remain
+in place.
+
+The shared timing label now adds `sequence_history_ownerless` only when the
+canonical interval's `occurrenceId` is null. Its existing EN/RU wording explicitly
+says that the Sequence interval has no occurrence owner. Editor input descriptions
+and exact Before/After review both retain interval kind/ID and root execution
+identity. Owned intervals retain their exact canonical occurrence context;
+countdown owners gain no timestamps, child execution or invented relationship.
+
+The fail-first JVM regression `revokedTimingJumpDiscardsItsPendingFocus` failed
+against the original timing navigator before the repair. Deterministic JVM frame
+and dispatcher tests cover current editor/review navigation, all authority losses,
+supersession, changed/removed membership, native attachment/availability, scope
+cancellation before and after scroll, exact equal-looking canonical replacement,
+and fresh usable authority. No navigation fixture exposes a repository reader;
+dispatch counters stay zero.
+
+Six new Compose tests are registered in the instrumentation inventory. Their
+paused clocks and explicit coroutine gates cover editor/review loss before scroll
+and between scroll/focus, hide/reentry without a frame, PAUSE/RESUME, same-execution
+session replacement, publication/detail/proposal replacement, cancellation/stage
+disposal and fresh navigation directly on the replacement publication. A real
+LazyListState is held in a PreventUserInput scroll while a current synchronous
+request reaches its exact target; the revoked case releases that gate and must
+remain at its original position. The EN/RU fixture has equal-looking endpoint
+timestamps and distinct interval IDs for performed, skipped-countdown,
+not-started-countdown and explicitly ownerless cases. Both endpoint types and
+Before/After descriptions are checked without creating unperformed child facts.
+
+Controller limits remain explicit: device execution is prohibited in this turn.
+APK/source compilation does not establish a Compose/device PASS. Existing S1
+native admission, S2/S2C1 focus, 10,000-occurrence editor/review, production History
+and MainActivity navigation, repository integration and physical-reopen timing
+journeys remain in Controller's device gates. Full parity/coverage, cross-API
+checks and independent GitHub CI remain mandatory Controller-owned gates; manual
+accessibility-service certification stays deferred.
+
+Local S3C1 checks completed:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*history.*' --tests '*MainActivityNavigationTest*' --tests '*HistoricalTimestampTest*' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest --continue --console=plain
+.\gradlew.bat :app:ktlintCheck :app:detekt --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The combined invocation passed all 214 focused JVM tests across 14 suites,
+including 18 navigation tests, with zero failures, errors or skips. App Detekt,
+Android lint, debug assembly and app/data AndroidTest source/APK compilation and
+packaging passed. Its overall exit was nonzero only for formatting of the new
+editor destination declaration; that whitespace-only issue was corrected and the
+follow-up ktlint/Detekt invocation completed BUILD SUCCESSFUL. No remaining local
+check failure is outstanding. The runner's 74 unit tests passed with mocked device
+output, and inventory/source identity matches all 29 Sequence presentation tests.
+No emulator or device task was launched. These results establish local patch
+readiness, not Controller parity, a device PASS, or merge/CI approval.
+
+### S3C1 API 33 attachment repair (2026-11-16)
+
+Controller's canonical API 33 app run reached 760 tests and reported five timing
+focus assertion failures in `SequenceHistoryPresentationTest`. The target rows
+were displayed in an attached, focused foreground window, but navigation left
+native focus on the ordinal input. These were application/test failures, not an
+infrastructure-only failure.
+
+Two authorized diagnostic probes reproduced all five failures. A stable per-row
+requester alone did not repair them. Temporary tracing then showed current,
+enabled requests with `attached=false` after lazy reuse; the replacement observer
+never received the attachment of the retained modifier node. Both the temporary
+tracing and requester-only experiment were removed.
+
+`FocusTargetAttachmentElement.update` now publishes the current attached state to
+its replacement callback when the node is attached. Actual detachment still
+publishes false. This fixes the shared observation boundary used by both timing
+editor and review without changing their lease, pending-token, membership,
+foreground or native-focus admission checks. Other consumers were inspected:
+removal-only callbacks ignore the additional true notification, while consumers
+tracking attachment receive the correct current state. No resolver, proposal,
+reader, writer or historical timestamp semantics changed.
+
+The deterministic Compose regression
+`replacementNativeAttachmentObserverReceivesCurrentStateWithoutReattachment`
+replaces the observer on one retained native modifier node, checks immediate true
+delivery without a detach, then checks false on actual removal. All original five
+regressions and their downstream fresh-navigation assertions remain intact. The
+instrumentation inventory now contains all 30 Sequence presentation tests.
+
+The authorized class-scoped repair probe completed REAL PASS: 30 tests, zero
+failures or skips, including all five original failures, the new observer test,
+S2/S2C1 native focus, EN/RU ownership, stage/proposal replacement, contended
+scrolling and the 10,000-occurrence lazy editor/review checks. Evidence:
+`repair-probes/wf-66d1e26240c0559b97e60b9bf4b5c7fe/afa67feb9bbf40f0bb9c644ec972b373/tree-3/attempt-1/01.log`
+and its archived API 33 XML report. The failed requester and tracing probes are
+retained in trees 1 and 2 of the same probe. Runtime execution used only the
+Controller-authorized `repair-probe.cmd --scope-file ...` entrypoint. This is a
+diagnostic class PASS, not a rerun of the full 760-test canonical check or CI PASS.
+
+Follow-up local checks completed successfully:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest --tests '*history.*' --tests '*MainActivityNavigationTest*' --tests '*HistoricalTimestampTest*' :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+Gradle completed BUILD SUCCESSFUL. The focused JVM XML reports contain 214 tests
+across 14 suites, zero failures, errors or skips. App ktlint, Detekt, Android lint
+and AndroidTest source/APK packaging passed. The runner's 74 unit tests passed
+using mocked device output; inventory and source match exactly for all 30 Sequence
+presentation methods. No new repository paths were introduced. Full canonical
+device checks, cross-API coverage and independent GitHub CI remain Controller's
+final gates.
