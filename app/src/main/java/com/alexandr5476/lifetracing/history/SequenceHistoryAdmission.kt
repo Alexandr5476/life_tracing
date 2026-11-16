@@ -41,14 +41,15 @@ internal class SequenceHistoryAdmission(
     private val current: () -> SequenceHistoryMutationState,
     private val ownsRoute: () -> Boolean,
     private val dispatch: (SequenceHistoryMutationAction) -> Unit,
+    validation: SequenceHistoryIdentityValidation? = null,
     private val onRevoked: () -> Unit = {},
 ) {
     var attached = true
     private var revoked = false
     private val canonicalValid =
-        (publication.load as? HistoryDetailLoad.Content)
-            ?.value
-            ?.hasValidSequenceIdentity(executionId) == true
+        (publication.load as? HistoryDetailLoad.Content)?.value?.let { detail ->
+            validation?.validFor(detail, executionId) ?: detail.hasValidSequenceIdentity(executionId)
+        } == true
 
     fun revoke() {
         if (!revoked) {
@@ -236,6 +237,27 @@ internal fun SequenceHistoryDetail.hasValidSequenceIdentity(id: SequenceExecutio
         }
 }
 
+/** Validity belongs to one exact canonical instance, never to data-class equality. */
+internal class SequenceHistoryIdentityValidation(
+    private val detail: SequenceHistoryDetail,
+    private val executionId: SequenceExecutionId,
+) {
+    private val valid = detail.hasValidSequenceIdentity(executionId)
+
+    fun validFor(
+        candidate: SequenceHistoryDetail,
+        id: SequenceExecutionId,
+    ): Boolean? = valid.takeIf { candidate === detail && id == executionId }
+}
+
+internal class SequenceDetailReference(
+    private val detail: SequenceHistoryDetail?,
+) {
+    override fun equals(other: Any?): Boolean = other is SequenceDetailReference && detail === other.detail
+
+    override fun hashCode(): Int = System.identityHashCode(detail)
+}
+
 internal val LocalSequenceHistoryAdmission = staticCompositionLocalOf<SequenceHistoryAdmission?> { null }
 
 @Composable
@@ -252,11 +274,16 @@ internal fun rememberSequenceHistoryAdmission(
     val owner by rememberUpdatedState(ownsRoute)
     val send by rememberUpdatedState(dispatch)
     var generation by remember { mutableStateOf(0L) }
+    val detail = (state.load as? HistoryDetailLoad.Content)?.value
+    val validation =
+        remember(SequenceDetailReference(detail), executionId) {
+            detail?.let { SequenceHistoryIdentityValidation(it, executionId) }
+        }
     val admission =
         remember(SequencePublication(state), visible, lifecycle, generation) {
             SequenceHistoryAdmission(executionId, state, { read() }, {
                 visible && owner() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-            }, { send(it) }) { generation++ }
+            }, { send(it) }, validation) { generation++ }
         }
     DisposableEffect(admission) { onDispose { admission.attached = false } }
     DisposableEffect(lifecycle, admission) {
@@ -298,7 +325,10 @@ internal fun SequenceSecondaryButton(
     val available = enabled && (LocalSequenceHistoryAdmission.current?.isCurrent() != false)
     LifeTracingSecondaryButton(
         onClick = onClick,
-        modifier = modifier.then(if (available) Modifier.historyActionSemantics(onClick) else Modifier),
+        modifier =
+            modifier
+                .then(historyFocusTarget(enabled = available))
+                .then(if (available) Modifier.historyActionSemantics(onClick) else Modifier),
         enabled = available,
         content = content,
     )
@@ -314,7 +344,10 @@ internal fun SequencePrimaryButton(
     val available = enabled && (LocalSequenceHistoryAdmission.current?.isCurrent() != false)
     LifeTracingPrimaryButton(
         onClick = onClick,
-        modifier = modifier.then(if (available) Modifier.historyActionSemantics(onClick) else Modifier),
+        modifier =
+            modifier
+                .then(historyFocusTarget(enabled = available))
+                .then(if (available) Modifier.historyActionSemantics(onClick) else Modifier),
         enabled = available,
         content = content,
     )

@@ -157,11 +157,14 @@ internal class HistoryFocus {
     val retry = FocusRequester()
     var recoveryTarget: FocusRequester? = null
     var owner: Any? = null
+    var lazyOwner: String? = null
     var removed by mutableStateOf<Any?>(null)
     var awaitingRead by mutableStateOf(false)
     var recovering = false
     var landingPending by mutableStateOf(true)
 }
+
+internal val LocalHistoryLazyIdentity = staticCompositionLocalOf<String?> { null }
 
 internal val LocalHistoryFocus = staticCompositionLocalOf { HistoryFocus() }
 
@@ -214,6 +217,7 @@ internal fun historyFocusTarget(
     enabled: Boolean = true,
 ): Modifier {
     val focus = LocalHistoryFocus.current
+    val lazyIdentity = LocalHistoryLazyIdentity.current
     val token = remember { Any() }
     LaunchedEffect(enabled) {
         if (!enabled && focus.owner === token) focus.removed = token
@@ -221,11 +225,12 @@ internal fun historyFocusTarget(
     val target = requester?.let { Modifier.focusRequester(it) } ?: Modifier
     return target
         .onFocusTargetAttachmentChanged { attached ->
-            if (!attached && focus.owner === token) focus.removed = token
+            if (!attached && lazyIdentity == null && focus.owner === token) focus.removed = token
         }.onFocusChanged {
             if (it.isFocused) {
                 focus.landingPending = false
                 focus.owner = token
+                focus.lazyOwner = lazyIdentity
                 if (!focus.recovering && focus.removed == null) focus.awaitingRead = false
             }
         }

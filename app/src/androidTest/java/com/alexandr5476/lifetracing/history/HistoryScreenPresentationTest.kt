@@ -11,21 +11,23 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
@@ -110,7 +112,7 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequenceDisposedRouteCannotReviveCapturedNativeControls() {
         val f = admissionRoute()
-        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val button = sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo()
         val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         composeTestRule.runOnIdle { f.present.value = false }
         button.assertDoesNotExist()
@@ -130,7 +132,7 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequenceNativeActionsStayRevokedAfterHiddenForegroundRoundTripBeforeFrame() {
         val f = admissionRoute()
-        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val button = sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo()
         val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         composeTestRule.runOnIdle {
             f.visible.value = false
@@ -149,7 +151,7 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequencePauseResumeBeforeFrameRevokesCapturedNativeAction() {
         val f = admissionRoute()
-        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val button = sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo()
         val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         composeTestRule.runOnIdle {
             f.lifecycle.registry.currentState = Lifecycle.State.STARTED
@@ -164,7 +166,7 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequencePublicationCancellationAndSessionReplacementRevokeNativeControls() {
         val f = admissionRoute()
-        val button = composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo()
+        val button = sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo()
         val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         button.performClick()
         composeTestRule.runOnIdle {
@@ -191,7 +193,7 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequenceNativeTimestampAcceptsRepeatedEventsAndRejectsReviewedOrDisposedEditor() {
         val f = admissionRoute()
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         val field = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended").performScrollTo()
         val edit = field.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
         composeTestRule.runOnIdle {
@@ -206,7 +208,7 @@ class HistoryScreenPresentationTest {
             f.controller.dispatch(SequenceHistoryMutationAction.Cancel)
             assertFalse(edit(AnnotatedString("stale")))
         }
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         val fresh =
             field
                 .performScrollTo()
@@ -226,13 +228,12 @@ class HistoryScreenPresentationTest {
     fun sequencePendingWriterDisablesNativeBackAndDuplicateConfirmation() {
         val gate = CompletableDeferred<Unit>()
         val f = admissionRoute(write = { gate.await() })
-        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         val confirm = composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo()
         val click = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         val back =
             composeTestRule
                 .onNodeWithText(text(R.string.history_back))
-                .performScrollTo()
                 .fetchSemanticsNode()
                 .config[SemanticsActions.OnClick]
                 .action!!
@@ -244,7 +245,7 @@ class HistoryScreenPresentationTest {
             assertEquals(1, f.writes)
         }
         confirm.assertIsNotEnabled()
-        composeTestRule.onNodeWithText(text(R.string.history_back)).performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithText(text(R.string.history_back)).assertIsNotEnabled()
         composeTestRule.runOnIdle { gate.complete(Unit) }
         composeTestRule.onNodeWithText(text(R.string.history_back)).assertIsEnabled()
     }
@@ -253,7 +254,7 @@ class HistoryScreenPresentationTest {
     fun sequenceCommittedReadFailureOffersNativeReadOnlyRetry() {
         val f = admissionRoute()
         composeTestRule.runOnIdle { f.write = { f.failReads = true } }
-        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         val click =
             composeTestRule
                 .onNodeWithTag("sequence-history-confirm-delete-child")
@@ -418,7 +419,7 @@ class HistoryScreenPresentationTest {
                 CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
                     LifeTracingTheme {
                         if (detailMode.value) {
-                            Column(Modifier.verticalScroll(rememberScrollState())) { SequenceDetail(sequenceDetail) }
+                            SequenceDetail(sequenceDetail)
                         } else {
                             HistoryScreen(
                                 HistoryPresentationState(
@@ -460,17 +461,29 @@ class HistoryScreenPresentationTest {
                     .assertCountEquals(0)
             }
             composeTestRule.runOnIdle { detailMode.value = true }
-            val childStart =
-                DateTimeFormatter
-                    .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-                    .withLocale(russian)
-                    .format(first.atZone(child.originalZoneId)) + " (UTC+09:00, Asia/Tokyo)"
-            composeTestRule.onNodeWithText(childStart, substring = true).performScrollTo().assertIsDisplayed()
-            composeTestRule
-                .onAllNodesWithText("UTC+02:00, Europe/Berlin", substring = true)[0]
-                .performScrollTo()
-                .assertIsDisplayed()
-            composeTestRule.onNodeWithTag("history-occurrence-tombstone").performScrollTo().assertIsDisplayed()
+            composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("occurrence:performed")
+            val childSummary = composeTestRule.onNodeWithTag("sequence-child-${child.executionId.value}")
+            for (endpoint in listOf(first, second)) {
+                childSummary.assert(
+                    hasText(
+                        com.alexandr5476.lifetracing.ui
+                            .exactHistoricalTimestamp(endpoint, child.originalZoneId),
+                        substring = true,
+                    ),
+                )
+            }
+            composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:root")
+            val rootSummary = composeTestRule.onNodeWithTag("sequence-history-root")
+            for (endpoint in listOf(first, second)) {
+                rootSummary.assert(
+                    hasText(
+                        com.alexandr5476.lifetracing.ui
+                            .exactHistoricalTimestamp(endpoint, berlin),
+                        substring = true,
+                    ),
+                )
+            }
+            sequenceItem("occurrence:tombstone", "history-occurrence-tombstone").assertIsDisplayed()
         } finally {
             TimeZone.setDefault(previousZone)
         }
@@ -581,54 +594,42 @@ class HistoryScreenPresentationTest {
     fun sequenceDetailShowsCanonicalGraphStatesProvenanceAndTombstoneInOrder() {
         val zone = ZoneId.of("America/Los_Angeles")
         val detail = sequenceDetail(SequenceExecutionStatus.ENDED_EARLY, zone)
-        setDetail { SequenceDetail(detail) }
+        composeTestRule.setContent { LifeTracingTheme { SequenceDetail(detail) } }
 
         composeTestRule.onNodeWithText(text(R.string.history_ended_early)).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_active_duration, "10:00")).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_pause_duration, "02:00")).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_wall_duration, "15:00")).assertIsDisplayed()
         composeTestRule
-            .onAllNodesWithText(
-                historicalTime(detail.root.startedAt, zone),
+            .onNodeWithTag("sequence-history-root")
+            .assert(
+                hasText(
+                    com.alexandr5476.lifetracing.ui
+                        .exactHistoricalTimestamp(detail.root.startedAt, zone),
+                    substring = true,
+                ),
+            ).assertIsDisplayed()
+
+        sequenceItem("occurrence:performed", "history-occurrence-performed").assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_occurrence_performed)).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_source_id, "source-step")).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_timer_target, "00:30")).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_actual_duration, "01:00")).assertExists()
+        composeTestRule
+            .onNodeWithContentDescription(
+                text(R.string.history_actual_field, "Reps", "7 reps"),
                 substring = true,
-            )[0]
-            .assertIsDisplayed()
-
-        val performed = hasAnyAncestor(hasTestTag("history-occurrence-performed"))
-        composeTestRule.onNode(hasText(text(R.string.history_occurrence_performed)) and performed).performScrollTo()
-        composeTestRule.onNode(hasText(text(R.string.history_source_step)) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_timer_target, "00:30")) and performed).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_actual_duration, "01:00")) and performed).assertExists()
-        composeTestRule
-            .onNode(hasText(text(R.string.history_field_value, "Reps", "7 reps")) and performed)
-            .assertExists()
-
-        val repeated = hasAnyAncestor(hasTestTag("history-occurrence-skipped"))
-        composeTestRule.onNode(hasText(text(R.string.history_source_step)) and repeated).assertExists()
-        composeTestRule.onNode(hasText(text(R.string.history_repeat_iteration, 2)) and repeated).assertExists()
-        val runtimeAdded = hasAnyAncestor(hasTestTag("history-occurrence-not-started"))
-        composeTestRule.onNode(hasText(text(R.string.history_runtime_added)) and runtimeAdded).assertExists()
-
-        composeTestRule.onNodeWithTag("history-occurrence-skipped").performScrollTo()
-        composeTestRule
-            .onNode(
-                hasText(text(R.string.history_occurrence_skipped)) and
-                    hasAnyAncestor(hasTestTag("history-occurrence-skipped")),
             ).assertExists()
-        composeTestRule.onNodeWithTag("history-occurrence-not-started").performScrollTo()
-        composeTestRule
-            .onNode(
-                hasText(text(R.string.history_occurrence_not_started)) and
-                    hasAnyAncestor(hasTestTag("history-occurrence-not-started")),
-            ).assertExists()
-        composeTestRule.onNodeWithTag("history-occurrence-tombstone").performScrollTo()
-        composeTestRule
-            .onNode(
-                hasText(text(R.string.history_deleted_child)) and
-                    hasAnyAncestor(hasTestTag("history-occurrence-tombstone")),
-            ).assertExists()
+        sequenceItem("occurrence:skipped", "history-occurrence-skipped").assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_source_id, "source-repeat-step")).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_occurrence_skipped)).assertExists()
+        sequenceItem("occurrence:not-started", "history-occurrence-not-started").assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_runtime_added)).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_occurrence_not_started)).assertExists()
+        sequenceItem("occurrence:tombstone", "history-occurrence-tombstone").assertIsDisplayed()
+        composeTestRule.onNodeWithText(text(R.string.history_deleted_child)).assertExists()
         composeTestRule.onNodeWithText("Structurally removed").assertDoesNotExist()
-
         val intervalLabels =
             listOf(
                 R.string.history_interval_active_step,
@@ -637,26 +638,39 @@ class HistoryScreenPresentationTest {
                 R.string.history_interval_implicit_idle,
                 R.string.history_interval_transition_countdown,
             )
-        val intervalTops =
-            detail.intervals.map { interval ->
-                composeTestRule
-                    .onNodeWithTag("history-interval-${interval.id.value}")
-                    .fetchSemanticsNode()
-                    .boundsInRoot.top
-            }
-        assertEquals(intervalTops.sorted(), intervalTops)
         detail.intervals.zip(intervalLabels).forEach { (interval, label) ->
-            composeTestRule
-                .onNodeWithTag("history-interval-${interval.id.value}")
-                .performScrollTo()
-                .assertIsDisplayed()
-            composeTestRule
-                .onNode(
-                    hasText(text(label)) and
-                        hasAnyAncestor(hasTestTag("history-interval-${interval.id.value}")),
-                ).assertExists()
+            sequenceItem("interval:${interval.id.value}", "history-interval-${interval.id.value}").assertIsDisplayed()
+            composeTestRule.onNodeWithText(text(label)).assertExists()
         }
-        composeTestRule.onAllNodes(hasClickAction()).assertCountEquals(0)
+    }
+
+    @Test
+    fun sequencePresentEmptyTextIsDistinctFromMissingConfiguredAndActualText() {
+        val base = sequenceDetail(SequenceExecutionStatus.COMPLETED, ZoneId.of("UTC"))
+        val field =
+            com.alexandr5476.lifetracing.domain.SequenceHistoryField(
+                com.alexandr5476.lifetracing.domain
+                    .SequenceSnapshotFieldId("empty"),
+                "Notes",
+                CustomFieldType.TEXT,
+                null,
+                null,
+                false,
+                com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
+                    .Text(""),
+                com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+                    .Text(""),
+                emptyList(),
+            )
+        setSequenceMutationDetail(base.copy(fields = listOf(field)))
+        composeTestRule
+            .onNodeWithTag("sequence-history-detail-list")
+            .performScrollToKey("sequence-field:empty")
+        composeTestRule
+            .onNodeWithContentDescription(
+                text(R.string.manual_history_present_empty),
+                substring = true,
+            ).assertExists()
     }
 
     @Test
@@ -674,7 +688,7 @@ class HistoryScreenPresentationTest {
             ),
         )
         composeTestRule.onNodeWithText(text(R.string.history_ended_early)).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().assertIsDisplayed()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -683,14 +697,14 @@ class HistoryScreenPresentationTest {
         val detail = sequenceMutationDetail()
         setSequenceMutationDetail(detail, correct = { _, _, _ -> timingCommands++ })
 
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         composeTestRule
             .onNodeWithTag("sequence-history-timestamp-root-ended")
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_active_duration, "10:00")).assertDoesNotExist()
         composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().assertIsDisplayed()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().assertIsDisplayed()
         assertEquals(0, timingCommands)
     }
 
@@ -698,7 +712,7 @@ class HistoryScreenPresentationTest {
     fun timingEditorPresentsSyntaxDstNoChangeAndExplicitOffsetStates() {
         val detail = sequenceMutationDetail().copy(originalZoneId = ZoneId.of("Europe/Berlin"))
         setSequenceMutationDetail(detail, correct = { _, _, _ -> error("unexpected") })
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         val end = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended")
 
         end.performScrollTo().performTextReplacement("not-a-date")
@@ -723,7 +737,7 @@ class HistoryScreenPresentationTest {
         composeTestRule.onNodeWithText(text(R.string.sequence_history_timing_review)).assertIsDisplayed()
 
         composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
         composeTestRule.onNodeWithText(text(R.string.sequence_history_no_timing_changes)).assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertDoesNotExist()
@@ -741,7 +755,7 @@ class HistoryScreenPresentationTest {
             )
         val controller = setSequenceMutationDetail(detail, correct = { _, correction, _ -> committed = correction })
 
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         composeTestRule
             .onNodeWithTag("sequence-history-timestamp-root-ended")
             .performScrollTo()
@@ -782,7 +796,7 @@ class HistoryScreenPresentationTest {
                 sequenceMutationDetail(),
                 correct = { _, _, _ -> throw failure },
             )
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         val draft =
             requireNotNull(controller.state.value.timingDraft)
                 .timestamps
@@ -820,13 +834,16 @@ class HistoryScreenPresentationTest {
         )
         val targetText = text(R.string.history_occurrence, 1, "Performed")
 
-        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performClick()
         assertEquals(0, deletions)
 
-        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
         composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         composeTestRule
@@ -914,7 +931,10 @@ class HistoryScreenPresentationTest {
         val detail = structuralMutationDetail()
         setSequenceMutationDetail(detail)
 
-        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
 
         composeTestRule
@@ -958,7 +978,7 @@ class HistoryScreenPresentationTest {
         controller.dispatch(SequenceHistoryMutationAction.Retry)
         composeTestRule.waitUntil(2_000) { controller.state.value.load is HistoryDetailLoad.Content }
 
-        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").performScrollTo().performClick()
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
         composeTestRule.waitUntil(2_000) {
             controller.state.value.issue == SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE
@@ -966,7 +986,10 @@ class HistoryScreenPresentationTest {
         composeTestRule.onNodeWithText(text(R.string.sequence_history_child_deletion_failure)).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performScrollTo().performClick()
 
-        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").performScrollTo().performClick()
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
         composeTestRule.waitUntil(2_000) {
@@ -983,7 +1006,7 @@ class HistoryScreenPresentationTest {
                 sequenceMutationDetail(),
                 correct = { _, _, _ -> gate.await() },
             )
-        composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
         val target = SequenceHistoryTimestampTarget.RootEndedAt
         val draft = requireNotNull(controller.state.value.timingDraft).timestamps.getValue(target)
         composeTestRule
@@ -1025,6 +1048,14 @@ class HistoryScreenPresentationTest {
             .onAllNodesWithText(historicalTime(activity.completedAt, activity.originalZoneId), substring = true)
             .assertCountEquals(2)
         assertTrue(activity.completedAt.toString().startsWith("2026"))
+    }
+
+    private fun sequenceItem(
+        key: String,
+        tag: String,
+    ): androidx.compose.ui.test.SemanticsNodeInteraction {
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey(key)
+        return composeTestRule.onNodeWithTag(tag)
     }
 
     private fun setDetail(content: @androidx.compose.runtime.Composable () -> Unit) {

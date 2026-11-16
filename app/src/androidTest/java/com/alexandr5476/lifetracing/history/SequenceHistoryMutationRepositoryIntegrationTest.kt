@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
@@ -245,6 +246,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         enterHistory()
         openSequence(timing)
         val timingBefore = requireNotNull(history.getSequenceDetail(timing))
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-ended",
@@ -261,6 +263,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         openSequence(deletion)
         val deletionBefore = requireNotNull(history.getSequenceDetail(deletion))
         val deletionTarget = deletionBefore.occurrences.single().occurrenceId
+        scrollToHistoryOccurrence(deletionTarget.value)
         composeTestRule
             .onNodeWithTag("sequence-history-delete-child-${deletionTarget.value}")
             .performScrollTo()
@@ -277,6 +280,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(deletionTarget.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
         composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
@@ -292,6 +296,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(removed.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -388,6 +393,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val overlapBefore = requireNotNull(history.getSequenceDetail(overlap))
         val later = overlapBefore.occurrences.last()
         val earlierStart = requireNotNull(later.enteredAt).minusSeconds(5)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-occurrence-${later.occurrenceId.value}-entered",
@@ -425,6 +431,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         openSequence(moved)
         val movedBefore = requireNotNull(history.getSequenceDetail(moved))
         assertEquals(utcDate, movedBefore.root.primaryLocalDate)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-started",
@@ -478,6 +485,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val third = original.occurrences[2]
         val overlappingStart = requireNotNull(second.enteredAt).plusSeconds(5)
         val thirdInterval = original.intervals.single { it.occurrenceId == third.occurrenceId }
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-occurrence-${third.occurrenceId.value}-entered",
@@ -504,6 +512,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -518,6 +527,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
         composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
         resolveOwnerlessIntervals()
@@ -585,6 +595,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
 
         enterHistory()
         openSequence(executionId)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-ended",
@@ -660,15 +671,16 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
                 ?.executionId == id &&
-                composeTestRule.onAllNodesWithTag("sequence-history-timing").fetchSemanticsNodes().size == 1
+                composeTestRule.onAllNodesWithTag("sequence-history-detail-list").fetchSemanticsNodes().size == 1
         }
     }
 
     private fun scrollToHistoryOccurrence(occurrenceId: String) {
         val tag = "history-occurrence-$occurrenceId"
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule.onAllNodesWithTag("sequence-history-detail-list").fetchSemanticsNodes().isNotEmpty()
         }
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("occurrence:$occurrenceId")
         composeTestRule.onNodeWithTag(tag).performScrollTo()
     }
 
@@ -686,7 +698,6 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         assertNull(session.controller.state.value.issue)
         composeTestRule
             .onNodeWithText(composeTestRule.activity.getString(R.string.history_back))
-            .performScrollTo()
             .assertIsDisplayed()
             .performClick()
         composeTestRule.waitUntil(5_000) {

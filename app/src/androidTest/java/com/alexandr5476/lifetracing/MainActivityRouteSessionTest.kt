@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
@@ -223,6 +224,7 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
+            composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
             composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
             composeTestRule
                 .onNodeWithTag("sequence-history-timestamp-root-ended")
@@ -243,8 +245,7 @@ class MainActivityRouteSessionTest {
             composeTestRule
                 .onNodeWithText(
                     composeTestRule.activity.getString(R.string.history_back),
-                ).performScrollTo()
-                .assertIsNotEnabled()
+                ).assertIsNotEnabled()
             release.complete(Unit)
             composeTestRule.waitUntil(5_000) {
                 controller.state.value.refreshGeneration == 1L &&
@@ -262,8 +263,7 @@ class MainActivityRouteSessionTest {
             composeTestRule
                 .onNodeWithText(
                     composeTestRule.activity.getString(R.string.history_back),
-                ).performScrollTo()
-                .performClick()
+                ).performClick()
             composeTestRule.waitUntil(5_000) {
                 composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession ==
                     null
@@ -276,6 +276,7 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
+            composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
             composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
             assertTrue(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession !== session)
             composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().assertIsEnabled()

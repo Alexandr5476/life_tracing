@@ -62,10 +62,7 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
-import com.alexandr5476.lifetracing.domain.SequenceHistoryField
-import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
-import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
@@ -223,7 +220,9 @@ internal fun SequenceHistoryDetailRoute(
                 LocalSequenceHistoryAdmission provides admission,
                 LocalHistoryFocus provides focus,
             ) {
-                HistoryDetailSurface(
+                SequenceHistoryDetailSurface(
+                    state = state,
+                    onAction = { action -> admission.action(action)() },
                     onBack = admission.back { if (!controller.handleBack()) onBack() },
                     load = load,
                     onRetry = admission.action(SequenceHistoryMutationAction.Retry),
@@ -525,37 +524,6 @@ internal fun historyRootDescription(
 }
 
 @Composable
-private fun <T> HistoryDetailSurface(
-    onBack: () -> Unit,
-    load: HistoryDetailLoad<T>,
-    onRetry: () -> Unit,
-    backEnabled: Boolean = true,
-    retryEnabled: Boolean = true,
-    content: @Composable (T) -> Unit,
-) {
-    Surface(color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-        ) {
-            TextButton(
-                onClick = onBack,
-                enabled = backEnabled,
-                modifier =
-                    historyFocusTarget(LocalHistoryFocus.current.back, backEnabled)
-                        .then(if (backEnabled) Modifier.historyActionSemantics(onBack) else Modifier),
-            ) { Text(stringResource(R.string.history_back)) }
-            when (load) {
-                HistoryDetailLoad.Loading -> HistoryCard { HistoryReadStatus(R.string.history_detail_loading) }
-                HistoryDetailLoad.Unavailable -> HistoryCard { HistoryReadStatus(R.string.history_unavailable) }
-                is HistoryDetailLoad.Failure -> FailureCard(onRetry, enabled = retryEnabled)
-                is HistoryDetailLoad.Content -> content(load.value)
-            }
-        }
-    }
-}
-
-@Composable
 internal fun ActivityDetail(detail: ActivityHistoryDetail) {
     Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
     detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
@@ -710,7 +678,7 @@ private fun SequenceHistoryMutationSurface(
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
     val occurrenceDescriptors =
-        remember(detail.occurrences) { SequenceHistoryProposalBuilder.occurrenceDescriptors(detail) }
+        remember(SequenceDetailReference(detail)) { SequenceHistoryProposalBuilder.occurrenceDescriptors(detail) }
     when {
         state.childDeletionProposal != null -> SequenceChildDeletionConfirmation(detail, state, onAction)
         state.structuralTarget != null && state.structuralProposal == null ->
@@ -720,21 +688,7 @@ private fun SequenceHistoryMutationSurface(
         state.structuralProposal != null -> StructuralReview(detail, occurrenceDescriptors, state, onAction)
         state.timingProposal != null -> TimingReview(detail, occurrenceDescriptors, state, onAction)
         state.timingDraft != null -> TimingEditor(detail, occurrenceDescriptors, state, onAction)
-        else -> {
-            state.issue?.let { SequenceMutationIssue(it) }
-            SequenceDetail(
-                detail,
-                onDeleteChild = { onAction(SequenceHistoryMutationAction.RequestChildDeletion(it)) },
-                onRemoveOccurrence = { onAction(SequenceHistoryMutationAction.BeginStructuralRemoval(it)) },
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                SequenceSecondaryButton(
-                    onClick = { onAction(SequenceHistoryMutationAction.BeginTiming) },
-                    enabled = !state.isMutating,
-                    modifier = Modifier.testTag("sequence-history-timing"),
-                ) { Text(stringResource(R.string.sequence_history_correct_timing)) }
-            }
-        }
+        else -> state.issue?.let { SequenceMutationIssue(it) }
     }
 }
 
@@ -1171,7 +1125,7 @@ private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     }
 
 @Composable
-private fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
+internal fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
     val resource =
         when (issue) {
             SequenceHistoryMutationIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
@@ -1212,136 +1166,7 @@ internal fun MutationIssue(issue: ActivityHistoryMutationIssue) {
 }
 
 @Composable
-internal fun SequenceDetail(
-    detail: SequenceHistoryDetail,
-    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
-    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
-) {
-    Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
-    detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
-    Text(
-        historyRootTimingInZone(
-            detail.root.startedAt,
-            detail.root.completedAt,
-            detail.originalZoneId,
-        ),
-    )
-    Text(
-        stringResource(sequenceStatusResource(detail.root.status)),
-        style = MaterialTheme.typography.labelLarge,
-    )
-    Text(stringResource(R.string.history_active_duration, durationText(detail.root.activeDuration)))
-    Text(stringResource(R.string.history_pause_duration, durationText(detail.root.pauseDuration)))
-    Text(stringResource(R.string.history_wall_duration, durationText(detail.root.wallDuration)))
-    if (detail.fields.isNotEmpty()) {
-        Text(stringResource(R.string.history_sequence_fields), style = MaterialTheme.typography.titleMedium)
-        detail.fields.forEach { HistoryField(it) }
-    }
-    Text(stringResource(R.string.history_occurrences), style = MaterialTheme.typography.titleMedium)
-    detail.occurrences.forEach { occurrence ->
-        Occurrence(detail.originalZoneId, occurrence, onDeleteChild, onRemoveOccurrence)
-    }
-    Text(stringResource(R.string.history_intervals), style = MaterialTheme.typography.titleMedium)
-    detail.intervals.forEach { interval -> HistoryInterval(detail.originalZoneId, interval) }
-}
-
-@Composable
-private fun Occurrence(
-    zoneId: ZoneId,
-    occurrence: SequenceHistoryOccurrence,
-    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
-    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
-) {
-    HistoryCard(modifier = Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
-        Text(
-            stringResource(R.string.history_occurrence, occurrence.runtimePosition + 1, occurrence.activity.title),
-            style = MaterialTheme.typography.titleMedium,
-        )
-        occurrence.activity.shortComment?.let { Text(it) }
-        Text(stringResource(occurrenceStatusResource(occurrence.status)), style = MaterialTheme.typography.labelLarge)
-        if (occurrence.sourceSequenceSnapshotNodeId != null) Text(stringResource(R.string.history_source_step))
-        occurrence.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
-        if (occurrence.isRuntimeAdded) Text(stringResource(R.string.history_runtime_added))
-        occurrence.enteredAt?.let { Text(stringResource(R.string.history_entered, historyInstant(it, zoneId))) }
-        occurrence.completedAt?.let {
-            Text(
-                stringResource(R.string.history_occurrence_completed, historyInstant(it, zoneId)),
-            )
-        }
-        Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
-        occurrence.activity.mainValue?.let { HistoryField(it) }
-        if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION && occurrence.child == null) {
-            Text(stringResource(R.string.history_deleted_child), style = MaterialTheme.typography.labelLarge)
-        } else {
-            occurrence.child?.let { child ->
-                child.startedAt?.let {
-                    Text(stringResource(R.string.history_child_started, historyInstant(it, child.originalZoneId)))
-                }
-                child.completedAt?.let {
-                    Text(stringResource(R.string.history_child_completed, historyInstant(it, child.originalZoneId)))
-                }
-                Text(stringResource(R.string.history_actual_duration, durationOrMissing(child.activeDuration)))
-                child.fields.forEach { HistoryField(it) }
-            }
-        }
-        if (
-            onDeleteChild != null &&
-            occurrence.status == RuntimeOccurrenceStatus.COMPLETED &&
-            !occurrence.isDeletedFromHistory &&
-            occurrence.childMutationFacts != null
-        ) {
-            SequenceSecondaryButton(
-                onClick = { onDeleteChild(occurrence.occurrenceId) },
-                modifier = Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
-            ) { Text(stringResource(R.string.sequence_history_delete_child)) }
-        }
-        if (
-            onRemoveOccurrence != null &&
-            occurrence.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION) &&
-            !occurrence.isDeletedFromHistory &&
-            occurrence.childMutationFacts != null
-        ) {
-            SequenceSecondaryButton(
-                onClick = { onRemoveOccurrence(occurrence.occurrenceId) },
-                modifier = Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
-            ) { Text(stringResource(R.string.sequence_history_remove_occurrence)) }
-        }
-    }
-}
-
-@Composable
-private fun HistoryInterval(
-    zoneId: ZoneId,
-    interval: SequenceInterval,
-) {
-    HistoryCard(modifier = Modifier.testTag("history-interval-${interval.id.value}")) {
-        Text(stringResource(intervalKindResource(interval.kind)), style = MaterialTheme.typography.titleSmall)
-        Text(stringResource(R.string.history_interval_started, historyInstant(interval.startedAt, zoneId)))
-        Text(
-            stringResource(
-                R.string.history_interval_ended,
-                interval.endedAt?.let { historyInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value),
-            ),
-        )
-    }
-}
-
-@Composable
 private fun HistoryField(field: ActivityHistoryField) =
-    HistoryFieldContent(
-        field.name,
-        field.unit,
-        field.displayPrecision,
-        field.categoryOptions.associate {
-            it.id to
-                it.label
-        },
-        field.configuredValue,
-        field.actualValue,
-    )
-
-@Composable
-private fun HistoryField(field: SequenceHistoryField) =
     HistoryFieldContent(
         field.name,
         field.unit,
@@ -1365,17 +1190,8 @@ private fun HistoryFieldContent(
 ) {
     val configuredText = historyConfigured(configured, labels, precision, unit)
     val actualText = historyActual(actual, precision, unit)
-    val emptyText = stringResource(R.string.manual_history_present_empty)
-    val actualAccessible =
-        if (actual is ActivityHistoryActualValue.Text && actual.value.isEmpty()) emptyText else actualText
-    val configuredAccessible =
-        if (configured is ActivityHistoryConfiguredValue.Text &&
-            configured.value.isEmpty()
-        ) {
-            emptyText
-        } else {
-            configuredText
-        }
+    val actualAccessible = historyAccessibleValue(actual, actualText)
+    val configuredAccessible = historyAccessibleValue(configured, configuredText)
     val actualDescription = stringResource(R.string.history_actual_field, name, actualAccessible)
     val configuredDescription = stringResource(R.string.history_configured_value, configuredAccessible)
     Column(
@@ -1417,7 +1233,7 @@ internal fun historyConfigured(
     }
 
 @Composable
-private fun historyActual(
+internal fun historyActual(
     value: Any,
     precision: Int?,
     unit: String?,
@@ -1436,12 +1252,31 @@ private fun historyActual(
     }
 
 @Composable
-private fun HistoryReadStatus(resource: Int) {
+internal fun historyAccessibleValue(
+    value: Any,
+    formatted: String,
+): String =
+    if (value is ActivityHistoryConfiguredValue.Text &&
+        value.value.isEmpty() ||
+        value is ActivityHistoryActualValue.Text &&
+        value.value.isEmpty() ||
+        value is SequenceHistoryConfiguredValue.Text &&
+        value.value.isEmpty() ||
+        value is SequenceHistoryActualValue.Text &&
+        value.value.isEmpty()
+    ) {
+        stringResource(R.string.manual_history_present_empty)
+    } else {
+        formatted
+    }
+
+@Composable
+internal fun HistoryReadStatus(resource: Int) {
     Text(stringResource(resource), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
 }
 
 @Composable
-private fun FailureCard(
+internal fun FailureCard(
     onRetry: () -> Unit,
     enabled: Boolean = true,
 ) {
@@ -1463,7 +1298,7 @@ private fun FailureCard(
 }
 
 @Composable
-private fun HistoryCard(
+internal fun HistoryCard(
     modifier: Modifier = Modifier,
     container: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surfaceContainerLow,
     onClick: (() -> Unit)? = null,
@@ -1558,7 +1393,7 @@ internal fun mutationPreviewInstantText(
 }
 
 @Composable
-private fun historyTracking(
+internal fun historyTracking(
     mode: TimeTrackingMode,
     target: Duration?,
 ): String =
@@ -1569,10 +1404,10 @@ private fun historyTracking(
     }
 
 @Composable
-private fun durationOrMissing(value: Duration?): String =
+internal fun durationOrMissing(value: Duration?): String =
     value?.let(::durationText) ?: stringResource(R.string.history_missing_value)
 
-private fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
+internal fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
     when (status) {
         SequenceExecutionStatus.COMPLETED -> R.string.history_completed
         SequenceExecutionStatus.ENDED_EARLY -> R.string.history_ended_early
@@ -1581,7 +1416,7 @@ private fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
         -> error("Only terminal Sequence status is representable in History")
     }
 
-private fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
+internal fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
     when (status) {
         RuntimeOccurrenceStatus.NOT_STARTED -> R.string.history_occurrence_not_started
         RuntimeOccurrenceStatus.CURRENT -> R.string.history_occurrence_current
@@ -1590,7 +1425,7 @@ private fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
         RuntimeOccurrenceStatus.DELETED_EXECUTION -> R.string.history_occurrence_deleted_execution
     }
 
-private fun intervalKindResource(kind: SequenceIntervalKind): Int =
+internal fun intervalKindResource(kind: SequenceIntervalKind): Int =
     when (kind) {
         SequenceIntervalKind.ACTIVE_STEP -> R.string.history_interval_active_step
         SequenceIntervalKind.STEP_PAUSE -> R.string.history_interval_step_pause
@@ -1599,7 +1434,7 @@ private fun intervalKindResource(kind: SequenceIntervalKind): Int =
         SequenceIntervalKind.TRANSITION_COUNTDOWN -> R.string.history_interval_transition_countdown
     }
 
-private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
+internal fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
 
 internal fun numberText(
     value: Long,

@@ -1034,6 +1034,7 @@
       "sequenceNativeTimestampAcceptsRepeatedEventsAndRejectsReviewedOrDisposedEditor",
       "sequencePauseResumeBeforeFrameRevokesCapturedNativeAction",
       "sequencePendingWriterDisablesNativeBackAndDuplicateConfirmation",
+      "sequencePresentEmptyTextIsDistinctFromMissingConfiguredAndActualText",
       "sequencePublicationCancellationAndSessionReplacementRevokeNativeControls",
       "sequenceTimingCorrectionUsesControllerDraftAndCancelWritesNothing",
       "timingEditorPresentsSyntaxDstNoChangeAndExplicitOffsetStates",
@@ -1554,6 +1555,22 @@
       "restoringMissingCategoryRequiresAnOwnedChoiceAndAssociatesItsNativeError",
       "resumedRouteReenablesControlsAndRevokesCallbacksCapturedBeforePause",
       "staleDeletedTargetRequiresCanonicalRecoveryAndHasNoCorrectionControls"
+    ],
+    "com.alexandr5476.lifetracing.history.SequenceHistoryPresentationTest": [
+      "childOwnZoneNoLiveMissingAndTimedZeroRemainDistinctFromTombstone",
+      "crossDaySpringTransitionPreservesBothRootDatesAndOffsets",
+      "englishRussianAndScaleExtremesReachOffscreenSummariesAndNativeControls",
+      "identicalOccurrencesExposeIndependentIdentityFrozenSourceRepeatAndEveryReason",
+      "intervalsExposeEveryKindExactIdentityOwnershipAndEndpointPrecision",
+      "keyboardSummaryFocusSurvivesPublicationAndRecoversAfterCanonicalRemoval",
+      "keyboardTraversesReadOnlyHeadingAndNativeMutationControlWithoutInvokingActions",
+      "loadingFailureRetryAndReplacementContentReadOncePerRequestedLoad",
+      "ordinalAndSectionNavigationReachOffscreenContentWithoutCommands",
+      "rootsExposeExecutionSnapshotPlanAndExactOverlapEndpoints",
+      "sequenceFieldsKeepMissingZeroEmptyAndDuplicateFieldAndOptionIdentities",
+      "tenThousandRowsStayBoundedAndReusedNativeControlsKeepExactTargets",
+      "unavailableCanonicalReadKeepsBackAndStatusReachable",
+      "unperformedOccurrencesKeepConfiguredMainValueWithoutInventingChildFacts"
     ]
   },
   "startup": {

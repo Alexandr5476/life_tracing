@@ -1,0 +1,937 @@
+@file:Suppress("LongMethod", "MagicNumber", "TooManyFunctions", "LargeClass", "MaxLineLength")
+
+@file:OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+
+package com.alexandr5476.lifetracing.history
+
+import android.content.res.Configuration
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.unit.Density
+import com.alexandr5476.lifetracing.R
+import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
+import com.alexandr5476.lifetracing.domain.ActivityHistoryActualValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryCategoryOption
+import com.alexandr5476.lifetracing.domain.ActivityHistoryConfiguredValue
+import com.alexandr5476.lifetracing.domain.ActivityHistoryField
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotFieldId
+import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
+import com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot
+import com.alexandr5476.lifetracing.domain.CustomFieldType
+import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
+import com.alexandr5476.lifetracing.domain.OccurrenceCompletionReason
+import com.alexandr5476.lifetracing.domain.PlanEntryId
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.SequenceExecutionId
+import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryCategoryOption
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryChildMutationFacts
+import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
+import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
+import com.alexandr5476.lifetracing.domain.SequenceHistoryField
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrenceActivity
+import com.alexandr5476.lifetracing.domain.SequenceInterval
+import com.alexandr5476.lifetracing.domain.SequenceIntervalId
+import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
+import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotCategoryOptionId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotFieldId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
+import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
+import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
+import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
+import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.util.Locale
+
+class SequenceHistoryPresentationTest {
+    @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    fun rootsExposeExecutionSnapshotPlanAndExactOverlapEndpoints() {
+        val current = mutableStateOf(detail(), referentialEqualityPolicy())
+        compose.setContent { TestTheme { SequenceDetail(current.value) } }
+        for (status in listOf(SequenceExecutionStatus.COMPLETED, SequenceExecutionStatus.ENDED_EARLY)) {
+            compose.runOnIdle { current.value = current.value.copy(root = current.value.root.copy(status = status)) }
+            text(R.string.sequence_history_execution_id, "root").assertExists()
+            text(R.string.sequence_history_snapshot_id, "frozen-root").assertExists()
+            text(R.string.sequence_history_plan_id, "plan").assertExists()
+            compose.onNodeWithText("Frozen root").assertExists()
+            compose.onNodeWithText("Frozen comment").assertExists()
+            text(
+                if (status ==
+                    SequenceExecutionStatus.COMPLETED
+                ) {
+                    R.string.history_completed
+                } else {
+                    R.string.history_ended_early
+                },
+            ).assertExists()
+            val root = compose.onNodeWithTag("sequence-history-root")
+            root.assert(hasText("2026-10-25T02:30:12.123+02:00[Europe/Berlin]", substring = true))
+            root.assert(hasText("2026-10-25T02:30:12.124+01:00[Europe/Berlin]", substring = true))
+            text(R.string.history_active_duration, "00:30").assertExists()
+            text(R.string.history_pause_duration, "59:30").assertExists()
+            text(R.string.history_wall_duration, "1:00:00").assertExists()
+        }
+    }
+
+    @Test
+    fun crossDaySpringTransitionPreservesBothRootDatesAndOffsets() {
+        val base = detail()
+        val first = Instant.parse("2026-03-28T22:59:59.999Z")
+        val last = Instant.parse("2026-03-29T01:30:00.001Z")
+        compose.setContent {
+            TestTheme { SequenceDetail(base.copy(root = base.root.copy(startedAt = first, completedAt = last))) }
+        }
+        val root = compose.onNodeWithTag("sequence-history-root")
+        root.assert(hasText(exactHistoricalTimestamp(first, zone), substring = true))
+        root.assert(hasText(exactHistoricalTimestamp(last, zone), substring = true))
+    }
+
+    @Test
+    fun identicalOccurrencesExposeIndependentIdentityFrozenSourceRepeatAndEveryReason() {
+        val reasons = OccurrenceCompletionReason.entries + null
+        val occurrences = reasons.mapIndexed { index, reason -> occurrence(index).copy(completionReason = reason) }
+        compose.setContent { TestTheme { SequenceDetail(detail(occurrences)) } }
+        val labels =
+            listOf(
+                R.string.sequence_history_reason_timer,
+                R.string.sequence_history_reason_manual,
+                R.string.sequence_history_reason_advance,
+                R.string.sequence_history_reason_jump,
+                R.string.sequence_history_reason_early,
+                R.string.sequence_history_reason_missing,
+            )
+        reasons.indices.forEach { index ->
+            scroll("occurrence:o$index")
+            text(R.string.sequence_history_occurrence_id, "o$index").assertExists()
+            text(R.string.sequence_history_activity_snapshot_id, "same-snapshot").assertExists()
+            text(R.string.sequence_history_source_id, "frozen-step").assertExists()
+            text(R.string.sequence_history_repeat_id, "frozen-repeat").assertExists()
+            text(R.string.history_repeat_iteration, 1).assertExists()
+            text(R.string.sequence_history_not_runtime_added).assertExists()
+            text(R.string.sequence_history_completion_reason, compose.activity.getString(labels[index])).assertExists()
+        }
+    }
+
+    @Test
+    fun unperformedOccurrencesKeepConfiguredMainValueWithoutInventingChildFacts() {
+        val main = activityField().copy(configuredValue = ActivityHistoryConfiguredValue.Number(0))
+        val occurrences =
+            listOf(RuntimeOccurrenceStatus.SKIPPED, RuntimeOccurrenceStatus.NOT_STARTED).mapIndexed { index, status ->
+                occurrence(index, status).copy(
+                    sourceSequenceSnapshotNodeId = null,
+                    repeatSourceSnapshotNodeId = null,
+                    repeatIteration = null,
+                    isRuntimeAdded = true,
+                    activity = occurrence(index).activity.copy(mainValue = main),
+                )
+            }
+        compose.setContent { TestTheme { SequenceDetail(detail(occurrences)) } }
+        occurrences.forEach { occurrence ->
+            scroll("occurrence:${occurrence.occurrenceId.value}")
+            text(R.string.history_runtime_added).assertExists()
+            text(
+                R.string.sequence_history_source_id,
+                compose.activity.getString(R.string.history_missing_value),
+            ).assertExists()
+            description(R.string.history_configured_value, "0").assertExists()
+            compose.onNodeWithContentDescription("actual:", substring = true).assertDoesNotExist()
+            compose.onNodeWithTag("sequence-child-child-${occurrence.occurrenceId.value}").assertDoesNotExist()
+            // These summaries carry no entered/completed facts, even though the root has endpoints.
+            compose
+                .onNodeWithTag("sequence-occurrence-summary-${occurrence.occurrenceId.value}")
+                .assert(
+                    SemanticsMatcher("no invented entered boundary") {
+                        it.config
+                            .getOrElse(SemanticsProperties.Text) { emptyList() }
+                            .none { value -> value.text.contains("2026-") }
+                    },
+                )
+        }
+    }
+
+    @Test
+    fun childOwnZoneNoLiveMissingAndTimedZeroRemainDistinctFromTombstone() {
+        val noLive =
+            occurrence(0).let {
+                it.copy(
+                    activity = it.activity.copy(timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING),
+                    child = it.child!!.copy(startedAt = null, activeDuration = null),
+                )
+            }
+        val optionA = ActivitySnapshotCategoryOptionId("child-a")
+        val optionB = ActivitySnapshotCategoryOptionId("child-b")
+        val textField =
+            ActivityHistoryField(
+                ActivitySnapshotFieldId("child-text"),
+                "Same field",
+                CustomFieldType.TEXT,
+                null,
+                null,
+                false,
+                ActivityHistoryConfiguredValue.Text(""),
+                ActivityHistoryActualValue.Text(""),
+                emptyList(),
+            )
+        val categoryField =
+            ActivityHistoryField(
+                ActivitySnapshotFieldId("child-category"),
+                "Same field",
+                CustomFieldType.CATEGORY,
+                null,
+                null,
+                false,
+                ActivityHistoryConfiguredValue.Category(optionA),
+                ActivityHistoryActualValue.Category(optionB, "Same option"),
+                listOf(
+                    ActivityHistoryCategoryOption(optionA, "Same option"),
+                    ActivityHistoryCategoryOption(optionB, "Same option"),
+                ),
+            )
+        val zero =
+            occurrence(1).let {
+                it.copy(
+                    child =
+                        it.child!!.copy(
+                            activeDuration = Duration.ZERO,
+                            fields = listOf(activityField(), textField, categoryField),
+                        ),
+                )
+            }
+        val fractional = occurrence(3).let { it.copy(child = it.child!!.copy(activeDuration = Duration.ofMillis(1))) }
+        val deleted = occurrence(2).copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION, child = null)
+        compose.setContent { TestTheme { SequenceDetail(detail(listOf(noLive, zero, deleted, fractional))) } }
+        scroll("occurrence:o0")
+        text(R.string.sequence_history_child_id, "child-o0").assertExists()
+        text(R.string.sequence_history_zone, "Asia/Tokyo").assertExists()
+        text(
+            R.string.history_actual_duration,
+            compose.activity.getString(R.string.history_missing_value),
+        ).assertExists()
+        compose
+            .onNode(
+                hasText(exactHistoricalTimestamp(end, ZoneId.of("Asia/Tokyo")), substring = true) and scope(),
+            ).assertExists()
+        scroll("occurrence:o1")
+        text(R.string.history_actual_duration, "00:00").assertExists()
+        compose
+            .onAllNodes(
+                hasText(compose.activity.getString(R.string.history_stopwatch)) and scope(),
+            ).assertCountEquals(1)
+        description(
+            R.string.history_actual_field,
+            "Same field",
+            compose.activity.getString(R.string.manual_history_present_empty),
+        ).assertExists()
+        description(R.string.sequence_history_configured_option, "child-a").assertExists()
+        description(R.string.sequence_history_actual_option, "child-b").assertExists()
+        description(R.string.history_actual_field, "Same field", "7").assertExists()
+        scroll("occurrence:o2")
+        text(R.string.history_deleted_child).assertExists()
+        text(R.string.sequence_history_deleted_detail).assertExists()
+        text(R.string.sequence_history_deleted_child_id, "child-o2").assertExists()
+        compose.onNode(hasContentDescription("actual:", substring = true) and scope()).assertDoesNotExist()
+        compose.onNodeWithTag("sequence-child-child-o2").assertDoesNotExist()
+        scroll("occurrence:o3")
+        text(R.string.history_actual_duration, "00:00.001").assertExists()
+    }
+
+    @Test
+    fun sequenceFieldsKeepMissingZeroEmptyAndDuplicateFieldAndOptionIdentities() {
+        val optionA = SequenceSnapshotCategoryOptionId("a")
+        val optionB = SequenceSnapshotCategoryOptionId("b")
+        val fields =
+            listOf(
+                field(
+                    "number",
+                    CustomFieldType.NUMBER,
+                    SequenceHistoryConfiguredValue.Number(3_000),
+                    SequenceHistoryActualValue.Number(0),
+                ),
+                field(
+                    "number-missing",
+                    CustomFieldType.NUMBER,
+                    SequenceHistoryConfiguredValue.Missing,
+                    SequenceHistoryActualValue.Missing,
+                ),
+                field(
+                    "category-missing",
+                    CustomFieldType.CATEGORY,
+                    SequenceHistoryConfiguredValue.Missing,
+                    SequenceHistoryActualValue.Missing,
+                ),
+                field(
+                    "missing",
+                    CustomFieldType.TEXT,
+                    SequenceHistoryConfiguredValue.Missing,
+                    SequenceHistoryActualValue.Missing,
+                ),
+                field(
+                    "empty",
+                    CustomFieldType.TEXT,
+                    SequenceHistoryConfiguredValue.Text(""),
+                    SequenceHistoryActualValue.Text(""),
+                ),
+                field(
+                    "text",
+                    CustomFieldType.TEXT,
+                    SequenceHistoryConfiguredValue.Text("Default"),
+                    SequenceHistoryActualValue.Text("Recorded"),
+                ),
+                field(
+                    "category",
+                    CustomFieldType.CATEGORY,
+                    SequenceHistoryConfiguredValue.Category(optionA),
+                    SequenceHistoryActualValue.Category(optionB, "Same option"),
+                ).copy(
+                    categoryOptions =
+                        listOf(
+                            SequenceHistoryCategoryOption(optionA, "Same option"),
+                            SequenceHistoryCategoryOption(optionB, "Same option"),
+                        ),
+                ),
+            )
+        compose.setContent { TestTheme { SequenceDetail(detail().copy(fields = fields)) } }
+        fields.forEach { field ->
+            scroll("sequence-field:${field.id.value}")
+            description(R.string.sequence_history_field_id, "Same field", field.id.value).assertExists()
+        }
+        scroll("sequence-field:number")
+        description(R.string.history_actual_field, "Same field", "0").assertExists()
+        description(R.string.history_configured_value, "3").assertExists()
+        for (id in listOf("number-missing", "category-missing")) {
+            scroll("sequence-field:$id")
+            description(
+                R.string.history_actual_field,
+                "Same field",
+                compose.activity.getString(R.string.history_missing_value),
+            ).assertExists()
+            description(
+                R.string.history_configured_value,
+                compose.activity.getString(R.string.history_missing_value),
+            ).assertExists()
+        }
+        scroll("sequence-field:empty")
+        description(
+            R.string.history_actual_field,
+            "Same field",
+            compose.activity.getString(R.string.manual_history_present_empty),
+        ).assertExists()
+        description(
+            R.string.history_configured_value,
+            compose.activity.getString(R.string.manual_history_present_empty),
+        ).assertExists()
+        scroll("sequence-field:missing")
+        description(
+            R.string.history_actual_field,
+            "Same field",
+            compose.activity.getString(R.string.history_missing_value),
+        ).assertExists()
+        scroll("sequence-field:text")
+        description(R.string.history_actual_field, "Same field", "Recorded").assertExists()
+        description(R.string.history_configured_value, "Default").assertExists()
+        scroll("sequence-field:category")
+        description(R.string.sequence_history_configured_option, "a").assertExists()
+        description(R.string.sequence_history_actual_option, "b").assertExists()
+        description(R.string.sequence_history_option_id, "Same option", "a").assertExists()
+        description(R.string.sequence_history_option_id, "Same option", "b").assertExists()
+    }
+
+    @Test
+    fun intervalsExposeEveryKindExactIdentityOwnershipAndEndpointPrecision() {
+        val paused =
+            occurrence(1).let {
+                it.copy(
+                    activity = it.activity.copy(timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING),
+                    child = it.child!!.copy(startedAt = null, activeDuration = null),
+                )
+            }
+        val occurrences =
+            listOf(
+                occurrence(0),
+                paused,
+                occurrence(2, RuntimeOccurrenceStatus.SKIPPED),
+                occurrence(3, RuntimeOccurrenceStatus.NOT_STARTED),
+            )
+        val intervals =
+            SequenceIntervalKind.entries.mapIndexed { index, kind ->
+                val owner =
+                    when (kind) {
+                        SequenceIntervalKind.ACTIVE_STEP -> occurrences[0].occurrenceId
+                        SequenceIntervalKind.STEP_PAUSE -> occurrences[1].occurrenceId
+                        SequenceIntervalKind.TRANSITION_COUNTDOWN -> occurrences[2].occurrenceId
+                        else -> null
+                    }
+                SequenceInterval(SequenceIntervalId("i$index"), kind, start, end, owner)
+            } +
+                SequenceInterval(
+                    SequenceIntervalId("i5"),
+                    SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                    start,
+                    end,
+                    occurrences[3].occurrenceId,
+                )
+        val selected =
+            detail(occurrences).let {
+                it.copy(
+                    intervals = intervals,
+                    settings = it.settings.copy(noLiveTimeAccounting = NoLiveTimeAccounting.PAUSE),
+                )
+            }
+        compose.setContent { TestTheme { SequenceDetail(selected) } }
+        val labels =
+            listOf(
+                R.string.history_interval_active_step,
+                R.string.history_interval_step_pause,
+                R.string.history_interval_explicit_pause,
+                R.string.history_interval_implicit_idle,
+                R.string.history_interval_transition_countdown,
+                R.string.history_interval_transition_countdown,
+            )
+        intervals.forEachIndexed { index, interval ->
+            scroll("interval:i$index")
+            text(labels[index]).assertExists()
+            text(R.string.sequence_history_interval_id, "i$index").assertExists()
+            if (interval.occurrenceId == null) {
+                text(R.string.sequence_history_ownerless).assertExists()
+            } else {
+                text(R.string.sequence_history_owner_id, requireNotNull(interval.occurrenceId).value).assertExists()
+            }
+            text(R.string.history_interval_started, exactHistoricalTimestamp(start, zone)).assertExists()
+            text(R.string.history_interval_ended, exactHistoricalTimestamp(end, zone)).assertExists()
+        }
+    }
+
+    @Test
+    fun tenThousandRowsStayBoundedAndReusedNativeControlsKeepExactTargets() {
+        val detail = detail(List(10_000) { occurrence(it) })
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var reads = 0
+        var writes = 0
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                detail.root.executionId,
+                {
+                    reads++
+                    detail
+                },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        try {
+            compose.setContent {
+                TestTheme {
+                    SequenceHistoryDetailRoute(
+                        SequenceHistoryMutationRouteSession(detail.root.executionId, controller),
+                        {},
+                        {},
+                    )
+                }
+            }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            compose.onNodeWithTag("history-occurrence-o9999").assertDoesNotExist()
+            compose.onNodeWithTag("history-interval-i4").assertDoesNotExist()
+            for (index in listOf(0, 5_000, 9_999, 0)) {
+                scroll("occurrence:o$index")
+                text(R.string.sequence_history_occurrence_id, "o$index").assertExists()
+                compose.onNodeWithTag("sequence-history-delete-child-o$index").performScrollTo().performClick()
+                compose.runOnIdle {
+                    assertEquals(
+                        SequenceOccurrenceId("o$index"),
+                        controller.state.value.childDeletionProposal
+                            ?.occurrenceId,
+                    )
+                }
+                compose.onNodeWithText(compose.activity.getString(R.string.manual_history_cancel)).performClick()
+            }
+            scroll("interval:i4")
+            text(R.string.sequence_history_interval_id, "i4").assertExists()
+            compose.runOnIdle {
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun keyboardSummaryFocusSurvivesPublicationAndRecoversAfterCanonicalRemoval() {
+        val publication =
+            mutableStateOf(
+                SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail())),
+                referentialEqualityPolicy(),
+            )
+        compose.setContent {
+            TestTheme {
+                val focus = rememberHistoryFocus(true, false, false, { true })
+                CompositionLocalProvider(LocalHistoryFocus provides focus) {
+                    SequenceHistoryDetailSurface(publication.value, {}, {}, publication.value.load, {}, true, false) {}
+                }
+            }
+        }
+        keyboard.enter(text(R.string.history_back))
+        keyboard.awaitFocus(text(R.string.history_back))
+        compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+        keyboard.awaitFocus(compose.onNodeWithTag("sequence-history-root"))
+        scroll("occurrence:o0")
+        val target = compose.onNodeWithTag("sequence-occurrence-summary-o0")
+        target.performSemanticsAction(SemanticsActions.RequestFocus)
+        target.assertIsFocused()
+        compose.runOnIdle {
+            publication.value =
+                publication.value.copy(
+                    publication = publication.value.publication + 1,
+                )
+        }
+        target.assertIsFocused()
+        compose.runOnIdle {
+            val current = (publication.value.load as HistoryDetailLoad.Content).value
+            publication.value =
+                publication.value.copy(
+                    load =
+                        HistoryDetailLoad.Content(
+                            current.copy(
+                                root = current.root.copy(title = "Reloaded root"),
+                                occurrences = emptyList(),
+                                intervals = emptyList(),
+                            ),
+                        ),
+                )
+        }
+        selectedKey = null
+        keyboard.awaitFocus(text(R.string.history_back))
+        compose.onNodeWithTag("sequence-occurrence-summary-o0").assertDoesNotExist()
+        scroll("sequence:root")
+        compose.onNodeWithText("Reloaded root").assertExists()
+        compose.onNodeWithText("Frozen root").assertDoesNotExist()
+    }
+
+    @Test
+    fun keyboardTraversesReadOnlyHeadingAndNativeMutationControlWithoutInvokingActions() {
+        val selected = detail()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var reads = 0
+        var writes = 0
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                selected.root.executionId,
+                {
+                    reads++
+                    selected
+                },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        val session = SequenceHistoryMutationRouteSession(selected.root.executionId, controller)
+        try {
+            compose.setContent { TestTheme { SequenceHistoryDetailRoute(session, {}, {}) } }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            keyboard.enter(text(R.string.history_back))
+            keyboard.awaitFocus(text(R.string.history_back))
+            compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-history-root"))
+            scroll("sequence:timing")
+            val timing = compose.onNodeWithTag("sequence-history-timing")
+            timing.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(timing)
+            compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+            val heading =
+                compose.onNode(
+                    hasText(compose.activity.getString(R.string.history_sequence_fields)) and
+                        SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+                )
+            keyboard.awaitFocus(heading)
+            compose.onRoot().performKeyInput {
+                keyDown(Key.ShiftLeft)
+                pressKey(Key.Tab)
+                keyUp(Key.ShiftLeft)
+            }
+            keyboard.awaitFocus(timing)
+            compose.runOnIdle {
+                assertEquals(null, controller.state.value.timingDraft)
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+            }
+            compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+            compose.waitUntil { controller.state.value.timingDraft != null }
+            compose.runOnIdle { assertEquals(0, writes) }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun ordinalAndSectionNavigationReachOffscreenContentWithoutCommands() {
+        val detail = detail(List(10_000) { occurrence(it) })
+        compose.setContent { TestTheme { SequenceDetail(detail) } }
+        scroll("sequence:navigation")
+        compose.onNodeWithTag("sequence-history-go-position").performTextReplacement("5001")
+        val go = compose.onNodeWithTag("sequence-history-go").performScrollTo()
+        keyboard.enter(go)
+        go.performSemanticsAction(SemanticsActions.RequestFocus)
+        keyboard.awaitFocus(go)
+        compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+        keyboard.awaitFocus(compose.onNodeWithTag("sequence-occurrence-summary-o5000"))
+        scroll("sequence:navigation")
+        selectedKey = null
+        text(R.string.history_intervals).performClick()
+        keyboard.awaitFocus(
+            compose.onNode(
+                hasText(compose.activity.getString(R.string.history_intervals)) and
+                    SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
+            ),
+        )
+        compose.onNodeWithTag("sequence-interval-summary-i0").assertExists()
+    }
+
+    @Test
+    fun unavailableCanonicalReadKeepsBackAndStatusReachable() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                SequenceExecutionId("root"),
+                { null },
+                { _, _, _ -> },
+                { _, _, _ -> },
+                { _, _, _ -> },
+            )
+        try {
+            compose.setContent {
+                TestTheme {
+                    SequenceHistoryDetailRoute(
+                        SequenceHistoryMutationRouteSession(controller.executionId, controller),
+                        {},
+                        {},
+                    )
+                }
+            }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Unavailable }
+            text(R.string.history_unavailable).assertExists()
+            text(R.string.history_back).assertIsDisplayed()
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun loadingFailureRetryAndReplacementContentReadOncePerRequestedLoad() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val gate = CompletableDeferred<Unit>()
+        var reads = 0
+        val controller =
+            SequenceHistoryMutationController(scope, SequenceExecutionId("root"), {
+                reads++
+                if (reads == 1) {
+                    gate.await()
+                    error("read failure")
+                }
+                detail()
+            }, { _, _, _ -> }, { _, _, _ -> }, { _, _, _ -> })
+        try {
+            compose.setContent {
+                TestTheme {
+                    SequenceHistoryDetailRoute(
+                        SequenceHistoryMutationRouteSession(controller.executionId, controller),
+                        {},
+                        {},
+                    )
+                }
+            }
+            text(R.string.history_detail_loading).assertExists()
+            compose.runOnIdle { gate.complete(Unit) }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Failure }
+            compose.onNodeWithTag("history-retry").performClick()
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            text(R.string.sequence_history_execution_id, "root").assertExists()
+            compose.runOnIdle { assertEquals(2, reads) }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun englishRussianAndScaleExtremesReachOffscreenSummariesAndNativeControls() {
+        val scale = mutableStateOf(0)
+        val cases =
+            listOf(
+                Triple(Locale.US, .9f, .9f),
+                Triple(Locale.US, 1.2f, 1.3f),
+                Triple(Locale.forLanguageTag("ru"), .9f, .9f),
+                Triple(Locale.forLanguageTag("ru"), 1.2f, 1.3f),
+            )
+        compose.setContent {
+            val (locale, interfaceScale, textScale) = cases[scale.value]
+            val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale) }
+            val context = LocalContext.current.createConfigurationContext(configuration)
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalContext provides context,
+                LocalDensity provides Density(density.density * interfaceScale, 1.5f * textScale / interfaceScale),
+            ) {
+                TestTheme { SequenceDetail(detail(), onTiming = {}) }
+            }
+        }
+        cases.indices.forEach { index ->
+            compose.runOnIdle { scale.value = index }
+            for ((key, tag) in listOf(
+                "sequence:root" to "sequence-history-root",
+                "sequence:timing" to "sequence-history-timing",
+                "occurrence:o0" to "sequence-occurrence-summary-o0",
+                "interval:i4" to "sequence-interval-summary-i4",
+            )) {
+                scroll(key)
+                val bounds =
+                    compose
+                        .onNodeWithTag(tag)
+                        .assertIsDisplayed()
+                        .fetchSemanticsNode()
+                        .boundsInRoot
+                val viewport = compose.onRoot().fetchSemanticsNode().boundsInRoot
+                assertTrue(bounds.left >= viewport.left - 1)
+                assertTrue(bounds.right <= viewport.right + 1)
+            }
+        }
+    }
+
+    @Composable
+    private fun TestTheme(content: @Composable () -> Unit) {
+        val focus = remember { HistoryFocus() }
+        CompositionLocalProvider(LocalHistoryFocus provides focus) {
+            LifeTracingAccessibleTargets { LifeTracingTheme(content = content) }
+        }
+    }
+
+    private var selectedKey: String? = null
+
+    private fun scroll(key: String) {
+        selectedKey = key
+        compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey(key)
+    }
+
+    private fun scope(): SemanticsMatcher {
+        val tag =
+            when {
+                selectedKey?.startsWith(
+                    "occurrence:",
+                ) == true -> "history-occurrence-${selectedKey!!.substringAfter(':')}"
+                selectedKey?.startsWith("interval:") == true -> "history-interval-${selectedKey!!.substringAfter(':')}"
+                selectedKey?.startsWith(
+                    "sequence-field:",
+                ) == true -> "sequence-history-field-${selectedKey!!.substringAfter(':')}"
+                else -> null
+            }
+        return if (tag == null) {
+            androidx.compose.ui.test
+                .SemanticsMatcher("any") { true }
+        } else {
+            hasTestTag(tag) or hasAnyAncestor(hasTestTag(tag))
+        }
+    }
+
+    private fun text(
+        id: Int,
+        vararg args: Any,
+    ) = compose.onNode(
+        hasText(compose.activity.getString(id, *args)) and scope(),
+    )
+
+    private fun description(
+        id: Int,
+        vararg args: Any,
+    ) = compose.onNode(
+        hasContentDescription(compose.activity.getString(id, *args), substring = true) and scope(),
+    )
+
+    private fun field(
+        id: String,
+        type: CustomFieldType,
+        configured: SequenceHistoryConfiguredValue,
+        actual: SequenceHistoryActualValue,
+    ) = SequenceHistoryField(
+        SequenceSnapshotFieldId(id),
+        "Same field",
+        type,
+        null,
+        if (type ==
+            CustomFieldType.NUMBER
+        ) {
+            0
+        } else {
+            null
+        },
+        false,
+        configured,
+        actual,
+        emptyList(),
+    )
+
+    private fun activityField() =
+        ActivityHistoryField(
+            ActivitySnapshotFieldId("frozen-child-field"),
+            "Same field",
+            CustomFieldType.NUMBER,
+            null,
+            0,
+            true,
+            ActivityHistoryConfiguredValue.Number(2_000),
+            ActivityHistoryActualValue.Number(7_000),
+            emptyList(),
+        )
+
+    private fun occurrence(
+        index: Int,
+        status: RuntimeOccurrenceStatus = RuntimeOccurrenceStatus.COMPLETED,
+    ): SequenceHistoryOccurrence {
+        val id = SequenceOccurrenceId("o$index")
+        val performed = status == RuntimeOccurrenceStatus.COMPLETED
+        val childId = ActivityExecutionId("child-o$index")
+        return SequenceHistoryOccurrence(
+            id,
+            index,
+            ActivitySnapshotId("same-snapshot"),
+            SequenceSnapshotNodeId("frozen-step"),
+            SequenceSnapshotNodeId("frozen-repeat"),
+            1,
+            false,
+            false,
+            status,
+            if (performed) start else null,
+            if (performed) end else null,
+            null,
+            SequenceHistoryOccurrenceActivity(
+                ActivitySnapshotId("same-snapshot"),
+                "Same activity",
+                "Frozen child",
+                TimeTrackingMode.STOPWATCH,
+                null,
+                ActivityTemplateSettings(),
+                null,
+            ),
+            if (performed) {
+                SequenceHistoryChildActivity(
+                    childId,
+                    ActivityExecutionStatus.COMPLETED,
+                    start,
+                    end,
+                    Duration.ofSeconds(30),
+                    listOf(activityField()),
+                    ZoneId.of("Asia/Tokyo"),
+                    540,
+                )
+            } else {
+                null
+            },
+            if (performed) SequenceHistoryChildMutationFacts(childId, start, end, emptyList()) else null,
+        )
+    }
+
+    private fun detail(occurrences: List<SequenceHistoryOccurrence> = listOf(occurrence(0))) =
+        SequenceHistoryDetail(
+            CompletedSequenceHistoryRoot(
+                SequenceExecutionId("root"),
+                SequenceSnapshotId("frozen-root"),
+                LocalDate.parse("2026-10-25"),
+                end,
+                start,
+                SequenceExecutionStatus.COMPLETED,
+                Duration.ofSeconds(30),
+                Duration.ofMinutes(59).plusSeconds(30),
+                Duration.ofHours(1),
+                PlanEntryId("plan"),
+                "Frozen root",
+                "Frozen comment",
+                zone,
+                120,
+            ),
+            end,
+            zone,
+            SequenceSnapshotSettings(
+                true,
+                Duration.ZERO,
+                Duration.ZERO,
+                true,
+                true,
+                false,
+                true,
+                true,
+                NoLiveTimeAccounting.ACTIVE,
+            ),
+            emptyList(),
+            occurrences,
+            SequenceIntervalKind.entries.mapIndexed {
+                index,
+                kind,
+                ->
+                SequenceInterval(SequenceIntervalId("i$index"), kind, start, end, null)
+            },
+        )
+
+    private companion object {
+        val zone: ZoneId = ZoneId.of("Europe/Berlin")
+        val start: Instant = Instant.parse("2026-10-25T00:30:12.123Z")
+        val end: Instant = Instant.parse("2026-10-25T01:30:12.124Z")
+    }
+}

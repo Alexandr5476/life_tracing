@@ -342,3 +342,122 @@ cause of those native admission failures. No application assertions or focus
 guards were changed for the experiment; the underlying SystemUI startup issue was
 not repaired in the repository. The class-scoped diagnostic PASS supplies no full
 API 33 suite or independent GitHub CI PASS credit. Controller retains those gates.
+
+
+## Canonical terminal Sequence detail (S2)
+
+The S2 task contract, product v0.16 §16, domain v0.10 §§10/13, schema v0.6
+§§14–17 and the current implementation clarifications govern this presentation.
+No separate Parent Contract file is tracked in this worktree. Existing S1 route
+sessions, exact publication ownership, optimistic mutation tokens, writers and
+committed-refresh delivery remain authoritative.
+
+`SequenceHistoryPresentation.kt` consumes the exact `SequenceHistoryDetail`
+returned by `HistoryReadRepository.getSequenceDetail`. It does not hydrate
+Templates, fetch children during composition, reconstruct topology, restore hidden
+occurrences, recalculate root durations or infer interval ownership. Visible
+tombstones retain occurrence/source/configuration facts and distinguish deleted
+child detail from a present No-live child with Missing duration. The retained
+deleted-child identity comes only from the same canonical mutation facts; deleted
+actual timestamps/values are not displayed as child results.
+
+Root, occurrence/provenance, child, frozen Field and interval groups are separate
+native read-only focus targets. Actions remain separate native Material nodes.
+Fields retain exact snapshot Field/option IDs even with duplicate labels; defaults
+and actual results are labeled separately. An unperformed occurrence's configured
+Main Value has no actual-result announcement. Missing, numeric zero, present-empty
+Text and missing Text remain distinct. Sequence and Activity Text types also retain
+equivalent present-empty handling in the shared History value formatter.
+
+Sequence-owned endpoints use the root's original zone; child endpoints use the
+child's original zone. Exact ISO zoned descriptions are visible as well as spoken,
+including seconds, stored fractional precision and each endpoint's actual offset.
+They remain distinct across repeated local clocks and local-day/DST boundaries.
+Fractional durations are preserved in Sequence detail. Activity History retains its
+existing compact timestamp and correction presentation.
+
+Idle content has one `LazyColumn`; no vertically scrolling ancestor wraps it.
+Back remains attached outside the lazy viewport, including loading/failure and
+transient mutation states. Root/status/section, Field, occurrence and interval keys
+use disjoint namespaces. Occurrence/interval item keys contain their exact IDs, and
+the lists retain canonical order. The production detail does not create a subtree
+for every selected occurrence/interval. Section links and a labeled list-ordinal
+input jump to offscreen content using arithmetic indices and exact target IDs;
+these controls only scroll and request native focus. Mutation editors retain their
+existing scrollable surface and S1 actions.
+
+Lazy disposal is distinguished from historical removal in `HistoryFocus`.
+The focused item's type-qualified key is checked on canonical instance replacement;
+removal recovers to the attached Back target, and failed reads recover to Retry.
+Unrelated publications preserve native item focus and the lazy scroll state.
+No focus or scrolling effect dispatches a mutation or repository reload. No second
+aggregate, historical repository or persisted accessibility state is introduced.
+
+Composition work is bounded by visible lazy items and their own frozen Fields.
+Item keys and navigation indices use O(1) operations. The sole canonical-replacement
+focus membership check is O(N) in the relevant selected collection. S1 admission
+validation is remembered by exact canonical instance and execution ID, with fresh
+validation after reload; unrelated publications and timestamp keystrokes reuse its
+validity. Cache misses still perform the complete original identity validation.
+JVM regressions count selected-list reads across 50 admissions and reject cached
+validity reuse for another/equal-but-distinct/malformed aggregate. No global
+History/Statistics scan or N+1 child/interval query is added.
+
+New Compose fixtures cover roots, identities, exact original-zone endpoints,
+provenance/reasons, unperformed and deleted-child states, No-live/Missing versus
+zero, frozen schema/value/option identities, all interval kinds and ownership,
+native keyboard focus, canonical removal, read recovery, EN/RU scaling, and a
+10,000-occurrence selected detail with early/middle/late discovery and reused action
+targets. Existing presentation, mutation integration and MainActivity recreation
+fixtures discover offscreen items through the production lazy container before
+invoking native controls. All new test identities are registered in the mandatory
+instrumentation inventory.
+
+Structural-removal visibility is established by the existing real repository test
+`SequenceHistoryCommandRepositoryTest.leaveGapPersistsHiddenOccurrenceAndCanonicalHistoryOmitsIt`
+and `SequenceHistoryMutationRepositoryIntegrationTest`; S2 does not synthesize a
+structural-removal result from tombstone metadata. Device execution and independent
+GitHub CI remain Controller-owned. AndroidTest compilation supplies no device PASS
+or manual TalkBack/Switch Access certification.
+
+Local S2 verification (2026-11-16) passed with:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:testDebugUnitTest --tests '*history.*' --tests '*MainActivityNavigationTest*' --tests '*HistoricalTimestampTest*' :app:assembleDebug :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The selected JVM suites ran 188 tests with no failures, errors or skips. All 74
+instrumentation-runner unit tests passed; their simulated device command output
+does not represent emulator execution. The 14 new Compose test identities match
+the instrumentation inventory, and Sequence resource keys are paired and unique
+in English/Russian. Production and AndroidTest sources/APKs compile and package;
+the new Compose cases and existing device regressions still require Controller
+execution. This evidence does not replace the independent CI gates.
+
+### API 33 S2 repair evidence
+
+Controller execution `S2-77163393488948db8628ea64a8d610e7/attempt-1`
+reported three failing testcases. Two timestamp assertions matched both the root
+and an occurrence sharing its endpoint. They now assert the exact endpoint on the
+intended tagged summary; the localized child/root fixture checks both endpoints
+in their respective original zones. Adjacent root assertions use the same explicit
+identity rather than a global first match. The controller-only persistence fixture
+also contained a misplaced UI-scroll call despite never opening a History route;
+that call is removed. Its persistence/refresh assertions remain intact. Every
+remaining occurrence-scroll call belongs to a fixture that opens the route first.
+No production semantics, admission checks or historical writer changed in this
+repair.
+
+The authorized real API 33 repair probe passed all three original failing methods
+with zero failures, errors or skips. Evidence is retained under repair lease
+`b66955e0690d43638aa0d1111f26bb89/tree-1/attempt-1`. The probe compiled and
+packaged the revised AndroidTest APK. This scoped result explains the reported
+failures but supplies no full API 33 suite or independent CI PASS credit; Controller
+retains those gates.
+
+After that probe, only assertion line-break formatting and this evidence changed.
+Final `:app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest` and
+`git diff --check` passed. No additional JVM suite was needed for this test-only
+repair; the real probe executed the affected controller/persistence assertions.

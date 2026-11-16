@@ -56,6 +56,62 @@ import kotlin.coroutines.CoroutineContext
 
 class SequenceHistoryAdmissionTest {
     @Test
+    fun routineAdmissionPublicationsDoNotRescanAnAlreadyValidatedCanonicalAggregate() {
+        val base = SequenceAdmissionFacts.detail()
+        var reads = 0
+        val observed =
+            object : AbstractList<SequenceHistoryOccurrence>() {
+                override val size: Int get() = base.occurrences.size
+
+                override fun get(index: Int): SequenceHistoryOccurrence {
+                    reads++
+                    return base.occurrences[index]
+                }
+            }
+        val detail = base.copy(occurrences = observed)
+        val validation = SequenceHistoryIdentityValidation(detail, detail.root.executionId)
+        val validatedReads = reads
+        assertTrue(validatedReads >= detail.occurrences.size)
+        repeat(50) { publication ->
+            val state =
+                SequenceHistoryMutationState(
+                    load = HistoryDetailLoad.Content(detail),
+                    publication = publication.toLong(),
+                )
+            val admission =
+                SequenceHistoryAdmission(detail.root.executionId, state, { state }, { true }, {}, validation)
+            assertTrue(admission.enabled(SequenceHistoryMutationAction.BeginTiming))
+        }
+        assertEquals(validatedReads, reads)
+        val reloaded = detail.copy()
+        SequenceHistoryIdentityValidation(reloaded, reloaded.root.executionId)
+        assertTrue(reads > validatedReads)
+    }
+
+    @Test
+    fun identityValidationCanOnlyBeReusedForTheExactCanonicalInstanceAndExecution() {
+        val detail = SequenceAdmissionFacts.detail()
+        val validation = SequenceHistoryIdentityValidation(detail, detail.root.executionId)
+        assertEquals(true, validation.validFor(detail, detail.root.executionId))
+        assertNull(validation.validFor(detail.copy(), detail.root.executionId))
+        assertNull(validation.validFor(detail, SequenceExecutionId("other")))
+        val malformed = detail.copy(occurrences = detail.occurrences + detail.occurrences.first())
+        val invalid = SequenceHistoryIdentityValidation(malformed, detail.root.executionId)
+        assertEquals(false, invalid.validFor(malformed, detail.root.executionId))
+        var state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(malformed))
+        var actions = 0
+        val admission =
+            SequenceHistoryAdmission(detail.root.executionId, state, { state }, { true }, { actions++ }, validation)
+        admission.action(SequenceHistoryMutationAction.BeginTiming)()
+        assertEquals(0, actions)
+        state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail))
+        val fresh =
+            SequenceHistoryAdmission(detail.root.executionId, state, { state }, { true }, { actions++ }, validation)
+        fresh.action(SequenceHistoryMutationAction.BeginTiming)()
+        assertEquals(1, actions)
+    }
+
+    @Test
     fun equalReplacementCannotUseOldPublication() {
         val f = Fixture()
         val old = f.admission().action(SequenceHistoryMutationAction.BeginTiming)
