@@ -638,38 +638,23 @@ private fun SequenceHistoryMutationSurface(
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
-    val occurrenceDescriptors =
-        remember(SequenceDetailReference(detail)) { SequenceHistoryProposalBuilder.occurrenceDescriptors(detail) }
     when {
         state.childDeletionProposal != null -> SequenceChildDeletionConfirmation(detail, state, onAction)
         state.structuralTarget != null && state.structuralProposal == null ->
             StructuralModeChooser(state, onAction)
         state.structuralProposal != null && !state.structuralProposal.isConfirmable ->
             OwnerlessPlacementChooser(detail, state, onAction)
-        state.structuralProposal != null -> StructuralReview(detail, occurrenceDescriptors, state, onAction)
+        state.structuralProposal != null -> {
+            val descriptors =
+                remember(SequenceDetailReference(detail)) {
+                    SequenceHistoryProposalBuilder.occurrenceDescriptors(detail)
+                }
+            StructuralReview(detail, descriptors, state, onAction)
+        }
         state.timingProposal != null -> Column(Modifier.fillMaxSize()) { SequenceTimingReview(detail, state, onAction) }
         state.timingDraft != null -> Column(Modifier.fillMaxSize()) { SequenceTimingEditor(detail, state, onAction) }
         else -> state.issue?.let { SequenceMutationIssue(it) }
     }
-}
-
-@Composable
-private fun SequenceChildDeletionConfirmation(
-    detail: SequenceHistoryDetail,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    Text(stringResource(R.string.sequence_history_delete_child_title), style = MaterialTheme.typography.headlineSmall)
-    OccurrenceTarget(requireNotNull(state.childDeletionTarget))
-    Text(stringResource(R.string.sequence_history_delete_child_message, detail.root.title))
-    state.issue?.let { SequenceMutationIssue(it) }
-    ReviewActions(
-        isMutating = state.isMutating,
-        confirmLabel = if (state.isMutating) R.string.history_deleting else R.string.history_delete,
-        confirmTag = "sequence-history-confirm-delete-child",
-        onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-        onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmChildDeletion) },
-    )
 }
 
 @Composable

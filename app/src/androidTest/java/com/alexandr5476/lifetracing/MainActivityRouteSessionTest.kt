@@ -102,6 +102,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
@@ -144,7 +145,14 @@ class MainActivityRouteSessionTest {
     }
 
     @Test
-    fun sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation() {
+    fun sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation() =
+        sequenceHistoryRecreation(childDeletion = false)
+
+    @Test
+    fun sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation() =
+        sequenceHistoryRecreation(childDeletion = true)
+
+    private fun sequenceHistoryRecreation(childDeletion: Boolean) {
         val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
         val live = LiveSessionRepository.create(composeTestRule.activity)
         clearLiveSession(live)
@@ -202,7 +210,14 @@ class MainActivityRouteSessionTest {
                         commands.correctTiming(id, correction, time)
                     }
                 },
-                { _, _, _ -> error("unused deletion") },
+                { id, command, time ->
+                    entered.complete(Unit)
+                    release.await()
+                    withContext(Dispatchers.IO) {
+                        writes.incrementAndGet()
+                        commands.deleteChildHistory(id, command, time)
+                    }
+                },
                 { _, _, _ -> error("unused removal") },
             )
         try {
@@ -224,20 +239,34 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
-            composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
-            composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
-            composeTestRule
-                .onNodeWithTag("sequence-history-timestamp-root-ended")
-                .performScrollTo()
-                .performTextReplacement(
-                    canonical.root.completedAt
-                        .plusMillis(1)
-                        .atOffset(ZoneOffset.UTC)
-                        .toLocalDateTime()
-                        .toString(),
-                )
-            composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
-            composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
+            if (childDeletion) {
+                val occurrence = canonical.occurrences.single()
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${occurrence.occurrenceId.value}")
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-delete-child-${occurrence.occurrenceId.value}",
+                    ).performScrollTo()
+                    .performClick()
+                composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+            } else {
+                composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+                composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
+                composeTestRule
+                    .onNodeWithTag("sequence-history-timestamp-root-ended")
+                    .performScrollTo()
+                    .performTextReplacement(
+                        canonical.root.completedAt
+                            .plusMillis(1)
+                            .atOffset(ZoneOffset.UTC)
+                            .toLocalDateTime()
+                            .toString(),
+                    )
+                composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+                composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
+            }
             composeTestRule.waitUntil(5_000) { entered.isCompleted }
             val session = requireNotNull(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession)
             recreateActivity()
@@ -260,6 +289,25 @@ class MainActivityRouteSessionTest {
             composeTestRule.runOnUiThread { session.deliverRefresh(1) { duplicateDeliveries++ } }
             assertEquals(0, duplicateDeliveries)
             assertEquals(1, writes.get())
+            if (childDeletion) {
+                assertEquals(
+                    com.alexandr5476.lifetracing.history.SequenceHistoryCommittedMutation.CHILD_DELETION,
+                    controller.state.value.committedMutation,
+                )
+                val tombstone = history.getSequenceDetail(started.execution.id)!!.occurrences.single()
+                assertEquals(canonical.occurrences.single().occurrenceId, tombstone.occurrenceId)
+                assertEquals(
+                    canonical.occurrences
+                        .single()
+                        .childMutationFacts!!
+                        .executionId,
+                    tombstone.childMutationFacts!!.executionId,
+                )
+                assertEquals(
+                    com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus.DELETED_EXECUTION,
+                    tombstone.status,
+                )
+            }
             composeTestRule
                 .onNodeWithText(
                     composeTestRule.activity.getString(R.string.history_back),
@@ -276,12 +324,24 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
+            if (childDeletion) {
+                val occurrence = canonical.occurrences.single()
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${occurrence.occurrenceId.value}")
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-delete-child-${occurrence.occurrenceId.value}",
+                    ).assertDoesNotExist()
+                composeTestRule.onNodeWithTag("sequence-deleted-${occurrence.occurrenceId.value}").assertExists()
+            }
             composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
             composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
             assertTrue(composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession !== session)
             composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().assertIsEnabled()
         } finally {
-            scope.cancel()
+            runBlocking { requireNotNull(scope.coroutineContext[kotlinx.coroutines.Job]).cancelAndJoin() }
         }
     }
 

@@ -537,6 +537,11 @@ private fun SequenceOccurrence(
                     SequenceSecondaryButton(
                         { onDeleteChild(occurrence.occurrenceId) },
                         Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
+                        enabled =
+                            occurrence.canDeleteChild() &&
+                                LocalSequenceHistoryAdmission.current?.enabled(
+                                    SequenceHistoryMutationAction.RequestChildDeletion(occurrence.occurrenceId),
+                                ) != false,
                     ) {
                         Text(stringResource(R.string.sequence_history_delete_child))
                     }

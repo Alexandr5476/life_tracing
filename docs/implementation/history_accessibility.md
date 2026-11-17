@@ -670,3 +670,11 @@ execution; no runtime repair result or full-suite/CI PASS is inferred.
 See [Sequence timing correction evidence](sequence_history_timing_accessibility.md)
 for native timing controls, typed error/offset authority, lazy owner navigation,
 committed read recovery, complexity reasoning and Controller verification limits.
+
+## Sequence child History deletion (S4)
+
+[Sequence child deletion evidence](sequence_child_history_deletion_accessibility.md)
+records the exact native confirmation, localized logical-deletion consequences,
+S1 action admission, canonical tombstone/focus and committed read-only recovery,
+new physical-reopen production journeys and the existing repository policy matrix.
+Local checks pass; device execution and independent CI remain Controller-owned.

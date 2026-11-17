@@ -519,7 +519,7 @@ class SequenceHistoryPresentationTest {
                             ?.occurrenceId,
                     )
                 }
-                compose.onNodeWithText(compose.activity.getString(R.string.manual_history_cancel)).performClick()
+                compose.onNodeWithTag("sequence-child-deletion-cancel").performScrollTo().performClick()
             }
             scroll("interval:i4")
             text(R.string.sequence_history_interval_id, "i4").assertExists()

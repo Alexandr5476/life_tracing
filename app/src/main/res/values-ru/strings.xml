@@ -526,7 +526,7 @@
     <string name="sequence_history_interval_ended">Завершение интервала %1$s</string>
     <string name="sequence_history_delete_child">Удалить дочернее выполнение</string>
     <string name="sequence_history_delete_child_title">Удалить дочернее выполнение?</string>
-    <string name="sequence_history_delete_child_message">Дочернее выполнение останется в %1$s как запись «Удаленное выполнение».</string>
+    <string name="sequence_history_delete_child_message">Из видимой истории «%1$s» логически удаляется только выбранное завершённое выполнение Activity. Его вхождение остаётся видимым с пометкой «Выполнение удалено». Сохранённая конфигурация Activity, исходный шаг, повтор и сведения о добавлении во время выполнения сохраняются. Запись дочернего выполнения, паузы, значения, снимки, исходное время событий, длительность и часовой пояс остаются в хранилище. Шкала времени Sequence, интервалы, начало и конец, дата истории, общая длительность и значения Sequence не меняются. Sequence остаётся в истории и продолжает учитываться в статистике Sequence и общей статистике. Только удалённое дочернее выполнение перестаёт учитываться в статистике Activity; остальные дочерние выполнения не меняются. Многоразовые шаблоны и сохранённые снимки не удаляются. Уже выполненный план остаётся выполненным той же Sequence в то же время; он не открывается заново и не переназначается.</string>
     <string name="sequence_history_remove_occurrence">Структурно удалить шаг</string>
     <string name="sequence_history_structural_title">Структурное удаление шага</string>
     <string name="sequence_history_structural_mode_prompt">Выберите, как обработать время удаляемого шага.</string>
@@ -980,4 +980,7 @@
     <string name="sequence_timing_no_owner_target">У этого объекта нет меток времени в текущем редакторе или предлагаемых изменениях.</string>
     <string name="sequence_timing_keyboard_help">Аппаратная клавиатура: F6 переводит фокус на переходы; Shift+F6 — на проверку, подтверждение или сохранение. Enter активирует кнопку в фокусе.</string>
     <string name="sequence_timing_empty_section">%1$s: нет</string>
+    <string name="sequence_child_deletion_parent">Sequence «%1$s», ID выполнения: %2$s</string>
+    <string name="sequence_child_deletion_child">ID выбранного завершённого выполнения Activity: %1$s</string>
+    <string name="sequence_child_deletion_confirm">Подтвердить удаление «%1$s», дочернее выполнение %2$s</string>
 </resources>

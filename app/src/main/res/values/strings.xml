@@ -526,7 +526,7 @@
     <string name="sequence_history_interval_ended">Interval %1$s ended</string>
     <string name="sequence_history_delete_child">Delete child execution</string>
     <string name="sequence_history_delete_child_title">Delete child execution?</string>
-    <string name="sequence_history_delete_child_message">The child execution remains as a deleted-execution occurrence in %1$s.</string>
+    <string name="sequence_history_delete_child_message">Only the selected completed Activity execution is logically deleted from visible history in %1$s. Its occurrence remains visible as Deleted execution. Frozen Activity configuration and source, Repeat and runtime-added provenance remain. The child record, pauses, values, snapshots, original times, duration and recorded time zone remain stored. The Sequence timeline, intervals, start/end, historical date, aggregate duration and Sequence values do not change. The Sequence stays in History and continues to contribute to Sequence and global Statistics. Only the deleted child stops contributing to Activity Statistics; other children are unchanged. Reusable Templates and frozen snapshots are not removed. An already fulfilled Plan stays fulfilled by the same Sequence at the same time; it is not reopened or retargeted.</string>
     <string name="sequence_history_remove_occurrence">Remove occurrence structurally</string>
     <string name="sequence_history_structural_title">Remove occurrence structurally</string>
     <string name="sequence_history_structural_mode_prompt">Choose how to handle the removed occurrence time.</string>
@@ -980,4 +980,7 @@
     <string name="sequence_timing_no_owner_target">This owner has no timestamp in the current editor or proposed changes.</string>
     <string name="sequence_timing_keyboard_help">Keyboard: F6 moves focus to navigation. Shift+F6 moves focus to Review, Proceed, or Save. Press Enter to activate the focused button.</string>
     <string name="sequence_timing_empty_section">%1$s: none</string>
+    <string name="sequence_child_deletion_parent">Sequence “%1$s”, execution ID: %2$s</string>
+    <string name="sequence_child_deletion_child">Selected completed Activity execution ID: %1$s</string>
+    <string name="sequence_child_deletion_confirm">Confirm deletion of “%1$s”, child execution %2$s</string>
 </resources>

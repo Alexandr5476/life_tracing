@@ -25,10 +25,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexandr5476.lifetracing.domain.ActivityExecutionId
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
+import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
@@ -46,10 +48,13 @@ internal class SequenceHistoryAdmission(
 ) {
     var attached = true
     private var revoked = false
-    private val canonicalValid =
-        (publication.load as? HistoryDetailLoad.Content)?.value?.let { detail ->
-            validation?.validFor(detail, executionId) ?: detail.hasValidSequenceIdentity(executionId)
-        } == true
+    private val detail = (publication.load as? HistoryDetailLoad.Content)?.value
+    private val identity =
+        detail?.let {
+            validation?.takeIf { cached -> cached.validFor(it, executionId) != null }
+                ?: SequenceHistoryIdentityValidation(it, executionId)
+        }
+    private val canonicalValid = detail?.let { identity?.validFor(it, executionId) } == true
 
     fun revoke() {
         if (!revoked) {
@@ -74,7 +79,7 @@ internal class SequenceHistoryAdmission(
     fun enabled(action: SequenceHistoryMutationAction): Boolean =
         isCurrent() &&
             (action == SequenceHistoryMutationAction.Retry || canonicalValid) &&
-            sequenceHistoryActionAllowed(executionId, publication, action)
+            sequenceHistoryActionAllowed(executionId, publication, action, identity)
 
     fun action(action: SequenceHistoryMutationAction): () -> Unit =
         {
@@ -107,7 +112,7 @@ internal class SequenceHistoryAdmission(
         ownsActionRoute() &&
             current() === expected &&
             (action == SequenceHistoryMutationAction.Retry || canonicalValid) &&
-            sequenceHistoryActionAllowed(executionId, expected, action)
+            sequenceHistoryActionAllowed(executionId, expected, action, identity)
 }
 
 internal fun SequenceHistoryMutationState.hasSequenceTransient(): Boolean =
@@ -129,6 +134,7 @@ internal fun sequenceHistoryActionAllowed(
     executionId: SequenceExecutionId,
     state: SequenceHistoryMutationState,
     action: SequenceHistoryMutationAction,
+    validation: SequenceHistoryIdentityValidation? = null,
 ): Boolean {
     if (state.isMutating) return false
     if (action == SequenceHistoryMutationAction.Retry) {
@@ -137,6 +143,7 @@ internal fun sequenceHistoryActionAllowed(
     val detail = (state.load as? HistoryDetailLoad.Content)?.value ?: return false
     if (!detail.isHistoricalSequence(executionId)) return false
     if (action == SequenceHistoryMutationAction.Cancel) return state.hasSequenceTransient()
+    val index = validation?.occurrencesFor(detail, executionId)
     val phaseCount =
         (if (state.timingDraft != null) 1 else 0) +
             (if (state.childDeletionProposal != null) 1 else 0) +
@@ -159,16 +166,22 @@ internal fun sequenceHistoryActionAllowed(
                 it.ownerlessPlacements.values.none { placement -> placement == null } &&
                 it.command?.expectedUpdatedAt == detail.updatedAt &&
                 it.command.occurrenceId == it.occurrenceId &&
-                detail.eligibleOccurrence(it.occurrenceId, structural = true)?.childMutationFacts?.executionId ==
+                detail
+                    .eligibleOccurrence(
+                        it.occurrenceId,
+                        structural = true,
+                        index = index,
+                    )?.childMutationFacts
+                    ?.executionId ==
                 it.command.childExecutionId
         } == true
     return when (action) {
         SequenceHistoryMutationAction.Retry -> false
         SequenceHistoryMutationAction.BeginTiming -> idle
         is SequenceHistoryMutationAction.RequestChildDeletion ->
-            idle && detail.eligibleOccurrence(action.occurrenceId, structural = false) != null
+            idle && detail.eligibleOccurrence(action.occurrenceId, structural = false, index = index) != null
         is SequenceHistoryMutationAction.BeginStructuralRemoval ->
-            idle && detail.eligibleOccurrence(action.occurrenceId, structural = true) != null
+            idle && detail.eligibleOccurrence(action.occurrenceId, structural = true, index = index) != null
         SequenceHistoryMutationAction.Cancel -> state.hasSequenceTransient()
         SequenceHistoryMutationAction.ProceedOverlap,
         SequenceHistoryMutationAction.CancelOverlap,
@@ -190,11 +203,17 @@ internal fun sequenceHistoryActionAllowed(
             state.childDeletionProposal?.let {
                 it.expectedUpdatedAt == detail.updatedAt &&
                     state.childDeletionTarget?.occurrenceId == it.occurrenceId &&
-                    detail.eligibleOccurrence(it.occurrenceId, structural = false)?.childMutationFacts?.executionId ==
+                    detail
+                        .eligibleOccurrence(
+                            it.occurrenceId,
+                            structural = false,
+                            index = index,
+                        )?.childMutationFacts
+                        ?.executionId ==
                     it.childExecutionId
             } == true
         is SequenceHistoryMutationAction.ChooseStructuralMode ->
-            state.structuralTarget?.let { detail.eligibleOccurrence(it, structural = true) } != null &&
+            state.structuralTarget?.let { detail.eligibleOccurrence(it, structural = true, index = index) } != null &&
                 structural == null &&
                 !state.overlapWarning
         is SequenceHistoryMutationAction.PlaceOwnerlessInterval ->
@@ -207,18 +226,28 @@ internal fun sequenceHistoryActionAllowed(
     }
 }
 
+internal fun SequenceHistoryOccurrence.canDeleteChild(): Boolean =
+    !isDeletedFromHistory &&
+        status == RuntimeOccurrenceStatus.COMPLETED &&
+        activitySnapshotId == activity.snapshotId &&
+        child != null &&
+        child?.status == ActivityExecutionStatus.COMPLETED &&
+        childMutationFacts != null &&
+        child?.executionId == childMutationFacts?.executionId
+
 private fun SequenceHistoryDetail.eligibleOccurrence(
     id: SequenceOccurrenceId,
     structural: Boolean,
-) = occurrences.singleOrNull { it.occurrenceId == id }?.takeIf {
-    !it.isDeletedFromHistory &&
-        it.childMutationFacts != null &&
-        (it.child == null || it.child?.executionId == it.childMutationFacts?.executionId) &&
-        (
-            it.status == RuntimeOccurrenceStatus.COMPLETED ||
-                structural &&
-                it.status == RuntimeOccurrenceStatus.DELETED_EXECUTION
-        )
+    index: Map<SequenceOccurrenceId, SequenceHistoryOccurrence>? = null,
+) = (if (index != null) index[id] else occurrences.singleOrNull { it.occurrenceId == id })?.takeIf {
+    if (!structural) {
+        it.canDeleteChild()
+    } else {
+        !it.isDeletedFromHistory &&
+            it.childMutationFacts != null &&
+            (it.child == null || it.child?.executionId == it.childMutationFacts?.executionId) &&
+            it.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION)
+    }
 }
 
 /** Validate only the selected aggregate; temporary identity sets never become presentation state. */
@@ -247,6 +276,13 @@ internal class SequenceHistoryIdentityValidation(
     private val executionId: SequenceExecutionId,
 ) {
     private val valid = detail.hasValidSequenceIdentity(executionId)
+    private val occurrences = detail.occurrences.associateBy { it.occurrenceId }
+
+    fun occurrencesFor(
+        candidate: SequenceHistoryDetail,
+        id: SequenceExecutionId,
+    ): Map<SequenceOccurrenceId, SequenceHistoryOccurrence>? =
+        occurrences.takeIf { candidate === detail && id == executionId }
 
     fun validFor(
         candidate: SequenceHistoryDetail,

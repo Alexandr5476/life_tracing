@@ -816,7 +816,8 @@
       "restoredHistoryDetailWithoutRetainedSessionLoadsCanonicalNonEditableState",
       "sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation",
       "sequencePlanStartUsesProductionRouteAndReturnsToUsableDailyRuntime",
-      "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation"
+      "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation",
+      "sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation"
     ],
     "com.alexandr5476.lifetracing.PlanExecutionAccessibilityPersistenceTest": [
       "dailyOriginSemanticTimedStartPreservesExactFrozenIdentityAfterReopen",
@@ -1045,7 +1046,13 @@
       "timingValidationGenericAndStaleFailuresRemainVisibleInReview",
       "timingFieldErrorFocusAndDstSelectionKeepExactNativeTarget",
       "timingEditorWithOnlyRootBoundariesDisablesEmptyOwnerSections",
-      "approvingOverlapRetiresPressedProceedBeforeSaveIsAvailable"
+      "approvingOverlapRetiresPressedProceedBeforeSaveIsAvailable",
+      "childDeletionCanonicalTombstoneRemovesActualChildTargetsAndRetainsOtherActions",
+      "childDeletionCapturedConfirmCannotReviveAfterOwnershipLossOrSessionReplacement",
+      "childDeletionEndedEarlyNoLiveRuntimeAddedDoesNotInventSourceOrDuration",
+      "childDeletionFailedWriterRequiresExplicitFreshRetryAndStaleRequiresNewReview",
+      "childDeletionNativeConfirmationDisambiguatesEqualFactsAndCancelRetiresConfirm",
+      "childDeletionEntryPointerPressCannotCarryIntoNativeConfirmation"
     ],
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
       "failedTerminalCatalogRetryRestoresSelectableLastPageAndRevokesRetry",
@@ -1493,7 +1500,9 @@
       "accessibleUnchangedCommentPreservesSnapshotAfterPhysicalReopen",
       "russianScaledNoLiveCorrectionPreservesMissingDurationAfterPhysicalReopen",
       "nativeSequenceTimingCorrectionReopensCanonicalDateChildIntervalStatisticsAndFulfilledPlan",
-      "nativeSequenceDstNoLiveCommitReadFailureRetriesReadOnlyAndReopensCanonicalFacts"
+      "nativeSequenceDstNoLiveCommitReadFailureRetriesReadOnlyAndReopensCanonicalFacts",
+      "nativeSequenceChildDeletionPreservesFulfilledPlanAndCanonicalProjectionsAfterPhysicalReopen",
+      "russianScaledEndedEarlyNoLiveChildDeletionRecoversReadOnlyAndPhysicallyReopensTombstone"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",

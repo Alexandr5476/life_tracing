@@ -25,6 +25,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -65,6 +66,7 @@ import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.NoLiveTimeAccounting
 import com.alexandr5476.lifetracing.domain.PlanEntryId
 import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
+import com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryChildActivity
@@ -256,6 +258,7 @@ class HistoryScreenPresentationTest {
             assertEquals(1, f.writes)
         }
         confirm.assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("sequence-child-deletion-cancel").assertIsNotEnabled()
         composeTestRule.onNodeWithText(text(R.string.history_back)).assertIsNotEnabled()
         composeTestRule.runOnIdle { gate.complete(Unit) }
         composeTestRule.onNodeWithText(text(R.string.history_back)).assertIsEnabled()
@@ -264,7 +267,29 @@ class HistoryScreenPresentationTest {
     @Test
     fun sequenceCommittedReadFailureOffersNativeReadOnlyRetry() {
         val f = admissionRoute()
-        composeTestRule.runOnIdle { f.write = { f.failReads = true } }
+        composeTestRule.runOnIdle {
+            f.write = {
+                val selected =
+                    f.detail.occurrences
+                        .first()
+                        .occurrenceId
+                f.detail =
+                    f.detail.copy(
+                        updatedAt = f.detail.updatedAt.plusMillis(1),
+                        occurrences =
+                            f.detail.occurrences.map {
+                                if (it.occurrenceId ==
+                                    selected
+                                ) {
+                                    it.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION, child = null)
+                                } else {
+                                    it
+                                }
+                            },
+                    )
+                f.failReads = true
+            }
+        }
         sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         val click =
             composeTestRule
@@ -274,6 +299,10 @@ class HistoryScreenPresentationTest {
                 .config[SemanticsActions.OnClick]
                 .action!!
         composeTestRule.runOnIdle { click() }
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_timing_committed_read_failure, text(R.string.sequence_timing_child_deleted)),
+            ).assertExists()
         val retry = composeTestRule.onNodeWithTag("history-retry").performScrollTo().assertIsEnabled()
         val oldRetry = retry.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         retry.performClick()
@@ -293,7 +322,11 @@ class HistoryScreenPresentationTest {
             assertEquals(1L, f.controller.state.value.refreshGeneration)
             assertTrue(f.controller.state.value.load is HistoryDetailLoad.Content)
             assertEquals(1, f.refreshes)
+            assertEquals(SequenceHistoryCommittedMutation.CHILD_DELETION, f.controller.state.value.committedMutation)
         }
+        sequenceItem("occurrence:performed", "sequence-deleted-performed").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-child-child").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").assertDoesNotExist()
     }
 
     @Test
@@ -429,11 +462,331 @@ class HistoryScreenPresentationTest {
             .config[SemanticsProperties.VerticalScrollAxisRange]
             .value()
 
+    @Test
+    fun childDeletionNativeConfirmationDisambiguatesEqualFactsAndCancelRetiresConfirm() {
+        val base = sequenceMutationDetail()
+        val first = base.occurrences.first()
+        val second =
+            first.copy(
+                occurrenceId = SequenceOccurrenceId("equal-second"),
+                runtimePosition = 1,
+                sourceSequenceSnapshotNodeId = SequenceSnapshotNodeId("second-step"),
+                repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("repeat-source"),
+                repeatIteration = 2,
+                child = first.child!!.copy(executionId = ActivityExecutionId("second-child")),
+                childMutationFacts = first.childMutationFacts!!.copy(executionId = ActivityExecutionId("second-child")),
+            )
+        val f = admissionRoute(detail = base.copy(occurrences = listOf(first, second), intervals = emptyList()))
+        sequenceItem(
+            "occurrence:equal-second",
+            "sequence-history-delete-child-equal-second",
+        ).performScrollTo().performClick()
+        val heading = composeTestRule.onNodeWithTag("sequence-child-deletion-heading")
+        keyboard.enter(heading)
+        heading.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        keyboard.awaitFocus(heading)
+        heading.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_child_deletion_parent, base.root.title, base.root.executionId.value),
+            ).assertExists()
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_history_occurrence_id, second.occurrenceId.value),
+            ).assertExists()
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_history_activity_snapshot_id, second.activitySnapshotId.value),
+            ).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_source_id, "second-step")).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_repeat_id, "repeat-source")).assertExists()
+        composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertExists()
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-child-deletion-child",
+            ).performScrollTo()
+            .performSemanticsAction(SemanticsActions.RequestFocus) {
+                it()
+            }
+        keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-child-deletion-child"))
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-child-deletion-consequences",
+            ).performScrollTo()
+            .performSemanticsAction(SemanticsActions.RequestFocus) {
+                it()
+            }
+        keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-child-deletion-consequences"))
+        val confirm =
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-confirm-delete-child",
+                ).performScrollTo()
+                .assertIsEnabled()
+        confirm.assertTextEquals(text(R.string.sequence_child_deletion_confirm, second.activity.title, "second-child"))
+        val retained = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        composeTestRule.onNodeWithTag("sequence-child-deletion-cancel").performScrollTo().performClick()
+        composeTestRule.runOnIdle {
+            retained()
+            assertEquals(0, f.writes)
+        }
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.runOnIdle {
+            retained()
+            assertEquals(0, f.writes)
+        }
+        val current = composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo()
+        current.performSemanticsAction(SemanticsActions.OnClick) { it() }
+        composeTestRule.runOnIdle {
+            assertEquals(1, f.writes)
+            assertEquals(
+                listOf(
+                    base.root.executionId to
+                        com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand(
+                            base.updatedAt,
+                            first.occurrenceId,
+                            first.childMutationFacts!!.executionId,
+                        ),
+                ),
+                f.commands,
+            )
+        }
+    }
+
+    @Test
+    fun childDeletionEndedEarlyNoLiveRuntimeAddedDoesNotInventSourceOrDuration() {
+        val base = sequenceMutationDetail()
+        val first = base.occurrences.first()
+        val noLive =
+            first.copy(
+                sourceSequenceSnapshotNodeId = null,
+                repeatSourceSnapshotNodeId = null,
+                repeatIteration = null,
+                isRuntimeAdded = true,
+                activity =
+                    first.activity.copy(
+                        timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING,
+                        timerTarget = null,
+                    ),
+                child = first.child!!.copy(startedAt = null, activeDuration = null),
+                childMutationFacts = first.childMutationFacts!!.copy(startedAt = null),
+            )
+        val f =
+            admissionRoute(
+                detail =
+                    base.copy(
+                        root = base.root.copy(status = SequenceExecutionStatus.ENDED_EARLY),
+                        occurrences = listOf(noLive),
+                        intervals = emptyList(),
+                    ),
+            )
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithText(text(R.string.history_runtime_added)).assertExists()
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_history_source_id, first.sourceSequenceSnapshotNodeId!!.value),
+            ).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().assertIsEnabled()
+        composeTestRule.runOnIdle {
+            assertEquals(
+                noLive.occurrenceId,
+                f.controller.state.value.childDeletionProposal!!
+                    .occurrenceId,
+            )
+            assertEquals(
+                noLive.childMutationFacts!!.executionId,
+                f.controller.state.value.childDeletionProposal!!
+                    .childExecutionId,
+            )
+            assertEquals(null, noLive.child!!.startedAt)
+            assertEquals(null, noLive.child!!.activeDuration)
+        }
+        composeTestRule.runOnIdle { composeTestRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnIdle {
+            assertEquals(0, f.writes)
+            assertEquals(0, f.backs)
+            assertEquals(null, f.controller.state.value.childDeletionProposal)
+        }
+    }
+
+    @Test
+    fun childDeletionFailedWriterRequiresExplicitFreshRetryAndStaleRequiresNewReview() {
+        val f = admissionRoute(write = { error("writer unavailable") })
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        val confirm = composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo()
+        val old = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        confirm.performClick()
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_history_child_deletion_failure),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(1, f.writes)
+            f.write =
+                { throw java.util.ConcurrentModificationException() }
+        }
+        confirm.performScrollTo().performClick()
+        composeTestRule.runOnIdle {
+            assertEquals(2, f.writes)
+            assertEquals(null, f.controller.state.value.childDeletionProposal)
+            assertEquals(0L, f.controller.state.value.refreshGeneration)
+        }
+        confirm.assertDoesNotExist()
+        composeTestRule.runOnIdle {
+            old()
+            f.write = {}
+        }
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        val fresh = composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo()
+        keyboard.enter(fresh)
+        fresh.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        keyboard.awaitFocus(fresh)
+        fresh.performKeyInput { pressKey(Key.Enter) }
+        composeTestRule.runOnIdle {
+            assertEquals(3, f.writes)
+            assertEquals(1L, f.controller.state.value.refreshGeneration)
+        }
+    }
+
+    @Test
+    fun childDeletionCapturedConfirmCannotReviveAfterOwnershipLossOrSessionReplacement() {
+        val f = admissionRoute()
+
+        fun open(): () -> Boolean {
+            sequenceItem(
+                "occurrence:performed",
+                "sequence-history-delete-child-performed",
+            ).performScrollTo().performClick()
+            return composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-confirm-delete-child",
+                ).performScrollTo()
+                .fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        }
+        var old = open()
+        composeTestRule.runOnIdle {
+            f.visible.value = false
+            old()
+            f.visible.value = true
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-child-deletion-cancel").performScrollTo().performClick()
+        old = open()
+        composeTestRule.runOnIdle {
+            f.lifecycle.registry.currentState = Lifecycle.State.STARTED
+            f.lifecycle.registry.currentState =
+                Lifecycle.State.RESUMED
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-child-deletion-cancel").performScrollTo().performClick()
+        old = open()
+        composeTestRule.runOnIdle { f.present.value = false }
+        composeTestRule.runOnIdle {
+            old()
+            f.present.value = true
+        }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-child-deletion-cancel").performScrollTo().performClick()
+        old = open()
+        composeTestRule.runOnIdle {
+            f.session.value = SequenceHistoryMutationRouteSession(f.detail.root.executionId, f.createController())
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.waitUntil(2_000) { f.session.value.controller.state.value.load is HistoryDetailLoad.Content }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+        composeTestRule.runOnIdle { assertEquals(1, f.writes) }
+    }
+
+    @Test
+    fun childDeletionCanonicalTombstoneRemovesActualChildTargetsAndRetainsOtherActions() {
+        val f = admissionRoute()
+        val selected = f.detail.occurrences.first()
+        composeTestRule.runOnIdle {
+            f.write = {
+                f.detail =
+                    f.detail.copy(
+                        updatedAt = f.detail.updatedAt.plusMillis(1),
+                        occurrences =
+                            f.detail.occurrences.map {
+                                if (it.occurrenceId ==
+                                    selected.occurrenceId
+                                ) {
+                                    it.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION, child = null)
+                                } else {
+                                    it
+                                }
+                            },
+                    )
+            }
+        }
+        val childSummary = sequenceItem("occurrence:performed", "sequence-child-child").performScrollTo()
+        keyboard.enter(childSummary)
+        childSummary.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+        keyboard.awaitFocus(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        sequenceItem("occurrence:performed", "sequence-deleted-performed").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-child-child").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-history-delete-child-performed").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").assertIsEnabled()
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
+        composeTestRule.runOnIdle {
+            assertFalse(
+                f.controller.state.value.timingDraft!!.timestamps.keys.any {
+                    (it is SequenceHistoryTimestampTarget.ChildStartedAt && it.occurrenceId == selected.occurrenceId) ||
+                        (
+                            it is SequenceHistoryTimestampTarget.ChildCompletedAt &&
+                                it.occurrenceId == selected.occurrenceId
+                        )
+                },
+            )
+            assertEquals(1, f.writes)
+            assertEquals(1, f.refreshes)
+        }
+    }
+
+    @Test
+    fun childDeletionEntryPointerPressCannotCarryIntoNativeConfirmation() {
+        val f = admissionRoute()
+        val entry = sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo()
+        val center = entry.fetchSemanticsNode().boundsInRoot.center
+        composeTestRule.onRoot().performTouchInput { down(center) }
+        try {
+            entry.performSemanticsAction(SemanticsActions.OnClick) { it() }
+            composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").assertExists()
+        } finally {
+            composeTestRule.onRoot().performTouchInput { up() }
+        }
+        composeTestRule.runOnIdle {
+            assertEquals(0, f.writes)
+            assertEquals(0L, f.controller.state.value.refreshGeneration)
+        }
+        composeTestRule.onNodeWithTag("sequence-history-confirm-delete-child").performScrollTo().performClick()
+        composeTestRule.runOnIdle { assertEquals(1, f.writes) }
+    }
+
     private fun admissionRoute(
         write: suspend () -> Unit = {},
         foregroundTarget: Boolean = false,
+        detail: SequenceHistoryDetail = sequenceMutationDetail(),
     ): SequenceAdmissionRouteFixture {
-        val f = SequenceAdmissionRouteFixture(sequenceMutationDetail(), write)
+        val f = SequenceAdmissionRouteFixture(detail, write)
         admissionScopes += f.scope
         composeTestRule.setContent {
             CompositionLocalProvider(LocalLifecycleOwner provides f.lifecycle) {
@@ -443,7 +796,7 @@ class HistoryScreenPresentationTest {
                         if (f.present.value) {
                             SequenceHistoryDetailRoute(
                                 current,
-                                {},
+                                { f.backs++ },
                                 { f.refreshes++ },
                                 f.visible.value,
                                 { f.visible.value && f.session.value === current },
@@ -466,7 +819,7 @@ class HistoryScreenPresentationTest {
     }
 
     private class SequenceAdmissionRouteFixture(
-        val detail: SequenceHistoryDetail,
+        var detail: SequenceHistoryDetail,
         var write: suspend () -> Unit,
     ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -477,6 +830,9 @@ class HistoryScreenPresentationTest {
         var reads = 0
         var writes = 0
         var refreshes = 0
+        var backs = 0
+        val commands =
+            mutableListOf<Pair<SequenceExecutionId, SequenceChildHistoryDeletionCommand>>()
         val controller = createController()
         val session = mutableStateOf(SequenceHistoryMutationRouteSession(detail.root.executionId, controller))
 
@@ -489,7 +845,8 @@ class HistoryScreenPresentationTest {
                     if (failReads) error("read failure") else detail
                 },
                 { _, _, _ -> error("unexpected timing writer") },
-                { _, _, _ ->
+                { id, command, _ ->
+                    commands += id to command
                     writes++
                     write()
                 },
@@ -1133,17 +1490,28 @@ class HistoryScreenPresentationTest {
     fun destructiveSurfacesIdentifyOccurrenceAndCloseGapReviewHidesDeletedChildFacts() {
         val detail = structuralMutationDetail()
         var deletions = 0
-        setSequenceMutationDetail(
-            detail,
-            delete = { _, _, _ -> deletions++ },
-        )
+        val controller =
+            setSequenceMutationDetail(
+                detail,
+                delete = { _, _, _ -> deletions++ },
+            )
         val targetText = text(R.string.history_occurrence, 1, "Performed")
 
         sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
         composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(text(R.string.manual_history_cancel)).performClick()
-        assertEquals(0, deletions)
+        composeTestRule
+            .onNodeWithTag("sequence-child-deletion-cancel")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        composeTestRule.onNodeWithTag("sequence-child-deletion-heading").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").assertIsDisplayed()
+        composeTestRule.runOnIdle {
+            assertEquals(null, controller.state.value.childDeletionProposal)
+            assertEquals(0L, controller.state.value.refreshGeneration)
+            assertEquals(0, deletions)
+        }
 
         sequenceItem(
             "occurrence:performed",

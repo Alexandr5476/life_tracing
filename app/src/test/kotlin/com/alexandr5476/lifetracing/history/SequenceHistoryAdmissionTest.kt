@@ -56,6 +56,132 @@ import kotlin.coroutines.CoroutineContext
 
 class SequenceHistoryAdmissionTest {
     @Test
+    fun childDeletionSelectionUsesExactIdsAndFrozenProvenanceForEqualLookingChildren() {
+        val base = SequenceAdmissionFacts.detail()
+        val first = base.occurrences.first()
+        val second =
+            first.copy(
+                occurrenceId = SequenceOccurrenceId("equal-looking-second"),
+                runtimePosition = 1,
+                sourceSequenceSnapshotNodeId = SequenceSnapshotNodeId("step-second"),
+                repeatSourceSnapshotNodeId = SequenceSnapshotNodeId("repeat-second"),
+                repeatIteration = 2,
+                child = first.child!!.copy(executionId = ActivityExecutionId("second-child")),
+                childMutationFacts = first.childMutationFacts!!.copy(executionId = ActivityExecutionId("second-child")),
+            )
+        for (status in listOf(SequenceExecutionStatus.COMPLETED, SequenceExecutionStatus.ENDED_EARLY)) {
+            val detail = base.copy(root = base.root.copy(status = status), occurrences = listOf(first, second))
+            val command =
+                com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand(
+                    detail.updatedAt,
+                    second.occurrenceId,
+                    second.childMutationFacts!!.executionId,
+                )
+            assertSame(second, detail.childDeletionOccurrence(command))
+            assertEquals(first.activitySnapshotId, second.activitySnapshotId)
+            assertEquals(first.activity.title, second.activity.title)
+            assertEquals(first.completedAt, second.completedAt)
+            assertNull(
+                detail.childDeletionOccurrence(command.copy(childExecutionId = first.childMutationFacts!!.executionId)),
+            )
+            assertNull(
+                detail.childDeletionOccurrence(command.copy(expectedUpdatedAt = detail.updatedAt.minusMillis(1))),
+            )
+            assertEquals(
+                SequenceSnapshotNodeId("step-second"),
+                detail.childDeletionOccurrence(command)!!.sourceSequenceSnapshotNodeId,
+            )
+            assertEquals(
+                SequenceSnapshotNodeId("repeat-second"),
+                detail.childDeletionOccurrence(command)!!.repeatSourceSnapshotNodeId,
+            )
+            assertEquals(2, detail.childDeletionOccurrence(command)!!.repeatIteration)
+            val added =
+                second.copy(
+                    sourceSequenceSnapshotNodeId = null,
+                    repeatSourceSnapshotNodeId = null,
+                    repeatIteration = null,
+                    isRuntimeAdded = true,
+                )
+            assertSame(added, detail.copy(occurrences = listOf(added)).childDeletionOccurrence(command))
+            assertNull(added.sourceSequenceSnapshotNodeId)
+            for (ineligible in RuntimeOccurrenceStatus.entries.filter { it != RuntimeOccurrenceStatus.COMPLETED }) {
+                assertNull(
+                    detail
+                        .copy(
+                            occurrences = listOf(second.copy(status = ineligible)),
+                        ).childDeletionOccurrence(command),
+                )
+            }
+            assertNull(
+                detail
+                    .copy(
+                        occurrences = listOf(second.copy(isDeletedFromHistory = true)),
+                    ).childDeletionOccurrence(command),
+            )
+            assertNull(
+                detail
+                    .copy(
+                        root = detail.root.copy(status = SequenceExecutionStatus.RUNNING),
+                    ).childDeletionOccurrence(command),
+            )
+        }
+    }
+
+    @Test
+    fun repeatedDeletionControlAdmissionDoesNotRescanCanonicalOccurrences() {
+        val base = SequenceAdmissionFacts.detail()
+        var reads = 0
+        val observed =
+            object : AbstractList<SequenceHistoryOccurrence>() {
+                override val size: Int get() = base.occurrences.size
+
+                override fun get(index: Int): SequenceHistoryOccurrence {
+                    reads++
+                    return base.occurrences[index]
+                }
+            }
+        val detail = base.copy(occurrences = observed)
+        val validation = SequenceHistoryIdentityValidation(detail, detail.root.executionId)
+        val before = reads
+        val state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail))
+        repeat(50) {
+            val admission =
+                SequenceHistoryAdmission(detail.root.executionId, state, { state }, { true }, {}, validation)
+            assertTrue(
+                admission.enabled(
+                    SequenceHistoryMutationAction.RequestChildDeletion(base.occurrences.first().occurrenceId),
+                ),
+            )
+            assertFalse(
+                admission.enabled(SequenceHistoryMutationAction.RequestChildDeletion(SequenceOccurrenceId("absent"))),
+            )
+        }
+        assertEquals(before, reads)
+    }
+
+    @Test
+    fun childDeletionRejectsMissingDisplayedChildAndMismatchedFrozenSnapshot() {
+        val base = SequenceAdmissionFacts.detail()
+        val target = base.occurrences.first()
+        listOf(
+            target.copy(child = null),
+            target.copy(activity = target.activity.copy(snapshotId = ActivitySnapshotId("foreign"))),
+            target.copy(child = requireNotNull(target.child).copy(status = ActivityExecutionStatus.RUNNING)),
+        ).forEach { invalid ->
+            val detail = base.copy(occurrences = listOf(invalid))
+            val state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail))
+            assertFalse(
+                sequenceHistoryActionAllowed(
+                    detail.root.executionId,
+                    state,
+                    SequenceHistoryMutationAction.RequestChildDeletion(target.occurrenceId),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun routineAdmissionPublicationsDoNotRescanAnAlreadyValidatedCanonicalAggregate() {
         val base = SequenceAdmissionFacts.detail()
         var reads = 0
@@ -209,7 +335,7 @@ class SequenceHistoryAdmissionTest {
         val duplicate =
             first.copy(
                 occurrenceId = SequenceOccurrenceId("duplicate"),
-                child = null,
+                child = first.child!!.copy(executionId = ActivityExecutionId("duplicate-child")),
                 childMutationFacts =
                     first.childMutationFacts!!.copy(
                         executionId = ActivityExecutionId("duplicate-child"),
