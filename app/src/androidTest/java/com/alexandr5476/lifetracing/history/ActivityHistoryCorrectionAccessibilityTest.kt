@@ -185,7 +185,7 @@ class ActivityHistoryCorrectionAccessibilityTest {
         val controller = controller()
         show(controller)
         click("history-correct")
-        compose.onNodeWithTag("history-correction-started").assertIsFocused()
+        keyboard.awaitFocus(compose.onNodeWithTag("history-correction-started"))
         keyboard.enter()
         keyboard.awaitFocus(compose.onNodeWithTag("history-correction-started"))
         compose.onNodeWithTag("history-correction-started").performKeyInput { pressKey(Key.Tab) }
