@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.history
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -282,8 +283,8 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}", useUnmergedTree = true)
             .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(deletion)?.occurrences?.isEmpty() == true }
         backToHistory()
 
@@ -298,9 +299,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}", useUnmergedTree = true)
             .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(close)?.root?.completedAt == closeBefore.root.completedAt.minusMillis(removedSpan)
         }
@@ -514,14 +515,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule
-            .onNodeWithText(
-                composeTestRule.activity.getString(R.string.sequence_history_overlap_warning),
-            ).performScrollTo()
-            .assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        assertStructuralOverlapWarning()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").assertIsDisplayed().performClick()
         assertEquals(beforeStructural.updatedAt, history.getSequenceDetail(execution)?.updatedAt)
 
         scrollToHistoryOccurrence(target.occurrenceId.value)
@@ -529,10 +526,11 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
             .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        assertStructuralOverlapWarning()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.occurrences?.size == 2 }
         val after = requireNotNull(history.getSequenceDetail(execution))
         assertEquals(java.time.Duration.ofSeconds(20), after.root.activeDuration)
@@ -722,6 +720,15 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             )
     }
 
+    private fun assertStructuralOverlapWarning() {
+        composeTestRule.onNodeWithTag("sequence-structural-review-list").performScrollToKey("summary:result")
+        composeTestRule
+            .onNodeWithTag("sequence-structural-overlap-warning", useUnmergedTree = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals(composeTestRule.activity.getString(R.string.sequence_history_overlap_warning))
+    }
+
     private fun resolveOwnerlessIntervals() {
         val proposal =
             requireNotNull(
@@ -732,6 +739,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                     ?.structuralProposal,
             )
         proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { id ->
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-structural-placements-list",
+                ).performScrollToKey("choice:${id.value}")
             composeTestRule
                 .onNodeWithTag("sequence-history-ownerless-${id.value}-translated")
                 .performScrollTo()

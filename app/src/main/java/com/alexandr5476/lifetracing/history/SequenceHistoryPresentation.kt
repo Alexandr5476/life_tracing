@@ -107,7 +107,9 @@ internal fun SequenceHistoryDetailSurface(
             if (state.committedMutation != null) {
                 SequenceCommittedStatus(state)
             }
-            if (load is HistoryDetailLoad.Content && (state.timingDraft != null || state.timingProposal != null)) {
+            if (load is HistoryDetailLoad.Content &&
+                (state.timingDraft != null || state.timingProposal != null || state.structuralTarget != null)
+            ) {
                 Column(Modifier.weight(1f).fillMaxWidth()) { mutationContent(load.value) }
             } else if (load is HistoryDetailLoad.Content && !state.hasSequenceTransient()) {
                 SequenceDetail(
@@ -556,9 +558,26 @@ private fun SequenceOccurrence(
                         requireNotNull(occurrence.childMutationFacts).executionId,
                     ),
                 ) {
+                    val description =
+                        stringResource(
+                            R.string.sequence_structural_entry,
+                            occurrence.activity.title,
+                            occurrence.occurrenceId.value,
+                            occurrence.childMutationFacts!!.executionId.value,
+                        )
                     SequenceSecondaryButton(
                         { onRemoveOccurrence(occurrence.occurrenceId) },
-                        Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
+                        Modifier
+                            .testTag(
+                                "sequence-history-remove-occurrence-${occurrence.occurrenceId.value}",
+                            ).semantics {
+                                contentDescription = description
+                            },
+                        enabled =
+                            occurrence.canRemoveOccurrence() &&
+                                LocalSequenceHistoryAdmission.current?.enabled(
+                                    SequenceHistoryMutationAction.BeginStructuralRemoval(occurrence.occurrenceId),
+                                ) != false,
                     ) {
                         Text(stringResource(R.string.sequence_history_remove_occurrence))
                     }
@@ -736,7 +755,7 @@ private fun SequenceSectionHeading(resource: Int) {
     )
 }
 
-private fun sequenceDurationText(value: Duration): String {
+internal fun sequenceDurationText(value: Duration): String {
     val fraction =
         value.nano
             .toString()

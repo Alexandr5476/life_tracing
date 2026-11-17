@@ -415,17 +415,25 @@ class SequenceHistoryMutationController internal constructor(
         intervalId: SequenceIntervalId,
         placement: OwnerlessIntervalPlacement,
     ) {
-        val detail = detail() ?: return
         val existing = mutableState.value.structuralProposal ?: return
-        if (intervalId !in existing.ownerlessPlacements) return
-        val choices = existing.ownerlessPlacements.mapNotNull { (id, value) -> value?.let { id to it } }.toMap()
+        if (existing.isConfirmable || intervalId !in existing.ownerlessPlacements) return
+        val choices =
+            (
+                existing.ownerlessPlacements as? SequenceHistoryPlacementMap
+                    ?: SequenceHistoryPlacementMap.from(existing.ownerlessPlacements)
+            ).updated(intervalId, placement)
         val proposal =
-            SequenceHistoryProposalBuilder.structural(
-                detail,
-                existing.occurrenceId,
-                existing.mode,
-                choices + (intervalId to placement),
-            ) ?: return
+            if (choices.unresolvedCount == 0) {
+                val detail = detail() ?: return
+                SequenceHistoryProposalBuilder.structural(
+                    detail,
+                    existing.occurrenceId,
+                    existing.mode,
+                    choices.mapValues { requireNotNull(it.value) },
+                ) ?: return
+            } else {
+                existing.copy(ownerlessPlacements = choices)
+            }
         mutableState.update {
             it.copy(
                 structuralProposal = proposal,

@@ -220,8 +220,7 @@ internal fun sequenceHistoryActionAllowed(
             structural != null &&
                 !structural.isConfirmable &&
                 structural.occurrenceId == state.structuralTarget &&
-                action.intervalId in structural.ownerlessPlacements &&
-                structural.ownerlessPlacements[action.intervalId] == null
+                action.intervalId in structural.ownerlessPlacements
         SequenceHistoryMutationAction.ConfirmStructuralRemoval -> structuralReview && !state.overlapWarning
     }
 }
@@ -235,6 +234,17 @@ internal fun SequenceHistoryOccurrence.canDeleteChild(): Boolean =
         childMutationFacts != null &&
         child?.executionId == childMutationFacts?.executionId
 
+/** Structural eligibility intentionally includes retained child-deletion tombstones. */
+internal fun SequenceHistoryOccurrence.canRemoveOccurrence(): Boolean {
+    if (isDeletedFromHistory || childMutationFacts == null || activitySnapshotId != activity.snapshotId) return false
+    return when (status) {
+        RuntimeOccurrenceStatus.COMPLETED ->
+            child?.status == ActivityExecutionStatus.COMPLETED && child?.executionId == childMutationFacts?.executionId
+        RuntimeOccurrenceStatus.DELETED_EXECUTION -> child == null
+        else -> false
+    }
+}
+
 private fun SequenceHistoryDetail.eligibleOccurrence(
     id: SequenceOccurrenceId,
     structural: Boolean,
@@ -243,10 +253,7 @@ private fun SequenceHistoryDetail.eligibleOccurrence(
     if (!structural) {
         it.canDeleteChild()
     } else {
-        !it.isDeletedFromHistory &&
-            it.childMutationFacts != null &&
-            (it.child == null || it.child?.executionId == it.childMutationFacts?.executionId) &&
-            it.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION)
+        it.canRemoveOccurrence()
     }
 }
 

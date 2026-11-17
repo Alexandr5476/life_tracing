@@ -781,6 +781,397 @@ class HistoryScreenPresentationTest {
         composeTestRule.runOnIdle { assertEquals(1, f.writes) }
     }
 
+    @Test
+    fun structuralModesAndConfirmRevokeAcrossCancelHidePauseDisposalAndReplacement() {
+        val f = admissionRoute(detail = structuralMutationDetail())
+
+        fun open(): () -> Boolean {
+            sequenceItem(
+                "occurrence:performed",
+                "sequence-history-remove-occurrence-performed",
+            ).performScrollTo().performClick()
+            keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-structural-mode-heading"))
+            val mode = composeTestRule.onNodeWithTag("sequence-history-leave-gap")
+            val oldMode = mode.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+            composeTestRule.runOnIdle { oldMode() }
+            assertEquals(null, f.controller.state.value.structuralProposal)
+            sequenceItem(
+                "occurrence:performed",
+                "sequence-history-remove-occurrence-performed",
+            ).performScrollTo().performClick()
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-leave-gap",
+                ).performSemanticsAction(SemanticsActions.OnClick) {
+                    it()
+                }
+            keyboard.awaitFocus(composeTestRule.onNodeWithTag("sequence-structural-review-heading"))
+            return composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-confirm-structural",
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        }
+        var old = open()
+        composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        old = open()
+        composeTestRule.runOnIdle {
+            f.visible.value = false
+            old()
+            f.visible.value = true
+            old()
+        }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+        old = open()
+        composeTestRule.runOnIdle {
+            f.lifecycle.registry.currentState = Lifecycle.State.STARTED
+            old()
+            f.lifecycle.registry.currentState =
+                Lifecycle.State.RESUMED
+            old()
+        }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+        old = open()
+        composeTestRule.runOnIdle { f.present.value = false }
+        composeTestRule.runOnIdle {
+            old()
+            f.present.value = true
+        }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+        }
+        composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+        old = open()
+        composeTestRule.runOnIdle {
+            f.session.value =
+                SequenceHistoryMutationRouteSession(f.detail.root.executionId, f.createController())
+            old()
+        }
+        composeTestRule.waitUntil(2_000) { f.session.value.controller.state.value.load is HistoryDetailLoad.Content }
+        composeTestRule.runOnIdle {
+            old()
+            assertEquals(0, f.writes)
+            assertEquals(0, f.refreshes)
+        }
+    }
+
+    @Test
+    fun structuralChoicesAnnounceExactSelectedStateAndOldChoiceCannotReachReplacement() {
+        val f = admissionRoute(detail = structuralMutationDetail())
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performClick()
+        composeTestRule.onNodeWithTag("sequence-structural-placements-list").performScrollToKey("choice:ownerless")
+        val fixed = composeTestRule.onNodeWithTag("sequence-history-ownerless-ownerless-fixed")
+        val stale = fixed.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        keyboard.enter(fixed)
+        fixed.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        keyboard.awaitFocus(fixed)
+        fixed.performKeyInput { pressKey(Key.Enter) }
+        composeTestRule.onNodeWithTag("sequence-history-ownerless-ownerless-fixed").assertIsSelected()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertDoesNotExist()
+        assertEquals(
+            OwnerlessIntervalPlacement.FIXED,
+            f.controller.state.value.structuralProposal!!
+                .ownerlessPlacements[SequenceIntervalId("ownerless")],
+        )
+        assertEquals(
+            null,
+            f.controller.state.value.structuralProposal!!
+                .ownerlessPlacements[SequenceIntervalId("ownerless-2")],
+        )
+        composeTestRule.onNodeWithTag("sequence-structural-cancel").performClick()
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performClick()
+        composeTestRule.runOnIdle { stale() }
+        assertTrue(
+            f.controller.state.value.structuralProposal!!
+                .ownerlessPlacements.values
+                .all { it == null },
+        )
+        composeTestRule.onNodeWithText(text(R.string.history_back)).performClick()
+        composeTestRule.runOnIdle {
+            assertEquals(0, f.writes)
+            assertEquals(0, f.refreshes)
+        }
+    }
+
+    @Test
+    fun structuralOverlapApprovalRetiresHeldProceedAndCapturedApprovalCannotConfirm() {
+        val base = structuralMutationDetail()
+        val detail =
+            base.copy(
+                intervals =
+                    base.intervals + base.intervals.last().copy(id = SequenceIntervalId("overlap")),
+            )
+        val f = admissionRoute(detail = detail)
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performClick()
+        val proceed = composeTestRule.onNodeWithTag("sequence-history-overlap-proceed")
+        val oldProceed = proceed.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        val center = proceed.fetchSemanticsNode().boundsInRoot.center
+        composeTestRule.onRoot().performTouchInput { down(center) }
+        try {
+            proceed.performSemanticsAction(SemanticsActions.OnClick) { it() }
+            composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed()
+        } finally {
+            composeTestRule.onRoot().performTouchInput { up() }
+        }
+        composeTestRule.runOnIdle {
+            oldProceed()
+            assertEquals(0, f.writes)
+            assertEquals(0, f.refreshes)
+        }
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-history-confirm-structural",
+            ).performSemanticsAction(SemanticsActions.OnClick) {
+                it()
+            }
+        composeTestRule.runOnIdle {
+            assertEquals(1, f.writes)
+            assertEquals(1, f.refreshes)
+        }
+    }
+
+    @Test
+    fun structuralCommitReadFailureRetriesOnlyReadAndRecoversRemovedOccurrenceFocus() {
+        val f = admissionRoute(detail = structuralMutationDetail())
+        val original = f.detail
+        composeTestRule.runOnIdle {
+            f.write = {
+                f.detail =
+                    original.copy(
+                        updatedAt = original.updatedAt.plusMillis(1),
+                        occurrences = original.occurrences.filter { it.occurrenceId.value != "performed" },
+                        intervals = original.intervals.filter { it.occurrenceId?.value != "performed" },
+                    )
+                f.failReads = true
+            }
+        }
+        val entry =
+            sequenceItem(
+                "occurrence:performed",
+                "sequence-history-remove-occurrence-performed",
+            ).performScrollTo()
+        keyboard.enter(entry)
+        entry.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        entry.performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performClick()
+        val confirm = composeTestRule.onNodeWithTag("sequence-history-confirm-structural")
+        val stale = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        confirm.performClick()
+        composeTestRule.waitUntil(2_000) { f.controller.state.value.load is HistoryDetailLoad.Failure }
+        assertEquals(SequenceHistoryCommittedMutation.STRUCTURAL, f.controller.state.value.committedMutation)
+        composeTestRule
+            .onNodeWithText(
+                text(R.string.sequence_timing_committed_read_failure, text(R.string.sequence_timing_structure_changed)),
+            ).assertExists()
+        composeTestRule.runOnIdle {
+            stale()
+            f.failReads = false
+        }
+        composeTestRule.onNodeWithTag("history-retry").performClick()
+        composeTestRule.waitUntil(2_000) { f.controller.state.value.load is HistoryDetailLoad.Content }
+        keyboard.awaitFocus(composeTestRule.onNodeWithText(text(R.string.history_back)))
+        composeTestRule.onNodeWithTag("sequence-history-remove-occurrence-performed").assertDoesNotExist()
+        composeTestRule.runOnIdle {
+            assertEquals(1, f.writes)
+            assertEquals(1, f.refreshes)
+        }
+    }
+
+    @Test
+    fun structuralLargeSequenceUsesBoundedChoiceAndReviewCompositionWithExactOrdinalNavigation() {
+        val base = structuralMutationDetail()
+        val sample = base.occurrences.last()
+        val occurrences =
+            listOf(base.occurrences.first()) +
+                List(9_999) { index ->
+                    val childId = ActivityExecutionId("large-child-$index")
+                    sample.copy(
+                        occurrenceId = SequenceOccurrenceId("large-occurrence-$index"),
+                        runtimePosition = index + 1,
+                        child = sample.child!!.copy(executionId = childId),
+                        childMutationFacts =
+                            sample.childMutationFacts!!.copy(
+                                executionId = childId,
+                                pauses =
+                                    sample.childMutationFacts!!.pauses.map {
+                                        it.copy(
+                                            id =
+                                                com.alexandr5476.lifetracing.domain
+                                                    .ActivityExecutionPauseId("large-pause-$index"),
+                                        )
+                                    },
+                            ),
+                    )
+                }
+        val choices = List(256) { index -> base.intervals.last().copy(id = SequenceIntervalId("large-choice-$index")) }
+        val detail =
+            base.copy(
+                occurrences = occurrences,
+                intervals =
+                    base.intervals.filter {
+                        it.occurrenceId == base.occurrences.first().occurrenceId
+                    } + choices,
+            )
+        val f = admissionRoute(detail = detail)
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").performClick()
+        val reads = f.reads
+
+        fun navigate(ordinal: Int) {
+            composeTestRule.onNodeWithTag("sequence-structural-navigate").performClick()
+            composeTestRule.onNodeWithTag("sequence-structural-ordinal").performTextReplacement(ordinal.toString())
+            composeTestRule.onNodeWithTag("sequence-structural-go").performClick()
+        }
+        for (index in listOf(0, 127, 255)) {
+            navigate(index + 1)
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-ownerless-large-choice-$index-fixed",
+                ).assertIsDisplayed()
+                .performSemanticsAction(SemanticsActions.OnClick) {
+                    it()
+                }
+            assertEquals(
+                OwnerlessIntervalPlacement.FIXED,
+                f.controller.state.value.structuralProposal!!
+                    .ownerlessPlacements[
+                    SequenceIntervalId(
+                        "large-choice-$index",
+                    ),
+                ],
+            )
+        }
+        composeTestRule.runOnIdle {
+            for (index in 0..255) {
+                if (index !in listOf(0, 127, 255)) {
+                    f.controller.dispatch(
+                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                            SequenceIntervalId("large-choice-$index"),
+                            OwnerlessIntervalPlacement.TRANSLATED,
+                        ),
+                    )
+                }
+            }
+        }
+        val proposal = f.controller.state.value.structuralProposal!!
+        assertTrue(proposal.isConfirmable)
+        assertTrue(proposal.changes.size > 30_000)
+        for (index in listOf(0, proposal.changes.size / 2, proposal.changes.lastIndex)) {
+            navigate(index + 1)
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-structural-change-${structuralChangeKey(proposal.changes[index])}",
+                ).assertIsDisplayed()
+        }
+        val composed =
+            composeTestRule
+                .onAllNodes(
+                    SemanticsMatcher("structural review fact") {
+                        it.config
+                            .getOrElse(
+                                SemanticsProperties.TestTag,
+                            ) { "" }
+                            .startsWith("sequence-structural-change-")
+                    },
+                ).fetchSemanticsNodes()
+                .size
+        assertTrue(composed < 40)
+        composeTestRule.runOnIdle {
+            assertEquals(reads, f.reads)
+            assertEquals(0, f.writes)
+            assertEquals(0, f.refreshes)
+        }
+    }
+
+    @Test
+    fun structuralFailureRetryAndStaleRecoveryRequireNewCurrentDecision() {
+        val f = admissionRoute(detail = structuralMutationDetail())
+        var failure: Exception = IllegalStateException("writer failed")
+        composeTestRule.runOnIdle { f.write = { throw failure } }
+        sequenceItem(
+            "occurrence:performed",
+            "sequence-history-remove-occurrence-performed",
+        ).performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performClick()
+        val obsolete =
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-history-confirm-structural",
+                ).fetchSemanticsNode()
+                .config[SemanticsActions.OnClick]
+                .action!!
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performClick()
+        composeTestRule.waitUntil(2_000) {
+            f.controller.state.value.issue ==
+                SequenceHistoryMutationIssue.STRUCTURAL_FAILURE
+        }
+        composeTestRule.onNodeWithText(text(R.string.sequence_history_structural_failure)).assertIsDisplayed()
+        composeTestRule.runOnIdle {
+            obsolete()
+            assertEquals(1, f.writes)
+            failure = IllegalArgumentException("graph")
+        }
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-history-confirm-structural",
+            ).performSemanticsAction(SemanticsActions.OnClick) {
+                it()
+            }
+        composeTestRule.waitUntil(2_000) {
+            f.controller.state.value.issue ==
+                SequenceHistoryMutationIssue.INVALID_PROPOSAL
+        }
+        assertEquals(0L, f.controller.state.value.refreshGeneration)
+        composeTestRule.runOnIdle {
+            failure = ConcurrentModificationException("stale")
+            f.detail =
+                f.detail.copy(updatedAt = f.detail.updatedAt.plusSeconds(1))
+        }
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performClick()
+        composeTestRule.waitUntil(2_000) {
+            f.controller.state.value.issue == SequenceHistoryMutationIssue.STALE &&
+                f.controller.state.value.load is HistoryDetailLoad.Content
+        }
+        composeTestRule.runOnIdle {
+            obsolete()
+            assertEquals(3, f.writes)
+            assertEquals(0, f.refreshes)
+        }
+        assertEquals(null, f.controller.state.value.structuralTarget)
+        assertEquals(null, f.controller.state.value.structuralProposal)
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertDoesNotExist()
+    }
+
     private fun admissionRoute(
         write: suspend () -> Unit = {},
         foregroundTarget: Boolean = false,
@@ -850,7 +1241,10 @@ class HistoryScreenPresentationTest {
                     writes++
                     write()
                 },
-                { _, _, _ -> error("unexpected structural writer") },
+                { _, _, _ ->
+                    writes++
+                    write()
+                },
             )
     }
 
@@ -1498,7 +1892,7 @@ class HistoryScreenPresentationTest {
         val targetText = text(R.string.history_occurrence, 1, "Performed")
 
         sequenceItem("occurrence:performed", "sequence-history-delete-child-performed").performScrollTo().performClick()
-        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
+        composeTestRule.onNodeWithText(targetText, substring = true).assertIsDisplayed()
         composeTestRule.onNodeWithText(text(R.string.history_repeat_iteration, 2)).assertIsDisplayed()
         composeTestRule
             .onNodeWithTag("sequence-child-deletion-cancel")
@@ -1517,8 +1911,9 @@ class HistoryScreenPresentationTest {
             "occurrence:performed",
             "sequence-history-remove-occurrence-performed",
         ).performScrollTo().performClick()
-        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-structural-target").assert(hasText(targetText, substring = true))
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-structural-placements-list").performScrollToKey("choice:ownerless")
         composeTestRule
             .onNodeWithText(
                 text(
@@ -1560,13 +1955,18 @@ class HistoryScreenPresentationTest {
             .onNodeWithTag("sequence-history-ownerless-ownerless-fixed")
             .performScrollTo()
             .performClick()
+        composeTestRule.onNodeWithTag("sequence-structural-placements-list").performScrollToKey("choice:ownerless-2")
         composeTestRule
             .onNodeWithTag("sequence-history-ownerless-ownerless-2-translated")
             .performScrollTo()
             .performClick()
 
         composeTestRule.onNodeWithText(text(R.string.sequence_history_structural_review)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(targetText).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-structural-target").assert(hasText(targetText, substring = true))
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-structural-review-list",
+            ).performScrollToKey("child-pause:retained:pause-retained")
         composeTestRule.onNodeWithText("pause-retained", substring = true).performScrollTo().assertIsDisplayed()
         val deletedTarget = text(R.string.history_occurrence, 2, "Deleted later")
         composeTestRule
@@ -1575,6 +1975,7 @@ class HistoryScreenPresentationTest {
         composeTestRule
             .onNodeWithText(text(R.string.sequence_history_child_completed, deletedTarget))
             .assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sequence-structural-review-list").performScrollToKey("ownerless:ownerless")
         composeTestRule
             .onNodeWithText(
                 text(
@@ -1586,6 +1987,7 @@ class HistoryScreenPresentationTest {
                 ),
             ).performScrollTo()
             .assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sequence-structural-review-list").performScrollToKey("ownerless:ownerless-2")
         composeTestRule
             .onNodeWithText(
                 text(
@@ -1597,6 +1999,23 @@ class HistoryScreenPresentationTest {
                 ),
             ).performScrollTo()
             .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithTag("sequence-structural-review-list")
+            .performScrollToKey("deleted-child:child-deleted-later")
+        composeTestRule
+            .onNodeWithTag("sequence-structural-notice-deleted-child:child-deleted-later")
+            .assertIsDisplayed()
+            .assertTextEquals(text(R.string.sequence_structural_deleted_translation, "child-deleted-later"))
+        composeTestRule
+            .onNodeWithTag("sequence-structural-review-list")
+            .performScrollToKey("deleted-child-pause:child-deleted-later:pause-deleted-later")
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-structural-notice-deleted-child-pause:child-deleted-later:pause-deleted-later",
+            ).assertIsDisplayed()
+            .assertTextEquals(
+                text(R.string.sequence_structural_deleted_pause, "child-deleted-later", "pause-deleted-later"),
+            )
     }
 
     @Test
@@ -1608,8 +2027,12 @@ class HistoryScreenPresentationTest {
             "occurrence:performed",
             "sequence-history-remove-occurrence-performed",
         ).performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").assertIsDisplayed().performClick()
 
+        composeTestRule
+            .onNodeWithTag(
+                "sequence-structural-review-list",
+            ).performScrollToKey("removed-interval:performed")
         composeTestRule
             .onNodeWithText(
                 text(
@@ -1663,8 +2086,8 @@ class HistoryScreenPresentationTest {
             "occurrence:performed",
             "sequence-history-remove-occurrence-performed",
         ).performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(2_000) {
             controller.state.value.issue == SequenceHistoryMutationIssue.STRUCTURAL_FAILURE
         }

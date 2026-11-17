@@ -817,7 +817,8 @@
       "sequenceHistorySessionAndCommittedRefreshGateSurviveActivityRecreation",
       "sequencePlanStartUsesProductionRouteAndReturnsToUsableDailyRuntime",
       "timedPlanPreflightBackCreatesNoRuntimeAndRetainsTheSameSessionAcrossRecreation",
-      "sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation"
+      "sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation",
+      "sequenceStructuralSessionAndCommittedRefreshGateSurviveActivityRecreation"
     ],
     "com.alexandr5476.lifetracing.PlanExecutionAccessibilityPersistenceTest": [
       "dailyOriginSemanticTimedStartPreservesExactFrozenIdentityAfterReopen",
@@ -1052,7 +1053,13 @@
       "childDeletionEndedEarlyNoLiveRuntimeAddedDoesNotInventSourceOrDuration",
       "childDeletionFailedWriterRequiresExplicitFreshRetryAndStaleRequiresNewReview",
       "childDeletionNativeConfirmationDisambiguatesEqualFactsAndCancelRetiresConfirm",
-      "childDeletionEntryPointerPressCannotCarryIntoNativeConfirmation"
+      "childDeletionEntryPointerPressCannotCarryIntoNativeConfirmation",
+      "structuralChoicesAnnounceExactSelectedStateAndOldChoiceCannotReachReplacement",
+      "structuralCommitReadFailureRetriesOnlyReadAndRecoversRemovedOccurrenceFocus",
+      "structuralFailureRetryAndStaleRecoveryRequireNewCurrentDecision",
+      "structuralLargeSequenceUsesBoundedChoiceAndReviewCompositionWithExactOrdinalNavigation",
+      "structuralModesAndConfirmRevokeAcrossCancelHidePauseDisposalAndReplacement",
+      "structuralOverlapApprovalRetiresHeldProceedAndCapturedApprovalCannotConfirm"
     ],
     "com.alexandr5476.lifetracing.history.ManualActivityEntryScreenTest": [
       "failedTerminalCatalogRetryRestoresSelectableLastPageAndRevokesRetry",
@@ -1502,7 +1509,9 @@
       "nativeSequenceTimingCorrectionReopensCanonicalDateChildIntervalStatisticsAndFulfilledPlan",
       "nativeSequenceDstNoLiveCommitReadFailureRetriesReadOnlyAndReopensCanonicalFacts",
       "nativeSequenceChildDeletionPreservesFulfilledPlanAndCanonicalProjectionsAfterPhysicalReopen",
-      "russianScaledEndedEarlyNoLiveChildDeletionRecoversReadOnlyAndPhysicallyReopensTombstone"
+      "russianScaledEndedEarlyNoLiveChildDeletionRecoversReadOnlyAndPhysicallyReopensTombstone",
+      "nativeStructuralCloseGapPlacesOwnerlessIntervalMovesChildPauseAndPhysicallyReopensProjections",
+      "nativeStructuralLeaveGapRemovesChildTombstoneAndPhysicallyReopensCanonicalProjections"
     ],
     "com.alexandr5476.lifetracing.ui.NativeWindowDiagnosticsTest": [
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",

@@ -56,6 +56,58 @@ import kotlin.coroutines.CoroutineContext
 
 class SequenceHistoryAdmissionTest {
     @Test
+    fun structuralAdmissionKeepsDeletedChildrenEligibleAndRejectsMissingOrMismatchedFacts() {
+        val base = SequenceAdmissionFacts.detail()
+        val first = base.occurrences.first()
+        val tombstone = first.copy(status = RuntimeOccurrenceStatus.DELETED_EXECUTION, child = null)
+        val action = SequenceHistoryMutationAction.BeginStructuralRemoval(first.occurrenceId)
+        for (status in listOf(SequenceExecutionStatus.COMPLETED, SequenceExecutionStatus.ENDED_EARLY)) {
+            for (target in listOf(first, tombstone)) {
+                val detail =
+                    base.copy(
+                        root = base.root.copy(status = status),
+                        occurrences = listOf(target),
+                        intervals = emptyList(),
+                    )
+                val state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail))
+                assertTrue(sequenceHistoryActionAllowed(detail.root.executionId, state, action))
+                val proposal =
+                    requireNotNull(
+                        SequenceHistoryProposalBuilder.structural(
+                            detail,
+                            target.occurrenceId,
+                            SequenceHistoryStructuralRemovalMode.LEAVE_GAP,
+                        ),
+                    )
+                assertEquals(target.occurrenceId, proposal.command?.occurrenceId)
+                assertEquals(target.childMutationFacts?.executionId, proposal.command?.childExecutionId)
+                assertEquals(detail.updatedAt, proposal.command?.expectedUpdatedAt)
+            }
+        }
+        val invalid =
+            listOf(
+                first.copy(child = null),
+                first.copy(childMutationFacts = null),
+                first.copy(isDeletedFromHistory = true),
+                first.copy(activitySnapshotId = ActivitySnapshotId("wrong-snapshot")),
+                first.copy(
+                    childMutationFacts =
+                        first.childMutationFacts!!.copy(
+                            executionId = ActivityExecutionId("wrong-child"),
+                        ),
+                ),
+                first.copy(status = RuntimeOccurrenceStatus.NOT_STARTED),
+                first.copy(status = RuntimeOccurrenceStatus.CURRENT),
+                first.copy(status = RuntimeOccurrenceStatus.SKIPPED),
+            )
+        for (target in invalid) {
+            val detail = base.copy(occurrences = listOf(target), intervals = emptyList())
+            val state = SequenceHistoryMutationState(load = HistoryDetailLoad.Content(detail))
+            assertFalse(sequenceHistoryActionAllowed(detail.root.executionId, state, action), target.toString())
+        }
+    }
+
+    @Test
     fun childDeletionSelectionUsesExactIdsAndFrozenProvenanceForEqualLookingChildren() {
         val base = SequenceAdmissionFacts.detail()
         val first = base.occurrences.first()
@@ -353,6 +405,21 @@ class SequenceHistoryAdmissionTest {
                 f.controller.state.value.childDeletionProposal
                     ?.childExecutionId,
             )
+            f.send(SequenceHistoryMutationAction.Cancel)
+            f.send(SequenceHistoryMutationAction.BeginStructuralRemoval(duplicate.occurrenceId))
+            f.send(SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.LEAVE_GAP))
+            val structural =
+                requireNotNull(
+                    f.controller.state.value.structuralProposal
+                        ?.command,
+                )
+            assertEquals(duplicate.occurrenceId, structural.occurrenceId)
+            assertEquals(duplicate.childMutationFacts!!.executionId, structural.childExecutionId)
+            assertEquals(base.updatedAt, structural.expectedUpdatedAt)
+            assertEquals(first.activitySnapshotId, duplicate.activitySnapshotId)
+            assertEquals(first.enteredAt, duplicate.enteredAt)
+            assertEquals(first.completedAt, duplicate.completedAt)
+            assertEquals(0, f.writes)
             f.send(SequenceHistoryMutationAction.Cancel)
             f.send(SequenceHistoryMutationAction.RequestChildDeletion(SequenceOccurrenceId("absent")))
             assertNull(f.controller.state.value.childDeletionProposal)

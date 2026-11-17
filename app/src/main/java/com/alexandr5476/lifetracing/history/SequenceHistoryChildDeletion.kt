@@ -159,7 +159,7 @@ private fun DeletionSummary(
 
 /** Heading landing borrows read-only S1 ownership and rechecks after the frame. */
 @Composable
-private fun deletionHeadingFocus(lease: SequenceHistoryNavigation): Modifier {
+internal fun deletionHeadingFocus(lease: SequenceHistoryNavigation): Modifier {
     val requester = remember { FocusRequester() }
     var attached by remember { mutableStateOf(false) }
     var landed by remember { mutableStateOf(false) }

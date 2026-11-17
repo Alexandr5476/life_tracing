@@ -71,7 +71,7 @@ internal fun SequenceHistoryDetail.represents(
                 occurrence.childMutationFacts?.executionId == element.executionId
         is SequenceHistoryFocusElement.RemoveOccurrence ->
             canRemove &&
-                !occurrence.isDeletedFromHistory &&
+                occurrence.canRemoveOccurrence() &&
                 occurrence.status in
                 setOf(
                     RuntimeOccurrenceStatus.COMPLETED,

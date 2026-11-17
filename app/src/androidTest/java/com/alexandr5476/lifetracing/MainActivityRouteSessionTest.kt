@@ -152,7 +152,14 @@ class MainActivityRouteSessionTest {
     fun sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation() =
         sequenceHistoryRecreation(childDeletion = true)
 
-    private fun sequenceHistoryRecreation(childDeletion: Boolean) {
+    @Test
+    fun sequenceStructuralSessionAndCommittedRefreshGateSurviveActivityRecreation() =
+        sequenceHistoryRecreation(childDeletion = false, structural = true)
+
+    private fun sequenceHistoryRecreation(
+        childDeletion: Boolean,
+        structural: Boolean = false,
+    ) {
         val authoring = TemplateAuthoringRepository.create(composeTestRule.activity)
         val live = LiveSessionRepository.create(composeTestRule.activity)
         clearLiveSession(live)
@@ -218,7 +225,14 @@ class MainActivityRouteSessionTest {
                         commands.deleteChildHistory(id, command, time)
                     }
                 },
-                { _, _, _ -> error("unused removal") },
+                { id, command, time ->
+                    entered.complete(Unit)
+                    release.await()
+                    withContext(Dispatchers.IO) {
+                        writes.incrementAndGet()
+                        commands.removeOccurrenceHistory(id, command, time)
+                    }
+                },
             )
         try {
             composeTestRule.runOnUiThread {
@@ -239,7 +253,20 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
-            if (childDeletion) {
+            if (structural) {
+                val occurrence = canonical.occurrences.single()
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${occurrence.occurrenceId.value}")
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-remove-occurrence-${occurrence.occurrenceId.value}",
+                    ).performScrollTo()
+                    .performClick()
+                composeTestRule.onNodeWithTag("sequence-history-leave-gap").assertIsDisplayed().performClick()
+                composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
+            } else if (childDeletion) {
                 val occurrence = canonical.occurrences.single()
                 composeTestRule
                     .onNodeWithTag(
@@ -289,7 +316,13 @@ class MainActivityRouteSessionTest {
             composeTestRule.runOnUiThread { session.deliverRefresh(1) { duplicateDeliveries++ } }
             assertEquals(0, duplicateDeliveries)
             assertEquals(1, writes.get())
-            if (childDeletion) {
+            if (structural) {
+                assertEquals(
+                    com.alexandr5476.lifetracing.history.SequenceHistoryCommittedMutation.STRUCTURAL,
+                    controller.state.value.committedMutation,
+                )
+                assertTrue(history.getSequenceDetail(started.execution.id)!!.occurrences.isEmpty())
+            } else if (childDeletion) {
                 assertEquals(
                     com.alexandr5476.lifetracing.history.SequenceHistoryCommittedMutation.CHILD_DELETION,
                     controller.state.value.committedMutation,
@@ -324,7 +357,13 @@ class MainActivityRouteSessionTest {
                     ?.value
                     ?.load is HistoryDetailLoad.Content
             }
-            if (childDeletion) {
+            if (structural) {
+                assertTrue(history.getSequenceDetail(started.execution.id)!!.occurrences.isEmpty())
+                composeTestRule
+                    .onNodeWithTag(
+                        "sequence-history-remove-occurrence-${canonical.occurrences.single().occurrenceId.value}",
+                    ).assertDoesNotExist()
+            } else if (childDeletion) {
                 val occurrence = canonical.occurrences.single()
                 composeTestRule
                     .onNodeWithTag(

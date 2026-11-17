@@ -28,6 +28,42 @@ import kotlin.coroutines.CoroutineContext
 
 class SequenceHistoryNavigationTest {
     @Test
+    fun structuralNavigationChecksPublicationBeforeScrollAndAttachedFocus() {
+        for (afterScroll in listOf(false, true)) {
+            val f = Fixture()
+            try {
+                val navigation = StructuralListNavigation(f.lease)
+                var scrolls = 0
+                navigation.go(9_999, f.scope) { scrolls++ }
+                val jump = requireNotNull(navigation.pending)
+                assertFalse(navigation.focus(jump, true, true) { error("Focus before scroll") })
+                f.queue.drain()
+                if (afterScroll) f.nextFrame()
+                f.state = f.state.copy(publication = 1)
+                f.nextFrame()
+                assertEquals(if (afterScroll) 1 else 0, scrolls)
+                assertFalse(navigation.focus(jump, true, true) { error("Obsolete publication focus") })
+                val lease = SequenceHistoryNavigation({ true })
+                val fresh = StructuralListNavigation(lease)
+                fresh.go(5_000, f.scope) { scrolls++ }
+                f.nextFrame()
+                val current = requireNotNull(fresh.pending)
+                assertFalse(fresh.focus(current, false, true) { error("Detached native target") })
+                assertFalse(fresh.focus(current, true, false) { error("Hidden native target") })
+                assertTrue(fresh.focus(current, true, true) { true })
+                assertNull(fresh.pending)
+                fresh.go(1, f.scope) { error("Disposed stage scroll") }
+                fresh.dispose()
+                f.nextFrame()
+                assertNull(fresh.pending)
+                assertEquals(0, f.writes)
+            } finally {
+                f.scope.cancel()
+            }
+        }
+    }
+
+    @Test
     fun revokedTimingJumpDiscardsItsPendingFocus() {
         val fixture = Fixture()
         try {
