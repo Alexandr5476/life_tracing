@@ -133,12 +133,12 @@ class HistoryScreenPresentationTest {
             click()
             f.present.value = true
         }
-        button.performScrollTo().assertIsEnabled()
+        val reopened = sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().assertIsEnabled()
         composeTestRule.runOnIdle {
             click()
             assertEquals(null, f.controller.state.value.timingDraft)
         }
-        button.performClick()
+        reopened.performClick()
         composeTestRule.runOnIdle { assertTrue(f.controller.state.value.timingDraft != null) }
     }
 
@@ -183,12 +183,13 @@ class HistoryScreenPresentationTest {
         val click = button.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         button.performClick()
         composeTestRule.runOnIdle {
+            assertTrue(f.controller.state.value.timingDraft != null)
             f.controller.dispatch(SequenceHistoryMutationAction.Cancel)
             click()
         }
         composeTestRule.runOnIdle { assertEquals(null, f.controller.state.value.timingDraft) }
         val current =
-            button
+            sequenceItem("sequence:timing", "sequence-history-timing")
                 .performScrollTo()
                 .fetchSemanticsNode()
                 .config[SemanticsActions.OnClick]
@@ -199,7 +200,8 @@ class HistoryScreenPresentationTest {
             current()
             assertEquals(null, old.controller.state.value.timingDraft)
         }
-        button.performScrollTo().performClick()
+        composeTestRule.waitUntil(2_000) { f.session.value.controller.state.value.load is HistoryDetailLoad.Content }
+        sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().assertIsEnabled().performClick()
         composeTestRule.runOnIdle { assertTrue(f.session.value.controller.state.value.timingDraft != null) }
     }
 
@@ -207,6 +209,7 @@ class HistoryScreenPresentationTest {
     fun sequenceNativeTimestampAcceptsRepeatedEventsAndRejectsReviewedOrDisposedEditor() {
         val f = admissionRoute()
         sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-timing-list").performScrollToKey("root-ended")
         val field = composeTestRule.onNodeWithTag("sequence-history-timestamp-root-ended").performScrollTo()
         val edit = field.fetchSemanticsNode().config[SemanticsActions.SetText].action!!
         composeTestRule.runOnIdle {
@@ -222,6 +225,7 @@ class HistoryScreenPresentationTest {
             assertFalse(edit(AnnotatedString("stale")))
         }
         sequenceItem("sequence:timing", "sequence-history-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-timing-list").performScrollToKey("root-ended")
         val fresh =
             field
                 .performScrollTo()
