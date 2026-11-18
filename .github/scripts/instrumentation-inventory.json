@@ -1588,9 +1588,11 @@
     "com.alexandr5476.lifetracing.history.SequenceHistoryPresentationTest": [
       "capturedReadOnlySectionActionCannotReviveAfterHiddenRoundTrip",
       "childOwnZoneNoLiveMissingAndTimedZeroRemainDistinctFromTombstone",
+      "closeGapReviewExposesMovedIntervalOwnersAndExactEndpointsInBothLanguages",
       "crossDaySpringTransitionPreservesBothRootDatesAndOffsets",
       "englishRussianAndScaleExtremesReachOffscreenSummariesAndNativeControls",
       "identicalOccurrencesExposeIndependentIdentityFrozenSourceRepeatAndEveryReason",
+      "intervalOrdinalsFocusExactCanonicalEndpointsWithBoundedComposition",
       "intervalsExposeEveryKindExactIdentityOwnershipAndEndpointPrecision",
       "keyboardSummaryFocusSurvivesPublicationAndRecoversAfterCanonicalRemoval",
       "keyboardTraversesReadOnlyHeadingAndNativeMutationControlWithoutInvokingActions",
