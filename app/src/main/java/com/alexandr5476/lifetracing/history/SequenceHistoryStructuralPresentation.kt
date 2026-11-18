@@ -58,6 +58,7 @@ import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
+import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceTimelineCalculator
 import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
@@ -90,6 +91,7 @@ private class StructuralContext(
     val detail: SequenceHistoryDetail,
 ) {
     val occurrences = detail.occurrences.associateBy { it.occurrenceId }
+    val intervals = detail.intervals.associateBy { it.id }
     val deletedChildIds =
         detail.occurrences
             .filter { it.status == RuntimeOccurrenceStatus.DELETED_EXECUTION }
@@ -626,6 +628,27 @@ private fun structuralInterval(
         (end?.let { exactHistoricalTimestamp(it, zone) } ?: stringResource(R.string.history_missing_value))
 
 @Composable
+private fun structuralIntervalEndpointLabel(
+    context: StructuralContext,
+    intervalId: SequenceIntervalId,
+    endpointLabel: Int,
+): String {
+    val interval = context.intervals.getValue(intervalId)
+    val owner = interval.occurrenceId?.let(context.occurrences::getValue)
+    return buildList {
+        add(stringResource(endpointLabel, interval.id.value))
+        add(stringResource(intervalKindResource(interval.kind)))
+        if (owner == null) {
+            add(stringResource(R.string.sequence_history_ownerless))
+        } else {
+            add(stringResource(R.string.sequence_history_owner_id, owner.occurrenceId.value))
+            val status = stringResource(occurrenceStatusResource(owner.status))
+            add(stringResource(R.string.sequence_structural_interval_owner_status, status))
+        }
+    }.joinToString(". ")
+}
+
+@Composable
 private fun structuralChangeText(
     context: StructuralContext,
     change: SequenceHistoryPreviewChange,
@@ -689,14 +712,16 @@ private fun structuralChangeText(
                             occurrenceText(requireNotNull(owner)),
                         )
                     is SequenceHistoryTimestampTarget.IntervalStartedAt ->
-                        stringResource(
+                        structuralIntervalEndpointLabel(
+                            context,
+                            target.intervalId,
                             R.string.sequence_history_interval_started,
-                            target.intervalId.value,
                         )
                     is SequenceHistoryTimestampTarget.IntervalEndedAt ->
-                        stringResource(
+                        structuralIntervalEndpointLabel(
+                            context,
+                            target.intervalId,
                             R.string.sequence_history_interval_ended,
-                            target.intervalId.value,
                         )
                 } +
                     if (child) {

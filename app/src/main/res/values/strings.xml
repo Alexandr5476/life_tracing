@@ -942,6 +942,9 @@
     <string name="sequence_history_actual_option">Recorded option ID: %1$s</string>
     <string name="sequence_history_go_position">Occurrence in the list (1–%1$d)</string>
     <string name="sequence_history_go">Go to occurrence</string>
+    <string name="sequence_history_go_interval_position">Interval in the list (1–%1$d)</string>
+    <string name="sequence_history_go_interval">Go to interval</string>
+    <string name="sequence_structural_interval_owner_status">Owner status: %1$s</string>
     <string name="sequence_history_unit">Field unit: %1$s</string>
     <string name="sequence_history_deleted_child_id">Deleted child execution ID: %1$s</string>
     <string name="sequence_history_runtime_position">Stored runtime position (from zero): %1$d</string>

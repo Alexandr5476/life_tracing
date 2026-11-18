@@ -83,6 +83,7 @@ import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceHistoryField
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
 import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrenceActivity
+import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
 import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalId
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
@@ -796,6 +797,9 @@ class SequenceHistoryPresentationTest {
             selectedKey = null
             val section = text(R.string.history_intervals)
             val click = requireNotNull(section.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+            compose.onNodeWithTag("sequence-history-go-interval-position").performScrollTo().performTextReplacement("5")
+            val intervalJump = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
+            val jumpClick = requireNotNull(intervalJump.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
             val inputFocus =
                 requireNotNull(
                     compose
@@ -809,9 +813,11 @@ class SequenceHistoryPresentationTest {
             compose.runOnIdle {
                 visible.value = false
                 click()
+                jumpClick()
                 assertFalse(inputFocus())
                 visible.value = true
                 click()
+                jumpClick()
                 assertFalse(inputFocus())
             }
             compose.waitForIdle()
@@ -823,6 +829,8 @@ class SequenceHistoryPresentationTest {
                 assertEquals(1, reads)
                 assertEquals(0, writes)
             }
+            section.performScrollTo()
+            keyboard.enter(section)
             section.performClick()
             keyboard.awaitFocus(
                 compose.onNode(
@@ -830,6 +838,16 @@ class SequenceHistoryPresentationTest {
                         SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading),
                 ),
             )
+            scroll("sequence:navigation")
+            compose.onNodeWithTag("sequence-history-go-interval-position").performTextReplacement("5")
+            val freshJump = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
+            keyboard.enter(freshJump)
+            freshJump.performSemanticsAction(SemanticsActions.OnClick)
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-interval-summary-i4"))
+            compose.runOnIdle {
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+            }
         } finally {
             scope.cancel()
         }
@@ -1006,6 +1024,12 @@ class SequenceHistoryPresentationTest {
         }
         cases.indices.forEach { index ->
             compose.runOnIdle { scale.value = index }
+            scroll("sequence:navigation")
+            val intervalPosition = compose.onNodeWithTag("sequence-history-go-interval-position").performScrollTo()
+            intervalPosition.performTextReplacement("5")
+            val goInterval = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
+            val goLabel = if (cases[index].first.language == "ru") "Перейти к интервалу" else "Go to interval"
+            goInterval.assertIsDisplayed().assert(hasText(goLabel))
             for ((key, tag) in listOf(
                 "sequence:root" to "sequence-history-root",
                 "sequence:timing" to "sequence-history-timing",
@@ -1841,6 +1865,247 @@ class SequenceHistoryPresentationTest {
         CompositionLocalProvider(LocalHistoryFocus provides focus) {
             LifeTracingAccessibleTargets { LifeTracingTheme(content = content) }
         }
+    }
+
+    @Test
+    fun intervalOrdinalsFocusExactCanonicalEndpointsWithBoundedComposition() {
+        val owner = occurrence(0)
+        val intervals =
+            List(6_000) { index ->
+                SequenceInterval(
+                    SequenceIntervalId("jump-$index"),
+                    if (index % 2 == 0) SequenceIntervalKind.ACTIVE_STEP else SequenceIntervalKind.IMPLICIT_IDLE,
+                    start.plusMillis(index.toLong()),
+                    end,
+                    owner.occurrenceId.takeIf { index % 2 == 0 },
+                )
+            }
+        val canonical = mutableStateOf(detail(listOf(owner)).copy(intervals = intervals), referentialEqualityPolicy())
+        compose.setContent { TestTheme { SequenceDetail(canonical.value) } }
+
+        fun jump(
+            ordinal: Int,
+            expected: SequenceInterval,
+            useKeyboard: Boolean,
+        ) {
+            scroll("sequence:navigation")
+            compose
+                .onNodeWithTag("sequence-history-go-interval-position")
+                .performScrollTo()
+                .performTextReplacement(ordinal.toString())
+            val go = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
+            keyboard.enter(go)
+            if (useKeyboard) {
+                go.performSemanticsAction(SemanticsActions.RequestFocus)
+                keyboard.awaitFocus(go)
+                compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+            } else {
+                go.performSemanticsAction(SemanticsActions.OnClick)
+            }
+            val summary = compose.onNodeWithTag("sequence-interval-summary-${expected.id.value}")
+            keyboard.awaitFocus(summary)
+            val context = compose.activity
+            summary.assert(hasText(context.getString(R.string.sequence_history_interval_id, expected.id.value)))
+            val started = exactHistoricalTimestamp(expected.startedAt, zone)
+            val ended = exactHistoricalTimestamp(requireNotNull(expected.endedAt), zone)
+            summary.assert(hasText(context.getString(R.string.history_interval_started, started)))
+            summary.assert(hasText(context.getString(R.string.history_interval_ended, ended)))
+            val intervalSummary =
+                SemanticsMatcher("interval summary") {
+                    it.config.contains(SemanticsProperties.TestTag) &&
+                        it.config[SemanticsProperties.TestTag].startsWith("sequence-interval-summary-")
+                }
+            val visibleIntervals = compose.onAllNodes(intervalSummary).fetchSemanticsNodes().size
+            assertTrue("Composed $visibleIntervals of ${intervals.size} intervals", visibleIntervals in 1..40)
+        }
+
+        jump(1, intervals.first(), useKeyboard = true)
+        jump(3_001, intervals[3_000], useKeyboard = false)
+        jump(6_000, intervals.last(), useKeyboard = true)
+        compose.runOnIdle { canonical.value = canonical.value.copy(intervals = intervals.reversed()) }
+        jump(6_000, intervals.first(), useKeyboard = false)
+    }
+
+    @Test
+    fun closeGapReviewExposesMovedIntervalOwnersAndExactEndpointsInBothLanguages() {
+        val selected = closeGapIntervalDetail()
+        val target = selected.occurrences.first()
+        val unperformed = selected.occurrences.drop(2)
+        val locale = mutableStateOf(Locale.US)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var writes = 0
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                selected.root.executionId,
+                { selected },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        val session = SequenceHistoryMutationRouteSession(selected.root.executionId, controller)
+        try {
+            compose.setContent {
+                val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale.value) }
+                val context = LocalContext.current.createConfigurationContext(configuration)
+                CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                    TestTheme { SequenceHistoryDetailRoute(session, {}, {}) }
+                }
+            }
+            compose.waitUntil { controller.state.value.load is HistoryDetailLoad.Content }
+            scroll("occurrence:${target.occurrenceId.value}")
+            compose
+                .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}")
+                .performScrollTo()
+                .performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithTag("sequence-history-close-gap").performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithTag("sequence-structural-placements-list").performScrollToKey("choice:ownerless")
+            compose
+                .onNodeWithTag("sequence-history-ownerless-ownerless-translated")
+                .performScrollTo()
+                .performSemanticsAction(SemanticsActions.OnClick)
+
+            val proposal = requireNotNull(controller.state.value.structuralProposal)
+            val command = requireNotNull(proposal.command)
+            val performed = selected.occurrences[1]
+            assertEquals(SequenceHistoryStructuralRemovalMode.CLOSE_GAP, command.mode)
+            assertEquals(performed.occurrenceId, command.occurrenceTimings.single().occurrenceId)
+            assertEquals(performed.child?.executionId, command.childTimings.single().executionId)
+            assertTrue(
+                proposal.changes.none { change ->
+                    change is SequenceHistoryPreviewChange.Timestamp &&
+                        unperformed.any { owner ->
+                            val key = timestampTargetKey(change.target)
+                            key.startsWith("occurrence-${owner.occurrenceId.value}-") ||
+                                key.startsWith("child-${owner.occurrenceId.value}-")
+                        }
+                },
+            )
+            val list = compose.onNodeWithTag("sequence-structural-review-list")
+            val confirm = compose.onNodeWithTag("sequence-history-confirm-structural")
+            val retainedConfirm = requireNotNull(confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+
+            val russian = Locale.forLanguageTag("ru")
+            for (language in listOf(Locale.US, russian)) {
+                compose.runOnIdle { locale.value = language }
+                val configuration = Configuration(compose.activity.resources.configuration)
+                configuration.setLocale(language)
+                val context = compose.activity.createConfigurationContext(configuration)
+                for (interval in selected.intervals.drop(1)) {
+                    val owner = selected.occurrences.firstOrNull { it.occurrenceId == interval.occurrenceId }
+                    val ownerText =
+                        if (owner == null) {
+                            context.getString(R.string.sequence_history_ownerless)
+                        } else {
+                            val ownerId =
+                                context.getString(R.string.sequence_history_owner_id, owner.occurrenceId.value)
+                            val status = context.getString(occurrenceStatusResource(owner.status))
+                            val statusLabel = if (language == russian) "Статус владельца" else "Owner status"
+                            "$ownerId. $statusLabel: $status"
+                        }
+                    val kind = context.getString(intervalKindResource(interval.kind))
+                    val endpoints = listOf("started" to interval.startedAt, "ended" to requireNotNull(interval.endedAt))
+                    for ((endpoint, before) in endpoints) {
+                        val key = "timestamp:interval-${interval.id.value}-$endpoint"
+                        list.performScrollToKey(key)
+                        val row = compose.onNodeWithTag("sequence-structural-change-$key")
+                        val label =
+                            context.getString(
+                                if (endpoint == "started") {
+                                    R.string.sequence_history_interval_started
+                                } else {
+                                    R.string.sequence_history_interval_ended
+                                },
+                                interval.id.value,
+                            )
+                        val expected =
+                            context.getString(
+                                R.string.sequence_timing_before_after,
+                                "$label. $kind. $ownerText",
+                                exactHistoricalTimestamp(before, zone),
+                                exactHistoricalTimestamp(before.minusSeconds(60), zone),
+                            )
+                        row.assertIsDisplayed().assert(hasText(expected))
+                    }
+                }
+            }
+            compose.onNodeWithTag("sequence-structural-cancel").performSemanticsAction(SemanticsActions.OnClick)
+            compose.runOnIdle {
+                retainedConfirm()
+                assertEquals(null, controller.state.value.structuralProposal)
+                assertEquals(0, writes)
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    private fun closeGapIntervalDetail(): SequenceHistoryDetail {
+        fun timed(
+            index: Int,
+            startSeconds: Long,
+            endSeconds: Long,
+        ): SequenceHistoryOccurrence {
+            val base = occurrence(index)
+            val entered = start.plusSeconds(startSeconds)
+            val completed = start.plusSeconds(endSeconds)
+            return base.copy(
+                enteredAt = entered,
+                completedAt = completed,
+                child =
+                    requireNotNull(base.child).copy(
+                        startedAt = entered,
+                        completedAt = completed,
+                        activeDuration = Duration.between(entered, completed),
+                    ),
+                childMutationFacts =
+                    requireNotNull(base.childMutationFacts).copy(startedAt = entered, completedAt = completed),
+            )
+        }
+        val target = timed(0, 10, 70)
+        val performed = timed(1, 1_600, 1_660)
+        val notStarted = occurrence(2, RuntimeOccurrenceStatus.NOT_STARTED)
+        val skipped = occurrence(3, RuntimeOccurrenceStatus.SKIPPED)
+        return detail(listOf(target, performed, notStarted, skipped)).copy(
+            intervals =
+                listOf(
+                    SequenceInterval(
+                        SequenceIntervalId("target"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        requireNotNull(target.enteredAt),
+                        target.completedAt,
+                        target.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("active"),
+                        SequenceIntervalKind.ACTIVE_STEP,
+                        requireNotNull(performed.enteredAt),
+                        performed.completedAt,
+                        performed.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("not-started-countdown"),
+                        SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                        start.plusSeconds(1_800),
+                        start.plusSeconds(1_810),
+                        notStarted.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("skipped-countdown"),
+                        SequenceIntervalKind.TRANSITION_COUNTDOWN,
+                        start.plusSeconds(1_820),
+                        start.plusSeconds(1_830),
+                        skipped.occurrenceId,
+                    ),
+                    SequenceInterval(
+                        SequenceIntervalId("ownerless"),
+                        SequenceIntervalKind.EXPLICIT_PAUSE,
+                        start.plusSeconds(1_900),
+                        start.plusSeconds(1_910),
+                        null,
+                    ),
+                ),
+        )
     }
 
     private var selectedKey: String? = null

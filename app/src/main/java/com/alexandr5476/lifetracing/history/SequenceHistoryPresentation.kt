@@ -293,83 +293,116 @@ private fun SequenceSectionNavigation(
     hasIssue: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    var ordinal by remember { mutableStateOf("") }
     val navigation = requireNotNull(LocalSequenceNavigationFocus.current)
     val lease = navigation.lease
     val available = scope.isActive && lease.isCurrent()
-    val controlFocus =
-        historyFocusTarget(enabled = available).focusProperties {
-            canFocus =
-                scope.isActive &&
-                lease.canFocus()
-        }
-    val goEnabled = available && ordinal.toIntOrNull()?.let { it in 1..detail.occurrences.size } == true
+    val focusPolicy = Modifier.focusProperties { canFocus = scope.isActive && lease.canFocus() }
 
     // Section offsets use only collection sizes and optional prefix items; no collection scan.
-    fun go(key: String) {
+    val fieldsIndex = 2 + (if (hasTiming) 1 else 0) + (if (hasIssue) 1 else 0)
+    val occurrencesIndex = fieldsIndex + 2 + detail.fields.size.coerceAtLeast(1)
+    val intervalsHeadingIndex = occurrencesIndex + detail.occurrences.size
+
+    fun go(
+        key: String,
+        index: Int,
+    ) {
         if (!scope.isActive || !lease.isCurrent()) return
-        val index = if (key == "occurrence") ordinal.toIntOrNull()?.minus(1) else null
-        if (key == "occurrence" && (index == null || index !in detail.occurrences.indices)) return
         navigation.pending = null
         lease.launch(scope) {
             withFrameNanos { }
             if (!lease.isCurrent()) return@launch
-            val fieldsIndex = 2 + (if (hasTiming) 1 else 0) + (if (hasIssue) 1 else 0)
-            val occurrencesIndex = fieldsIndex + 2 + (if (detail.fields.isEmpty()) 1 else detail.fields.size)
-            navigation.pending =
-                SequenceNavigationRequest(
-                    when (key) {
-                        "fields" -> "sequence:fields-heading"
-                        "intervals" -> "sequence:intervals-heading"
-                        else -> "occurrence:${detail.occurrences[requireNotNull(index)].occurrenceId.value}"
-                    },
-                )
+            navigation.pending = SequenceNavigationRequest(key)
             // Synchronous request: no scroll-mutex suspension can run past the authority check.
-            state.requestScrollToItem(
-                when (key) {
-                    "fields" -> fieldsIndex
-                    "intervals" -> occurrencesIndex + detail.occurrences.size
-                    else -> occurrencesIndex + requireNotNull(index)
-                },
-            )
+            state.requestScrollToItem(index)
         }
     }
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        TextButton(
-            onClick = { go("fields") },
-            enabled = available,
-            modifier = controlFocus.historyActionSemantics({ go("fields") }).testTag("sequence-history-section-fields"),
-        ) { Text(stringResource(R.string.history_sequence_fields)) }
-        TextButton(
-            onClick = { go("intervals") },
-            enabled = available,
-            modifier =
-                historyFocusTarget(enabled = available)
-                    .focusProperties { canFocus = scope.isActive && lease.canFocus() }
-                    .historyActionSemantics({ go("intervals") })
-                    .testTag("sequence-history-section-intervals"),
-        ) { Text(stringResource(R.string.history_intervals)) }
-        LifeTracingOutlinedTextField(
-            value = ordinal,
-            onValueChange = { if (scope.isActive && lease.isCurrent()) ordinal = it },
-            enabled = available,
-            label = { Text(stringResource(R.string.sequence_history_go_position, detail.occurrences.size)) },
-            modifier =
-                historyFocusTarget(enabled = available)
-                    .focusProperties { canFocus = scope.isActive && lease.canFocus() }
-                    .fillMaxWidth()
-                    .testTag("sequence-history-go-position"),
-        )
-        TextButton(
-            onClick = { go("occurrence") },
-            enabled = goEnabled,
-            modifier =
-                historyFocusTarget(enabled = goEnabled)
-                    .focusProperties { canFocus = goEnabled && scope.isActive && lease.canFocus() }
-                    .historyActionSemantics({ go("occurrence") })
-                    .testTag("sequence-history-go"),
-        ) { Text(stringResource(R.string.sequence_history_go)) }
+
+    Column {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            val goFields = { go("sequence:fields-heading", fieldsIndex) }
+            val goIntervals = { go("sequence:intervals-heading", intervalsHeadingIndex) }
+            TextButton(
+                onClick = goFields,
+                enabled = available,
+                modifier =
+                    historyFocusTarget(enabled = available)
+                        .then(focusPolicy)
+                        .historyActionSemantics(goFields)
+                        .testTag("sequence-history-section-fields"),
+            ) { Text(stringResource(R.string.history_sequence_fields)) }
+            TextButton(
+                onClick = goIntervals,
+                enabled = available,
+                modifier =
+                    historyFocusTarget(enabled = available)
+                        .then(focusPolicy)
+                        .historyActionSemantics(goIntervals)
+                        .testTag("sequence-history-section-intervals"),
+            ) { Text(stringResource(R.string.history_intervals)) }
+        }
+        SequenceOrdinalNavigation(
+            detail.occurrences.size,
+            R.string.sequence_history_go_position,
+            R.string.sequence_history_go,
+            "sequence-history-go",
+            lease,
+        ) { index ->
+            go("occurrence:${detail.occurrences[index].occurrenceId.value}", occurrencesIndex + index)
+        }
+        if (detail.intervals.isNotEmpty()) {
+            SequenceOrdinalNavigation(
+                detail.intervals.size,
+                R.string.sequence_history_go_interval_position,
+                R.string.sequence_history_go_interval,
+                "sequence-history-go-interval",
+                lease,
+            ) { index ->
+                go("interval:${detail.intervals[index].id.value}", intervalsHeadingIndex + 1 + index)
+            }
+        }
     }
+}
+
+@Composable
+private fun SequenceOrdinalNavigation(
+    count: Int,
+    ordinalLabel: Int,
+    buttonLabel: Int,
+    tag: String,
+    lease: SequenceHistoryNavigation,
+    go: (Int) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var ordinal by remember { mutableStateOf("") }
+
+    fun position(): Int? = ordinal.toIntOrNull()?.takeIf { it in 1..count }?.minus(1)
+
+    val available = scope.isActive && lease.isCurrent()
+    val goEnabled = available && position() != null
+    val jump: () -> Unit = {
+        if (scope.isActive && lease.isCurrent()) position()?.let(go)
+    }
+    LifeTracingOutlinedTextField(
+        value = ordinal,
+        onValueChange = { if (scope.isActive && lease.isCurrent()) ordinal = it },
+        enabled = available,
+        label = { Text(stringResource(ordinalLabel, count)) },
+        modifier =
+            historyFocusTarget(enabled = available)
+                .focusProperties { canFocus = scope.isActive && lease.canFocus() }
+                .fillMaxWidth()
+                .testTag("$tag-position"),
+    )
+    TextButton(
+        onClick = jump,
+        enabled = goEnabled,
+        modifier =
+            historyFocusTarget(enabled = goEnabled)
+                .focusProperties { canFocus = goEnabled && scope.isActive && lease.canFocus() }
+                .then(if (goEnabled) Modifier.historyActionSemantics(jump) else Modifier)
+                .testTag(tag),
+    ) { Text(stringResource(buttonLabel)) }
 }
 
 @Composable

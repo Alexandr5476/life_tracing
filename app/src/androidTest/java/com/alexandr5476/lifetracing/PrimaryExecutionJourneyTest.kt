@@ -121,6 +121,8 @@ import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -1406,7 +1408,6 @@ class PrimaryExecutionJourneyTest {
                 f.useProductionAppearance(if (russian) 120 else 90, if (russian) 130 else 90)
                 f.launch()
                 if (russian) f.applyAppearance("ru", 2f, 120, 130)
-                val graph = LifeTracingRuntimeGraph.from(f.host())
                 val attempts = AtomicInteger()
                 val writes = AtomicInteger()
                 val reads = AtomicInteger()
@@ -1414,7 +1415,7 @@ class PrimaryExecutionJourneyTest {
                 val release = CompletableDeferred<Unit>()
                 val controller =
                     ActivityHistoryMutationController(
-                        graph.scope,
+                        f.historyUiScope(),
                         entry.id,
                         { id ->
                             if (reads.incrementAndGet() == 2 &&
@@ -3407,13 +3408,12 @@ class PrimaryExecutionJourneyTest {
             f.useProductionAppearance(if (noLive) 120 else 90, if (noLive) 130 else 90)
             f.launch()
             if (noLive) f.applyAppearance("ru", 2f, 120, 130)
-            val graph = LifeTracingRuntimeGraph.from(f.host())
             val attempts = AtomicInteger()
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
             val controller =
                 ActivityHistoryMutationController(
-                    graph.scope,
+                    f.historyUiScope(),
                     entry.id,
                     { id ->
                         kotlinx.coroutines.withContext(
@@ -3441,7 +3441,7 @@ class PrimaryExecutionJourneyTest {
                 compose.runOnIdle {
                     f.host().historyControllerOwner.get {
                         com.alexandr5476.lifetracing.history.HistoryController(
-                            graph.scope,
+                            f.historyUiScope(),
                             { query ->
                                 if (controller.state.value.deleted &&
                                     failHistory.get()
@@ -3823,7 +3823,6 @@ class PrimaryExecutionJourneyTest {
             assertTrue(before.intervals.any { it.occurrenceId == null })
             f.launch()
             if (closeGap) f.applyAppearance("ru", 1.5f, 120, 130) else f.applyAppearance("en", 1f, 90, 90)
-            val graph = LifeTracingRuntimeGraph.from(f.host())
             val writes =
                 java.util.concurrent.atomic
                     .AtomicInteger()
@@ -3836,7 +3835,7 @@ class PrimaryExecutionJourneyTest {
                     .AtomicReference<com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand>()
             val controller =
                 SequenceHistoryMutationController(
-                    graph.scope,
+                    f.historyUiScope(),
                     runtime.execution.id,
                     { id ->
                         if (writes.get() > 0 && readFailure.get()) error("committed structural read failure")
@@ -4251,7 +4250,6 @@ class PrimaryExecutionJourneyTest {
             }
             f.launch()
             if (noLive) f.applyAppearance("ru", 1.5f, 120, 130) else f.applyAppearance("en", 1f, 90, 90)
-            val graph = LifeTracingRuntimeGraph.from(f.host())
             val writes =
                 java.util.concurrent.atomic
                     .AtomicInteger()
@@ -4263,7 +4261,7 @@ class PrimaryExecutionJourneyTest {
                     .AtomicReference<com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand>()
             val controller =
                 SequenceHistoryMutationController(
-                    graph.scope,
+                    f.historyUiScope(),
                     runtime.execution.id,
                     { id ->
                         if (writes.get() > 0 &&
@@ -4737,7 +4735,6 @@ class PrimaryExecutionJourneyTest {
                     .activeDuration,
             )
             f.launch()
-            val graph = LifeTracingRuntimeGraph.from(f.host())
             val attempts =
                 java.util.concurrent.atomic
                     .AtomicInteger()
@@ -4749,7 +4746,7 @@ class PrimaryExecutionJourneyTest {
                     .AtomicBoolean(true)
             val controller =
                 SequenceHistoryMutationController(
-                    graph.scope,
+                    f.historyUiScope(),
                     runtime.execution.id,
                     { id ->
                         reads.incrementAndGet()
@@ -4891,6 +4888,10 @@ class PrimaryExecutionJourneyTest {
         private var activity: MainActivity? = null
 
         fun host() = requireNotNull(activity)
+
+        // Match the production History dispatcher while retaining the disposable graph's job.
+        fun historyUiScope(): CoroutineScope =
+            CoroutineScope(LifeTracingRuntimeGraph.from(host()).scope.coroutineContext + Dispatchers.Main.immediate)
 
         private var resourceContext: android.content.Context? = null
         private var originalAppearance: AppearancePreferences? = null
