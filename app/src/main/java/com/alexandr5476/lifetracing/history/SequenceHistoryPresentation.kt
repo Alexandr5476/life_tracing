@@ -171,7 +171,7 @@ internal fun SequenceDetail(
     val focus = LocalHistoryFocus.current
     val lease = rememberSequenceHistoryNavigation(detail, onTiming != null, issue != null)
     val scope = rememberCoroutineScope()
-    val navigation = remember(lease, listState, scope) { SequenceNavigationFocus(lease, listState, scope) }
+    val navigation = remember(lease, listState, scope) { SequenceNavigationFocus(detail, lease, listState, scope) }
     CompositionLocalProvider(LocalSequenceNavigationFocus provides navigation) {
         LaunchedEffect(SequenceDetailReference(detail), onDeleteChild != null, onRemoveOccurrence != null) {
             // Virtualization alone is not removal. Check the focused key only on canonical replacement.
@@ -205,19 +205,11 @@ internal fun SequenceDetail(
                     .fillMaxSize()
                     .testTag("sequence-history-detail-list")
                     .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.F6) {
-                            val section =
-                                if (detail.intervals.isNotEmpty() &&
-                                    (focus.lazyOwner?.startsWith("interval:") == true || detail.occurrences.isEmpty())
-                                ) {
-                                    SequenceDetailOrdinal.INTERVAL
-                                } else {
-                                    SequenceDetailOrdinal.OCCURRENCE
-                                }
-                            navigation.returnTo(section)
-                        } else {
-                            false
-                        }
+                        event.type == KeyEventType.KeyDown &&
+                            event.key == Key.F6 &&
+                            navigation.returnToAvailableOrdinal(
+                                fromInterval = focus.lazyOwner?.startsWith("interval:") == true,
+                            )
                     },
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
         ) {
@@ -279,6 +271,7 @@ internal fun SequenceDetail(
 }
 
 private class SequenceNavigationFocus(
+    private val detail: SequenceHistoryDetail,
     val lease: SequenceHistoryNavigation,
     private val listState: LazyListState,
     private val scope: CoroutineScope,
@@ -286,7 +279,21 @@ private class SequenceNavigationFocus(
     var pending by mutableStateOf<SequenceNavigationRequest?>(null)
     val requester = FocusRequester()
 
-    fun returnTo(section: SequenceDetailOrdinal): Boolean = go(section.fieldTag, SEQUENCE_NAVIGATION_INDEX)
+    fun hasOrdinal(section: SequenceDetailOrdinal): Boolean =
+        when (section) {
+            SequenceDetailOrdinal.OCCURRENCE -> detail.occurrences.isNotEmpty()
+            SequenceDetailOrdinal.INTERVAL -> detail.intervals.isNotEmpty()
+        }
+
+    fun returnToAvailableOrdinal(fromInterval: Boolean): Boolean =
+        when {
+            fromInterval && hasOrdinal(SequenceDetailOrdinal.INTERVAL) -> returnTo(SequenceDetailOrdinal.INTERVAL)
+            hasOrdinal(SequenceDetailOrdinal.OCCURRENCE) -> returnTo(SequenceDetailOrdinal.OCCURRENCE)
+            else -> returnTo(SequenceDetailOrdinal.INTERVAL)
+        }
+
+    fun returnTo(section: SequenceDetailOrdinal): Boolean =
+        hasOrdinal(section) && go(section.fieldTag, SEQUENCE_NAVIGATION_INDEX)
 
     fun go(
         key: String,
@@ -350,7 +357,9 @@ private fun sequenceNavigationTarget(identity: String? = LocalHistoryLazyIdentit
 @Composable
 private fun sequenceOrdinalReturn(section: SequenceDetailOrdinal?): Modifier {
     val navigation = LocalSequenceNavigationFocus.current
-    if (section == null || navigation == null || !navigation.lease.isCurrent()) return Modifier
+    if (section == null || navigation == null || !navigation.hasOrdinal(section) || !navigation.lease.isCurrent()) {
+        return Modifier
+    }
     val scope = rememberCoroutineScope()
     val label = stringResource(R.string.sequence_history_return_to_ordinals)
     return Modifier.semantics {
@@ -404,16 +413,19 @@ private fun SequenceSectionNavigation(
                         .testTag("sequence-history-section-intervals"),
             ) { Text(stringResource(R.string.history_intervals)) }
         }
-        SequenceOrdinalNavigation(
-            detail.occurrences.size,
-            R.string.sequence_history_go_position,
-            R.string.sequence_history_go,
-            SequenceDetailOrdinal.OCCURRENCE,
-            lease,
-        ) { index ->
-            navigation.go("occurrence:${detail.occurrences[index].occurrenceId.value}", occurrencesIndex + index, scope)
+        if (navigation.hasOrdinal(SequenceDetailOrdinal.OCCURRENCE)) {
+            SequenceOrdinalNavigation(
+                detail.occurrences.size,
+                R.string.sequence_history_go_position,
+                R.string.sequence_history_go,
+                SequenceDetailOrdinal.OCCURRENCE,
+                lease,
+            ) { index ->
+                val occurrenceId = detail.occurrences[index].occurrenceId
+                navigation.go("occurrence:${occurrenceId.value}", occurrencesIndex + index, scope)
+            }
         }
-        if (detail.intervals.isNotEmpty()) {
+        if (navigation.hasOrdinal(SequenceDetailOrdinal.INTERVAL)) {
             SequenceOrdinalNavigation(
                 detail.intervals.size,
                 R.string.sequence_history_go_interval_position,

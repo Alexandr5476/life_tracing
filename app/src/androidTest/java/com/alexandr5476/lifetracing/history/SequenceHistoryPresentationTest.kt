@@ -25,6 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -36,12 +40,15 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDisplayed
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -54,6 +61,7 @@ import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Density
 import androidx.lifecycle.Lifecycle
 import com.alexandr5476.lifetracing.R
@@ -1024,14 +1032,22 @@ class SequenceHistoryPresentationTest {
                 TestTheme { SequenceDetail(detail(), onTiming = {}) }
             }
         }
+        val root = compose.onNodeWithTag("sequence-history-root")
+        val intervalsSection = compose.onNodeWithTag("sequence-history-section-intervals")
+        keyboard.enter(root)
         cases.indices.forEach { index ->
             compose.runOnIdle { scale.value = index }
+            // End the previous case's editing focus before checking the scaled browsing layout.
+            scroll("sequence:root")
+            root.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(root)
+            keyboard.closeKeyboard(root)
             scroll("sequence:navigation")
             val intervalPosition = compose.onNodeWithTag("sequence-history-go-interval-position").performScrollTo()
-            intervalPosition.performTextReplacement("5")
+            intervalPosition.performSemanticsAction(SemanticsActions.SetText) { assertTrue(it(AnnotatedString("5"))) }
             val goInterval = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
             val goLabel = if (cases[index].first.language == "ru") "Перейти к интервалу" else "Go to interval"
-            goInterval.assertIsDisplayed().assert(hasText(goLabel))
+            goInterval.assertIsDisplayed().assertIsEnabled().assert(hasText(goLabel))
             for ((key, tag) in listOf(
                 "sequence:root" to "sequence-history-root",
                 "sequence:timing" to "sequence-history-timing",
@@ -1057,13 +1073,16 @@ class SequenceHistoryPresentationTest {
                 } else {
                     "Return to Sequence navigation"
                 }
-            keyboard.enter(interval)
             val intervalReturn = interval.fetchSemanticsNode().config[SemanticsActions.CustomActions].single()
             assertEquals(returnLabel, intervalReturn.label)
             compose.runOnIdle { assertTrue(intervalReturn.action()) }
             keyboard.awaitFocus(intervalPosition)
             intervalPosition.assertIsDisplayed()
+            intervalsSection.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(intervalsSection)
+            keyboard.closeKeyboard(intervalsSection)
             scroll("occurrence:o0")
+            occurrence.assertIsDisplayed()
             val occurrenceReturn = occurrence.fetchSemanticsNode().config[SemanticsActions.CustomActions].single()
             assertEquals(returnLabel, occurrenceReturn.label)
             compose.runOnIdle { assertTrue(occurrenceReturn.action()) }
@@ -1129,8 +1148,7 @@ class SequenceHistoryPresentationTest {
             for (index in listOf(0, targets.size / 2, targets.lastIndex)) {
                 compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement((index + 1).toString())
                 compose.onNodeWithTag("sequence-timing-go").performClick()
-                val field = compose.onNodeWithTag("sequence-history-timestamp-${timestampTargetKey(targets[index])}")
-                field.assertIsDisplayed()
+                awaitTimingDestination("sequence-history-timestamp-${timestampTargetKey(targets[index])}")
                 assertTrue(compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size < 15)
             }
             compose.onNodeWithTag("sequence-timing-section").performSemanticsAction(SemanticsActions.OnClick)
@@ -1140,8 +1158,7 @@ class SequenceHistoryPresentationTest {
                 ).performClick()
             compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("1")
             compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
-            compose
-                .onNodeWithTag("sequence-history-timestamp-occurrence-o0-entered")
+            awaitTimingDestination("sequence-history-timestamp-occurrence-o0-entered")
                 .assert(
                     hasContentDescription(
                         compose.activity.getString(R.string.history_repeat_iteration, 1),
@@ -1154,9 +1171,7 @@ class SequenceHistoryPresentationTest {
             compose.onNodeWithText(compose.activity.getString(R.string.sequence_timing_section_children)).performClick()
             compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement("5001")
             compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
-            compose
-                .onNodeWithTag("sequence-history-timestamp-child-o5000-started")
-                .assertIsDisplayed()
+            awaitTimingDestination("sequence-history-timestamp-child-o5000-started")
                 .assert(hasContentDescription("Europe/Berlin", substring = true))
                 .assert(hasContentDescription("Asia/Tokyo", substring = true))
                 .assert(hasContentDescription("child-o5000", substring = true))
@@ -1290,10 +1305,7 @@ class SequenceHistoryPresentationTest {
             for (index in listOf(0, targets.size / 2, targets.lastIndex)) {
                 compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement((index + 1).toString())
                 compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
-                compose
-                    .onNodeWithTag(
-                        "sequence-history-timestamp-${timestampTargetKey(targets[index])}",
-                    ).assertIsDisplayed()
+                awaitTimingDestination("sequence-history-timestamp-${timestampTargetKey(targets[index])}")
                 assertTrue(compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size < 15)
                 compose.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed()
                 compose
@@ -1324,9 +1336,8 @@ class SequenceHistoryPresentationTest {
                     } else {
                         zone
                     }
-                val summary = compose.onNodeWithTag("sequence-history-change-${timestampTargetKey(change.target)}")
+                val summary = awaitTimingDestination("sequence-history-change-${timestampTargetKey(change.target)}")
                 summary
-                    .assertIsDisplayed()
                     .assert(
                         hasText(exactHistoricalTimestamp(change.before, previewZone), substring = true),
                     ).assert(hasText(exactHistoricalTimestamp(change.after, previewZone), substring = true))
@@ -1517,11 +1528,10 @@ class SequenceHistoryPresentationTest {
                         ).performTextReplacement((targets.indexOf(target) + 1).toString())
                     compose.onNodeWithTag("sequence-timing-go").performSemanticsAction(SemanticsActions.OnClick)
                     val node =
-                        compose.onNodeWithTag(
+                        awaitTimingDestination(
                             "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(target)}",
+                            focused = true,
                         )
-                    node.assertIsDisplayed()
-                    keyboard.awaitFocus(node)
                     val expected =
                         mutableListOf(
                             resources.getString(
@@ -1786,14 +1796,11 @@ class SequenceHistoryPresentationTest {
                 // The replacement itself must be usable, including a distinct but equal canonical/proposal.
                 compose.onNodeWithTag("sequence-timing-go").performClick()
                 val replacementTarget = if (review && loss == "proposal") targets.first() else targets.last()
-                val replacement =
-                    compose.onNodeWithTag(
-                        "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(
-                            replacementTarget,
-                        )}",
-                    )
-                replacement.assertIsDisplayed()
-                keyboard.awaitFocus(replacement)
+                val stage = if (review) "change" else "timestamp"
+                awaitTimingDestination(
+                    "sequence-history-$stage-${timestampTargetKey(replacementTarget)}",
+                    focused = true,
+                )
             }
             compose.runOnIdle {
                 showing.value = true
@@ -1806,12 +1813,8 @@ class SequenceHistoryPresentationTest {
             keyboard.awaitFocus(foreign)
             compose.onNodeWithTag("sequence-timing-ordinal").performTextReplacement(targets.size.toString())
             compose.onNodeWithTag("sequence-timing-go").performClick()
-            val target =
-                compose.onNodeWithTag(
-                    "sequence-history-${if (review) "change" else "timestamp"}-${timestampTargetKey(targets.last())}",
-                )
-            target.assertIsDisplayed()
-            keyboard.awaitFocus(target)
+            val stage = if (review) "change" else "timestamp"
+            awaitTimingDestination("sequence-history-$stage-${timestampTargetKey(targets.last())}", focused = true)
             compose.runOnIdle { assertEquals(0, actions) }
         }
     }
@@ -1945,6 +1948,144 @@ class SequenceHistoryPresentationTest {
         jump(6_000, intervals.last(), useKeyboard = true)
         compose.runOnIdle { canonical.value = canonical.value.copy(intervals = intervals.reversed()) }
         jump(6_000, intervals.first(), useKeyboard = false)
+    }
+
+    @Test
+    fun detailOrdinalsAndF6UseOnlyAvailableCanonicalCollectionsInBothLanguages() {
+        val original = detail(listOf(occurrence(0, RuntimeOccurrenceStatus.SKIPPED)))
+        val wall = Duration.between(start, end)
+        val rootFacts = original.root.copy(activeDuration = Duration.ZERO, pauseDuration = wall, wallDuration = wall)
+        val base = original.copy(root = rootFacts)
+        val ownerless =
+            SequenceInterval(SequenceIntervalId("ownerless"), SequenceIntervalKind.IMPLICIT_IDLE, start, end, null)
+        val russian = Locale.forLanguageTag("ru")
+        val locale = mutableStateOf(Locale.US)
+        var canonical = base.copy(intervals = listOf(ownerless))
+        var reads = 0
+        var writes = 0
+        var refreshes = 0
+        var unhandledF6 = 0
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller =
+            SequenceHistoryMutationController(
+                scope,
+                base.root.executionId,
+                {
+                    assertEquals(base.root.executionId, it)
+                    reads++
+                    canonical
+                },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+                { _, _, _ -> writes++ },
+            )
+        val session = SequenceHistoryMutationRouteSession(base.root.executionId, controller)
+        try {
+            compose.setContent {
+                val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale.value) }
+                val context = LocalContext.current.createConfigurationContext(configuration)
+                CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                    Box(
+                        Modifier.onKeyEvent {
+                            if (it.key == Key.F6 && it.type == KeyEventType.KeyDown) unhandledF6++
+                            false
+                        },
+                    ) {
+                        TestTheme { SequenceHistoryDetailRoute(session, {}, { refreshes++ }) }
+                    }
+                }
+            }
+            val topologies = listOf(true to true, true to false, false to true, false to false)
+            val root = compose.onNodeWithTag("sequence-history-root")
+            val occurrenceOrdinal = compose.onNodeWithTag("sequence-history-go-position")
+            val intervalOrdinal = compose.onNodeWithTag("sequence-history-go-interval-position")
+            var retainedReturn: (() -> Boolean)? = null
+            for ((index, topology) in topologies.withIndex()) {
+                val (hasOccurrences, hasIntervals) = topology
+                if (index > 0) {
+                    compose.runOnIdle {
+                        canonical =
+                            base.copy(
+                                occurrences = if (hasOccurrences) base.occurrences else emptyList(),
+                                intervals = if (hasIntervals) listOf(ownerless) else emptyList(),
+                                root = base.root.copy(status = SequenceExecutionStatus.ENDED_EARLY),
+                            )
+                        controller.dispatch(SequenceHistoryMutationAction.Retry)
+                        retainedReturn?.let { assertFalse(it()) }
+                    }
+                }
+                compose.waitUntil {
+                    (controller.state.value.load as? HistoryDetailLoad.Content)?.value === canonical
+                }
+                val publication = controller.state.value
+                for (language in listOf(Locale.US, russian)) {
+                    val isRussian = language == russian
+                    compose.runOnIdle { locale.value = language }
+                    scroll("sequence:root")
+                    val executionLabel =
+                        if (isRussian) "ID выполнения Sequence: root" else "Sequence execution ID: root"
+                    root.assert(hasText(executionLabel))
+                    val status =
+                        if (index == 0) {
+                            if (isRussian) "Завершено" else "Completed"
+                        } else {
+                            if (isRussian) "Завершено досрочно" else "Ended early"
+                        }
+                    root.assert(hasText(status))
+                    keyboard.enter(root)
+                    root.performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(root)
+                    val previousUnhandled = compose.runOnIdle { unhandledF6 }
+                    compose.onRoot().performKeyInput { pressKey(Key.F6) }
+                    when {
+                        hasOccurrences -> keyboard.awaitFocus(occurrenceOrdinal)
+                        hasIntervals -> keyboard.awaitFocus(intervalOrdinal)
+                        else -> root.assertIsFocused()
+                    }
+                    val expectedUnhandled = previousUnhandled + if (hasOccurrences || hasIntervals) 0 else 1
+                    compose.runOnIdle { assertEquals(expectedUnhandled, unhandledF6) }
+
+                    scroll("sequence:navigation")
+                    if (hasOccurrences) {
+                        val label = if (isRussian) "Вхождение в списке (1–1)" else "Occurrence in the list (1–1)"
+                        occurrenceOrdinal.assertIsEnabled().assert(hasText(label))
+                    } else {
+                        occurrenceOrdinal.assertDoesNotExist()
+                        compose.onNodeWithTag("sequence-history-go").assertDoesNotExist()
+                    }
+                    if (hasIntervals) {
+                        val label = if (isRussian) "Интервал в списке (1–1)" else "Interval in the list (1–1)"
+                        intervalOrdinal.assertIsEnabled().assert(hasText(label))
+                    } else {
+                        intervalOrdinal.assertDoesNotExist()
+                        compose.onNodeWithTag("sequence-history-go-interval").assertDoesNotExist()
+                    }
+                    if (!hasOccurrences && hasIntervals) {
+                        intervalOrdinal.performTextReplacement("1")
+                        val go = compose.onNodeWithTag("sequence-history-go-interval").performScrollTo()
+                        go.assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick)
+                        val interval = compose.onNodeWithTag("sequence-interval-summary-ownerless")
+                        keyboard.awaitFocus(interval)
+                        val actions = interval.fetchSemanticsNode().config[SemanticsActions.CustomActions]
+                        retainedReturn = actions.single().action
+                        compose.runOnIdle { assertTrue(requireNotNull(retainedReturn)()) }
+                        keyboard.awaitFocus(intervalOrdinal)
+                    }
+                    compose.onAllNodes(hasText("1–0", substring = true)).assertCountEquals(0)
+                    scroll("sequence:timing")
+                    compose.onNodeWithTag("sequence-history-timing").assertIsEnabled()
+                    compose.onNodeWithText(if (isRussian) "Назад" else "Back").assertIsEnabled()
+                    compose.runOnIdle {
+                        assertSame(publication, controller.state.value)
+                        assertEquals(index + 1, reads)
+                        assertEquals(0, writes)
+                        assertEquals(0, refreshes)
+                    }
+                }
+            }
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test
@@ -2339,6 +2480,20 @@ class SequenceHistoryPresentationTest {
     }
 
     private var selectedKey: String? = null
+
+    private fun awaitTimingDestination(
+        tag: String,
+        focused: Boolean = false,
+    ): SemanticsNodeInteraction {
+        val node = compose.onNodeWithTag(tag)
+        val ready = if (focused) compose.onNode(hasTestTag(tag) and isFocused()) else node
+        // The jump queues a lazy-list remeasure before the destination can take focus.
+        compose.waitUntil(conditionDescription = "Timing destination $tag is visible", timeoutMillis = 5_000) {
+            ready.isDisplayed()
+        }
+        if (focused) keyboard.awaitFocus(node)
+        return node.assertIsDisplayed()
+    }
 
     private fun scroll(key: String) {
         selectedKey = key
