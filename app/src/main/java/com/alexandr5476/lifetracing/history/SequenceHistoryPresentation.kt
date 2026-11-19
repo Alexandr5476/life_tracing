@@ -40,12 +40,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import com.alexandr5476.lifetracing.R
@@ -66,6 +76,7 @@ import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
 import com.alexandr5476.lifetracing.ui.theme.spacing
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
 import java.time.Duration
 import java.time.ZoneId
@@ -159,7 +170,8 @@ internal fun SequenceDetail(
 ) {
     val focus = LocalHistoryFocus.current
     val lease = rememberSequenceHistoryNavigation(detail, onTiming != null, issue != null)
-    val navigation = remember(lease) { SequenceNavigationFocus(lease) }
+    val scope = rememberCoroutineScope()
+    val navigation = remember(lease, listState, scope) { SequenceNavigationFocus(lease, listState, scope) }
     CompositionLocalProvider(LocalSequenceNavigationFocus provides navigation) {
         LaunchedEffect(SequenceDetailReference(detail), onDeleteChild != null, onRemoveOccurrence != null) {
             // Virtualization alone is not removal. Check the focused key only on canonical replacement.
@@ -188,7 +200,25 @@ internal fun SequenceDetail(
         }
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().testTag("sequence-history-detail-list"),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .testTag("sequence-history-detail-list")
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.F6) {
+                            val section =
+                                if (detail.intervals.isNotEmpty() &&
+                                    (focus.lazyOwner?.startsWith("interval:") == true || detail.occurrences.isEmpty())
+                                ) {
+                                    SequenceDetailOrdinal.INTERVAL
+                                } else {
+                                    SequenceDetailOrdinal.OCCURRENCE
+                                }
+                            navigation.returnTo(section)
+                        } else {
+                            false
+                        }
+                    },
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
         ) {
             item("sequence:root", contentType = "root") {
@@ -196,9 +226,9 @@ internal fun SequenceDetail(
                     LocalHistoryLazyIdentity provides "sequence:root",
                 ) { SequenceRootSummary(detail) }
             }
-            item("sequence:navigation", contentType = "navigation") {
-                CompositionLocalProvider(LocalHistoryLazyIdentity provides "sequence:navigation") {
-                    SequenceSectionNavigation(detail, listState, onTiming != null, issue != null)
+            item(SEQUENCE_NAVIGATION_KEY, contentType = "navigation") {
+                CompositionLocalProvider(LocalHistoryLazyIdentity provides SEQUENCE_NAVIGATION_KEY) {
+                    SequenceSectionNavigation(detail, onTiming != null, issue != null)
                 }
             }
             if (onTiming != null) {
@@ -250,9 +280,43 @@ internal fun SequenceDetail(
 
 private class SequenceNavigationFocus(
     val lease: SequenceHistoryNavigation,
+    private val listState: LazyListState,
+    private val scope: CoroutineScope,
 ) {
     var pending by mutableStateOf<SequenceNavigationRequest?>(null)
     val requester = FocusRequester()
+
+    fun returnTo(section: SequenceDetailOrdinal): Boolean = go(section.fieldTag, SEQUENCE_NAVIGATION_INDEX)
+
+    fun go(
+        key: String,
+        index: Int,
+        origin: CoroutineScope = scope,
+    ): Boolean {
+        if (!origin.isActive || !lease.isCurrent()) return false
+        pending = null
+        lease.launch(origin) {
+            withFrameNanos { }
+            if (!lease.isCurrent()) return@launch
+            pending = SequenceNavigationRequest(key)
+            // Request the scroll synchronously while the lease is current.
+            listState.requestScrollToItem(index)
+        }
+        return true
+    }
+}
+
+private const val SEQUENCE_NAVIGATION_KEY = "sequence:navigation"
+private const val SEQUENCE_NAVIGATION_INDEX = 1
+
+private enum class SequenceDetailOrdinal(
+    val tag: String,
+) {
+    OCCURRENCE("sequence-history-go"),
+    INTERVAL("sequence-history-go-interval"),
+    ;
+
+    val fieldTag get() = "$tag-position"
 }
 
 private class SequenceNavigationRequest(
@@ -262,13 +326,12 @@ private class SequenceNavigationRequest(
 private val LocalSequenceNavigationFocus = staticCompositionLocalOf<SequenceNavigationFocus?> { null }
 
 @Composable
-private fun sequenceSummaryFocus(allowJump: Boolean = true): Modifier {
+private fun sequenceNavigationTarget(identity: String? = LocalHistoryLazyIdentity.current): Modifier {
     val navigation = LocalSequenceNavigationFocus.current
     val lease = navigation?.lease
     val available = lease?.isCurrent() != false
-    val identity = LocalHistoryLazyIdentity.current
     val request = navigation?.pending
-    val pending = allowJump && identity != null && request?.key == identity
+    val pending = identity != null && request?.key == identity
     var attached by remember { mutableStateOf(false) }
     LaunchedEffect(navigation, request, pending) {
         if (pending && available) {
@@ -284,11 +347,22 @@ private fun sequenceSummaryFocus(allowJump: Boolean = true): Modifier {
         .focusProperties { canFocus = lease?.canFocus() != false }
 }
 
+@Composable
+private fun sequenceOrdinalReturn(section: SequenceDetailOrdinal?): Modifier {
+    val navigation = LocalSequenceNavigationFocus.current
+    if (section == null || navigation == null || !navigation.lease.isCurrent()) return Modifier
+    val scope = rememberCoroutineScope()
+    val label = stringResource(R.string.sequence_history_return_to_ordinals)
+    return Modifier.semantics {
+        customActions =
+            listOf(CustomAccessibilityAction(label) { scope.isActive && navigation.returnTo(section) })
+    }
+}
+
 /** Section/ordinal navigation scrolls only. No admission, reload or historical command is dispatched. */
 @Composable
 private fun SequenceSectionNavigation(
     detail: SequenceHistoryDetail,
-    state: LazyListState,
     hasTiming: Boolean,
     hasIssue: Boolean,
 ) {
@@ -299,29 +373,18 @@ private fun SequenceSectionNavigation(
     val focusPolicy = Modifier.focusProperties { canFocus = scope.isActive && lease.canFocus() }
 
     // Section offsets use only collection sizes and optional prefix items; no collection scan.
-    val fieldsIndex = 2 + (if (hasTiming) 1 else 0) + (if (hasIssue) 1 else 0)
+    val fieldsIndex = SEQUENCE_NAVIGATION_INDEX + 1 + (if (hasTiming) 1 else 0) + (if (hasIssue) 1 else 0)
     val occurrencesIndex = fieldsIndex + 2 + detail.fields.size.coerceAtLeast(1)
     val intervalsHeadingIndex = occurrencesIndex + detail.occurrences.size
 
-    fun go(
-        key: String,
-        index: Int,
-    ) {
-        if (!scope.isActive || !lease.isCurrent()) return
-        navigation.pending = null
-        lease.launch(scope) {
-            withFrameNanos { }
-            if (!lease.isCurrent()) return@launch
-            navigation.pending = SequenceNavigationRequest(key)
-            // Synchronous request: no scroll-mutex suspension can run past the authority check.
-            state.requestScrollToItem(index)
-        }
-    }
-
     Column {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            val goFields = { go("sequence:fields-heading", fieldsIndex) }
-            val goIntervals = { go("sequence:intervals-heading", intervalsHeadingIndex) }
+            val goFields: () -> Unit = {
+                navigation.go("sequence:fields-heading", fieldsIndex, scope)
+            }
+            val goIntervals: () -> Unit = {
+                navigation.go("sequence:intervals-heading", intervalsHeadingIndex, scope)
+            }
             TextButton(
                 onClick = goFields,
                 enabled = available,
@@ -345,20 +408,20 @@ private fun SequenceSectionNavigation(
             detail.occurrences.size,
             R.string.sequence_history_go_position,
             R.string.sequence_history_go,
-            "sequence-history-go",
+            SequenceDetailOrdinal.OCCURRENCE,
             lease,
         ) { index ->
-            go("occurrence:${detail.occurrences[index].occurrenceId.value}", occurrencesIndex + index)
+            navigation.go("occurrence:${detail.occurrences[index].occurrenceId.value}", occurrencesIndex + index, scope)
         }
         if (detail.intervals.isNotEmpty()) {
             SequenceOrdinalNavigation(
                 detail.intervals.size,
                 R.string.sequence_history_go_interval_position,
                 R.string.sequence_history_go_interval,
-                "sequence-history-go-interval",
+                SequenceDetailOrdinal.INTERVAL,
                 lease,
             ) { index ->
-                go("interval:${detail.intervals[index].id.value}", intervalsHeadingIndex + 1 + index)
+                navigation.go("interval:${detail.intervals[index].id.value}", intervalsHeadingIndex + 1 + index, scope)
             }
         }
     }
@@ -369,11 +432,13 @@ private fun SequenceOrdinalNavigation(
     count: Int,
     ordinalLabel: Int,
     buttonLabel: Int,
-    tag: String,
+    section: SequenceDetailOrdinal,
     lease: SequenceHistoryNavigation,
     go: (Int) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val tag = section.tag
     var ordinal by remember { mutableStateOf("") }
 
     fun position(): Int? = ordinal.toIntOrNull()?.takeIf { it in 1..count }?.minus(1)
@@ -389,10 +454,21 @@ private fun SequenceOrdinalNavigation(
         enabled = available,
         label = { Text(stringResource(ordinalLabel, count)) },
         modifier =
-            historyFocusTarget(enabled = available)
-                .focusProperties { canFocus = scope.isActive && lease.canFocus() }
+            sequenceNavigationTarget(section.fieldTag)
                 .fillMaxWidth()
-                .testTag("$tag-position"),
+                .testTag(section.fieldTag)
+                .onPreviewKeyEvent { event ->
+                    if (event.key == Key.Tab) {
+                        if (event.type == KeyEventType.KeyDown && scope.isActive && lease.isCurrent()) {
+                            focusManager.moveFocus(
+                                if (event.isShiftPressed) FocusDirection.Previous else FocusDirection.Next,
+                            )
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                },
     )
     TextButton(
         onClick = jump,
@@ -442,7 +518,10 @@ private fun SequenceOccurrence(
 ) {
     HistoryCard(Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
         SequenceOccurrenceFocus(occurrence, SequenceHistoryFocusElement.Summary) {
-            SequenceReadOnlySummary("sequence-occurrence-summary-${occurrence.occurrenceId.value}") {
+            SequenceReadOnlySummary(
+                "sequence-occurrence-summary-${occurrence.occurrenceId.value}",
+                SequenceDetailOrdinal.OCCURRENCE,
+            ) {
                 Text(
                     stringResource(
                         R.string.history_occurrence,
@@ -636,7 +715,7 @@ private fun SequenceHistoryInterval(
     interval: SequenceInterval,
 ) {
     HistoryCard(Modifier.testTag("history-interval-${interval.id.value}")) {
-        SequenceReadOnlySummary("sequence-interval-summary-${interval.id.value}") {
+        SequenceReadOnlySummary("sequence-interval-summary-${interval.id.value}", SequenceDetailOrdinal.INTERVAL) {
             Text(stringResource(intervalKindResource(interval.kind)))
             Text(stringResource(R.string.sequence_history_interval_id, interval.id.value))
             Text(
@@ -753,8 +832,8 @@ private fun SequenceFieldValues(
             }
         }
     Column(
-        sequenceSummaryFocus(
-            LocalHistoryLazyIdentity.current?.startsWith("sequence-field:") == true,
+        sequenceNavigationTarget(
+            LocalHistoryLazyIdentity.current?.takeIf { it.startsWith("sequence-field:") },
         ).focusable().testTag("sequence-history-field-$id").clearAndSetSemantics {
             contentDescription =
                 facts.joinToString(". ")
@@ -767,14 +846,16 @@ private fun SequenceFieldValues(
 @Composable
 private fun SequenceReadOnlySummary(
     tag: String,
+    returnTo: SequenceDetailOrdinal? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val identity = LocalHistoryLazyIdentity.current.takeIf { returnTo != null || tag == "sequence-history-root" }
     Column(
-        sequenceSummaryFocus(
-            tag == "sequence-history-root" ||
-                tag.startsWith("sequence-occurrence-summary") ||
-                tag.startsWith("sequence-interval-summary"),
-        ).semantics(mergeDescendants = true) {}.focusable().testTag(tag),
+        sequenceNavigationTarget(identity)
+            .then(sequenceOrdinalReturn(returnTo))
+            .semantics(mergeDescendants = true) {}
+            .focusable()
+            .testTag(tag),
         content = content,
     )
 }
@@ -783,7 +864,7 @@ private fun SequenceReadOnlySummary(
 private fun SequenceSectionHeading(resource: Int) {
     Text(
         stringResource(resource),
-        sequenceSummaryFocus().semantics { heading() }.focusable(),
+        sequenceNavigationTarget().semantics { heading() }.focusable(),
         style = MaterialTheme.typography.titleMedium,
     )
 }

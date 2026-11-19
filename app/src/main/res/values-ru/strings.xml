@@ -944,6 +944,7 @@
     <string name="sequence_history_go">Перейти к вхождению</string>
     <string name="sequence_history_go_interval_position">Интервал в списке (1–%1$d)</string>
     <string name="sequence_history_go_interval">Перейти к интервалу</string>
+    <string name="sequence_history_return_to_ordinals">Вернуться к навигации по последовательности</string>
     <string name="sequence_structural_interval_owner_status">Статус владельца: %1$s</string>
     <string name="sequence_history_unit">Единица поля: %1$s</string>
     <string name="sequence_history_deleted_child_id">ID удалённого дочернего выполнения: %1$s</string>

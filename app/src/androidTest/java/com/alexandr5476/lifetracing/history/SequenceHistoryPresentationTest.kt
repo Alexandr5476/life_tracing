@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -107,6 +108,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -1047,6 +1049,25 @@ class SequenceHistoryPresentationTest {
                 assertTrue(bounds.left >= viewport.left - 1)
                 assertTrue(bounds.right <= viewport.right + 1)
             }
+            val interval = compose.onNodeWithTag("sequence-interval-summary-i4")
+            val occurrence = compose.onNodeWithTag("sequence-occurrence-summary-o0")
+            val returnLabel =
+                if (cases[index].first.language == "ru") {
+                    "Вернуться к навигации по последовательности"
+                } else {
+                    "Return to Sequence navigation"
+                }
+            keyboard.enter(interval)
+            val intervalReturn = interval.fetchSemanticsNode().config[SemanticsActions.CustomActions].single()
+            assertEquals(returnLabel, intervalReturn.label)
+            compose.runOnIdle { assertTrue(intervalReturn.action()) }
+            keyboard.awaitFocus(intervalPosition)
+            intervalPosition.assertIsDisplayed()
+            scroll("occurrence:o0")
+            val occurrenceReturn = occurrence.fetchSemanticsNode().config[SemanticsActions.CustomActions].single()
+            assertEquals(returnLabel, occurrenceReturn.label)
+            compose.runOnIdle { assertTrue(occurrenceReturn.action()) }
+            keyboard.awaitFocus(compose.onNodeWithTag("sequence-history-go-position"))
         }
     }
 
@@ -1924,6 +1945,215 @@ class SequenceHistoryPresentationTest {
         jump(6_000, intervals.last(), useKeyboard = true)
         compose.runOnIdle { canonical.value = canonical.value.copy(intervals = intervals.reversed()) }
         jump(6_000, intervals.first(), useKeyboard = false)
+    }
+
+    @Test
+    fun distantIntervalNavigationReturnsThroughNativeActionsAndRevokesObsoleteActions() {
+        val owner = occurrence(0)
+        val intervals =
+            List(6_000) { index ->
+                SequenceInterval(
+                    SequenceIntervalId("round-trip-$index"),
+                    SequenceIntervalKind.ACTIVE_STEP,
+                    start.plusMillis(index.toLong()),
+                    end.minusMillis(index.toLong()),
+                    owner.occurrenceId,
+                )
+            }
+        val original = detail(listOf(owner)).copy(intervals = intervals)
+        val reordered = original.copy(intervals = intervals.reversed())
+        var canonical = original
+        var reads = 0
+        var writes = 0
+        var refreshes = 0
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+        fun newSession(): SequenceHistoryMutationRouteSession {
+            val id = original.root.executionId
+            return SequenceHistoryMutationRouteSession(
+                id,
+                SequenceHistoryMutationController(
+                    scope,
+                    id,
+                    {
+                        assertEquals(id, it)
+                        reads++
+                        canonical
+                    },
+                    { _, _, _ -> writes++ },
+                    { _, _, _ -> writes++ },
+                    { _, _, _ -> writes++ },
+                ),
+            )
+        }
+
+        val initial = newSession()
+        val mounted = mutableStateOf(true)
+        val visible = mutableStateOf(true)
+        val presented = mutableStateOf(initial)
+        val active = mutableStateOf(initial)
+        val ordinal = compose.onNodeWithTag("sequence-history-go-interval-position")
+        val occurrenceOrdinal = compose.onNodeWithTag("sequence-history-go-position")
+        val go = compose.onNodeWithTag("sequence-history-go-interval")
+        val intervalSummary =
+            SemanticsMatcher("interval summary") {
+                it.config.contains(SemanticsProperties.TestTag) &&
+                    it.config[SemanticsProperties.TestTag].startsWith("sequence-interval-summary-")
+            }
+
+        fun press(key: Key) = compose.onRoot().performKeyInput { pressKey(key) }
+
+        fun openOrdinalsFromRoot() {
+            val root = compose.onNodeWithTag("sequence-history-root")
+            keyboard.enter(root)
+            root.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(root)
+            press(Key.F6)
+            keyboard.awaitFocus(occurrenceOrdinal)
+            press(Key.Tab)
+            keyboard.awaitFocus(ordinal)
+        }
+
+        fun jump(
+            position: Int,
+            expected: SequenceInterval,
+            useKeyboard: Boolean = true,
+        ) = compose.onNodeWithTag("sequence-interval-summary-${expected.id.value}").also { summary ->
+            ordinal.performTextReplacement(position.toString())
+            press(Key.Tab)
+            keyboard.awaitFocus(go)
+            if (useKeyboard) press(Key.Enter) else go.performSemanticsAction(SemanticsActions.OnClick)
+            keyboard.awaitFocus(summary)
+            summary.assertIsDisplayed()
+            val context = compose.activity
+            summary.assert(hasText(context.getString(R.string.sequence_history_interval_id, expected.id.value)))
+            val started = exactHistoricalTimestamp(expected.startedAt, zone)
+            val ended = exactHistoricalTimestamp(requireNotNull(expected.endedAt), zone)
+            summary.assert(hasText(context.getString(R.string.history_interval_started, started)))
+            summary.assert(hasText(context.getString(R.string.history_interval_ended, ended)))
+            val composed = compose.onAllNodes(intervalSummary).fetchSemanticsNodes().size
+            assertTrue("Composed $composed of ${intervals.size} intervals", composed in 1..40)
+        }
+
+        fun returnAction(summary: SemanticsNodeInteraction): () -> Boolean {
+            val label = compose.activity.getString(R.string.sequence_history_return_to_ordinals)
+            val actions = summary.fetchSemanticsNode().config[SemanticsActions.CustomActions]
+            return actions.single { it.label == label }.action
+        }
+
+        fun returnByAccessibility(summary: SemanticsNodeInteraction) {
+            val action = returnAction(summary)
+            compose.runOnIdle { assertTrue(action()) }
+            keyboard.awaitFocus(ordinal)
+            ordinal.assertIsDisplayed()
+        }
+
+        try {
+            compose.setContent {
+                TestTheme {
+                    if (mounted.value) {
+                        val session = presented.value
+                        SequenceHistoryDetailRoute(
+                            session,
+                            onBack = {},
+                            onRefresh = { refreshes++ },
+                            isRouteVisible = visible.value,
+                            ownsRoute = { visible.value && active.value === session },
+                        )
+                    }
+                }
+            }
+            compose.waitUntil { initial.controller.state.value.load is HistoryDetailLoad.Content }
+            val publication = initial.controller.state.value
+            openOrdinalsFromRoot()
+            val middle = jump(3_001, intervals[3_000])
+            returnByAccessibility(middle)
+            jump(19, intervals[18], useKeyboard = false)
+            press(Key.F6)
+            keyboard.awaitFocus(ordinal)
+            val last = jump(6_000, intervals.last())
+            val obsolete = returnAction(last)
+            compose.runOnIdle {
+                assertSame(publication, initial.controller.state.value)
+                assertSame(original, canonical)
+                assertEquals(1, reads)
+                assertEquals(0, writes)
+                assertEquals(0, refreshes)
+                visible.value = false
+                assertFalse(obsolete())
+            }
+            compose.runOnIdle {
+                visible.value = true
+                assertFalse(obsolete())
+            }
+            val beforePause = returnAction(last)
+            val list = compose.onNodeWithTag("sequence-history-detail-list")
+            val scrollRange = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+            val positionBeforePause = scrollRange.value()
+            compose.mainClock.autoAdvance = false
+            try {
+                compose.runOnIdle { assertTrue(beforePause()) }
+                compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+                compose.runOnUiThread { assertFalse(beforePause()) }
+                compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+            } finally {
+                compose.mainClock.autoAdvance = true
+            }
+            compose.runOnIdle { assertFalse(beforePause()) }
+            assertEquals(
+                positionBeforePause,
+                list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(),
+            )
+            returnByAccessibility(last)
+            val latest = jump(6_000, intervals.last())
+            val beforeReplacement = returnAction(latest)
+            compose.runOnIdle {
+                canonical = reordered
+                initial.controller.dispatch(SequenceHistoryMutationAction.Retry)
+                assertFalse(beforeReplacement())
+            }
+            compose.waitUntil {
+                (initial.controller.state.value.load as? HistoryDetailLoad.Content)?.value === reordered
+            }
+            // The visible interval exposes a fresh action after the reorder.
+            returnByAccessibility(compose.onAllNodes(intervalSummary)[0])
+            val reorderedPublication = initial.controller.state.value
+            val reorderedLast = jump(6_000, intervals.first())
+            val beforeDisposal = returnAction(reorderedLast)
+            compose.runOnIdle {
+                assertSame(reorderedPublication, initial.controller.state.value)
+                assertEquals(2, reads)
+                mounted.value = false
+            }
+            compose.onNodeWithTag("sequence-history-detail-list").assertDoesNotExist()
+            compose.runOnIdle {
+                assertFalse(beforeDisposal())
+                mounted.value = true
+            }
+            openOrdinalsFromRoot()
+            val remounted = jump(6_000, intervals.first())
+            val beforeSessionReplacement = returnAction(remounted)
+            val next = compose.runOnIdle { newSession().also { active.value = it } }
+            compose.runOnIdle {
+                assertFalse(beforeSessionReplacement())
+                presented.value = next
+            }
+            compose.waitUntil { next.controller.state.value.load is HistoryDetailLoad.Content }
+            val nextPublication = next.controller.state.value
+            openOrdinalsFromRoot()
+            returnByAccessibility(jump(6_000, intervals.first()))
+            compose.runOnIdle {
+                assertFalse(beforeSessionReplacement())
+                assertFalse(beforeDisposal())
+                assertSame(nextPublication, next.controller.state.value)
+                assertSame(reordered, (next.controller.state.value.load as HistoryDetailLoad.Content).value)
+                assertEquals(3, reads)
+                assertEquals(0, writes)
+                assertEquals(0, refreshes)
+            }
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test
