@@ -2089,6 +2089,150 @@ class SequenceHistoryPresentationTest {
     }
 
     @Test
+    fun focusedOrdinalRecoversToBackOnlyWhenItsCanonicalCollectionDisappears() {
+        val base = detailWithOwnerlessInterval(listOf(occurrence(0, RuntimeOccurrenceStatus.SKIPPED)))
+        val publication =
+            mutableStateOf(
+                SequenceHistoryMutationState(load = HistoryDetailLoad.Content(base)),
+                referentialEqualityPolicy(),
+            )
+        val russian = Locale.forLanguageTag("ru")
+        val locale = mutableStateOf(Locale.US)
+        var actions = 0
+        compose.setContent {
+            val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale.value) }
+            val context = LocalContext.current.createConfigurationContext(configuration)
+            CompositionLocalProvider(LocalConfiguration provides configuration, LocalContext provides context) {
+                TestTheme { CanonicalSurface(publication) { actions++ } }
+            }
+        }
+        val occurrenceOrdinal = compose.onNodeWithTag("sequence-history-go-position")
+        val intervalOrdinal = compose.onNodeWithTag("sequence-history-go-interval-position")
+
+        fun replace(detail: SequenceHistoryDetail) {
+            compose.runOnIdle { publication.value = publication.value.copy(load = HistoryDetailLoad.Content(detail)) }
+        }
+
+        fun jump(
+            ordinal: SemanticsNodeInteraction,
+            buttonTag: String,
+            summaryTag: String,
+        ) {
+            ordinal.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(ordinal)
+            ordinal.performTextReplacement("1")
+            compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+            keyboard.awaitFocus(compose.onNodeWithTag(buttonTag))
+            compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+            keyboard.awaitFocus(compose.onNodeWithTag(summaryTag))
+        }
+
+        val topologies = listOf(false to true, true to false, false to false, true to true)
+        for (language in listOf(Locale.US, russian)) {
+            compose.runOnIdle { locale.value = language }
+            val back = compose.onNodeWithText(if (language == russian) "Назад" else "Back")
+            val occurrenceLabel =
+                if (language == russian) "Вхождение в списке (1–1)" else "Occurrence in the list (1–1)"
+            val intervalLabel = if (language == russian) "Интервал в списке (1–1)" else "Interval in the list (1–1)"
+            keyboard.enter(back)
+            for (focusedOccurrence in listOf(true, false)) {
+                val target = if (focusedOccurrence) occurrenceOrdinal else intervalOrdinal
+                for ((hasOccurrences, hasIntervals) in topologies) {
+                    replace(base)
+                    scroll("sequence:navigation")
+                    target.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
+                    keyboard.awaitFocus(target)
+
+                    val replacement =
+                        base.copy(
+                            root = base.root.copy(status = SequenceExecutionStatus.ENDED_EARLY),
+                            occurrences = if (hasOccurrences) base.occurrences else emptyList(),
+                            intervals = if (hasIntervals) base.intervals else emptyList(),
+                        )
+                    replace(replacement)
+                    val retained = if (focusedOccurrence) hasOccurrences else hasIntervals
+                    if (retained) target.assertIsFocused() else keyboard.awaitFocus(back)
+
+                    if (hasOccurrences) {
+                        occurrenceOrdinal.assertIsEnabled().assert(hasText(occurrenceLabel))
+                    } else {
+                        occurrenceOrdinal.assertDoesNotExist()
+                    }
+                    if (hasIntervals) {
+                        intervalOrdinal.assertIsEnabled().assert(hasText(intervalLabel))
+                    } else {
+                        intervalOrdinal.assertDoesNotExist()
+                    }
+                    val goToOccurrence = if (retained) focusedOccurrence else hasOccurrences
+                    when {
+                        goToOccurrence ->
+                            jump(occurrenceOrdinal, "sequence-history-go", "sequence-occurrence-summary-o0")
+                        hasIntervals ->
+                            jump(intervalOrdinal, "sequence-history-go-interval", "sequence-interval-summary-ownerless")
+                    }
+                    compose.runOnIdle {
+                        assertSame(replacement, (publication.value.load as HistoryDetailLoad.Content).value)
+                        assertEquals(0, actions)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun ordinalLazyDisposalDoesNotRecoverFocusWhenItsCollectionRemains() {
+        val base = detailWithOwnerlessInterval(List(100) { occurrence(it, RuntimeOccurrenceStatus.SKIPPED) })
+        val publication =
+            mutableStateOf(
+                SequenceHistoryMutationState(load = HistoryDetailLoad.Content(base)),
+                referentialEqualityPolicy(),
+            )
+        var actions = 0
+        compose.setContent {
+            TestTheme {
+                Column(Modifier.fillMaxSize()) {
+                    TextButton({}, Modifier.testTag("outside-detail-focus")) { Text("Outside detail") }
+                    Box(Modifier.weight(1f)) { CanonicalSurface(publication) { actions++ } }
+                }
+            }
+        }
+        val outside = compose.onNodeWithTag("outside-detail-focus")
+        keyboard.enter(outside)
+        for (tag in listOf("sequence-history-go-position", "sequence-history-go-interval-position")) {
+            scroll("sequence:navigation")
+            val ordinal = compose.onNodeWithTag(tag).performScrollTo()
+            ordinal.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(ordinal)
+            // An attached control outside History leaves the last History focus owner recorded.
+            outside.performSemanticsAction(SemanticsActions.RequestFocus)
+            keyboard.awaitFocus(outside)
+            scroll("occurrence:o99")
+            ordinal.assertDoesNotExist()
+            outside.assertIsFocused()
+            compose.runOnIdle {
+                val canonical = (publication.value.load as HistoryDetailLoad.Content).value
+                val replacement = canonical.copy(root = canonical.root.copy(title = "Updated frozen root $tag"))
+                publication.value =
+                    publication.value.copy(load = HistoryDetailLoad.Content(replacement))
+            }
+            outside.assertIsFocused()
+            scroll("sequence:navigation")
+            ordinal.assertIsEnabled()
+            compose.runOnIdle { assertEquals(0, actions) }
+        }
+    }
+
+    private fun detailWithOwnerlessInterval(occurrences: List<SequenceHistoryOccurrence>): SequenceHistoryDetail {
+        val original = detail(occurrences)
+        val ownerless =
+            SequenceInterval(SequenceIntervalId("ownerless"), SequenceIntervalKind.IMPLICIT_IDLE, start, end, null)
+        return original.copy(
+            root = original.root.copy(activeDuration = Duration.ZERO, pauseDuration = original.root.wallDuration),
+            intervals = listOf(ownerless),
+        )
+    }
+
+    @Test
     fun distantIntervalNavigationReturnsThroughNativeActionsAndRevokesObsoleteActions() {
         val owner = occurrence(0)
         val intervals =

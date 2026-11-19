@@ -176,9 +176,11 @@ internal fun SequenceDetail(
         LaunchedEffect(SequenceDetailReference(detail), onDeleteChild != null, onRemoveOccurrence != null) {
             // Virtualization alone is not removal. Check the focused key only on canonical replacement.
             val owner = focus.lazyOwner
+            val ordinal = SequenceDetailOrdinal.entries.firstOrNull { it.focusKey == owner }
             val retained =
                 when {
                     owner == null -> true
+                    ordinal != null -> navigation.hasOrdinal(ordinal)
                     focus.sequenceOwner != null ->
                         detail.represents(
                             requireNotNull(focus.sequenceOwner),
@@ -324,6 +326,7 @@ private enum class SequenceDetailOrdinal(
     ;
 
     val fieldTag get() = "$tag-position"
+    val focusKey = "$SEQUENCE_NAVIGATION_KEY:$tag"
 }
 
 private class SequenceNavigationRequest(
@@ -447,7 +450,7 @@ private fun SequenceOrdinalNavigation(
     section: SequenceDetailOrdinal,
     lease: SequenceHistoryNavigation,
     go: (Int) -> Unit,
-) {
+) = CompositionLocalProvider(LocalHistoryLazyIdentity provides section.focusKey) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val tag = section.tag
