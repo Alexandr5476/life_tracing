@@ -17,7 +17,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -61,16 +60,10 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryActualValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryConfiguredValue
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
-import com.alexandr5476.lifetracing.domain.SequenceHistoryField
-import com.alexandr5476.lifetracing.domain.SequenceHistoryOccurrence
-import com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalMode
-import com.alexandr5476.lifetracing.domain.SequenceInterval
 import com.alexandr5476.lifetracing.domain.SequenceIntervalKind
-import com.alexandr5476.lifetracing.domain.SequenceOccurrenceId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.launcher.formatLauncherNumber
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
-import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
 import com.alexandr5476.lifetracing.ui.components.LifeTracingPrimaryButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.historicalTimestamp
@@ -79,11 +72,8 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeFormatterBuilder
 import java.time.format.FormatStyle
-import java.time.temporal.ChronoField
 
 @Composable
 fun HistoryRoute(
@@ -175,35 +165,65 @@ internal fun SequenceHistoryDetailRoute(
     isRouteVisible: Boolean = true,
     ownsRoute: () -> Boolean = { isRouteVisible },
 ) {
-    val controller = session.controller
-    val state by controller.state.collectAsState()
-    BackHandler(
-        enabled =
-            state.isMutating ||
-                state.timingDraft != null ||
-                state.childDeletionProposal != null ||
-                state.structuralTarget != null,
-    ) {
-        controller.handleBack()
-    }
-    LaunchedEffect(state.refreshGeneration) {
-        session.deliverRefresh(state.refreshGeneration, onRefresh)
-    }
-    val admission = rememberHistoryAdmission(state, { controller.state.value }, ownsRoute, isRouteVisible)
-    val focus =
-        rememberHistoryFocus(
-            isRouteVisible,
-            state.load is HistoryDetailLoad.Loading,
-            state.load is HistoryDetailLoad.Failure,
-            ownsRoute,
-        )
-    LifeTracingAccessibleTargets {
-        CompositionLocalProvider(LocalHistoryAdmission provides admission, LocalHistoryFocus provides focus) {
-            HistoryDetailSurface(
-                onBack = admission.callback { if (!controller.handleBack()) onBack() },
-                load = state.load,
-                onRetry = admission.callback { controller.dispatch(SequenceHistoryMutationAction.Retry) },
-            ) { SequenceHistoryMutationSurface(it, state, controller::dispatch) }
+    key(session) {
+        val controller = session.controller
+        val state by controller.state.collectAsState()
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+        val interactive = isRouteVisible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+        val owner = {
+            session.executionId == controller.executionId &&
+                ownsRoute() &&
+                lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        }
+        val admission =
+            rememberSequenceHistoryAdmission(
+                session.executionId,
+                state,
+                { controller.state.value },
+                owner,
+                interactive,
+                controller::dispatch,
+            )
+        BackHandler(enabled = interactive && owner() && (state.isMutating || state.hasSequenceTransient())) {
+            admission.back { controller.handleBack() }()
+        }
+        LaunchedEffect(state.refreshGeneration) {
+            session.deliverRefresh(state.refreshGeneration, onRefresh)
+        }
+        val focus =
+            rememberHistoryFocus(
+                interactive,
+                state.load is HistoryDetailLoad.Loading,
+                state.load is HistoryDetailLoad.Failure,
+                remember(admission) { admission::isCurrent },
+                backEnabled = !state.isMutating,
+            )
+        val load =
+            state.load.let {
+                if (it is HistoryDetailLoad.Content && !it.value.isHistoricalSequence(session.executionId)) {
+                    HistoryDetailLoad.Unavailable
+                } else {
+                    it
+                }
+            }
+        LifeTracingAccessibleTargets {
+            CompositionLocalProvider(
+                LocalSequenceHistoryAdmission provides admission,
+                LocalHistoryFocus provides focus,
+            ) {
+                SequenceHistoryDetailSurface(
+                    state = state,
+                    onAction = { action -> admission.action(action)() },
+                    onBack = admission.back { if (!controller.handleBack()) onBack() },
+                    load = load,
+                    onRetry = admission.action(SequenceHistoryMutationAction.Retry),
+                    backEnabled = admission.isCurrent(),
+                    retryEnabled = admission.enabled(SequenceHistoryMutationAction.Retry),
+                ) { detail ->
+                    SequenceHistoryMutationSurface(detail, state) { action -> admission.action(action)() }
+                }
+            }
         }
     }
 }
@@ -496,32 +516,6 @@ internal fun historyRootDescription(
 }
 
 @Composable
-private fun <T> HistoryDetailSurface(
-    onBack: () -> Unit,
-    load: HistoryDetailLoad<T>,
-    onRetry: () -> Unit,
-    content: @Composable (T) -> Unit,
-) {
-    Surface(color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-        ) {
-            TextButton(
-                onClick = onBack,
-                modifier = historyFocusTarget(LocalHistoryFocus.current.back).historyActionSemantics(onBack),
-            ) { Text(stringResource(R.string.history_back)) }
-            when (load) {
-                HistoryDetailLoad.Loading -> HistoryCard { HistoryReadStatus(R.string.history_detail_loading) }
-                HistoryDetailLoad.Unavailable -> HistoryCard { HistoryReadStatus(R.string.history_unavailable) }
-                is HistoryDetailLoad.Failure -> FailureCard(onRetry)
-                is HistoryDetailLoad.Content -> content(load.value)
-            }
-        }
-    }
-}
-
-@Composable
 internal fun ActivityDetail(detail: ActivityHistoryDetail) {
     Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
     detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
@@ -636,483 +630,24 @@ private fun ActivityHistoryMutationSurface(
 }
 
 @Composable
-private fun OffsetChoices(
-    offsets: List<ZoneOffset>,
-    selected: ZoneOffset?,
-    enabled: Boolean = true,
-    onSelect: (ZoneOffset) -> Unit,
-) {
-    if (offsets.size != 2) return
-    Text(stringResource(R.string.manual_history_ambiguous_time), color = MaterialTheme.colorScheme.error)
-    offsets.forEachIndexed { index, offset ->
-        TextButton(onClick = { onSelect(offset) }, enabled = enabled) {
-            Text(
-                (if (selected == offset) "✓ " else "") +
-                    stringResource(
-                        if (index ==
-                            0
-                        ) {
-                            R.string.manual_history_first_occurrence
-                        } else {
-                            R.string.manual_history_second_occurrence
-                        },
-                        "UTC${if (offset == ZoneOffset.UTC) "+00:00" else offset.id}",
-                    ),
-            )
-        }
-    }
-}
-
-@Composable
 private fun SequenceHistoryMutationSurface(
     detail: SequenceHistoryDetail,
     state: SequenceHistoryMutationState,
     onAction: (SequenceHistoryMutationAction) -> Unit,
 ) {
-    val occurrenceDescriptors =
-        remember(detail.occurrences) { SequenceHistoryProposalBuilder.occurrenceDescriptors(detail) }
     when {
         state.childDeletionProposal != null -> SequenceChildDeletionConfirmation(detail, state, onAction)
-        state.structuralTarget != null && state.structuralProposal == null ->
-            StructuralModeChooser(state, onAction)
-        state.structuralProposal != null && !state.structuralProposal.isConfirmable ->
-            OwnerlessPlacementChooser(detail, state, onAction)
-        state.structuralProposal != null -> StructuralReview(detail, occurrenceDescriptors, state, onAction)
-        state.timingProposal != null -> TimingReview(detail, occurrenceDescriptors, state, onAction)
-        state.timingDraft != null -> TimingEditor(detail, occurrenceDescriptors, state, onAction)
-        else -> {
-            state.issue?.let { SequenceMutationIssue(it) }
-            SequenceDetail(
-                detail,
-                onDeleteChild = { onAction(SequenceHistoryMutationAction.RequestChildDeletion(it)) },
-                onRemoveOccurrence = { onAction(SequenceHistoryMutationAction.BeginStructuralRemoval(it)) },
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                LifeTracingSecondaryButton(
-                    onClick = { onAction(SequenceHistoryMutationAction.BeginTiming) },
-                    enabled = !state.isMutating,
-                    modifier = Modifier.testTag("sequence-history-timing"),
-                ) { Text(stringResource(R.string.sequence_history_correct_timing)) }
+        state.structuralTarget != null ->
+            Column(Modifier.fillMaxSize()) {
+                SequenceStructuralSurface(detail, state, onAction)
             }
-        }
+        state.timingProposal != null -> Column(Modifier.fillMaxSize()) { SequenceTimingReview(detail, state, onAction) }
+        state.timingDraft != null -> Column(Modifier.fillMaxSize()) { SequenceTimingEditor(detail, state, onAction) }
+        else -> state.issue?.let { SequenceMutationIssue(it) }
     }
 }
 
-@Composable
-private fun TimingEditor(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val draft = requireNotNull(state.timingDraft)
-    Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
-    Text(stringResource(R.string.history_event_zone, detail.originalZoneId.id))
-    draft.timestamps.forEach { (target, value) ->
-        LifeTracingOutlinedTextField(
-            value.text,
-            { onAction(SequenceHistoryMutationAction.EditTimestamp(target, it)) },
-            Modifier.fillMaxWidth().testTag("sequence-history-timestamp-${timestampTargetKey(target)}"),
-            label = { Text(timestampTargetLabel(occurrenceDescriptors, target)) },
-            enabled = !state.isMutating,
-        )
-        OffsetChoices(value.validOffsets, value.selectedOffset, enabled = !state.isMutating) {
-            onAction(SequenceHistoryMutationAction.SelectTimestampOffset(target, it))
-        }
-    }
-    if (state.noTimingChanges) {
-        Text(stringResource(R.string.sequence_history_no_timing_changes))
-    }
-    state.issue?.let { SequenceMutationIssue(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(
-            onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
-            enabled = !state.isMutating,
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        LifeTracingPrimaryButton(
-            onClick = { onAction(SequenceHistoryMutationAction.ReviewTiming) },
-            enabled = !state.isMutating,
-            modifier = Modifier.testTag("sequence-history-review-timing"),
-        ) { Text(stringResource(R.string.sequence_history_review_timing)) }
-    }
-}
-
-@Composable
-private fun TimingReview(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val proposal = requireNotNull(state.timingProposal)
-    Text(stringResource(R.string.sequence_history_timing_review), style = MaterialTheme.typography.headlineSmall)
-    ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
-    state.issue?.let { SequenceMutationIssue(it) }
-    if (state.overlapWarning) {
-        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            LifeTracingSecondaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-cancel"),
-            ) { Text(stringResource(R.string.manual_history_cancel)) }
-            LifeTracingPrimaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.ProceedOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-proceed"),
-            ) { Text(stringResource(R.string.history_overlap_proceed)) }
-        }
-    } else {
-        ReviewActions(
-            isMutating = state.isMutating,
-            confirmLabel = R.string.history_save_correction,
-            confirmTag = "sequence-history-confirm-timing",
-            onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-            onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmTiming) },
-        )
-    }
-}
-
-@Composable
-private fun SequenceChildDeletionConfirmation(
-    detail: SequenceHistoryDetail,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    Text(stringResource(R.string.sequence_history_delete_child_title), style = MaterialTheme.typography.headlineSmall)
-    OccurrenceTarget(requireNotNull(state.childDeletionTarget))
-    Text(stringResource(R.string.sequence_history_delete_child_message, detail.root.title))
-    state.issue?.let { SequenceMutationIssue(it) }
-    ReviewActions(
-        isMutating = state.isMutating,
-        confirmLabel = if (state.isMutating) R.string.history_deleting else R.string.history_delete,
-        confirmTag = "sequence-history-confirm-delete-child",
-        onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-        onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmChildDeletion) },
-    )
-}
-
-@Composable
-private fun StructuralModeChooser(
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    Text(stringResource(R.string.sequence_history_structural_title), style = MaterialTheme.typography.headlineSmall)
-    OccurrenceTarget(requireNotNull(state.structuralTargetDescriptor))
-    Text(stringResource(R.string.sequence_history_structural_mode_prompt))
-    state.issue?.let { SequenceMutationIssue(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(
-            onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
-            enabled = !state.isMutating,
-        ) { Text(stringResource(R.string.manual_history_cancel)) }
-        LifeTracingSecondaryButton(
-            onClick = {
-                onAction(
-                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.LEAVE_GAP),
-                )
-            },
-            enabled = !state.isMutating,
-            modifier = Modifier.testTag("sequence-history-leave-gap"),
-        ) { Text(stringResource(R.string.sequence_history_leave_gap)) }
-        LifeTracingPrimaryButton(
-            onClick = {
-                onAction(
-                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.CLOSE_GAP),
-                )
-            },
-            enabled = !state.isMutating,
-            modifier = Modifier.testTag("sequence-history-close-gap"),
-        ) { Text(stringResource(R.string.sequence_history_close_gap)) }
-    }
-}
-
-@Composable
-private fun OwnerlessPlacementChooser(
-    detail: SequenceHistoryDetail,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val proposal = requireNotNull(state.structuralProposal)
-    Text(stringResource(R.string.sequence_history_ownerless_title), style = MaterialTheme.typography.headlineSmall)
-    OccurrenceTarget(proposal.target)
-    Text(stringResource(R.string.sequence_history_ownerless_message))
-    state.issue?.let { SequenceMutationIssue(it) }
-    proposal.ownerlessChoices.filter { it.selectedPlacement == null }.forEach { choice ->
-        HistoryCard {
-            Text(
-                stringResource(
-                    R.string.sequence_history_ownerless_interval,
-                    stringResource(intervalKindResource(choice.kind)),
-                    choice.intervalId.value,
-                ),
-            )
-            LifeTracingSecondaryButton(
-                onClick = {
-                    onAction(
-                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
-                            choice.intervalId,
-                            OwnerlessIntervalPlacement.FIXED,
-                        ),
-                    )
-                },
-                enabled = !state.isMutating,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .testTag("sequence-history-ownerless-${choice.intervalId.value}-fixed"),
-            ) {
-                Text(
-                    stringResource(
-                        R.string.sequence_history_ownerless_fixed_choice,
-                        mutationPreviewInterval(choice.fixedStartedAt, choice.fixedEndedAt, detail.originalZoneId),
-                    ),
-                )
-            }
-            LifeTracingPrimaryButton(
-                onClick = {
-                    onAction(
-                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
-                            choice.intervalId,
-                            OwnerlessIntervalPlacement.TRANSLATED,
-                        ),
-                    )
-                },
-                enabled = !state.isMutating,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .testTag("sequence-history-ownerless-${choice.intervalId.value}-translated"),
-            ) {
-                Text(
-                    stringResource(
-                        R.string.sequence_history_ownerless_translated_choice,
-                        mutationPreviewInterval(
-                            choice.translatedStartedAt,
-                            choice.translatedEndedAt,
-                            detail.originalZoneId,
-                        ),
-                    ),
-                )
-            }
-        }
-    }
-    LifeTracingSecondaryButton(
-        onClick = { onAction(SequenceHistoryMutationAction.Cancel) },
-        enabled = !state.isMutating,
-    ) { Text(stringResource(R.string.manual_history_cancel)) }
-}
-
-@Composable
-private fun StructuralReview(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    state: SequenceHistoryMutationState,
-    onAction: (SequenceHistoryMutationAction) -> Unit,
-) {
-    val proposal = requireNotNull(state.structuralProposal)
-    Text(stringResource(R.string.sequence_history_structural_review), style = MaterialTheme.typography.headlineSmall)
-    OccurrenceTarget(proposal.target)
-    Text(
-        stringResource(
-            if (proposal.mode == SequenceHistoryStructuralRemovalMode.LEAVE_GAP) {
-                R.string.sequence_history_leave_gap
-            } else {
-                R.string.sequence_history_close_gap
-            },
-        ),
-    )
-    Text(
-        stringResource(
-            R.string.sequence_history_final_root_end,
-            mutationPreviewInstant(requireNotNull(proposal.command).finalEndedAt, detail.originalZoneId),
-        ),
-    )
-    ProposalChanges(detail, occurrenceDescriptors, proposal.changes)
-    state.issue?.let { SequenceMutationIssue(it) }
-    if (state.overlapWarning) {
-        Text(stringResource(R.string.history_overlap_warning), color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-            LifeTracingSecondaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.CancelOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-cancel"),
-            ) { Text(stringResource(R.string.manual_history_cancel)) }
-            LifeTracingPrimaryButton(
-                onClick = { onAction(SequenceHistoryMutationAction.ProceedOverlap) },
-                enabled = !state.isMutating,
-                modifier = Modifier.testTag("sequence-history-overlap-proceed"),
-            ) { Text(stringResource(R.string.history_overlap_proceed)) }
-        }
-    } else {
-        ReviewActions(
-            isMutating = state.isMutating,
-            confirmLabel = R.string.sequence_history_confirm_structural,
-            confirmTag = "sequence-history-confirm-structural",
-            onCancel = { onAction(SequenceHistoryMutationAction.Cancel) },
-            onConfirm = { onAction(SequenceHistoryMutationAction.ConfirmStructuralRemoval) },
-        )
-    }
-}
-
-@Composable
-private fun ReviewActions(
-    isMutating: Boolean,
-    confirmLabel: Int,
-    confirmTag: String,
-    onCancel: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    if (isMutating) Text(stringResource(R.string.history_saving))
-    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingSecondaryButton(onClick = onCancel, enabled = !isMutating) {
-            Text(stringResource(R.string.manual_history_cancel))
-        }
-        LifeTracingPrimaryButton(
-            onClick = onConfirm,
-            enabled = !isMutating,
-            modifier = Modifier.testTag(confirmTag),
-        ) { Text(stringResource(confirmLabel)) }
-    }
-}
-
-@Composable
-private fun ProposalChanges(
-    detail: SequenceHistoryDetail,
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    changes: List<SequenceHistoryPreviewChange>,
-) {
-    Text(stringResource(R.string.sequence_history_changes), style = MaterialTheme.typography.titleMedium)
-    changes.forEach { change ->
-        when (change) {
-            is SequenceHistoryPreviewChange.Timestamp ->
-                Text(
-                    stringResource(
-                        R.string.sequence_history_change,
-                        timestampTargetLabel(occurrenceDescriptors, change.target),
-                        mutationPreviewInstant(change.before, detail.originalZoneId),
-                        mutationPreviewInstant(change.after, detail.originalZoneId),
-                    ),
-                )
-            is SequenceHistoryPreviewChange.RemovedOccurrence ->
-                Text(
-                    stringResource(
-                        R.string.sequence_history_removed_occurrence,
-                        occurrenceTargetText(change.occurrence),
-                    ),
-                )
-            is SequenceHistoryPreviewChange.ChildPauseTimestamp ->
-                Text(
-                    stringResource(
-                        R.string.sequence_history_change,
-                        stringResource(
-                            R.string.sequence_history_child_pause,
-                            occurrenceTargetText(change.occurrence),
-                            change.pauseId.value,
-                        ),
-                        mutationPreviewInterval(change.beforeStartedAt, change.beforeEndedAt, detail.originalZoneId),
-                        mutationPreviewInterval(change.afterStartedAt, change.afterEndedAt, detail.originalZoneId),
-                    ),
-                )
-            is SequenceHistoryPreviewChange.RemovedInterval ->
-                Text(
-                    stringResource(
-                        R.string.sequence_history_removed_interval,
-                        stringResource(intervalKindResource(change.interval.kind)),
-                        change.interval.intervalId.value,
-                        mutationPreviewInterval(
-                            change.interval.startedAt,
-                            change.interval.endedAt,
-                            detail.originalZoneId,
-                        ),
-                    ),
-                )
-            is SequenceHistoryPreviewChange.OwnerlessPlacement ->
-                Text(
-                    stringResource(
-                        R.string.sequence_history_ownerless_selection,
-                        stringResource(intervalKindResource(change.kind)),
-                        change.intervalId.value,
-                        stringResource(
-                            if (change.placement == OwnerlessIntervalPlacement.FIXED) {
-                                R.string.sequence_history_fixed
-                            } else {
-                                R.string.sequence_history_translated
-                            },
-                        ),
-                        mutationPreviewInterval(
-                            change.resultingStartedAt,
-                            change.resultingEndedAt,
-                            detail.originalZoneId,
-                        ),
-                    ),
-                )
-        }
-    }
-}
-
-@Composable
-private fun timestampTargetLabel(
-    occurrenceDescriptors: Map<SequenceOccurrenceId, SequenceHistoryOccurrenceDescriptor>,
-    target: SequenceHistoryTimestampTarget,
-): String =
-    when (target) {
-        SequenceHistoryTimestampTarget.RootStartedAt -> stringResource(R.string.sequence_history_root_started)
-        SequenceHistoryTimestampTarget.RootEndedAt -> stringResource(R.string.sequence_history_root_ended)
-        is SequenceHistoryTimestampTarget.OccurrenceEnteredAt ->
-            stringResource(
-                R.string.sequence_history_occurrence_entered,
-                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
-            )
-        is SequenceHistoryTimestampTarget.OccurrenceCompletedAt ->
-            stringResource(
-                R.string.sequence_history_occurrence_completed,
-                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
-            )
-        is SequenceHistoryTimestampTarget.ChildStartedAt ->
-            stringResource(
-                R.string.sequence_history_child_started,
-                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
-            )
-        is SequenceHistoryTimestampTarget.ChildCompletedAt ->
-            stringResource(
-                R.string.sequence_history_child_completed,
-                occurrenceTargetText(occurrenceDescriptors.getValue(target.occurrenceId)),
-            )
-        is SequenceHistoryTimestampTarget.IntervalStartedAt ->
-            stringResource(
-                R.string.sequence_history_interval_started,
-                target.intervalId.value,
-            )
-        is SequenceHistoryTimestampTarget.IntervalEndedAt ->
-            stringResource(
-                R.string.sequence_history_interval_ended,
-                target.intervalId.value,
-            )
-    }
-
-@Composable
-private fun OccurrenceTarget(target: SequenceHistoryOccurrenceDescriptor) {
-    Text(occurrenceTargetText(target), style = MaterialTheme.typography.titleMedium)
-    if (target.hasSourceStep) Text(stringResource(R.string.history_source_step))
-    target.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
-    if (target.isRuntimeAdded) Text(stringResource(R.string.history_runtime_added))
-}
-
-@Composable
-private fun occurrenceTargetText(target: SequenceHistoryOccurrenceDescriptor): String =
-    stringResource(R.string.history_occurrence, target.runtimePosition + 1, target.activityTitle)
-
-@Composable
-private fun mutationPreviewInterval(
-    startedAt: Instant,
-    endedAt: Instant?,
-    zoneId: ZoneId,
-): String =
-    "${mutationPreviewInstant(startedAt, zoneId)} – " +
-        (endedAt?.let { mutationPreviewInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value))
-
-private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
+internal fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     when (target) {
         SequenceHistoryTimestampTarget.RootStartedAt -> "root-started"
         SequenceHistoryTimestampTarget.RootEndedAt -> "root-ended"
@@ -1125,7 +660,7 @@ private fun timestampTargetKey(target: SequenceHistoryTimestampTarget): String =
     }
 
 @Composable
-private fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
+internal fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
     val resource =
         when (issue) {
             SequenceHistoryMutationIssue.INVALID_DATE_TIME -> R.string.manual_history_invalid_datetime
@@ -1138,7 +673,13 @@ private fun SequenceMutationIssue(issue: SequenceHistoryMutationIssue) {
             SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE -> R.string.sequence_history_child_deletion_failure
             SequenceHistoryMutationIssue.STRUCTURAL_FAILURE -> R.string.sequence_history_structural_failure
         }
-    Text(stringResource(resource), color = MaterialTheme.colorScheme.error)
+    Text(
+        stringResource(resource),
+        Modifier.semantics {
+            liveRegion = LiveRegionMode.Polite
+        },
+        color = MaterialTheme.colorScheme.error,
+    )
 }
 
 @Composable
@@ -1166,136 +707,7 @@ internal fun MutationIssue(issue: ActivityHistoryMutationIssue) {
 }
 
 @Composable
-internal fun SequenceDetail(
-    detail: SequenceHistoryDetail,
-    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
-    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)? = null,
-) {
-    Text(detail.root.title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
-    detail.root.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
-    Text(
-        historyRootTimingInZone(
-            detail.root.startedAt,
-            detail.root.completedAt,
-            detail.originalZoneId,
-        ),
-    )
-    Text(
-        stringResource(sequenceStatusResource(detail.root.status)),
-        style = MaterialTheme.typography.labelLarge,
-    )
-    Text(stringResource(R.string.history_active_duration, durationText(detail.root.activeDuration)))
-    Text(stringResource(R.string.history_pause_duration, durationText(detail.root.pauseDuration)))
-    Text(stringResource(R.string.history_wall_duration, durationText(detail.root.wallDuration)))
-    if (detail.fields.isNotEmpty()) {
-        Text(stringResource(R.string.history_sequence_fields), style = MaterialTheme.typography.titleMedium)
-        detail.fields.forEach { HistoryField(it) }
-    }
-    Text(stringResource(R.string.history_occurrences), style = MaterialTheme.typography.titleMedium)
-    detail.occurrences.forEach { occurrence ->
-        Occurrence(detail.originalZoneId, occurrence, onDeleteChild, onRemoveOccurrence)
-    }
-    Text(stringResource(R.string.history_intervals), style = MaterialTheme.typography.titleMedium)
-    detail.intervals.forEach { interval -> HistoryInterval(detail.originalZoneId, interval) }
-}
-
-@Composable
-private fun Occurrence(
-    zoneId: ZoneId,
-    occurrence: SequenceHistoryOccurrence,
-    onDeleteChild: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
-    onRemoveOccurrence: ((com.alexandr5476.lifetracing.domain.SequenceOccurrenceId) -> Unit)?,
-) {
-    HistoryCard(modifier = Modifier.testTag("history-occurrence-${occurrence.occurrenceId.value}")) {
-        Text(
-            stringResource(R.string.history_occurrence, occurrence.runtimePosition + 1, occurrence.activity.title),
-            style = MaterialTheme.typography.titleMedium,
-        )
-        occurrence.activity.shortComment?.let { Text(it) }
-        Text(stringResource(occurrenceStatusResource(occurrence.status)), style = MaterialTheme.typography.labelLarge)
-        if (occurrence.sourceSequenceSnapshotNodeId != null) Text(stringResource(R.string.history_source_step))
-        occurrence.repeatIteration?.let { Text(stringResource(R.string.history_repeat_iteration, it)) }
-        if (occurrence.isRuntimeAdded) Text(stringResource(R.string.history_runtime_added))
-        occurrence.enteredAt?.let { Text(stringResource(R.string.history_entered, historyInstant(it, zoneId))) }
-        occurrence.completedAt?.let {
-            Text(
-                stringResource(R.string.history_occurrence_completed, historyInstant(it, zoneId)),
-            )
-        }
-        Text(historyTracking(occurrence.activity.timeTrackingMode, occurrence.activity.timerTarget))
-        occurrence.activity.mainValue?.let { HistoryField(it) }
-        if (occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION && occurrence.child == null) {
-            Text(stringResource(R.string.history_deleted_child), style = MaterialTheme.typography.labelLarge)
-        } else {
-            occurrence.child?.let { child ->
-                child.startedAt?.let {
-                    Text(stringResource(R.string.history_child_started, historyInstant(it, child.originalZoneId)))
-                }
-                child.completedAt?.let {
-                    Text(stringResource(R.string.history_child_completed, historyInstant(it, child.originalZoneId)))
-                }
-                Text(stringResource(R.string.history_actual_duration, durationOrMissing(child.activeDuration)))
-                child.fields.forEach { HistoryField(it) }
-            }
-        }
-        if (
-            onDeleteChild != null &&
-            occurrence.status == RuntimeOccurrenceStatus.COMPLETED &&
-            !occurrence.isDeletedFromHistory &&
-            occurrence.childMutationFacts != null
-        ) {
-            LifeTracingSecondaryButton(
-                onClick = { onDeleteChild(occurrence.occurrenceId) },
-                modifier = Modifier.testTag("sequence-history-delete-child-${occurrence.occurrenceId.value}"),
-            ) { Text(stringResource(R.string.sequence_history_delete_child)) }
-        }
-        if (
-            onRemoveOccurrence != null &&
-            occurrence.status in setOf(RuntimeOccurrenceStatus.COMPLETED, RuntimeOccurrenceStatus.DELETED_EXECUTION) &&
-            !occurrence.isDeletedFromHistory &&
-            occurrence.childMutationFacts != null
-        ) {
-            LifeTracingSecondaryButton(
-                onClick = { onRemoveOccurrence(occurrence.occurrenceId) },
-                modifier = Modifier.testTag("sequence-history-remove-occurrence-${occurrence.occurrenceId.value}"),
-            ) { Text(stringResource(R.string.sequence_history_remove_occurrence)) }
-        }
-    }
-}
-
-@Composable
-private fun HistoryInterval(
-    zoneId: ZoneId,
-    interval: SequenceInterval,
-) {
-    HistoryCard(modifier = Modifier.testTag("history-interval-${interval.id.value}")) {
-        Text(stringResource(intervalKindResource(interval.kind)), style = MaterialTheme.typography.titleSmall)
-        Text(stringResource(R.string.history_interval_started, historyInstant(interval.startedAt, zoneId)))
-        Text(
-            stringResource(
-                R.string.history_interval_ended,
-                interval.endedAt?.let { historyInstant(it, zoneId) } ?: stringResource(R.string.history_missing_value),
-            ),
-        )
-    }
-}
-
-@Composable
 private fun HistoryField(field: ActivityHistoryField) =
-    HistoryFieldContent(
-        field.name,
-        field.unit,
-        field.displayPrecision,
-        field.categoryOptions.associate {
-            it.id to
-                it.label
-        },
-        field.configuredValue,
-        field.actualValue,
-    )
-
-@Composable
-private fun HistoryField(field: SequenceHistoryField) =
     HistoryFieldContent(
         field.name,
         field.unit,
@@ -1319,17 +731,8 @@ private fun HistoryFieldContent(
 ) {
     val configuredText = historyConfigured(configured, labels, precision, unit)
     val actualText = historyActual(actual, precision, unit)
-    val emptyText = stringResource(R.string.manual_history_present_empty)
-    val actualAccessible =
-        if (actual is ActivityHistoryActualValue.Text && actual.value.isEmpty()) emptyText else actualText
-    val configuredAccessible =
-        if (configured is ActivityHistoryConfiguredValue.Text &&
-            configured.value.isEmpty()
-        ) {
-            emptyText
-        } else {
-            configuredText
-        }
+    val actualAccessible = historyAccessibleValue(actual, actualText)
+    val configuredAccessible = historyAccessibleValue(configured, configuredText)
     val actualDescription = stringResource(R.string.history_actual_field, name, actualAccessible)
     val configuredDescription = stringResource(R.string.history_configured_value, configuredAccessible)
     Column(
@@ -1371,7 +774,7 @@ internal fun historyConfigured(
     }
 
 @Composable
-private fun historyActual(
+internal fun historyActual(
     value: Any,
     precision: Int?,
     unit: String?,
@@ -1390,12 +793,31 @@ private fun historyActual(
     }
 
 @Composable
-private fun HistoryReadStatus(resource: Int) {
+internal fun historyAccessibleValue(
+    value: Any,
+    formatted: String,
+): String =
+    if (value is ActivityHistoryConfiguredValue.Text &&
+        value.value.isEmpty() ||
+        value is ActivityHistoryActualValue.Text &&
+        value.value.isEmpty() ||
+        value is SequenceHistoryConfiguredValue.Text &&
+        value.value.isEmpty() ||
+        value is SequenceHistoryActualValue.Text &&
+        value.value.isEmpty()
+    ) {
+        stringResource(R.string.manual_history_present_empty)
+    } else {
+        formatted
+    }
+
+@Composable
+internal fun HistoryReadStatus(resource: Int) {
     Text(stringResource(resource), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
 }
 
 @Composable
-private fun FailureCard(
+internal fun FailureCard(
     onRetry: () -> Unit,
     enabled: Boolean = true,
 ) {
@@ -1410,14 +832,14 @@ private fun FailureCard(
             enabled = enabled,
             modifier =
                 historyFocusTarget(LocalHistoryFocus.current.retry, enabled)
-                    .historyActionSemantics(onRetry)
+                    .then(if (enabled) Modifier.historyActionSemantics(onRetry) else Modifier)
                     .testTag("history-retry"),
         ) { Text(stringResource(R.string.history_retry)) }
     }
 }
 
 @Composable
-private fun HistoryCard(
+internal fun HistoryCard(
     modifier: Modifier = Modifier,
     container: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surfaceContainerLow,
     onClick: (() -> Unit)? = null,
@@ -1481,38 +903,20 @@ private fun historyInstant(
     zoneId: ZoneId,
 ): String = historicalTimestamp(instant, zoneId, includeDate = true)
 
-@Composable
-private fun mutationPreviewInstant(
-    instant: Instant,
-    zoneId: ZoneId,
-): String =
-    mutationPreviewInstantText(
-        instant,
-        zoneId,
-        LocalConfiguration.current.locales[0],
-    )
-
+@Suppress("UnusedParameter")
 internal fun mutationPreviewInstantText(
     instant: Instant,
     zoneId: ZoneId,
     locale: java.util.Locale,
 ): String {
-    val zoned = instant.atZone(zoneId)
-    val formatted =
-        DateTimeFormatterBuilder()
-            .appendLocalized(FormatStyle.MEDIUM, FormatStyle.MEDIUM)
-            .appendFraction(ChronoField.MILLI_OF_SECOND, 3, 3, true)
-            .toFormatter(locale)
-            .format(zoned)
-    return if (zoneId.rules.getValidOffsets(zoned.toLocalDateTime()).size > 1) {
-        "$formatted ${zoned.offset.id}"
-    } else {
-        formatted
-    }
+    // Exact, reversible endpoint text includes seconds, fractions, actual offset and ZoneId.
+    // locale remains in this API for existing structural callers.
+    return com.alexandr5476.lifetracing.ui
+        .exactHistoricalTimestamp(instant, zoneId)
 }
 
 @Composable
-private fun historyTracking(
+internal fun historyTracking(
     mode: TimeTrackingMode,
     target: Duration?,
 ): String =
@@ -1523,10 +927,10 @@ private fun historyTracking(
     }
 
 @Composable
-private fun durationOrMissing(value: Duration?): String =
+internal fun durationOrMissing(value: Duration?): String =
     value?.let(::durationText) ?: stringResource(R.string.history_missing_value)
 
-private fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
+internal fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
     when (status) {
         SequenceExecutionStatus.COMPLETED -> R.string.history_completed
         SequenceExecutionStatus.ENDED_EARLY -> R.string.history_ended_early
@@ -1535,7 +939,7 @@ private fun sequenceStatusResource(status: SequenceExecutionStatus): Int =
         -> error("Only terminal Sequence status is representable in History")
     }
 
-private fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
+internal fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
     when (status) {
         RuntimeOccurrenceStatus.NOT_STARTED -> R.string.history_occurrence_not_started
         RuntimeOccurrenceStatus.CURRENT -> R.string.history_occurrence_current
@@ -1544,7 +948,7 @@ private fun occurrenceStatusResource(status: RuntimeOccurrenceStatus): Int =
         RuntimeOccurrenceStatus.DELETED_EXECUTION -> R.string.history_occurrence_deleted_execution
     }
 
-private fun intervalKindResource(kind: SequenceIntervalKind): Int =
+internal fun intervalKindResource(kind: SequenceIntervalKind): Int =
     when (kind) {
         SequenceIntervalKind.ACTIVE_STEP -> R.string.history_interval_active_step
         SequenceIntervalKind.STEP_PAUSE -> R.string.history_interval_step_pause
@@ -1553,7 +957,7 @@ private fun intervalKindResource(kind: SequenceIntervalKind): Int =
         SequenceIntervalKind.TRANSITION_COUNTDOWN -> R.string.history_interval_transition_countdown
     }
 
-private fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
+internal fun durationText(value: Duration): String = DateUtils.formatElapsedTime(value.seconds.coerceAtLeast(0))
 
 internal fun numberText(
     value: Long,

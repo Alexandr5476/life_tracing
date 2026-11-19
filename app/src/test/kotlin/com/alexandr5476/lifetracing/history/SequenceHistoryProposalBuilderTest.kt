@@ -52,6 +52,72 @@ import java.util.Locale
 
 class SequenceHistoryProposalBuilderTest {
     @Test
+    fun manyOwnerlessSelectionsDoNotTraverseCanonicalGraphUntilFinalization() =
+        runBlocking {
+            var visits = 0
+            val base = detail()
+            val intervals =
+                base.intervals.filter { it.occurrenceId != null } +
+                    List(512) { index ->
+                        interval("choice-$index", SequenceIntervalKind.EXPLICIT_PAUSE, minute(35), minute(37), null)
+                    }
+            val counted =
+                object : AbstractList<SequenceInterval>() {
+                    override val size: Int get() = intervals.size
+
+                    override fun get(index: Int): SequenceInterval {
+                        visits++
+                        return intervals[index]
+                    }
+                }
+            val canonical = base.copy(intervals = counted)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val controller =
+                SequenceHistoryMutationController(
+                    scope,
+                    SEQUENCE,
+                    { canonical },
+                    { _, _, _ -> error("unexpected") },
+                    { _, _, _ -> error("unexpected") },
+                    { _, _, _ -> error("unexpected") },
+                )
+            try {
+                awaitLoaded(controller)
+                controller.dispatch(SequenceHistoryMutationAction.BeginStructuralRemoval(TARGET))
+                controller.dispatch(
+                    SequenceHistoryMutationAction.ChooseStructuralMode(SequenceHistoryStructuralRemovalMode.CLOSE_GAP),
+                )
+                val original = requireNotNull(controller.state.value.structuralProposal)
+                visits = 0
+                repeat(511) { index ->
+                    controller.dispatch(
+                        SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                            SequenceIntervalId("choice-$index"),
+                            OwnerlessIntervalPlacement.FIXED,
+                        ),
+                    )
+                }
+                assertEquals(0, visits, "Selections must not reconstruct the complete historical graph")
+                assertTrue(original.ownerlessPlacements.values.all { it == null }, "Old publications remain immutable")
+                assertFalse(requireNotNull(controller.state.value.structuralProposal).isConfirmable)
+                controller.dispatch(
+                    SequenceHistoryMutationAction.PlaceOwnerlessInterval(
+                        SequenceIntervalId("choice-511"),
+                        OwnerlessIntervalPlacement.TRANSLATED,
+                    ),
+                )
+                val final = requireNotNull(controller.state.value.structuralProposal).command
+                assertEquals(TOKEN, final?.expectedUpdatedAt)
+                assertEquals(minute(25), final?.finalIntervals?.single { it.id.value == "choice-511" }?.startedAt)
+                assertEquals(minute(35), final?.finalIntervals?.single { it.id.value == "choice-0" }?.startedAt)
+                assertTrue(visits < intervals.size * 12, "One bounded final build")
+            } finally {
+                controller.close()
+                scope.cancel()
+            }
+        }
+
+    @Test
     fun timingBuildsExactChangedFactsAndCompleteIntervalGraph() {
         val detail = detail()
         val original = SequenceHistoryProposalBuilder.timingDraft(detail)
@@ -171,6 +237,17 @@ class SequenceHistoryProposalBuilderTest {
         assertTrue(earlierText.contains(ZoneOffset.ofHours(2).id))
         assertTrue(laterText.contains(ZoneOffset.ofHours(1).id))
         assertFalse(earlierText == laterText)
+    }
+
+    @Test
+    fun reviewTimestampAlwaysNamesActualOffsetAndZone() {
+        val instant = Instant.parse("2026-01-01T10:00:10.123Z")
+        for (locale in listOf(Locale.US, Locale.forLanguageTag("ru"))) {
+            val preview = mutationPreviewInstantText(instant, BERLIN, locale)
+            assertTrue(preview.contains("Europe/Berlin"))
+            assertTrue(preview.contains("+01:00"))
+            assertTrue(preview.contains(".123"))
+        }
     }
 
     @Test
@@ -332,10 +409,11 @@ class SequenceHistoryProposalBuilderTest {
                 .first { it.before == targetEnd && it.after == targetStart }
 
         assertTrue(proposal.isConfirmable)
-        assertEquals(
-            mutationPreviewInstantText(move.before, zone, Locale.US).substringBeforeLast(' '),
-            mutationPreviewInstantText(move.after, zone, Locale.US).substringBeforeLast(' '),
-        )
+        val beforePreview = java.time.ZonedDateTime.parse(mutationPreviewInstantText(move.before, zone, Locale.US))
+        val afterPreview = java.time.ZonedDateTime.parse(mutationPreviewInstantText(move.after, zone, Locale.US))
+        assertEquals(beforePreview.toLocalDateTime(), afterPreview.toLocalDateTime())
+        assertEquals(move.before, beforePreview.toInstant())
+        assertEquals(move.after, afterPreview.toInstant())
         assertFalse(
             mutationPreviewInstantText(move.before, zone, Locale.US) ==
                 mutationPreviewInstantText(move.after, zone, Locale.US),
@@ -464,7 +542,10 @@ class SequenceHistoryProposalBuilderTest {
                 minute(25),
                 minute(27),
             ),
-            close.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single(),
+            close.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single {
+                it.intervalId ==
+                    OWNERLESS
+            },
         )
         assertEquals(listOf(LATER, SECOND_LATER), command.occurrenceTimings.map { it.occurrenceId })
         assertEquals(listOf(minute(0), minute(10)), command.occurrenceTimings.map { it.enteredAt })
@@ -501,6 +582,16 @@ class SequenceHistoryProposalBuilderTest {
                 .associate { it.id to it.occurrenceId },
         )
         assertEquals(minute(0), command.finalIntervals.single { it.id == FORCED_FIXED }.startedAt)
+        assertEquals(
+            OwnerlessIntervalPlacement.FIXED,
+            close.changes
+                .filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>()
+                .single {
+                    it.intervalId ==
+                        FORCED_FIXED
+                }.placement,
+        )
+        assertEquals(2, close.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().size)
         assertEquals(minute(0), command.finalIntervals.single { it.id == LATER_INTERVAL }.startedAt)
         assertEquals(minute(10), command.finalIntervals.single { it.id == SECOND_LATER_INTERVAL }.startedAt)
         assertEquals(minute(20), command.finalIntervals.single { it.id == COUNTDOWN_INTERVAL }.startedAt)
@@ -554,7 +645,10 @@ class SequenceHistoryProposalBuilderTest {
                 minute(35),
                 minute(37),
             ),
-            fixedPreview.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single(),
+            fixedPreview.changes.filterIsInstance<SequenceHistoryPreviewChange.OwnerlessPlacement>().single {
+                it.intervalId ==
+                    OWNERLESS
+            },
         )
         assertEquals(OwnerlessIntervalPlacement.FIXED, fixedPreview.ownerlessChoices.single().selectedPlacement)
         assertEquals(

@@ -248,3 +248,433 @@ The authorized probe again rejected execution with "No active repair-probe lease
 Neither failing device journey has been re-executed for this patch; the supplied
 assertion failures remain open for Controller verification. No direct device task
 or manual accessibility-service walkthrough was performed.
+
+## Sequence History mutation ownership (S1)
+
+`SequenceHistoryAdmission` is the native action boundary for the existing detail,
+timing draft/review/overlap, child deletion, structural mode/placement/review,
+Retry and Back. It checks the live RESUMED foreground route, exact retained
+session/controller and execution identity, publication reference, current phase,
+typed target and writer lock. Session-keyed composition isolates retained controls
+and focus. Pause events revoke synchronously; navigation snapshot observation,
+activation-time ownership checks and disposal permanently revoke older authority.
+Foreground reentry issues fresh callbacks. Each timestamp input advances only its
+own expected-publication cursor; buttons and offset choices cannot borrow it.
+Material pointer/keyboard actions and native semantics use the same guarded
+callbacks; disabled controls retain native disabled semantics.
+
+Canonical loading rejects mismatched/nonterminal roots and malformed occurrence,
+child and interval identities before creating mutation controls. Validation uses
+only the selected canonical aggregate and temporary identity sets. Admission
+retains references and a validity flag, never an aggregate copy. Publication checks
+use reference identity in constant time; typed target checks use the selected
+aggregate. No new reader, global History/Statistics query, persisted state or writer
+was introduced. Existing resolver, proposal builder, policies, optimistic tokens
+and transactional commands retain their semantics.
+
+System and native Back consume the current transient or block while a writer/read
+completion is pending. Safe exit drains the same retained session generation gate
+used by Compose refresh delivery before releasing the exact session. A committed
+read failure keeps its generation and permits read-only Retry. Generation delivery
+is independent of RESUMED ownership and survives Activity recreation.
+
+`SequenceHistoryAdmissionTest` covers publication replacement, identity and phase
+rejection, target disambiguation, revocation, independent text cursors, obsolete
+offsets, dismissed reviews/warnings, incomplete placement, duplicate confirmation,
+Back/session ownership, refresh draining, stale rejection and postcommit recovery.
+New production-route native semantics/keyboard tests in
+`HistoryScreenPresentationTest` and a MainActivity recreation test are registered
+in the mandatory instrumentation inventory. Device execution and independent
+GitHub CI remain Controller-owned. Manual accessibility-service certification was
+not performed. Full editor descriptions/focus design and large-Sequence rendering
+remain deferred.
+
+An additional fail-first JVM regression reproduced StateFlow conflating an immediate
+Retry/read failure with the preceding identical failure. Sequence dispatch now
+advances a non-durable publication counter, following Activity correction, while
+reference identity remains the authorization check. A repeated-failure native Retry
+regression covers fresh keyboard recovery and rejection of the retained Retry.
+Committed refresh generations and writer behavior are unchanged.
+
+Local verification passed 179 History/navigation JVM tests, including 17 admission
+regressions, with no failures, errors or skips. App ktlint, Detekt and Android lint
+passed; debug and app/data instrumentation APKs assembled. All eight new device
+test identities are registered; inventory/source identity validation and
+`git diff --check` passed. Instrumentation compilation supplies no device-execution
+or accessibility-service certification evidence. Durable command/repository,
+domain, schema, snapshot, Plan and Statistics implementations are unchanged.
+
+## API 33 fixture repair
+
+The canonical `gmd-api33-app` run reached three S1 testcase failures. The recreation
+fixture supplied a backdated Sequence start with a later persisted creation time;
+starting its first occurrence then violated the existing updated/creation invariant.
+The fixture now uses one explicit instant for both start and creation, retaining
+its past terminal event and correction. The two Sequence Enter-key cases now enter
+native keyboard mode and await the intended control's focus through the shared
+`KeyboardInputFixture`. Stale-action, single-writer and refresh assertions remain
+intact. Both Enter activations in the affected class were corrected together;
+production admission and durable behavior are unchanged by this repair.
+
+The Controller's subsequent API 33 causal run executed all three affected tests.
+The recreation test passed. Both keyboard tests reached native window admission
+and failed because the same `Application Not Responding: com.android.systemui`
+window owned input focus; the intended ComponentActivity remained the focused app.
+Their preceding stale-action assertions completed, but native keyboard activation
+was blocked in that execution. The full diagnostic captures reconstructed
+from acknowledged logcat frames matched the reported byte counts and SHA-256
+hashes (316245 bytes, `63cacb159ce3ab132b23e32ed32302a2ba7b5721b3495ff632feb02309b17a3d`;
+346046 bytes, `997b642a582d2b6f7673cfcfa1e4f39426ab7cd28365b1f0531e53e6619d0a2c`).
+Both identify SystemUI PID 825 and the same ANR dialog window `9b0d710`.
+
+After restoring the probe binding, an authorized containing-class experiment ran
+all 55 tests in `MainActivityRouteSessionTest` and `HistoryScreenPresentationTest`.
+It reproduced the same two SystemUI window-admission failures; the other 53 tests
+passed. The canonical artifacts and this first probe were preserved separately.
+Controller then completed its authorized `cleanManagedDevices` and setup recovery.
+With identical application source and the same class scope, a second real probe
+passed all 55 tests with no failures, errors or skips, including both keyboard
+regressions and Sequence session recreation. These are retained as `tree-1` and
+`tree-2` under repair-probe lease `b4c01c8a537649fc800a09d8b3f841ac`.
+
+This comparison identifies the device's SystemUI obstruction as the immediate
+cause of those native admission failures. No application assertions or focus
+guards were changed for the experiment; the underlying SystemUI startup issue was
+not repaired in the repository. The class-scoped diagnostic PASS supplies no full
+API 33 suite or independent GitHub CI PASS credit. Controller retains those gates.
+
+
+## Canonical terminal Sequence detail (S2)
+
+The S2 task contract, product v0.16 §16, domain v0.10 §§10/13, schema v0.6
+§§14–17 and the current implementation clarifications govern this presentation.
+No separate Parent Contract file is tracked in this worktree. Existing S1 route
+sessions, exact publication ownership, optimistic mutation tokens, writers and
+committed-refresh delivery remain authoritative.
+
+`SequenceHistoryPresentation.kt` consumes the exact `SequenceHistoryDetail`
+returned by `HistoryReadRepository.getSequenceDetail`. It does not hydrate
+Templates, fetch children during composition, reconstruct topology, restore hidden
+occurrences, recalculate root durations or infer interval ownership. Visible
+tombstones retain occurrence/source/configuration facts and distinguish deleted
+child detail from a present No-live child with Missing duration. The retained
+deleted-child identity comes only from the same canonical mutation facts; deleted
+actual timestamps/values are not displayed as child results.
+
+Root, occurrence/provenance, child, frozen Field and interval groups are separate
+native read-only focus targets. Actions remain separate native Material nodes.
+Fields retain exact snapshot Field/option IDs even with duplicate labels; defaults
+and actual results are labeled separately. An unperformed occurrence's configured
+Main Value has no actual-result announcement. Missing, numeric zero, present-empty
+Text and missing Text remain distinct. Sequence and Activity Text types also retain
+equivalent present-empty handling in the shared History value formatter.
+
+Sequence-owned endpoints use the root's original zone; child endpoints use the
+child's original zone. Exact ISO zoned descriptions are visible as well as spoken,
+including seconds, stored fractional precision and each endpoint's actual offset.
+They remain distinct across repeated local clocks and local-day/DST boundaries.
+Fractional durations are preserved in Sequence detail. Activity History retains its
+existing compact timestamp and correction presentation.
+
+Idle content has one `LazyColumn`; no vertically scrolling ancestor wraps it.
+Back remains attached outside the lazy viewport, including loading/failure and
+transient mutation states. Root/status/section, Field, occurrence and interval keys
+use disjoint namespaces. Occurrence/interval item keys contain their exact IDs, and
+the lists retain canonical order. The production detail does not create a subtree
+for every selected occurrence/interval. Section links and a labeled list-ordinal
+input jump to offscreen content using arithmetic indices and exact target IDs;
+these controls only scroll and request native focus. Mutation editors retain their
+existing scrollable surface and S1 actions.
+
+Lazy disposal is distinguished from historical removal in `HistoryFocus`.
+The focused item's type-qualified key and, for occurrence descendants, its typed
+semantic identity are checked on canonical instance replacement; removal recovers
+to the attached Back target, and failed reads recover to Retry.
+Unrelated publications preserve native item focus and the lazy scroll state.
+No focus or scrolling effect dispatches a mutation or repository reload. No second
+aggregate, historical repository or persisted accessibility state is introduced.
+
+Composition work is bounded by visible lazy items and their own frozen Fields.
+Item keys and navigation indices use O(1) operations. The sole canonical-replacement
+focus membership check is O(N) in the relevant selected collection. S1 admission
+validation is remembered by exact canonical instance and execution ID, with fresh
+validation after reload; unrelated publications and timestamp keystrokes reuse its
+validity. Cache misses still perform the complete original identity validation.
+JVM regressions count selected-list reads across 50 admissions and reject cached
+validity reuse for another/equal-but-distinct/malformed aggregate. No global
+History/Statistics scan or N+1 child/interval query is added.
+
+New Compose fixtures cover roots, identities, exact original-zone endpoints,
+provenance/reasons, unperformed and deleted-child states, No-live/Missing versus
+zero, frozen schema/value/option identities, all interval kinds and ownership,
+native keyboard focus, canonical removal, read recovery, EN/RU scaling, and a
+10,000-occurrence selected detail with early/middle/late discovery and reused action
+targets. Existing presentation, mutation integration and MainActivity recreation
+fixtures discover offscreen items through the production lazy container before
+invoking native controls. All new test identities are registered in the mandatory
+instrumentation inventory.
+
+Structural-removal visibility is established by the existing real repository test
+`SequenceHistoryCommandRepositoryTest.leaveGapPersistsHiddenOccurrenceAndCanonicalHistoryOmitsIt`
+and `SequenceHistoryMutationRepositoryIntegrationTest`; S2 does not synthesize a
+structural-removal result from tombstone metadata. Device execution and independent
+GitHub CI remain Controller-owned. AndroidTest compilation supplies no device PASS
+or manual TalkBack/Switch Access certification.
+
+Local S2 verification (2026-11-16) passed with:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:testDebugUnitTest --tests '*history.*' --tests '*MainActivityNavigationTest*' --tests '*HistoricalTimestampTest*' :app:assembleDebug :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The selected JVM suites ran 188 tests with no failures, errors or skips. All 74
+instrumentation-runner unit tests passed; their simulated device command output
+does not represent emulator execution. The 14 new Compose test identities match
+the instrumentation inventory, and Sequence resource keys are paired and unique
+in English/Russian. Production and AndroidTest sources/APKs compile and package;
+the new Compose cases and existing device regressions still require Controller
+execution. This evidence does not replace the independent CI gates.
+
+### API 33 S2 repair evidence
+
+Controller execution `S2-77163393488948db8628ea64a8d610e7/attempt-1`
+reported three failing testcases. Two timestamp assertions matched both the root
+and an occurrence sharing its endpoint. They now assert the exact endpoint on the
+intended tagged summary; the localized child/root fixture checks both endpoints
+in their respective original zones. Adjacent root assertions use the same explicit
+identity rather than a global first match. The controller-only persistence fixture
+also contained a misplaced UI-scroll call despite never opening a History route;
+that call is removed. Its persistence/refresh assertions remain intact. Every
+remaining occurrence-scroll call belongs to a fixture that opens the route first.
+No production semantics, admission checks or historical writer changed in this
+repair.
+
+The authorized real API 33 repair probe passed all three original failing methods
+with zero failures, errors or skips. Evidence is retained under repair lease
+`b66955e0690d43638aa0d1111f26bb89/tree-1/attempt-1`. The probe compiled and
+packaged the revised AndroidTest APK. This scoped result explains the reported
+failures but supplies no full API 33 suite or independent CI PASS credit; Controller
+retains those gates.
+
+After that probe, only assertion line-break formatting and this evidence changed.
+Final `:app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest` and
+`git diff --check` passed. No additional JVM suite was needed for this test-only
+repair; the real probe executed the affected controller/persistence assertions.
+
+
+## Sequence navigation ownership and nested recovery (S2C1)
+
+Baseline: `e920b44` (S2). This correction follows the S2C1 task contract and the
+same product/domain/schema/clarification authorities recorded above. It changes
+presentation authority and native focus recovery only. Canonical formatting,
+original-zone endpoints, durable facts, S1 mutation phase/admission rules,
+transactional commands and exactly-once committed refresh delivery are unchanged.
+
+`SequenceHistoryNavigation` is a separate, revocable read-only lease. Production
+borrows S1's exact current publication/foreground RESUMED session check and verifies
+that the rendered canonical detail is that publication's exact object. It receives
+no dispatcher. Standalone `SequenceDetail` remains usable with its composition and
+RESUMED lifecycle as authority. Snapshot observation, synchronous PAUSE observation,
+activation-time rejection and disposal permanently revoke older controls. Fresh
+foreground publications create fresh leases; rejected callbacks never revive.
+The originating navigation control's coroutine scope must also remain active at
+activation, including ordinal edits and native focus admission after lazy disposal.
+Native Material enabled/disabled semantics and dynamic `focusProperties` use this
+same availability, including invalid ordinal input.
+
+A jump checks its lease at activation and after its queued frame. It binds the
+ordinal to the exact occurrence ID at that canonical list index, using arithmetic
+section offsets. The guarded scroll uses the synchronous `requestScrollToItem`
+API so there is no intervening scroll-mutex suspension after admission. Superseding
+jumps cancel queued work and discard the previous pending focus token. A target's
+delayed native focus checks its attachment, the initiating lease and the exact
+pending request again after its frame. Replaced publications/details/sessions and
+hidden, paused or disposed routes cannot authorize that request. Shared History
+landing/recovery effects also retain their initiating ownership callback instead
+of borrowing the latest callback after a frame; Sequence supplies its exact S1
+publication guard. An unrelated publication does not move a surviving target.
+
+Occurrence descendants now compose typed identities from occurrence ID and the
+semantic element: occurrence summary, tombstone, child execution summary, child
+execution plus frozen Field ID, configured snapshot plus Field ID, or a mutation
+action plus its exact child identity. These identities key their native subtrees
+and accompany the existing lazy item key in `HistoryFocus`. Canonical replacement
+checks only the focused target's membership and applicable action availability.
+A retained occurrence therefore cannot conceal the disappearance of its child
+summary/Field/delete action when it becomes a visible tombstone. Recovery uses the
+attached Back target. Lazy detachment by itself still does not mark historical
+removal. No persistent cache or additional aggregate is retained: one focused
+typed identity is stored, and the membership lookup is O(selected occurrences +
+focused child's Fields), only on canonical replacement or action availability
+change. Row composition, focus events and scrolling do not scan the aggregate.
+
+Regression coverage:
+
+| Boundary | Executable evidence |
+| --- | --- |
+| Queue, publication, canonical reference, route/session loss, disposal, replacement generations, superseding requests | Ten `SequenceHistoryNavigationTest` JVM tests, using a queued dispatcher and explicit deferred frame gate |
+| Hidden native controls and input focus, hide/reentry before a frame, PAUSE/RESUME, disposed route, same-execution replacement session, fresh foreground controls | `HistoryScreenPresentationTest` and `SequenceHistoryPresentationTest` production-route fixtures |
+| Queued hidden jump and foreign foreground focus, queued replacement session | `sequenceQueuedReadOnlyJumpLosesHiddenRouteBeforeScrollAndCannotStealFocusOnReturn`, `sequenceQueuedReadOnlyJumpCannotScrollReplacementSessionWithSameExecution` |
+| Canonical replacement before scroll and between scroll/focus frames | Both `queuedOrdinalJump...` tests use a paused Compose frame clock and the production surface/admission with explicit canonical publications |
+| Performed child summary to visible tombstone with the same occurrence ID; disappearing child Field | Both `removedChild...` tests verify absent target, attached native Back focus, retained occurrence and rejection of a captured old child action; the canonical fixture exposes no reader and dispatch count stays zero |
+| Surviving nested target and ordinary lazy disposal | `nestedFocusSurvivesCanonicalReplacementAndOffscreenDisposalDoesNotRecover`; an explicit native handoff to an attached control outside the lazy list precedes actual disposal, while History retains the last semantic owner and receives no removal signal |
+| Exact ordinal binding despite runtime positions and duplicate titles | `ordinalNavigationUsesCanonicalOrderDespiteUnrelatedRuntimePositions`, plus the existing 10,000-occurrence navigation/reuse fixture |
+
+All eleven added instrumentation identities are registered in the mandatory
+inventory. Existing full-occurrence removal, keyboard/section navigation,
+10,000-occurrence bounded rendering, S1 stale-action, Activity/History accessibility,
+Sequence mutation and MainActivity session tests remain registered and compiled.
+No navigation/focus path calls a writer, canonical reload, History scan or per-row
+repository query. The initial nested-removal and captured-hidden-action regressions
+were added before the production repair; device fail-first execution and device
+regression execution are Controller-owned and were not run in this turn.
+
+Initial implementation verification on 2026-11-16 passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:testDebugUnitTest --tests '*history.*' --tests '*MainActivityNavigationTest*' --tests '*HistoricalTimestampTest*' :app:assembleDebug :app:assembleDebugAndroidTest :data:assembleDebugAndroidTest --continue --console=plain
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:lintDebug :app:assembleDebugAndroidTest --continue --console=plain
+python -B -m unittest discover -s .github/scripts -p test_run_instrumentation.py
+git diff --check
+```
+
+The selected JVM suites ran 197 tests (including nine new navigation/focus-decision
+tests) with zero failures, errors or skips. All 74 instrumentation-runner unit tests
+passed; their mocked device output is not device execution. Inventory/source
+identity checks match all 21 Sequence presentation and 31 History presentation
+tests. The separate app ktlint, Detekt, lint and AndroidTest APK rebuild after the
+final instrumentation fixture refinements also passed. The initial implementation
+turn launched no managed-device task or emulator. The subsequently authorized
+repair probes are recorded below. Full Controller device suites, mandatory parity/coverage
+gates and independent GitHub CI remain outstanding; APK compilation supplies no
+instrumentation PASS or manual accessibility-service certification.
+
+
+### API 33 S2C1 repair evidence
+
+Controller execution `S2C1-917ab8505899436683748e0eacf60d42/attempt-1`
+reported three failures in `SequenceHistoryPresentationTest`.
+
+Both nested-removal fixtures used an occurrence-scoped text matcher to find the
+route-level Back control after replacement. The shared fixture now binds one
+unscoped Back interaction before scrolling and uses it for native keyboard entry
+and recovery verification. Assertions still require the removed child summary or
+Field to be absent, native Back focus, a retained occurrence and rejection of the
+captured old child action. Adjacent route-level Back assertions were audited;
+the existing full-occurrence and queued-jump fixtures already reset their scope.
+
+The surviving-child test exposed a production defect: native `focusProperties`
+observed the old lease's publication/canonical state. Retiring that lease could
+invalidate an existing native focus target before the lazy content republished
+its replacement properties, even though the exact child remained represented.
+`SequenceHistoryNavigation.canFocus()` now evaluates the same live, revocable
+`isCurrent()` check inside `Snapshot.withoutReadObservation`. All five Sequence
+native focus-property guards use it. This prevents an obsolete publication's
+snapshot reads from independently clearing existing focus; composition still
+publishes current enabled/disabled properties, and the lease's own route/lifecycle
+observer is unchanged. Activation, ordinal edits, queued scroll and delayed focus
+continue to use their original exact-publication checks. Hidden, paused, disposed
+and replaced-session requests remain permanently rejected; no refocus workaround
+or historical command was introduced.
+
+The next probe passed that survival assertion and exposed a downstream fixture
+assumption: `clearFocus()` alone did not establish actual lazy disposal in this
+setup. The fixture now explicitly hands native focus to an attached Material
+control outside the list and waits for that target to own focus. That control does
+not alter History's last semantic owner, which is asserted to remain occurrence
+`o0`. The test still requires the old child node to disappear after scrolling,
+requires the outside target to retain native focus, checks that no removal signal
+was emitted and verifies that the child is discoverable again on return. The
+canonical-replacement survival assertion is unchanged and precedes the handoff.
+
+The added JVM regression models native focus-property snapshot observation. It
+verifies that canonical/publication replacement does not invalidate an existing
+native focus observer, while a new request rejects the obsolete lease permanently
+and a fresh lease remains usable. The focused JVM run passed 29 tests: ten
+navigation/focus tests and nineteen S1 admission tests, with no failures, errors
+or skips. App ktlint, Detekt and AndroidTest APK assembly passed; final fixture
+ktlint/Detekt checks also passed.
+
+Authorized real repair probe evidence is under lease
+`0e9c990d48e049c290763e72c1b8b8c9`:
+
+- `tree-1/attempt-1`: the three original methods ran; both corrected removal
+  fixtures passed and the production focus-survival failure remained (2/3 passed).
+- `tree-2/attempt-1`: the complete Sequence presentation class plus four production
+  route navigation tests ran; the production survival assertion passed and only
+  the later actual-disposal assertion failed (24/25 passed).
+- `tree-3/attempt-1`: the same 25-test scope passed with zero failures, errors or
+  skips after the explicit native handoff. This includes all three originally
+  failing methods, full occurrence removal, section/ordinal and queued navigation,
+  exact-ID reuse, the 10,000-occurrence bounded fixture, and hidden/paused/disposed/
+  same-execution session ownership regressions.
+
+Only the authorized `repair-probe.cmd` launched device work. The final probe
+compiled and packaged the changed AndroidTest APK. Inventory/source identities
+remain unchanged and `git diff --check` passes. These scoped real-device results
+explain and resolve the supplied failures; they do not supply a full 745-test API
+33 rerun, mandatory cross-API parity/coverage or independent GitHub CI PASS credit.
+
+
+### API 33 full-suite follow-up: Plan fixture reopening
+
+The next canonical `gmd-api33-app` run (attempt 2, tree fingerprint
+`426ab5d944a43e11359437bc65406612c5ff6c8a2ac486d7393bbbdc94ec83e6`)
+reported one failure among 745 tests. All three previously failing Sequence
+presentation methods passed. The remaining failure was
+`PlanExactDayPersistenceTest.untouchedHighPrecisionTargetSurvivesPreservationZoneTravelDismissalAndReopening[sequence=false]`,
+at the first `getPlan` after fixture reopening. Its recorded logcat reports that
+Room closed the old database pool with one connection still in use, followed by
+`SQLITE_BUSY` on the reopened store.
+
+The fixture cancelled its controller scope without joining its children. Obsolete
+canonical reads can still be inside synchronous Room calls after cancellation;
+completion of the latest publication does not establish that those reads finished.
+The ExactDay fixture now closes the controller, cancels and joins its owning job,
+and only then closes/recreates the store. Teardown uses the same ordering. The
+identical permanent-controller-stop/reopen mechanism in
+`PlanScheduleAccessibilityTest` receives the same correction. Neither change
+alters production Plan/History admission, repository transactions or durable facts.
+
+A new Activity/Sequence parameterized regression holds an obsolete repository
+read in a non-cancellable, explicitly gated section. Reopening must suspend and
+retain the old store until the read finishes; afterward a fresh store must return
+the original high-precision Plan and identical durable facts, with zero mutation
+commands. `CoroutineStart.UNDISPATCHED` establishes the pending-reopen assertion
+before releasing the gate. There are no sleeps or SQLite retry loops, and all
+waits are bounded. The instrumentation inventory includes both new identities.
+
+The authorized repair-probe entry point returned `No active repair-probe lease`
+for this follow-up. No device execution was started. The original full-suite
+failure therefore still requires Controller runtime verification of this patch;
+AndroidTest compilation and JVM/static checks do not establish a device PASS.
+
+
+Local verification passed:
+
+```powershell
+.\gradlew.bat :app:ktlintCheck :app:detekt :app:assembleDebugAndroidTest :app:testDebugUnitTest --tests '*Plan*Test*' --continue --console=plain
+```
+
+The seven selected Plan JVM suites ran 90 tests with zero failures, errors or
+skips. All changed AndroidTest Kotlin compiled and the APK packaged. A direct
+source/inventory comparison matched all ten ExactDay methods and twenty
+parameterized identities without duplicates. `git diff --check` passed. The new
+gated device regression and the original lock failure remain pending Controller
+execution; no runtime repair result or full-suite/CI PASS is inferred.
+
+## Sequence timing correction accessibility (S3)
+
+See [Sequence timing correction evidence](sequence_history_timing_accessibility.md)
+for native timing controls, typed error/offset authority, lazy owner navigation,
+committed read recovery, complexity reasoning and Controller verification limits.
+
+## Sequence child History deletion (S4)
+
+[Sequence child deletion evidence](sequence_child_history_deletion_accessibility.md)
+records the exact native confirmation, localized logical-deletion consequences,
+S1 action admission, canonical tombstone/focus and committed read-only recovery,
+new physical-reopen production journeys and the existing repository policy matrix.
+Local checks pass; device execution and independent CI remain Controller-owned.

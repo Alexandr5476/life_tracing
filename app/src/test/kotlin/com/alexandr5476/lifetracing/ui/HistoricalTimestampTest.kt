@@ -10,6 +10,30 @@ import java.util.TimeZone
 
 class HistoricalTimestampTest {
     @Test
+    fun exactEndpointsKeepSecondsMillisecondsOffsetsAndOriginalDates() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val first = Instant.parse("2026-10-25T00:30:12.123Z")
+        val second = Instant.parse("2026-10-25T01:30:12.124Z")
+        assertEquals("2026-10-25T02:30:12.123+02:00[Europe/Berlin]", exactHistoricalTimestamp(first, zone))
+        assertEquals("2026-10-25T02:30:12.124+01:00[Europe/Berlin]", exactHistoricalTimestamp(second, zone))
+        assertEquals(
+            first,
+            java.time.ZonedDateTime
+                .parse(exactHistoricalTimestamp(first, zone))
+                .toInstant(),
+        )
+        assertEquals(
+            second,
+            java.time.ZonedDateTime
+                .parse(exactHistoricalTimestamp(second, zone))
+                .toInstant(),
+        )
+        val midnight = Instant.parse("2026-10-24T21:59:59.999Z")
+        assertEquals("2026-10-24T23:59:59.999+02:00[Europe/Berlin]", exactHistoricalTimestamp(midnight, zone))
+        assertEquals("2026-10-25T00:00:00+02:00[Europe/Berlin]", exactHistoricalTimestamp(midnight.plusMillis(1), zone))
+    }
+
+    @Test
     fun equalClocksOnConsecutiveOriginalDatesIncludeBothLocalizedDates() {
         assertRange("2026-06-01T08:00:00Z", "2026-06-02T08:00:00Z", includeDate = true)
     }

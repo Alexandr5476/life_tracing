@@ -484,12 +484,13 @@ class LibraryAccessibilityRouteTest {
             val createTag = f.text(R.string.library_create_tag_target, f.templateContext(activity))
             val beforeDraft = f.store.durableFacts()
             f.description(createTag)
-            f.dialogInput(createTag).performTextInput("Canceled")
+            f.focusedDialogInput(createTag).performTextInput("Canceled")
             f.description(f.text(R.string.library_cancel_context, createTag))
             assertEquals(beforeDraft, f.store.durableFacts())
             f.description(createTag)
-            f.dialogInput(createTag).performTextInput("Dismissed")
+            f.focusedDialogInput(createTag).performTextInput("Dismissed")
             f.dismissDialogWithSystemBack(f.text(R.string.library_cancel_context, createTag))
+            compose.onNodeWithContentDescription(createTag).awaitKeyboardFocus()
             assertEquals(beforeDraft, f.store.durableFacts())
             f.nameMutation(createTag, "Created tag", R.string.library_create)
             val createdTag =
@@ -3412,6 +3413,8 @@ class LibraryAccessibilityRouteTest {
 
         fun dismissDialogWithSystemBack(cancelDescription: String) {
             val cancel = compose.onNodeWithContentDescription(cancelDescription)
+            // A hidden IME can make closeKeyboard a no-op without entering keyboard mode.
+            keyboard.awaitWindowFocus(cancel)
             keyboard.closeKeyboard(cancel)
             cancel.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
             keyboard.sendKey(cancel, KeyEvent.KEYCODE_BACK)
@@ -3599,8 +3602,10 @@ class LibraryAccessibilityRouteTest {
             awaitOrganization()
         }
 
-        fun dialogInput(context: String) =
-            compose.onNodeWithContentDescription(text(R.string.library_name_context, context))
+        fun focusedDialogInput(context: String) =
+            compose
+                .onNodeWithContentDescription(text(R.string.library_name_context, context))
+                .also { it.awaitKeyboardFocus() }
 
         fun nameMutation(
             context: String,
@@ -3608,7 +3613,7 @@ class LibraryAccessibilityRouteTest {
             confirm: Int,
         ) {
             description(context)
-            dialogInput(context).awaitKeyboardFocus().performTextReplacement(name)
+            focusedDialogInput(context).performTextReplacement(name)
             val before = library.state.value.mutationSuccessGeneration
             val accept =
                 compose.onNodeWithContentDescription(text(R.string.library_confirm_context, text(confirm), context))

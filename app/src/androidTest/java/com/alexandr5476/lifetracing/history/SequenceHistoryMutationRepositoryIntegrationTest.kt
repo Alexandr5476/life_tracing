@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing.history
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -9,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
@@ -245,14 +247,15 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         enterHistory()
         openSequence(timing)
         val timingBefore = requireNotNull(history.getSequenceDetail(timing))
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-ended",
             timingBefore.root.completedAt.plusSeconds(1),
             timingBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(timing)?.root?.completedAt == timingBefore.root.completedAt.plusSeconds(1)
         }
@@ -261,6 +264,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         openSequence(deletion)
         val deletionBefore = requireNotNull(history.getSequenceDetail(deletion))
         val deletionTarget = deletionBefore.occurrences.single().occurrenceId
+        scrollToHistoryOccurrence(deletionTarget.value)
         composeTestRule
             .onNodeWithTag("sequence-history-delete-child-${deletionTarget.value}")
             .performScrollTo()
@@ -277,9 +281,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(deletionTarget.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${deletionTarget.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-leave-gap").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-leave-gap").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(deletion)?.occurrences?.isEmpty() == true }
         backToHistory()
 
@@ -292,10 +297,11 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(removed.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${removed.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(close)?.root?.completedAt == closeBefore.root.completedAt.minusMillis(removedSpan)
         }
@@ -388,6 +394,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val overlapBefore = requireNotNull(history.getSequenceDetail(overlap))
         val later = overlapBefore.occurrences.last()
         val earlierStart = requireNotNull(later.enteredAt).minusSeconds(5)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-occurrence-${later.occurrenceId.value}-entered",
@@ -405,12 +412,12 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             earlierStart,
             overlapBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").assertIsDisplayed().performClick()
         assertEquals(overlapBefore.updatedAt, history.getSequenceDetail(overlap)?.updatedAt)
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(overlap)?.updatedAt != overlapBefore.updatedAt }
         val overlapAfter = requireNotNull(history.getSequenceDetail(overlap))
         assertEquals(java.time.Duration.ofSeconds(20), overlapAfter.root.activeDuration)
@@ -425,14 +432,15 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         openSequence(moved)
         val movedBefore = requireNotNull(history.getSequenceDetail(moved))
         assertEquals(utcDate, movedBefore.root.primaryLocalDate)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-started",
             midnight.minusSeconds(30),
             movedBefore.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) {
             history.getSequenceDetail(moved)?.root?.primaryLocalDate == utcDate.minusDays(1)
         }
@@ -478,6 +486,7 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         val third = original.occurrences[2]
         val overlappingStart = requireNotNull(second.enteredAt).plusSeconds(5)
         val thirdInterval = original.intervals.single { it.occurrenceId == third.occurrenceId }
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-occurrence-${third.occurrenceId.value}-entered",
@@ -494,9 +503,9 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
             overlappingStart,
             original.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.updatedAt != original.updatedAt }
 
         val beforeStructural = requireNotNull(history.getSequenceDetail(execution))
@@ -504,25 +513,24 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule
-            .onNodeWithText(
-                composeTestRule.activity.getString(R.string.history_overlap_warning),
-            ).performScrollTo()
-            .assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").performScrollTo().performClick()
+        assertStructuralOverlapWarning()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-cancel").assertIsDisplayed().performClick()
         assertEquals(beforeStructural.updatedAt, history.getSequenceDetail(execution)?.updatedAt)
 
         scrollToHistoryOccurrence(target.occurrenceId.value)
         composeTestRule
             .onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}", useUnmergedTree = true)
+            .performScrollTo()
             .performClick()
-        composeTestRule.onNodeWithTag("sequence-history-close-gap").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-close-gap").assertIsDisplayed().performClick()
         resolveOwnerlessIntervals()
-        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").performScrollTo().performClick()
+        assertStructuralOverlapWarning()
+        composeTestRule.onNodeWithTag("sequence-history-overlap-proceed").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(5_000) { history.getSequenceDetail(execution)?.occurrences?.size == 2 }
         val after = requireNotNull(history.getSequenceDetail(execution))
         assertEquals(java.time.Duration.ofSeconds(20), after.root.activeDuration)
@@ -585,14 +593,15 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
 
         enterHistory()
         openSequence(executionId)
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
         composeTestRule.onNodeWithTag("sequence-history-timing").performScrollTo().performClick()
         replaceTimestamp(
             "sequence-history-timestamp-root-ended",
             before.root.completedAt.plusSeconds(1),
             before.originalZoneId,
         )
-        composeTestRule.onNodeWithTag("sequence-history-review-timing").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-review-timing").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("sequence-history-confirm-timing").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(
             5_000,
         ) { plans.getPlan(plan.id)?.fulfilledAt == before.root.completedAt.plusSeconds(1) }
@@ -660,15 +669,16 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         composeTestRule.waitUntil(5_000) {
             composeTestRule.activity.sequenceHistoryMutationRouteSessions.activeSession
                 ?.executionId == id &&
-                composeTestRule.onAllNodesWithTag("sequence-history-timing").fetchSemanticsNodes().size == 1
+                composeTestRule.onAllNodesWithTag("sequence-history-detail-list").fetchSemanticsNodes().size == 1
         }
     }
 
     private fun scrollToHistoryOccurrence(occurrenceId: String) {
         val tag = "history-occurrence-$occurrenceId"
         composeTestRule.waitUntil(5_000) {
-            composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+            composeTestRule.onAllNodesWithTag("sequence-history-detail-list").fetchSemanticsNodes().isNotEmpty()
         }
+        composeTestRule.onNodeWithTag("sequence-history-detail-list").performScrollToKey("occurrence:$occurrenceId")
         composeTestRule.onNodeWithTag(tag).performScrollTo()
     }
 
@@ -686,7 +696,6 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         assertNull(session.controller.state.value.issue)
         composeTestRule
             .onNodeWithText(composeTestRule.activity.getString(R.string.history_back))
-            .performScrollTo()
             .assertIsDisplayed()
             .performClick()
         composeTestRule.waitUntil(5_000) {
@@ -701,11 +710,23 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
         zoneId: ZoneId,
     ) {
         composeTestRule
+            .onNodeWithTag("sequence-history-timing-list")
+            .performScrollToKey(tag.removePrefix("sequence-history-timestamp-"))
+        composeTestRule
             .onNodeWithTag(tag)
             .performScrollTo()
             .performTextReplacement(
                 DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(LocalDateTime.ofInstant(instant, zoneId)),
             )
+    }
+
+    private fun assertStructuralOverlapWarning() {
+        composeTestRule.onNodeWithTag("sequence-structural-review-list").performScrollToKey("summary:result")
+        composeTestRule
+            .onNodeWithTag("sequence-structural-overlap-warning", useUnmergedTree = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals(composeTestRule.activity.getString(R.string.sequence_history_overlap_warning))
     }
 
     private fun resolveOwnerlessIntervals() {
@@ -718,6 +739,10 @@ class SequenceHistoryMutationRepositoryIntegrationTest {
                     ?.structuralProposal,
             )
         proposal.ownerlessPlacements.filterValues { it == null }.keys.forEach { id ->
+            composeTestRule
+                .onNodeWithTag(
+                    "sequence-structural-placements-list",
+                ).performScrollToKey("choice:${id.value}")
             composeTestRule
                 .onNodeWithTag("sequence-history-ownerless-${id.value}-translated")
                 .performScrollTo()

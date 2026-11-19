@@ -36,6 +36,12 @@ internal fun historicalTimestampParts(
     )
 }
 
+/** Exact endpoint in its original zone; preserves every stored fractional digit. */
+internal fun exactHistoricalTimestamp(
+    instant: Instant,
+    zoneId: ZoneId,
+): String = DateTimeFormatter.ISO_ZONED_DATE_TIME.format(instant.atZone(zoneId))
+
 @Composable
 internal fun historicalTimestamp(
     instant: Instant,

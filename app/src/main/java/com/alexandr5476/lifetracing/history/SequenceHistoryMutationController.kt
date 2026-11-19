@@ -43,6 +43,8 @@ enum class SequenceHistoryMutationIssue {
     STRUCTURAL_FAILURE,
 }
 
+enum class SequenceHistoryCommittedMutation { TIMING, CHILD_DELETION, STRUCTURAL }
+
 data class SequenceHistoryMutationState(
     val load: HistoryDetailLoad<SequenceHistoryDetail> = HistoryDetailLoad.Loading,
     val timingDraft: SequenceHistoryTimingDraft? = null,
@@ -56,7 +58,10 @@ data class SequenceHistoryMutationState(
     val structuralProposal: SequenceHistoryStructuralProposal? = null,
     val isMutating: Boolean = false,
     val issue: SequenceHistoryMutationIssue? = null,
+    val invalidTimestampTarget: SequenceHistoryTimestampTarget? = null,
+    val committedMutation: SequenceHistoryCommittedMutation? = null,
     val refreshGeneration: Long = 0,
+    val publication: Long = 0,
 )
 
 sealed interface SequenceHistoryMutationAction {
@@ -130,6 +135,8 @@ class SequenceHistoryMutationController internal constructor(
 
     fun dispatch(action: SequenceHistoryMutationAction) {
         if (closed || mutableState.value.isMutating) return
+        // Keep immediate equal-looking recovery results observable without reviving old controls.
+        mutableState.update { it.copy(publication = it.publication + 1) }
         when (action) {
             SequenceHistoryMutationAction.Retry -> reload()
             SequenceHistoryMutationAction.BeginTiming -> beginTiming()
@@ -137,7 +144,7 @@ class SequenceHistoryMutationController internal constructor(
             is SequenceHistoryMutationAction.SelectTimestampOffset -> selectOffset(action.target, action.offset)
             SequenceHistoryMutationAction.ReviewTiming -> reviewTiming()
             SequenceHistoryMutationAction.ProceedOverlap ->
-                mutableState.update { it.copy(overlapWarning = false, issue = null) }
+                mutableState.update { it.copy(overlapWarning = false, issue = null, invalidTimestampTarget = null) }
             SequenceHistoryMutationAction.CancelOverlap ->
                 mutableState.update {
                     if (it.structuralProposal != null) {
@@ -147,9 +154,16 @@ class SequenceHistoryMutationController internal constructor(
                             structuralProposal = null,
                             overlapWarning = false,
                             issue = null,
+                            invalidTimestampTarget = null,
                         )
                     } else {
-                        it.copy(timingProposal = null, noTimingChanges = false, overlapWarning = false, issue = null)
+                        it.copy(
+                            timingProposal = null,
+                            noTimingChanges = false,
+                            overlapWarning = false,
+                            issue = null,
+                            invalidTimestampTarget = null,
+                        )
                     }
                 }
             SequenceHistoryMutationAction.ConfirmTiming -> confirmTiming()
@@ -208,7 +222,9 @@ class SequenceHistoryMutationController internal constructor(
             mutableState.update {
                 it.copy(
                     load =
-                        detail?.let(HistoryDetailLoad<SequenceHistoryDetail>::Content)
+                        detail
+                            ?.takeIf { detail -> detail.hasValidSequenceIdentity(executionId) }
+                            ?.let(HistoryDetailLoad<SequenceHistoryDetail>::Content)
                             ?: HistoryDetailLoad.Unavailable,
                     isMutating = false,
                     issue = issue,
@@ -221,6 +237,7 @@ class SequenceHistoryMutationController internal constructor(
         val detail = detail() ?: return
         mutableState.update {
             it.copy(
+                committedMutation = null,
                 timingDraft = SequenceHistoryProposalBuilder.timingDraft(detail),
                 timingProposal = null,
                 noTimingChanges = false,
@@ -231,6 +248,7 @@ class SequenceHistoryMutationController internal constructor(
                 structuralTargetDescriptor = null,
                 structuralProposal = null,
                 issue = null,
+                invalidTimestampTarget = null,
             )
         }
     }
@@ -247,12 +265,15 @@ class SequenceHistoryMutationController internal constructor(
                 timingDraft =
                     draft.copy(
                         timestamps =
-                            draft.timestamps +
-                                (target to value.copy(text = text, selectedOffset = null, validOffsets = emptyList())),
+                            draft.timestamps.withTimestamp(
+                                target,
+                                value.copy(text = text, selectedOffset = null, validOffsets = emptyList()),
+                            ),
                     ),
                 timingProposal = null,
                 noTimingChanges = false,
                 issue = null,
+                invalidTimestampTarget = null,
             )
         }
     }
@@ -268,11 +289,12 @@ class SequenceHistoryMutationController internal constructor(
             state.copy(
                 timingDraft =
                     draft.copy(
-                        timestamps = draft.timestamps + (target to value.copy(selectedOffset = offset)),
+                        timestamps = draft.timestamps.withTimestamp(target, value.copy(selectedOffset = offset)),
                     ),
                 timingProposal = null,
                 noTimingChanges = false,
                 issue = null,
+                invalidTimestampTarget = null,
             )
         }
     }
@@ -283,7 +305,13 @@ class SequenceHistoryMutationController internal constructor(
         when (val result = SequenceHistoryProposalBuilder.timing(detail, draft)) {
             SequenceHistoryTimingBuildResult.NoChange ->
                 mutableState.update {
-                    it.copy(timingProposal = null, noTimingChanges = true, overlapWarning = false, issue = null)
+                    it.copy(
+                        timingProposal = null,
+                        noTimingChanges = true,
+                        overlapWarning = false,
+                        issue = null,
+                        invalidTimestampTarget = null,
+                    )
                 }
             is SequenceHistoryTimingBuildResult.Ready ->
                 mutableState.update {
@@ -292,6 +320,7 @@ class SequenceHistoryMutationController internal constructor(
                         noTimingChanges = false,
                         overlapWarning = result.proposal.hasIntervalOverlap,
                         issue = null,
+                        invalidTimestampTarget = null,
                     )
                 }
             is SequenceHistoryTimingBuildResult.Invalid ->
@@ -304,14 +333,20 @@ class SequenceHistoryMutationController internal constructor(
                             } else {
                                 state.timingDraft.copy(
                                     timestamps =
-                                        state.timingDraft.timestamps +
-                                            (result.target to value.copy(validOffsets = result.validOffsets)),
+                                        state.timingDraft.timestamps.withTimestamp(
+                                            result.target,
+                                            value.copy(validOffsets = result.validOffsets),
+                                        ),
                                 )
                             },
                         timingProposal = null,
                         noTimingChanges = false,
                         overlapWarning = false,
                         issue = result.issue.toMutationIssue(),
+                        invalidTimestampTarget =
+                            result.target.takeUnless {
+                                result.issue == SequenceHistoryProposalIssue.MISSING_MUTATION_FACT
+                            },
                     )
                 }
         }
@@ -380,22 +415,31 @@ class SequenceHistoryMutationController internal constructor(
         intervalId: SequenceIntervalId,
         placement: OwnerlessIntervalPlacement,
     ) {
-        val detail = detail() ?: return
         val existing = mutableState.value.structuralProposal ?: return
-        if (intervalId !in existing.ownerlessPlacements) return
-        val choices = existing.ownerlessPlacements.mapNotNull { (id, value) -> value?.let { id to it } }.toMap()
+        if (existing.isConfirmable || intervalId !in existing.ownerlessPlacements) return
+        val choices =
+            (
+                existing.ownerlessPlacements as? SequenceHistoryPlacementMap
+                    ?: SequenceHistoryPlacementMap.from(existing.ownerlessPlacements)
+            ).updated(intervalId, placement)
         val proposal =
-            SequenceHistoryProposalBuilder.structural(
-                detail,
-                existing.occurrenceId,
-                existing.mode,
-                choices + (intervalId to placement),
-            ) ?: return
+            if (choices.unresolvedCount == 0) {
+                val detail = detail() ?: return
+                SequenceHistoryProposalBuilder.structural(
+                    detail,
+                    existing.occurrenceId,
+                    existing.mode,
+                    choices.mapValues { requireNotNull(it.value) },
+                ) ?: return
+            } else {
+                existing.copy(ownerlessPlacements = choices)
+            }
         mutableState.update {
             it.copy(
                 structuralProposal = proposal,
                 overlapWarning = proposal.hasIntervalOverlap,
                 issue = null,
+                invalidTimestampTarget = null,
             )
         }
     }
@@ -428,6 +472,15 @@ class SequenceHistoryMutationController internal constructor(
                                 structuralTarget = null,
                                 structuralTargetDescriptor = null,
                                 structuralProposal = null,
+                                invalidTimestampTarget = null,
+                                committedMutation =
+                                    when (failure) {
+                                        SequenceHistoryMutationIssue.TIMING_FAILURE ->
+                                            SequenceHistoryCommittedMutation.TIMING
+                                        SequenceHistoryMutationIssue.CHILD_DELETION_FAILURE ->
+                                            SequenceHistoryCommittedMutation.CHILD_DELETION
+                                        else -> SequenceHistoryCommittedMutation.STRUCTURAL
+                                    },
                                 refreshGeneration = it.refreshGeneration + 1,
                             )
                         }
@@ -443,11 +496,23 @@ class SequenceHistoryMutationController internal constructor(
                 } catch (_: IllegalArgumentException) {
                     if (!closed) {
                         mutableState.update {
-                            it.copy(isMutating = false, issue = SequenceHistoryMutationIssue.INVALID_PROPOSAL)
+                            it.copy(
+                                isMutating = false,
+                                issue = SequenceHistoryMutationIssue.INVALID_PROPOSAL,
+                                invalidTimestampTarget = null,
+                            )
                         }
                     }
                 } catch (_: Exception) {
-                    if (!closed) mutableState.update { it.copy(isMutating = false, issue = failure) }
+                    if (!closed) {
+                        mutableState.update {
+                            it.copy(
+                                isMutating = false,
+                                issue = failure,
+                                invalidTimestampTarget = null,
+                            )
+                        }
+                    }
                 }
             }
     }
@@ -456,6 +521,7 @@ class SequenceHistoryMutationController internal constructor(
         if (mutableState.value.isMutating) return
         mutableState.update {
             it.copy(
+                committedMutation = null,
                 timingDraft = null,
                 timingProposal = null,
                 noTimingChanges = false,
@@ -466,6 +532,7 @@ class SequenceHistoryMutationController internal constructor(
                 structuralTargetDescriptor = null,
                 structuralProposal = null,
                 issue = null,
+                invalidTimestampTarget = null,
             )
         }
     }
@@ -489,6 +556,7 @@ class SequenceHistoryMutationController internal constructor(
                 structuralProposal = null,
                 isMutating = isMutating,
                 issue = issue,
+                invalidTimestampTarget = null,
             )
         }
     }

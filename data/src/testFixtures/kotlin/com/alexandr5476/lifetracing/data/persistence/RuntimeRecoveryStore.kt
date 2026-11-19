@@ -45,6 +45,7 @@ class RuntimeRecoveryStore(
         StatisticsRepository(database) { StatisticsSeriesId(UUID.randomUUID().toString()) }
     val library: LibraryRepository = LibraryRepository.create(database)
     val history: HistoryReadRepository = HistoryReadRepository(database)
+    val sequenceHistoryCommands: SequenceHistoryCommandRepository = SequenceHistoryCommandRepository(database)
     val authoring: TemplateAuthoringRepository = TemplateAuthoringRepository(database, TemplateAuthoringIds.random())
 
     val plans: PlanRepository =

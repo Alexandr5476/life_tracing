@@ -1,6 +1,7 @@
 package com.alexandr5476.lifetracing.ui
 
 import android.view.KeyEvent
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -60,12 +61,12 @@ class KeyboardInputFixtureTest {
         val background = compose.onNodeWithTag("background")
         keyboard.enter(background)
         keyboard.closeKeyboard(background)
+        val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val confirm = compose.onNodeWithTag("confirm")
-        keyboard.awaitWindowFocus(confirm)
+        awaitForegroundDialog(backgroundView, confirm)
         confirm.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(confirm)
-        val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         assertTrue(compose.runOnIdle { !backgroundView.hasWindowFocus() })
         assertFalse(imeVisible(background))
 
@@ -100,9 +101,10 @@ class KeyboardInputFixtureTest {
         }
         val background = compose.onNodeWithTag("background")
         keyboard.enter(background)
+        val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val foreground = compose.onNodeWithTag("confirm")
-        keyboard.awaitWindowFocus(foreground)
+        awaitForegroundDialog(backgroundView, foreground)
         foreground.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(foreground)
 
@@ -162,8 +164,7 @@ class KeyboardInputFixtureTest {
             instrumentation.setInTouchMode(true)
             background.performSemanticsAction(SemanticsActions.OnClick)
             val foreground = compose.onNodeWithTag("confirm")
-            keyboard.awaitWindowFocus(foreground)
-            val foregroundView = (foreground.fetchSemanticsNode().root as ViewRootForTest).view
+            val foregroundView = awaitForegroundDialog(backgroundView, foreground)
             assertTrue(compose.runOnIdle { foregroundView.isInTouchMode })
             val rejected = KeyboardInputFixture(compose)
             rejected
@@ -177,6 +178,7 @@ class KeyboardInputFixtureTest {
                                 compose.runOnIdle { foregroundView.isInTouchMode },
                             )
                             val report = requireNotNull(failure.message)
+                            assertTrue(report, report.contains("windowFocused=false"))
                             assertTrue(report, report.contains("touchMode=true"))
                             assertTrue(compose.runOnIdle { foregroundView.hasWindowFocus() })
                             assertTrue(commands == 0)
@@ -209,6 +211,21 @@ class KeyboardInputFixtureTest {
         keyboard.closeKeyboard(input)
         compose.waitUntil(5_000) { !imeVisible(input) }
         input.assertTextEquals("Unchanged")
+    }
+
+    private fun awaitForegroundDialog(
+        background: View,
+        target: SemanticsNodeInteraction,
+    ): View {
+        keyboard.awaitWindowFocus(target)
+        val foreground = (target.fetchSemanticsNode().root as ViewRootForTest).view
+        // The two ViewRoots receive Android's focus changes independently.
+        compose.waitUntil(5_000) {
+            compose.runOnIdle {
+                background.isAttachedToWindow && !background.hasWindowFocus() && foreground.hasWindowFocus()
+            }
+        }
+        return foreground
     }
 
     private fun imeVisible(target: SemanticsNodeInteraction): Boolean {

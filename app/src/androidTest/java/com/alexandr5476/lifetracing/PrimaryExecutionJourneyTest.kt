@@ -15,16 +15,19 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setText
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
@@ -39,8 +42,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.text.AnnotatedString
@@ -75,7 +80,9 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
 import com.alexandr5476.lifetracing.domain.PlanSchedule
+import com.alexandr5476.lifetracing.domain.RuntimeOccurrenceStatus
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
+import com.alexandr5476.lifetracing.domain.SequenceHistoryTimingCorrection
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
@@ -96,6 +103,10 @@ import com.alexandr5476.lifetracing.history.ManualActivityEntryController
 import com.alexandr5476.lifetracing.history.ManualEntryCommand
 import com.alexandr5476.lifetracing.history.ManualEntryIssue
 import com.alexandr5476.lifetracing.history.ManualEntryLoad
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationController
+import com.alexandr5476.lifetracing.history.SequenceHistoryMutationIssue
+import com.alexandr5476.lifetracing.history.SequenceHistoryPreviewChange
+import com.alexandr5476.lifetracing.history.SequenceHistoryTimestampTarget
 import com.alexandr5476.lifetracing.launcher.LauncherCommandState
 import com.alexandr5476.lifetracing.launcher.LauncherLoad
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
@@ -110,6 +121,8 @@ import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -1395,7 +1408,6 @@ class PrimaryExecutionJourneyTest {
                 f.useProductionAppearance(if (russian) 120 else 90, if (russian) 130 else 90)
                 f.launch()
                 if (russian) f.applyAppearance("ru", 2f, 120, 130)
-                val graph = LifeTracingRuntimeGraph.from(f.host())
                 val attempts = AtomicInteger()
                 val writes = AtomicInteger()
                 val reads = AtomicInteger()
@@ -1403,7 +1415,7 @@ class PrimaryExecutionJourneyTest {
                 val release = CompletableDeferred<Unit>()
                 val controller =
                     ActivityHistoryMutationController(
-                        graph.scope,
+                        f.historyUiScope(),
                         entry.id,
                         { id ->
                             if (reads.incrementAndGet() == 2 &&
@@ -3396,13 +3408,12 @@ class PrimaryExecutionJourneyTest {
             f.useProductionAppearance(if (noLive) 120 else 90, if (noLive) 130 else 90)
             f.launch()
             if (noLive) f.applyAppearance("ru", 2f, 120, 130)
-            val graph = LifeTracingRuntimeGraph.from(f.host())
             val attempts = AtomicInteger()
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
             val controller =
                 ActivityHistoryMutationController(
-                    graph.scope,
+                    f.historyUiScope(),
                     entry.id,
                     { id ->
                         kotlinx.coroutines.withContext(
@@ -3430,7 +3441,7 @@ class PrimaryExecutionJourneyTest {
                 compose.runOnIdle {
                     f.host().historyControllerOwner.get {
                         com.alexandr5476.lifetracing.history.HistoryController(
-                            graph.scope,
+                            f.historyUiScope(),
                             { query ->
                                 if (controller.state.value.deleted &&
                                     failHistory.get()
@@ -3702,6 +3713,1156 @@ class PrimaryExecutionJourneyTest {
             }
         }
 
+    @Test
+    fun nativeSequenceChildDeletionPreservesFulfilledPlanAndCanonicalProjectionsAfterPhysicalReopen() =
+        sequenceChildDeletionJourney(noLive = false)
+
+    @Test
+    fun russianScaledEndedEarlyNoLiveChildDeletionRecoversReadOnlyAndPhysicallyReopensTombstone() =
+        sequenceChildDeletionJourney(noLive = true)
+
+    @Test
+    fun nativeStructuralLeaveGapRemovesChildTombstoneAndPhysicallyReopensCanonicalProjections() =
+        sequenceStructuralJourney(closeGap = false)
+
+    @Test
+    fun nativeStructuralCloseGapPlacesOwnerlessIntervalMovesChildPauseAndPhysicallyReopensProjections() =
+        sequenceStructuralJourney(closeGap = true)
+
+    private fun sequenceStructuralJourney(closeGap: Boolean) =
+        journey { f ->
+            val zone = ZoneId.systemDefault()
+            val started =
+                f.seedTime
+                    .atZone(zone)
+                    .toLocalDate()
+                    .minusDays(1)
+                    .atTime(23, 59, 57)
+                    .atZone(zone)
+                    .toInstant()
+            val activity =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("Shared structural child", null, TimeTrackingMode.STOPWATCH, null),
+                    createdAt = started.minusSeconds(20),
+                )
+            val source =
+                f.store.authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "Structural sequence",
+                        null,
+                        settings = SequenceTemplateSettings(autoAdvance = false),
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Repeat(
+                                    com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft(
+                                        DraftIdentity.New("repeat"),
+                                        0,
+                                        2,
+                                        listOf(
+                                            ActivityStepDraft(
+                                                DraftIdentity.New("step"),
+                                                0,
+                                                StepActivityDraft.FromTemplate(activity.id),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = started.minusSeconds(15),
+                )
+            val plan =
+                f.store.plans.createSequencePlanFromTemplate(
+                    source.id,
+                    PlanSchedule.FloatingDay(started.atZone(zone).toLocalDate()),
+                    started.minusSeconds(10),
+                )
+            val runtime =
+                f.store.live.startSequenceFromPlan(
+                    f.store.planReads
+                        .getFocusedAction(plan.id)
+                        .identity,
+                    started,
+                    started,
+                    zone,
+                )
+            f.store.live.completeCurrentSequenceStep(runtime.execution.currentOccurrenceId!!, started.plusSeconds(1))
+            val next = f.store.live.startNextSequenceStep(started.plusSeconds(3))
+            f.store.live.pauseActiveSequence(started.plusMillis(3_100))
+            f.store.live.resumeActiveSequence(started.plusMillis(3_200))
+            f.store.live.completeCurrentSequenceStep(next.execution.currentOccurrenceId!!, started.plusSeconds(6))
+            var before = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val selectedId = before.occurrences.first().occurrenceId
+            if (!closeGap) {
+                f.store.sequenceHistoryCommands.deleteChildHistory(
+                    runtime.execution.id,
+                    com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand(
+                        before.updatedAt,
+                        selectedId,
+                        before.occurrences
+                            .first()
+                            .childMutationFacts!!
+                            .executionId,
+                    ),
+                    started.plusSeconds(10),
+                )
+                before = f.store.history.getSequenceDetail(runtime.execution.id)!!
+                assertEquals(RuntimeOccurrenceStatus.DELETED_EXECUTION, before.occurrences.first().status)
+                assertNull(before.occurrences.first().child)
+            }
+            val rootBefore = f.store.sequence(runtime.execution.id)
+            val childrenBefore = f.store.children(runtime.execution.id)
+            val target = before.occurrences.first()
+            val removedChild = childrenBefore.single { it.sequenceOccurrenceId == target.occurrenceId }
+            val laterChild = childrenBefore.single { it.id != removedChild.id }
+            val planBefore = f.store.plans.getPlan(plan.id)!!
+            val factsBefore = f.store.durableFacts()
+            assertEquals(1, target.repeatIteration)
+            assertEquals(2, before.occurrences.last().repeatIteration)
+            assertTrue(laterChild.pauses.isNotEmpty())
+            assertTrue(before.intervals.any { it.occurrenceId == null })
+            f.launch()
+            if (closeGap) f.applyAppearance("ru", 1.5f, 120, 130) else f.applyAppearance("en", 1f, 90, 90)
+            val writes =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val readFailure =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(closeGap)
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val written =
+                java.util.concurrent.atomic
+                    .AtomicReference<com.alexandr5476.lifetracing.domain.SequenceHistoryStructuralRemovalCommand>()
+            val controller =
+                SequenceHistoryMutationController(
+                    f.historyUiScope(),
+                    runtime.execution.id,
+                    { id ->
+                        if (writes.get() > 0 && readFailure.get()) error("committed structural read failure")
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.history.getSequenceDetail(id)
+                        }
+                    },
+                    { _, _, _ -> error("unexpected timing") },
+                    { _, _, _ -> error("unexpected deletion") },
+                    { id, command, at ->
+                        written.set(command)
+                        gate.await()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.sequenceHistoryCommands.removeOccurrenceHistory(id, command, at)
+                        }
+                        writes.incrementAndGet()
+                    },
+                )
+            compose.runOnIdle {
+                f.host().sequenceHistoryMutationRouteSessions.acquire(
+                    runtime.execution.id,
+                ) { controller }
+            }
+            f.openHistoryFact(source.name, before.root.primaryLocalDate)
+
+            fun select() {
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${target.occurrenceId.value}")
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-remove-occurrence-${target.occurrenceId.value}",
+                    ).performScrollTo()
+                    .performSemanticsAction(SemanticsActions.OnClick) {
+                        it()
+                    }
+            }
+            select()
+            compose.onNodeWithTag("sequence-structural-cancel").performClick()
+            assertEquals(factsBefore, f.store.durableFacts())
+            select()
+            compose
+                .onNodeWithTag(
+                    if (closeGap) "sequence-history-close-gap" else "sequence-history-leave-gap",
+                ).assertIsDisplayed()
+                .performClick()
+            if (closeGap) {
+                val choices =
+                    controller.state.value.structuralProposal!!
+                        .ownerlessChoices
+                assertTrue(choices.isNotEmpty())
+                choices.forEach { choice ->
+                    compose
+                        .onNodeWithTag(
+                            "sequence-structural-placements-list",
+                        ).performScrollToKey("choice:${choice.intervalId.value}")
+                    compose
+                        .onNodeWithTag(
+                            "sequence-history-ownerless-${choice.intervalId.value}-fixed",
+                        ).performSemanticsAction(SemanticsActions.OnClick) {
+                            it()
+                        }
+                }
+            }
+            val proposal = controller.state.value.structuralProposal!!
+            assertEquals(before.updatedAt, proposal.command!!.expectedUpdatedAt)
+            assertEquals(target.occurrenceId, proposal.command!!.occurrenceId)
+            assertEquals(removedChild.id, proposal.command!!.childExecutionId)
+            assertEquals(
+                before.intervals.filter { it.occurrenceId == target.occurrenceId }.map { it.id },
+                proposal.changes
+                    .filterIsInstance<SequenceHistoryPreviewChange.RemovedInterval>()
+                    .map {
+                        it.interval.intervalId
+                    },
+            )
+            if (closeGap) assertTrue(controller.state.value.overlapWarning)
+            if (controller.state.value.overlapWarning) f.invoke(R.string.history_overlap_proceed)
+            val confirm = compose.onNodeWithTag("sequence-history-confirm-structural").assertIsDisplayed()
+            val oldConfirm = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            keyboard.enter(confirm)
+            confirm.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            keyboard.awaitFocus(confirm)
+            confirm.performKeyInput { pressKey(Key.Enter) }
+            f.await { controller.state.value.isMutating }
+            compose.onNodeWithTag("sequence-history-confirm-structural").assertIsNotEnabled()
+            compose.onNodeWithTag("sequence-structural-cancel").assertIsNotEnabled()
+            f.systemBack()
+            assertEquals(factsBefore, f.store.durableFacts())
+            compose.runOnIdle {
+                oldConfirm()
+                gate.complete(Unit)
+            }
+            f.await { controller.state.value.refreshGeneration == 1L && !controller.state.value.isMutating }
+            assertEquals(1, writes.get())
+            assertEquals(
+                com.alexandr5476.lifetracing.history.SequenceHistoryCommittedMutation.STRUCTURAL,
+                controller.state.value.committedMutation,
+            )
+            if (closeGap) {
+                assertTrue(controller.state.value.load is HistoryDetailLoad.Failure)
+                compose.runOnIdle {
+                    oldConfirm()
+                    readFailure.set(false)
+                }
+                compose
+                    .onNodeWithTag(
+                        "history-retry",
+                    ).performScrollTo()
+                    .performSemanticsAction(SemanticsActions.OnClick) {
+                        it()
+                    }
+                f.await { controller.state.value.load is HistoryDetailLoad.Content }
+            }
+            compose.runOnIdle { oldConfirm() }
+            assertEquals(1, writes.get())
+            assertEquals(proposal.command, written.get())
+            val after = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val rootAfter = f.store.sequence(runtime.execution.id)
+            val childrenAfter = f.store.children(runtime.execution.id)
+            if (!closeGap) assertEquals(childrenBefore, childrenAfter)
+            val targetAfter = rootAfter.occurrences.single { it.id == target.occurrenceId }
+            assertEquals(
+                rootBefore.occurrences.single { it.id == target.occurrenceId }.copy(
+                    status = RuntimeOccurrenceStatus.DELETED_EXECUTION,
+                    isDeletedFromHistory = true,
+                ),
+                targetAfter,
+            )
+            val childAfter = childrenAfter.single { it.id == removedChild.id }
+            if (closeGap) {
+                assertEquals(
+                    removedChild.copy(deletedAt = childAfter.deletedAt, updatedAt = childAfter.updatedAt),
+                    childAfter,
+                )
+            } else {
+                assertEquals(removedChild, childAfter)
+            }
+            assertTrue(childAfter.deletedAt != null)
+            assertEquals(listOf(before.occurrences.last().occurrenceId), after.occurrences.map { it.occurrenceId })
+            val shift = if (closeGap) 1_000L else 0L
+            assertEquals(before.root.startedAt, after.root.startedAt)
+            assertEquals(before.root.completedAt.minusMillis(shift), after.root.completedAt)
+            assertEquals(before.root.primaryLocalDate, after.root.primaryLocalDate)
+            val laterAfter = childrenAfter.single { it.id == laterChild.id }
+            assertEquals(laterChild.startedAt!!.minusMillis(shift), laterAfter.startedAt)
+            assertEquals(laterChild.completedAt!!.minusMillis(shift), laterAfter.completedAt)
+            assertEquals(laterChild.originalZoneId, laterAfter.originalZoneId)
+            assertEquals(
+                laterAfter.startedAt!!
+                    .atZone(laterChild.originalZoneId)
+                    .offset.totalSeconds / 60,
+                laterAfter.originalUtcOffsetMinutes,
+            )
+            val retainedOccurrence = after.occurrences.single()
+            val originalOccurrence = before.occurrences.single { it.occurrenceId == retainedOccurrence.occurrenceId }
+            assertEquals(
+                originalOccurrence.copy(
+                    enteredAt = originalOccurrence.enteredAt?.minusMillis(shift),
+                    completedAt = originalOccurrence.completedAt?.minusMillis(shift),
+                    child = retainedOccurrence.child,
+                    childMutationFacts = retainedOccurrence.childMutationFacts,
+                ),
+                retainedOccurrence,
+            )
+            assertEquals(laterChild.id, retainedOccurrence.child!!.executionId)
+            assertEquals(
+                laterChild.copy(
+                    startedAt = laterChild.startedAt!!.minusMillis(shift),
+                    completedAt = laterChild.completedAt!!.minusMillis(shift),
+                    primaryLocalDate = laterAfter.startedAt!!.atZone(laterChild.originalZoneId).toLocalDate(),
+                    originalUtcOffsetMinutes =
+                        laterAfter.startedAt!!
+                            .atZone(laterChild.originalZoneId)
+                            .offset.totalSeconds / 60,
+                    updatedAt = laterAfter.updatedAt,
+                    pauses =
+                        laterChild.pauses.map {
+                            it.copy(
+                                startedAt = it.startedAt.minusMillis(shift),
+                                endedAt = it.endedAt?.minusMillis(shift),
+                            )
+                        },
+                ),
+                laterAfter,
+            )
+            assertEquals(
+                laterAfter.startedAt!!.atZone(laterChild.originalZoneId).toLocalDate(),
+                laterAfter.primaryLocalDate,
+            )
+            assertEquals(
+                laterChild.pauses.map {
+                    it.copy(startedAt = it.startedAt.minusMillis(shift), endedAt = it.endedAt?.minusMillis(shift))
+                },
+                laterAfter.pauses,
+            )
+            // Moving owned intervals past fixed ownerless intervals changes canonical read order.
+            assertEquals(
+                before.intervals
+                    .filter { it.occurrenceId != target.occurrenceId }
+                    .map {
+                        if (it.occurrenceId ==
+                            laterChild.sequenceOccurrenceId
+                        ) {
+                            it.copy(
+                                startedAt = it.startedAt.minusMillis(shift),
+                                endedAt = it.endedAt?.minusMillis(shift),
+                            )
+                        } else {
+                            it
+                        }
+                    }.sortedWith(compareBy({ it.startedAt }, { it.id.value })),
+                after.intervals,
+            )
+            assertEquals(Duration.ofMillis(2_900), after.root.activeDuration)
+            assertEquals(Duration.ofSeconds(if (closeGap) 5 else 6), after.root.wallDuration)
+            assertEquals(after.root.wallDuration.minus(after.root.activeDuration), after.root.pauseDuration)
+            val planAfter = f.store.plans.getPlan(plan.id)!!
+            assertEquals(
+                planBefore.copy(fulfilledAt = after.root.completedAt, updatedAt = planAfter.updatedAt),
+                planAfter,
+            )
+            if (!closeGap) assertEquals(planBefore, planAfter)
+            val immutable =
+                factsBefore.keys -
+                    setOf(
+                        "sequence_executions",
+                        "sequence_occurrences",
+                        "sequence_intervals",
+                        "activity_executions",
+                        "activity_execution_pauses",
+                        "plan_entries",
+                    )
+            assertEquals(
+                factsBefore.filterKeys { it in immutable },
+                f.store.durableFacts().filterKeys { it in immutable },
+            )
+            val sequenceStats = f.store.statistics.sequenceSeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
+            val activityStats = f.store.statistics.activitySeries(activity.statisticsSeriesId, StatisticsPeriod.AllTime)
+            val global = f.store.statistics.global(StatisticsPeriod.AllTime)
+            val dailyQuery = DailyQuery(after.root.primaryLocalDate, Instant.now(), 20, zone)
+            val dailyAfter =
+                f.store.daily
+                    .getDaily(dailyQuery)
+                    .completedHistory
+            val historyAfter = f.roots(f.store, after.root.primaryLocalDate)
+            f.systemBack()
+            f.systemBack()
+            f.reopen(historyDay = after.root.primaryLocalDate) {
+                assertEquals(rootAfter, sequence(runtime.execution.id))
+                assertEquals(childrenAfter, children(runtime.execution.id))
+                assertEquals(after, history.getSequenceDetail(runtime.execution.id))
+                assertEquals(historyAfter, f.roots(this, after.root.primaryLocalDate))
+                assertTrue(historyAfter.contains(after.root))
+                assertEquals(dailyAfter, daily.getDaily(dailyQuery).completedHistory)
+                assertTrue(dailyAfter.contains(after.root))
+                assertEquals(planAfter, plans.getPlan(plan.id))
+                assertEquals(PlanEntryStatus.FULFILLED, planReads.getFocusedAction(plan.id).identity.status)
+                assertEquals(after.root.completedAt, plans.getPlan(plan.id)!!.fulfilledAt)
+                assertEquals(
+                    sequenceStats,
+                    statistics.sequenceSeries(source.statisticsSeriesId, StatisticsPeriod.AllTime),
+                )
+                assertEquals(after.root.activeDuration, sequenceStats.activeDurations.total)
+                assertEquals(global, statistics.global(StatisticsPeriod.AllTime))
+                assertEquals(after.root.activeDuration, global.totalTrackedDuration)
+                assertEquals(
+                    activityStats,
+                    statistics.activitySeries(activity.statisticsSeriesId, StatisticsPeriod.AllTime),
+                )
+                assertEquals(1L, activityStats.executionCount)
+                assertEquals(laterAfter.completedAt, activityStats.firstPerformedAt)
+                assertEquals(
+                    1L,
+                    statistics
+                        .activitySeries(
+                            activity.statisticsSeriesId,
+                            StatisticsPeriod.Day(laterAfter.primaryLocalDate),
+                        ).executionCount,
+                )
+                assertEquals(
+                    0L,
+                    statistics
+                        .activitySeries(
+                            activity.statisticsSeriesId,
+                            StatisticsPeriod.Day(laterAfter.primaryLocalDate.plusDays(if (closeGap) 1 else -1)),
+                        ).executionCount,
+                )
+                assertEquals(factsBefore.filterKeys { it in immutable }, durableFacts().filterKeys { it in immutable })
+            }
+        }
+
+    private fun sequenceChildDeletionJourney(noLive: Boolean) =
+        journey { f ->
+            val activity =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Repeated child",
+                        null,
+                        if (noLive) TimeTrackingMode.NO_LIVE_TRACKING else TimeTrackingMode.STOPWATCH,
+                        null,
+                        fields =
+                            listOf(
+                                ActivityFieldDraft(
+                                    DraftIdentity.New("value"),
+                                    0,
+                                    "Recorded child value",
+                                    CustomFieldType.NUMBER,
+                                    defaultNumberScaled = 7_000,
+                                ),
+                            ),
+                    ),
+                    createdAt = f.seedTime,
+                )
+            val source =
+                f.store.authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "Deletion sequence",
+                        null,
+                        settings = SequenceTemplateSettings(autoAdvance = false),
+                        fields =
+                            listOf(
+                                com.alexandr5476.lifetracing.domain.SequenceFieldDraft(
+                                    DraftIdentity.New("root-value"),
+                                    0,
+                                    "Root fact",
+                                    CustomFieldType.TEXT,
+                                    defaultText = "Retained",
+                                ),
+                            ),
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Repeat(
+                                    com.alexandr5476.lifetracing.domain.SequenceRepeatBlockDraft(
+                                        DraftIdentity.New("repeat"),
+                                        0,
+                                        2,
+                                        listOf(
+                                            ActivityStepDraft(
+                                                DraftIdentity.New("step"),
+                                                0,
+                                                StepActivityDraft.FromTemplate(activity.id),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = f.seedTime,
+                )
+            val plan = f.store.plans.createSequencePlanFromTemplate(source.id, f.schedule(), f.seedTime)
+            val started = f.seedTime.plusMillis(1)
+            val runtime =
+                f.store.live.startSequenceFromPlan(
+                    f.store.planReads
+                        .getFocusedAction(plan.id)
+                        .identity,
+                    started,
+                    started,
+                    ZoneId.systemDefault(),
+                )
+            if (noLive) {
+                f.store.live.endSequenceEarly(started.plusSeconds(1))
+            } else {
+                f.store.live.pauseActiveSequence(started.plusMillis(100))
+                f.store.live.resumeActiveSequence(started.plusMillis(200))
+                f.store.live.completeCurrentSequenceStep(
+                    requireNotNull(runtime.execution.currentOccurrenceId),
+                    started.plusSeconds(1),
+                )
+                val next = f.store.live.startNextSequenceStep(started.plusSeconds(2))
+                f.store.live.completeCurrentSequenceStep(
+                    requireNotNull(next.execution.currentOccurrenceId),
+                    started.plusSeconds(3),
+                )
+            }
+            val before = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val rootBefore = f.store.sequence(runtime.execution.id)
+            val childrenBefore = f.store.children(runtime.execution.id)
+            val planBefore = f.store.plans.getPlan(plan.id)!!
+            val frozenPlanBefore = f.store.planReads.getFocusedAction(plan.id)
+            val factsBefore = f.store.durableFacts()
+            val target = before.occurrences.first()
+            val childBefore = childrenBefore.single { it.sequenceOccurrenceId == target.occurrenceId }
+            val activityBefore =
+                f.store.statistics.activitySeries(
+                    activity.statisticsSeriesId,
+                    StatisticsPeriod.AllTime,
+                )
+            val sequenceBefore = f.store.statistics.sequenceSeries(source.statisticsSeriesId, StatisticsPeriod.AllTime)
+            val globalBefore = f.store.statistics.global(StatisticsPeriod.AllTime)
+            val historyBefore = f.roots(f.store, before.root.primaryLocalDate)
+            val dailyQuery = DailyQuery(before.root.primaryLocalDate, Instant.now(), 20, before.originalZoneId)
+            val dailyBefore =
+                f.store.daily
+                    .getDaily(dailyQuery)
+                    .completedHistory
+            assertEquals(PlanEntryStatus.FULFILLED, planBefore.status)
+            assertEquals(
+                if (noLive) SequenceExecutionStatus.ENDED_EARLY else SequenceExecutionStatus.COMPLETED,
+                before.root.status,
+            )
+            assertTrue(childBefore.values.isNotEmpty())
+            assertTrue(rootBefore.values.isNotEmpty())
+            assertEquals(1, target.repeatIteration)
+            if (noLive) {
+                assertNull(childBefore.startedAt)
+                assertNull(childBefore.activeDuration)
+            } else {
+                assertTrue(childBefore.pauses.isNotEmpty())
+            }
+            f.launch()
+            if (noLive) f.applyAppearance("ru", 1.5f, 120, 130) else f.applyAppearance("en", 1f, 90, 90)
+            val writes =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val failRead =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(noLive)
+            val written =
+                java.util.concurrent.atomic
+                    .AtomicReference<com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand>()
+            val controller =
+                SequenceHistoryMutationController(
+                    f.historyUiScope(),
+                    runtime.execution.id,
+                    { id ->
+                        if (writes.get() > 0 &&
+                            failRead.get()
+                        ) {
+                            error("canonical read failed after committed child deletion")
+                        }
+                        kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) { f.store.history.getSequenceDetail(id) }
+                    },
+                    { _, _, _ -> error("unexpected timing writer") },
+                    { id, command, at ->
+                        assertEquals(runtime.execution.id, id)
+                        written.set(command)
+                        writes.incrementAndGet()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.sequenceHistoryCommands.deleteChildHistory(id, command, at)
+                        }
+                    },
+                    { _, _, _ -> error("unexpected structural writer") },
+                )
+            compose.runOnIdle {
+                f.host().sequenceHistoryMutationRouteSessions.acquire(
+                    runtime.execution.id,
+                ) { controller }
+            }
+            f.openHistoryFact(source.name, before.root.primaryLocalDate)
+            if (noLive) {
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${target.occurrenceId.value}")
+                val displayed =
+                    compose
+                        .onNodeWithTag("sequence-child-${childBefore.id.value}")
+                        .performScrollTo()
+                        .fetchSemanticsNode()
+                        .config[SemanticsProperties.Text]
+                assertTrue(
+                    displayed.any {
+                        it.text ==
+                            f.text(R.string.history_actual_duration, f.text(R.string.history_missing_value))
+                    },
+                )
+                assertFalse(displayed.any { it.text.startsWith(f.text(R.string.history_child_started, "")) })
+            }
+
+            fun select() {
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-detail-list",
+                    ).performScrollToKey("occurrence:${target.occurrenceId.value}")
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-delete-child-${target.occurrenceId.value}",
+                    ).performScrollTo()
+                    .performSemanticsAction(SemanticsActions.OnClick) {
+                        it()
+                    }
+            }
+            select()
+            compose
+                .onNodeWithText(
+                    f.text(R.string.sequence_history_occurrence_id, target.occurrenceId.value),
+                ).assertExists()
+            compose.onNodeWithText(f.text(R.string.sequence_child_deletion_child, childBefore.id.value)).assertExists()
+            compose
+                .onNodeWithText(
+                    f.text(R.string.sequence_history_activity_snapshot_id, childBefore.snapshotId.value),
+                ).assertExists()
+            f.systemBack()
+            assertEquals(0, writes.get())
+            assertEquals(factsBefore, f.store.durableFacts())
+            select()
+            val confirm =
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-confirm-delete-child",
+                    ).performScrollTo()
+                    .assertIsEnabled()
+            val oldConfirm = confirm.fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            keyboard.enter(confirm)
+            confirm.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            keyboard.awaitFocus(confirm)
+            confirm.performKeyInput { pressKey(Key.Enter) }
+            f.await { !controller.state.value.isMutating && controller.state.value.refreshGeneration == 1L }
+            assertEquals(1, writes.get())
+            assertEquals(
+                com.alexandr5476.lifetracing.domain.SequenceChildHistoryDeletionCommand(
+                    before.updatedAt,
+                    target.occurrenceId,
+                    childBefore.id,
+                ),
+                written.get(),
+            )
+            assertEquals(
+                com.alexandr5476.lifetracing.history.SequenceHistoryCommittedMutation.CHILD_DELETION,
+                controller.state.value.committedMutation,
+            )
+            if (noLive) {
+                assertTrue(controller.state.value.load is HistoryDetailLoad.Failure)
+                compose
+                    .onNodeWithText(
+                        f.text(
+                            R.string.sequence_timing_committed_read_failure,
+                            f.text(R.string.sequence_timing_child_deleted),
+                        ),
+                    ).assertExists()
+                compose.runOnIdle {
+                    oldConfirm()
+                    failRead.set(false)
+                }
+                compose
+                    .onNodeWithTag(
+                        "history-retry",
+                    ).performScrollTo()
+                    .performSemanticsAction(SemanticsActions.OnClick) { it() }
+                f.await { controller.state.value.load is HistoryDetailLoad.Content }
+            }
+            compose
+                .onNodeWithTag(
+                    "sequence-history-detail-list",
+                ).performScrollToKey("occurrence:${target.occurrenceId.value}")
+            compose.onNodeWithTag("sequence-deleted-${target.occurrenceId.value}").assertExists()
+            compose.onNodeWithTag("sequence-child-${childBefore.id.value}").assertDoesNotExist()
+            compose.onNodeWithTag("sequence-history-delete-child-${target.occurrenceId.value}").assertDoesNotExist()
+            compose.onNodeWithTag("sequence-history-remove-occurrence-${target.occurrenceId.value}").assertIsEnabled()
+            val after = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val rootAfter = f.store.sequence(runtime.execution.id)
+            val childAfter = f.store.activity(childBefore.id)
+            assertEquals(
+                rootBefore.copy(
+                    updatedAt = rootAfter.updatedAt,
+                    occurrences =
+                        rootBefore.occurrences.map {
+                            if (it.id ==
+                                target.occurrenceId
+                            ) {
+                                it.copy(
+                                    status = RuntimeOccurrenceStatus.DELETED_EXECUTION,
+                                )
+                            } else {
+                                it
+                            }
+                        },
+                ),
+                rootAfter,
+            )
+            assertEquals(
+                childBefore.copy(deletedAt = childAfter.deletedAt, updatedAt = childAfter.updatedAt),
+                childAfter,
+            )
+            assertTrue(childAfter.deletedAt != null)
+            val tombstone = after.occurrences.single { it.occurrenceId == target.occurrenceId }
+            assertEquals(
+                target.copy(
+                    status = RuntimeOccurrenceStatus.DELETED_EXECUTION,
+                    child = null,
+                ),
+                tombstone,
+            )
+            assertFalse(tombstone.isDeletedFromHistory)
+            val immutableTables =
+                factsBefore.keys - setOf("sequence_executions", "sequence_occurrences", "activity_executions")
+            assertEquals(
+                factsBefore.filterKeys { it in immutableTables },
+                f.store.durableFacts().filterKeys {
+                    it in
+                        immutableTables
+                },
+            )
+            assertEquals(
+                childrenBefore.filter { it.id != childBefore.id },
+                f.store.children(runtime.execution.id).filter {
+                    it.id !=
+                        childBefore.id
+                },
+            )
+            assertEquals(before.root, after.root)
+            assertEquals(before.intervals, after.intervals)
+            assertEquals(before.fields, after.fields)
+            assertEquals(1, writes.get())
+            assertEquals(1L, controller.state.value.refreshGeneration)
+            f.systemBack()
+            f.systemBack()
+            f.reopen(historyDay = before.root.primaryLocalDate) {
+                assertEquals(rootAfter, sequence(runtime.execution.id))
+                assertEquals(childAfter, activity(childBefore.id))
+                assertEquals(after, history.getSequenceDetail(runtime.execution.id))
+                assertEquals(historyBefore, f.roots(this, before.root.primaryLocalDate))
+                assertEquals(dailyBefore, daily.getDaily(dailyQuery).completedHistory)
+                assertEquals(planBefore, plans.getPlan(plan.id))
+                assertEquals(frozenPlanBefore, planReads.getFocusedAction(plan.id))
+                assertEquals(
+                    sequenceBefore,
+                    statistics.sequenceSeries(source.statisticsSeriesId, StatisticsPeriod.AllTime),
+                )
+                assertEquals(globalBefore, statistics.global(StatisticsPeriod.AllTime))
+                val activityAfter = statistics.activitySeries(activity.statisticsSeriesId, StatisticsPeriod.AllTime)
+                assertEquals(activityBefore.executionCount - 1, activityAfter.executionCount)
+                assertEquals(
+                    childrenBefore.filter { it.id != childBefore.id },
+                    children(runtime.execution.id).filter {
+                        it.id !=
+                            childBefore.id
+                    },
+                )
+                assertEquals(
+                    factsBefore.filterKeys { it in immutableTables },
+                    durableFacts().filterKeys {
+                        it in
+                            immutableTables
+                    },
+                )
+                if (noLive) {
+                    assertNull(activity(childBefore.id).startedAt)
+                    assertNull(activity(childBefore.id).activeDuration)
+                }
+            }
+        }
+
+    @Test
+    fun nativeSequenceTimingCorrectionReopensCanonicalDateChildIntervalStatisticsAndFulfilledPlan() =
+        journey { f ->
+            val source = f.sequenceTemplate()
+            val plan = f.store.plans.createSequencePlanFromTemplate(source.id, f.schedule(), f.seedTime)
+            val started = f.seedTime.plusMillis(1)
+            val runtime =
+                f.store.live.startSequenceFromPlan(
+                    f.store.planReads
+                        .getFocusedAction(plan.id)
+                        .identity,
+                    started,
+                    started,
+                    ZoneId.systemDefault(),
+                )
+            f.store.live.pauseActiveSequence(started.plusMillis(100))
+            f.store.live.resumeActiveSequence(started.plusMillis(200))
+            f.store.live.completeCurrentSequenceStep(
+                requireNotNull(runtime.execution.currentOccurrenceId),
+                started.plusSeconds(1),
+            )
+            val secondRuntime = f.store.live.startNextSequenceStep(started.plusSeconds(2))
+            f.store.live.completeCurrentSequenceStep(
+                requireNotNull(secondRuntime.execution.currentOccurrenceId),
+                started.plusSeconds(3),
+            )
+            val before = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val beforeChildren = f.store.children(runtime.execution.id)
+            val beforePlan = f.store.plans.getPlan(plan.id)!!
+            val target = before.occurrences.last()
+            val interval =
+                before.intervals.last {
+                    it.occurrenceId == target.occurrenceId &&
+                        it.kind == com.alexandr5476.lifetracing.domain.SequenceIntervalKind.ACTIVE_STEP
+                }
+            val changedStart =
+                started
+                    .atZone(
+                        before.originalZoneId,
+                    ).toLocalDate()
+                    .minusDays(1)
+                    .atStartOfDay(before.originalZoneId)
+                    .toInstant()
+                    .plusMillis(123)
+            val changedEnd = before.root.completedAt.plusMillis(123)
+            val changedChildStart =
+                before.occurrences
+                    .first()
+                    .completedAt!!
+                    .minusMillis(123)
+            f.launch()
+            f.openHistoryFact(source.name)
+            val controller =
+                f
+                    .host()
+                    .sequenceHistoryMutationRouteSessions.activeSession!!
+                    .controller
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+
+            fun edit(
+                key: String,
+                at: Instant,
+            ) {
+                compose.onNodeWithTag("sequence-history-timing-list").performScrollToKey(key)
+                inputHistoryText(
+                    "sequence-history-timestamp-$key",
+                    java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME
+                        .format(at.atZone(before.originalZoneId)),
+                )
+            }
+            val unchangedFacts = f.store.durableFacts()
+            f.invoke(R.string.sequence_history_review_timing)
+            assertTrue(controller.state.value.noTimingChanges)
+            compose.onNodeWithTag("sequence-history-confirm-timing").assertDoesNotExist()
+            assertEquals(unchangedFacts, f.store.durableFacts())
+            f.invoke(R.string.manual_history_cancel)
+
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+            compose.onNodeWithTag("sequence-history-timing-list").performScrollToKey("root-ended")
+            inputHistoryText("sequence-history-timestamp-root-ended", "invalid")
+            f.invoke(R.string.sequence_history_review_timing)
+            assertEquals(SequenceHistoryMutationIssue.INVALID_DATE_TIME, controller.state.value.issue)
+            assertEquals(unchangedFacts, f.store.durableFacts())
+            f.invoke(R.string.manual_history_cancel)
+
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+            edit("root-ended", started.minusMillis(1))
+            f.invoke(R.string.sequence_history_review_timing)
+            f.invoke(R.string.history_save_correction)
+            f.await { controller.state.value.issue == SequenceHistoryMutationIssue.INVALID_PROPOSAL }
+            assertNull(controller.state.value.invalidTimestampTarget)
+            assertEquals(before, f.store.history.getSequenceDetail(runtime.execution.id))
+            assertEquals(unchangedFacts, f.store.durableFacts())
+            f.invoke(R.string.manual_history_cancel)
+
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+            edit("root-ended", before.root.completedAt.plusMillis(1))
+            f.invoke(R.string.sequence_history_review_timing)
+            val oldSave =
+                compose
+                    .onNodeWithTag(
+                        "sequence-history-confirm-timing",
+                    ).fetchSemanticsNode()
+                    .config[SemanticsActions.OnClick]
+                    .action!!
+            f.store.sequenceHistoryCommands.correctTiming(
+                runtime.execution.id,
+                SequenceHistoryTimingCorrection(before.updatedAt, endedAt = before.root.completedAt.plusMillis(2)),
+                Instant.now(),
+            )
+            val competing = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            val competingFacts = f.store.durableFacts()
+            f.invoke(R.string.history_save_correction)
+            f.await {
+                controller.state.value.issue == SequenceHistoryMutationIssue.STALE &&
+                    controller.state.value.load is HistoryDetailLoad.Content
+            }
+            compose.runOnIdle { oldSave() }
+            compose.waitForIdle()
+            assertEquals(competing, f.store.history.getSequenceDetail(runtime.execution.id))
+            assertEquals(competingFacts, f.store.durableFacts())
+            assertEquals(0L, controller.state.value.refreshGeneration)
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+            edit("root-started", changedStart)
+            edit("root-ended", changedEnd)
+            edit("occurrence-${target.occurrenceId.value}-entered", changedChildStart)
+            edit("child-${target.occurrenceId.value}-started", changedChildStart)
+            edit("interval-${interval.id.value}-started", changedChildStart)
+            f.invoke(R.string.sequence_history_review_timing)
+            assertEquals(
+                5,
+                controller.state.value.timingProposal!!
+                    .changes.size,
+            )
+            f.invoke(R.string.history_overlap_proceed)
+            f.invoke(R.string.history_save_correction)
+            f.await { controller.state.value.refreshGeneration == 1L && !controller.state.value.isMutating }
+            assertTrue(controller.state.value.load is HistoryDetailLoad.Content)
+            val after = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            assertEquals(changedStart, after.root.startedAt)
+            assertEquals(before.root.primaryLocalDate.minusDays(1), after.root.primaryLocalDate)
+            assertEquals(changedEnd, after.root.completedAt)
+            assertEquals(
+                changedChildStart,
+                after.occurrences
+                    .last()
+                    .child!!
+                    .startedAt,
+            )
+            assertEquals(changedChildStart, after.intervals.single { it.id == interval.id }.startedAt)
+            assertTrue(beforeChildren.any { it.pauses.isNotEmpty() })
+            assertEquals(
+                beforeChildren.associate { it.id to it.pauses },
+                f.store.children(runtime.execution.id).associate {
+                    it.id to
+                        it.pauses
+                },
+            )
+            assertEquals(Duration.ofMillis(2_900), after.root.activeDuration)
+            assertTrue(
+                after.occurrences.mapNotNull { it.child?.activeDuration }.fold(Duration.ZERO, Duration::plus) >
+                    after.root.activeDuration,
+            )
+            assertEquals(before.root.snapshotId, after.root.snapshotId)
+            assertEquals(before.occurrences.map { it.activity }, after.occurrences.map { it.activity })
+            val correctedPlan = f.store.plans.getPlan(plan.id)!!
+            assertEquals(beforePlan.copy(fulfilledAt = changedEnd, updatedAt = correctedPlan.updatedAt), correctedPlan)
+            assertEquals(PlanEntryStatus.FULFILLED, correctedPlan.status)
+            assertEquals(runtime.execution.id, correctedPlan.fulfilledSequenceExecutionId)
+            val children = f.store.children(runtime.execution.id)
+            f.systemBack()
+            f.systemBack()
+            f.reopen(historyDay = after.root.primaryLocalDate) {
+                assertEquals(after, history.getSequenceDetail(runtime.execution.id))
+                assertEquals(children, children(runtime.execution.id))
+                assertEquals(correctedPlan, plans.getPlan(plan.id))
+                assertEquals(changedEnd, plans.getPlan(plan.id)!!.fulfilledAt)
+                assertEquals(
+                    1L,
+                    statistics.sequenceSeries(source.statisticsSeriesId, StatisticsPeriod.AllTime).executionCount,
+                )
+                assertEquals(1L, statistics.global(StatisticsPeriod.AllTime).topLevelExecutionCount)
+                assertEquals(
+                    after.root.activeDuration,
+                    statistics.global(StatisticsPeriod.AllTime).totalTrackedDuration,
+                )
+                assertTrue(
+                    daily
+                        .getDaily(
+                            DailyQuery(after.root.primaryLocalDate, Instant.now(), 20, before.originalZoneId),
+                        ).completedHistory
+                        .any {
+                            it is com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot &&
+                                it.executionId == runtime.execution.id
+                        },
+                )
+            }
+        }
+
+    @Test
+    fun nativeSequenceDstNoLiveCommitReadFailureRetriesReadOnlyAndReopensCanonicalFacts() =
+        journey { f ->
+            val zone = ZoneId.of("Europe/Berlin")
+            val started = Instant.parse("2026-10-25T00:20:12.123Z")
+            val activity =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft("No-live repeated hour", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                    createdAt = started.minusSeconds(2),
+                )
+            val source =
+                f.store.authoring.createSequenceTemplate(
+                    SequenceTemplateDraft(
+                        "DST sequence",
+                        null,
+                        nodes =
+                            listOf(
+                                SequenceNodeDraft.Step(
+                                    ActivityStepDraft(
+                                        DraftIdentity.New("only"),
+                                        0,
+                                        StepActivityDraft.FromTemplate(activity.id),
+                                    ),
+                                ),
+                            ),
+                    ),
+                    createdAt = started.minusSeconds(1),
+                )
+            val runtime = f.store.library.startSequenceFromTemplate(source.id, started, started, zone, source.revision)
+            f.store.live.completeCurrentSequenceStep(
+                requireNotNull(runtime.execution.currentOccurrenceId),
+                started.plusSeconds(60),
+            )
+            val before = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            assertNull(
+                before.occurrences
+                    .single()
+                    .child!!
+                    .startedAt,
+            )
+            assertNull(
+                before.occurrences
+                    .single()
+                    .child!!
+                    .activeDuration,
+            )
+            f.launch()
+            val attempts =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val reads =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val failRead =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(true)
+            val controller =
+                SequenceHistoryMutationController(
+                    f.historyUiScope(),
+                    runtime.execution.id,
+                    { id ->
+                        reads.incrementAndGet()
+                        if (attempts.get() > 0 && failRead.get()) error("canonical reload unavailable after commit")
+                        kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) { f.store.history.getSequenceDetail(id) }
+                    },
+                    { id, correction, at ->
+                        attempts.incrementAndGet()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            f.store.sequenceHistoryCommands.correctTiming(id, correction, at)
+                        }
+                    },
+                    { _, _, _ -> error("unexpected child writer") },
+                    { _, _, _ -> error("unexpected structural writer") },
+                )
+            compose.runOnIdle {
+                f.host().sequenceHistoryMutationRouteSessions.acquire(
+                    runtime.execution.id,
+                ) { controller }
+            }
+            f.openHistoryFact(source.name, before.root.primaryLocalDate)
+            compose.onNodeWithTag("sequence-history-detail-list").performScrollToKey("sequence:timing")
+            f.invoke(R.string.sequence_history_correct_timing)
+            assertFalse(
+                controller.state.value.timingDraft!!.timestamps.keys.any {
+                    it is SequenceHistoryTimestampTarget.ChildStartedAt
+                },
+            )
+            compose.onNodeWithTag("sequence-history-timing-list").performScrollToKey("root-ended")
+            inputHistoryText("sequence-history-timestamp-root-ended", "2026-10-25T02:35:27.456")
+            f.invoke(R.string.sequence_history_review_timing)
+            assertEquals(
+                SequenceHistoryTimestampTarget.RootEndedAt,
+                controller.state.value.invalidTimestampTarget,
+            )
+            val draftBeforeOffsetChoice = requireNotNull(controller.state.value.timingDraft)
+            val second =
+                compose.onNode(
+                    hasText(f.text(R.string.sequence_history_root_ended), substring = true) and
+                        hasText(
+                            f.text(R.string.sequence_history_execution_id, runtime.execution.id.value),
+                            substring = true,
+                        ) and
+                        hasText(f.text(R.string.manual_history_second_occurrence, "UTC+01:00")),
+                )
+            second.performScrollTo().performSemanticsAction(SemanticsActions.OnClick)
+            second.assertIsSelected()
+            val draftAfterOffsetChoice = requireNotNull(controller.state.value.timingDraft)
+            assertEquals(
+                draftBeforeOffsetChoice.timestamps.filterKeys { it != SequenceHistoryTimestampTarget.RootEndedAt },
+                draftAfterOffsetChoice.timestamps.filterKeys { it != SequenceHistoryTimestampTarget.RootEndedAt },
+            )
+            f.invoke(R.string.sequence_history_review_timing)
+            val reviewed = controller.state.value.timingProposal!!
+            assertEquals(Instant.parse("2026-10-25T01:35:27.456Z"), reviewed.correction.endedAt)
+            f.invoke(R.string.history_save_correction)
+            f.await { controller.state.value.load is HistoryDetailLoad.Failure }
+            compose
+                .onNodeWithText(
+                    f.text(
+                        R.string.sequence_timing_committed_read_failure,
+                        f.text(R.string.sequence_timing_correction),
+                    ),
+                ).assertIsDisplayed()
+            assertEquals(1, attempts.get())
+            assertEquals(1L, controller.state.value.refreshGeneration)
+            failRead.set(false)
+            f.invoke(R.string.history_retry)
+            f.await { controller.state.value.load is HistoryDetailLoad.Content }
+            assertEquals(1, attempts.get())
+            assertEquals(3, reads.get())
+            val after = f.store.history.getSequenceDetail(runtime.execution.id)!!
+            assertEquals(reviewed.correction.endedAt, after.root.completedAt)
+            assertNull(
+                after.occurrences
+                    .single()
+                    .child!!
+                    .activeDuration,
+            )
+            assertEquals(before.occurrences, after.occurrences)
+            f.systemBack()
+            f.systemBack()
+            f.reopen(historyDay = after.root.primaryLocalDate, originalZone = zone) {
+                assertEquals(after, history.getSequenceDetail(runtime.execution.id))
+                assertNull(
+                    history
+                        .getSequenceDetail(runtime.execution.id)!!
+                        .occurrences
+                        .single()
+                        .child!!
+                        .startedAt,
+                )
+                assertEquals(1L, statistics.global(StatisticsPeriod.AllTime).topLevelExecutionCount)
+                assertEquals(
+                    after.root.activeDuration,
+                    statistics.global(StatisticsPeriod.AllTime).totalTrackedDuration,
+                )
+                assertEquals(
+                    1L,
+                    statistics.activitySeries(activity.statisticsSeriesId, StatisticsPeriod.AllTime).executionCount,
+                )
+                assertTrue(
+                    daily
+                        .getDaily(
+                            DailyQuery(after.root.primaryLocalDate, Instant.now(), 20, zone),
+                        ).completedHistory
+                        .any {
+                            it is com.alexandr5476.lifetracing.domain.CompletedSequenceHistoryRoot &&
+                                it.executionId == runtime.execution.id
+                        },
+                )
+            }
+        }
+
     private fun journey(body: (Fixture) -> Unit) =
         runBlocking {
             val app = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
@@ -3727,6 +4888,10 @@ class PrimaryExecutionJourneyTest {
         private var activity: MainActivity? = null
 
         fun host() = requireNotNull(activity)
+
+        // Match the production History dispatcher while retaining the disposable graph's job.
+        fun historyUiScope(): CoroutineScope =
+            CoroutineScope(LifeTracingRuntimeGraph.from(host()).scope.coroutineContext + Dispatchers.Main.immediate)
 
         private var resourceContext: android.content.Context? = null
         private var originalAppearance: AppearancePreferences? = null
@@ -4024,8 +5189,25 @@ class PrimaryExecutionJourneyTest {
             )
         }
 
-        fun openHistoryFact(name: String) {
+        fun openHistoryFact(
+            name: String,
+            historyDay: LocalDate? = null,
+        ) {
             invoke(R.string.daily_history)
+            if (historyDay != null) {
+                val history = host().historyControllerOwner.get { error("History must already exist") }
+                await { history.state.value.load !is HistoryRootsLoad.Loading }
+                while (historyDay < history.state.value.window.startDate) {
+                    val previousEnd = history.state.value.window.endDate
+                    await {
+                        if (history.state.value.window.endDate == previousEnd) {
+                            tryInvokeCurrent(hasTestTag("history-older") and hasClickAction())
+                        }
+                        history.state.value.window.endDate < previousEnd &&
+                            history.state.value.load !is HistoryRootsLoad.Loading
+                    }
+                }
+            }
             await { tryInvokeCurrent(hasText(name) and hasClickAction()) }
             await {
                 host()
@@ -4056,12 +5238,13 @@ class PrimaryExecutionJourneyTest {
         fun reopen(
             historyDay: LocalDate = day,
             expectedAllTimeCount: Long? = null,
+            originalZone: ZoneId = zone,
             checks: RuntimeRecoveryStore.() -> Unit,
         ) {
             val facts = store.durableFacts()
             val roots = roots(store, historyDay)
             roots.forEach { root ->
-                assertEquals(zone, root.originalZoneId)
+                assertEquals(originalZone, root.originalZoneId)
                 assertEquals(historyDay, root.primaryLocalDate)
             }
             val statistics = store.statistics.global(StatisticsPeriod.AllTime)
@@ -4085,6 +5268,8 @@ class PrimaryExecutionJourneyTest {
         override fun close() {
             try {
                 scenario?.close()
+                // Wait for graph-owned, potentially non-cancellable repository reads before closure.
+                closeGraph()
                 store.close()
             } finally {
                 originalAppearance?.let { original ->

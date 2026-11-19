@@ -66,7 +66,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.hamcrest.Matchers.sameInstance
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -719,7 +721,8 @@ class PlanScheduleAccessibilityTest {
 
         @Volatile var clock: Instant = Instant.parse("2026-10-24T10:00:00Z")
         var store = PlanSchedulingStore(context, name, CurrentZoneIdProvider { zone })
-        private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        private val controllerJob = SupervisorJob()
+        private val scope = CoroutineScope(controllerJob + Dispatchers.Default)
         val commands = CopyOnWriteArrayList<PlanMutation>()
         val language = mutableStateOf("en")
         val scale = mutableStateOf(Triple(100, 100, 1f))
@@ -788,7 +791,7 @@ class PlanScheduleAccessibilityTest {
 
         fun reopen() {
             controller.close()
-            scope.cancel()
+            runBlocking { withTimeout(5_000) { controllerJob.cancelAndJoin() } }
             store.close()
             store = PlanSchedulingStore(context, name, CurrentZoneIdProvider { zone })
         }
@@ -796,7 +799,7 @@ class PlanScheduleAccessibilityTest {
         override fun close() {
             commitGate?.complete(Unit)
             controller.close()
-            scope.cancel()
+            runBlocking { withTimeout(5_000) { controllerJob.cancelAndJoin() } }
             store.close()
             context.deleteDatabase(name)
         }

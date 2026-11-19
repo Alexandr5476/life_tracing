@@ -15,6 +15,8 @@ private data class FocusTargetAttachmentElement(
 
     override fun update(node: FocusTargetAttachmentNode) {
         node.onChanged = onChanged
+        // Lazy reuse can replace the observer while retaining an attached modifier node.
+        if (node.isAttached) onChanged(true)
     }
 
     override fun InspectorInfo.inspectableProperties() {

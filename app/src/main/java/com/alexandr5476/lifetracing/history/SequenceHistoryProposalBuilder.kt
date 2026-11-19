@@ -60,7 +60,12 @@ data class SequenceHistoryTimestampDraft(
 data class SequenceHistoryTimingDraft(
     val expectedUpdatedAt: Instant,
     val timestamps: Map<SequenceHistoryTimestampTarget, SequenceHistoryTimestampDraft>,
-)
+) {
+    // A draft is a non-durable publication. StateFlow must not compare every endpoint per keystroke.
+    override fun equals(other: Any?): Boolean = this === other
+
+    override fun hashCode(): Int = System.identityHashCode(this)
+}
 
 data class SequenceHistoryTimingProposal(
     val correction: SequenceHistoryTimingCorrection,
@@ -165,6 +170,11 @@ data class SequenceHistoryStructuralProposal(
     val changes: List<SequenceHistoryPreviewChange>,
     val hasIntervalOverlap: Boolean,
 ) {
+    // A proposal is an immutable publication, not a value to compare across an entire graph.
+    override fun equals(other: Any?): Boolean = this === other
+
+    override fun hashCode(): Int = System.identityHashCode(this)
+
     val isConfirmable: Boolean
         get() = command != null
 }
@@ -210,7 +220,7 @@ object SequenceHistoryProposalBuilder {
             add(SequenceHistoryTimestampTarget.IntervalStartedAt(interval.id), interval.startedAt)
             add(SequenceHistoryTimestampTarget.IntervalEndedAt(interval.id), interval.endedAt)
         }
-        return SequenceHistoryTimingDraft(detail.updatedAt, values)
+        return SequenceHistoryTimingDraft(detail.updatedAt, SequenceHistoryTimestampMap.from(values))
     }
 
     fun timing(
@@ -371,6 +381,7 @@ object SequenceHistoryProposalBuilder {
         val laterIds = later.mapTo(hashSetOf()) { it.occurrenceId }
         val placementState = linkedMapOf<SequenceIntervalId, OwnerlessIntervalPlacement?>()
         val placementChoices = mutableListOf<SequenceHistoryOwnerlessPlacementChoice>()
+        val forcedPlacements = linkedMapOf<SequenceIntervalId, OwnerlessIntervalPlacement?>()
         val finalIntervals =
             retained.map { interval ->
                 when {
@@ -404,6 +415,7 @@ object SequenceHistoryProposalBuilder {
                                     placement,
                                 )
                         }
+                        if (!(fixedLegal && translatedLegal)) forcedPlacements[interval.id] = placement
                         if (placement == OwnerlessIntervalPlacement.TRANSLATED) translated else interval
                     }
                 }
@@ -453,12 +465,13 @@ object SequenceHistoryProposalBuilder {
             targetDescriptor,
             mode,
             shift,
-            placementState,
+            SequenceHistoryPlacementMap.from(placementState),
             placementChoices,
             command,
             command
-                ?.let { structuralChanges(detail, it, placementState, occurrenceIndex, intervalsById) }
-                .orEmpty(),
+                ?.let {
+                    structuralChanges(detail, it, placementState + forcedPlacements, occurrenceIndex, intervalsById)
+                }.orEmpty(),
             command?.let { hasIntervalOverlap(it.finalIntervals) } ?: false,
         )
     }
