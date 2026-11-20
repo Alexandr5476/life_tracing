@@ -290,7 +290,11 @@ class StatisticsPeriodAccessibilityTest {
             }
 
         private fun scrollToOverview(key: StatisticsOverviewItem) {
-            if (!detail) compose.onNodeWithTag("statistics-list").performScrollToKey(key)
+            if (detail) {
+                compose.onNodeWithTag("statistics-detail-list").performScrollToKey(DetailAnchor.valueOf(key.name))
+            } else {
+                compose.onNodeWithTag("statistics-list").performScrollToKey(key)
+            }
         }
     }
 }

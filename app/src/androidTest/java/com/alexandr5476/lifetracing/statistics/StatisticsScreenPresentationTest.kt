@@ -407,6 +407,13 @@ class StatisticsScreenPresentationTest {
     private fun nativeAction(tag: String): () -> Boolean {
         val node =
             if (tag.startsWith("statistics-detail-")) {
+                val anchor =
+                    when (tag) {
+                        "statistics-detail-back", "statistics-detail-refresh" -> DetailAnchor.HEADER
+                        "statistics-detail-retry" -> DetailAnchor.STATUS
+                        else -> DetailAnchor.PERIOD
+                    }
+                compose.onNodeWithTag("statistics-detail-list").performScrollToKey(anchor)
                 compose.onNodeWithTag(tag).performScrollTo()
             } else {
                 overviewNode(tag)

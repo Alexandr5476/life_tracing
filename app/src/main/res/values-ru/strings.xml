@@ -60,7 +60,7 @@
     <string name="statistics_previous">Назад</string><string name="statistics_next">Вперёд</string><string name="statistics_loading">Загрузка статистики…</string><string name="statistics_failure">Не удалось загрузить статистику.</string><string name="statistics_retry">Повторить</string><string name="statistics_empty">За этот период нет выполнений.</string>
     <string name="statistics_tracked_time">Учтённое время: %1$s</string><string name="statistics_top_level_executions">Выполнения верхнего уровня: %1$s</string><string name="statistics_active_days">Активные дни: %1$s</string><string name="statistics_average_per_active_day">Среднее время за активный день: %1$s</string><string name="statistics_sequence_pause_idle">Паузы и ожидание последовательностей: %1$s</string><string name="statistics_series_title">Серии</string><string name="statistics_executions">Выполнения: %1$s</string><string name="statistics_duration_total">Общее время: %1$s</string><string name="statistics_duration_average">Среднее время: %1$s</string>
     <string name="statistics_unavailable">Недоступно</string><string name="statistics_no_duration_samples">Нет измерений длительности</string><string name="statistics_kind_activity">Занятие</string><string name="statistics_kind_sequence">Последовательность</string><string name="statistics_kind_one_off">Разовые занятия</string><string name="statistics_source_active">Текущий источник</string><string name="statistics_source_archived">Источник в архиве</string><string name="statistics_source_missing">Нет текущего источника</string><string name="statistics_source_system">Системная сводка разовых занятий</string>
-    <string name="statistics_refresh">Обновить</string><string name="statistics_detail_title">Подробности серии</string><string name="statistics_duration_median">Медианная длительность: %1$s</string><string name="statistics_duration_minimum">Минимальная длительность: %1$s</string><string name="statistics_duration_maximum">Максимальная длительность: %1$s</string><string name="statistics_total_pause_idle">Всего пауз и ожидания: %1$s</string><string name="statistics_average_pause_idle">Среднее время пауз и ожидания: %1$s</string><string name="statistics_average_per_active_day_count">Выполнений в среднем за активный день: %1$s</string><string name="statistics_first_performed">Первое выполнение: %1$s</string><string name="statistics_last_performed">Последнее выполнение: %1$s</string><string name="statistics_field_title">Поля</string><string name="statistics_field_recorded">Записано: %1$s</string><string name="statistics_field_missing">Нет значения: %1$s</string><string name="statistics_field_coverage">Заполнено: %1$s</string><string name="statistics_number_total">Сумма: %1$s</string><string name="statistics_number_average">Среднее: %1$s</string><string name="statistics_number_median">Медиана: %1$s</string><string name="statistics_number_minimum">Минимум: %1$s</string><string name="statistics_number_maximum">Максимум: %1$s</string><string name="statistics_category_values">Значения</string><string name="statistics_category_count_share">%1$s: %2$s (%3$s)</string><string name="statistics_field_text">Текстовое поле (без агрегации)</string><string name="statistics_period_title">Период</string>
+    <string name="statistics_refresh">Обновить</string><string name="statistics_detail_title">Подробности серии</string><string name="statistics_duration_median">Медианная длительность: %1$s</string><string name="statistics_duration_minimum">Минимальная длительность: %1$s</string><string name="statistics_duration_maximum">Максимальная длительность: %1$s</string><string name="statistics_total_pause_idle">Общая длительность пауз и ожидания: %1$s</string><string name="statistics_average_pause_idle">Средняя длительность пауз и ожидания: %1$s</string><string name="statistics_average_per_active_day_count">Выполнений в среднем за активный день: %1$s</string><string name="statistics_first_performed">Первое выполнение: %1$s</string><string name="statistics_last_performed">Последнее выполнение: %1$s</string><string name="statistics_field_title">Поля</string><string name="statistics_field_recorded">Записано: %1$s</string><string name="statistics_field_missing">Нет значения: %1$s</string><string name="statistics_field_coverage">Заполнено: %1$s</string><string name="statistics_number_total">Сумма: %1$s</string><string name="statistics_number_average">Среднее: %1$s</string><string name="statistics_number_median">Медиана: %1$s</string><string name="statistics_number_minimum">Минимум: %1$s</string><string name="statistics_number_maximum">Максимум: %1$s</string><string name="statistics_category_values">Значения</string><string name="statistics_field_text">Текстовые значения не агрегируются.</string><string name="statistics_period_title">Период</string>
     <string name="history_title">История</string>
     <string name="history_back">Назад</string>
     <string name="history_older">Раньше</string>
@@ -1016,4 +1016,29 @@
     <string name="statistics_invalid_week">Введите дату в формате ГГГГ-ММ-ДД, которая входит в полную неделю.</string>
     <string name="statistics_invalid_month">Введите корректный месяц в формате ГГГГ-ММ.</string>
     <string name="statistics_invalid_year">Введите полный год в формате ГГГГ.</string>
+    <string name="statistics_detail_kind">Тип серии: %1$s</string>
+    <string name="statistics_detail_metrics">Показатели серии</string>
+    <string name="statistics_duration_samples">Выполнения с длительностью: %1$s</string>
+    <string name="statistics_active_duration_samples">Выполнения с активной длительностью: %1$s</string>
+    <string name="statistics_active_duration_total">Общая активная длительность: %1$s</string>
+    <string name="statistics_active_duration_average">Средняя активная длительность: %1$s</string>
+    <string name="statistics_active_duration_median">Медианная активная длительность: %1$s</string>
+    <string name="statistics_active_duration_minimum">Минимальная активная длительность: %1$s</string>
+    <string name="statistics_active_duration_maximum">Максимальная активная длительность: %1$s</string>
+    <string name="statistics_detail_field_context">%1$s · %2$s</string>
+    <string name="statistics_detail_number_field">Числовое поле</string>
+    <string name="statistics_detail_category_field">Поле категории</string>
+    <string name="statistics_detail_text_field">Текстовое поле</string>
+    <string name="statistics_detail_duplicate_name">%1$s (идентификатор %2$s)</string>
+    <string name="statistics_detail_relevant">Учитываемые выполнения: %1$s</string>
+    <string name="statistics_detail_precision">Знаков после запятой для среднего и медианы: %1$s</string>
+    <string name="statistics_detail_default_precision">До %1$s знаков после запятой для среднего и медианы</string>
+    <string name="statistics_detail_unit">Единица измерения: %1$s</string>
+    <string name="statistics_detail_number_unit">%1$s %2$s</string>
+    <string name="statistics_detail_ratio">%1$s из %2$s (%3$s)</string>
+    <string name="statistics_category_recorded_share">%1$s. Количество: %2$s. Доля среди записанных значений: %3$s</string>
+    <string name="statistics_category_context">Поле «%1$s». %2$s</string>
+    <string name="statistics_category_activity_source">Вариант активности</string>
+    <string name="statistics_category_sequence_source">Вариант последовательности</string>
+    <string name="statistics_category_snapshot_source">Исторический вариант из снимка</string>
 </resources>

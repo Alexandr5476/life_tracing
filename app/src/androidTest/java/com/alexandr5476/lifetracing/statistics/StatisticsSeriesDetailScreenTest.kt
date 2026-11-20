@@ -4,13 +4,17 @@ package com.alexandr5476.lifetracing.statistics
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivitySeriesStatistics
@@ -70,14 +74,14 @@ class StatisticsSeriesDetailScreenTest {
                 )
             }
         }
-        compose.onNodeWithTag("statistics-detail-loading").assertIsDisplayed()
-        compose.onNodeWithTag("statistics-detail-refresh").performClick()
+        compose.scrollToTag("statistics-detail-loading").assertIsDisplayed()
+        compose.scrollToTag("statistics-detail-refresh").performClick()
         compose.runOnIdle { state.value = state.value.copy(load = StatisticsSeriesDetailLoadState.Failure) }
-        compose.onNodeWithTag("statistics-detail-retry").performClick()
-        compose.onNodeWithTag("statistics-detail-period-all_time").performClick()
+        compose.scrollToTag("statistics-detail-retry").performClick()
+        compose.scrollToTag("statistics-detail-period-all_time").performClick()
         assertEquals(2, refreshes)
         assertEquals(StatisticsPeriod.AllTime, selected)
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_back)).performClick()
+        compose.scrollToText(compose.activity.getString(R.string.statistics_back)).performClick()
         assertEquals(1, back)
     }
 
@@ -94,27 +98,27 @@ class StatisticsSeriesDetailScreenTest {
                 )
             }
         }
-        compose.onNodeWithTag("statistics-detail-period-day").performClick()
-        compose.onNodeWithTag("statistics-period-apply").performClick()
+        compose.scrollToTag("statistics-detail-period-day").performClick()
+        compose.scrollToTag("statistics-period-apply").performClick()
         assertEquals(StatisticsPeriod.Day(LocalDate.parse("2026-08-01")), selected.last())
-        compose.onNodeWithTag("statistics-detail-period-week").performClick()
-        compose.onNodeWithTag("statistics-period-apply").performClick()
+        compose.scrollToTag("statistics-detail-period-week").performClick()
+        compose.scrollToTag("statistics-period-apply").performClick()
         assertEquals(StatisticsPeriod.Week(LocalDate.parse("2026-07-27")), selected.last())
-        compose.onNodeWithTag("statistics-detail-period-month").performClick()
-        compose.onNodeWithTag("statistics-period-apply").performClick()
+        compose.scrollToTag("statistics-detail-period-month").performClick()
+        compose.scrollToTag("statistics-period-apply").performClick()
         assertEquals(StatisticsPeriod.Month(YearMonth.of(2026, 8)), selected.last())
-        compose.onNodeWithTag("statistics-detail-period-year").performClick()
-        compose.onNodeWithTag("statistics-period-apply").performClick()
+        compose.scrollToTag("statistics-detail-period-year").performClick()
+        compose.scrollToTag("statistics-period-apply").performClick()
         assertEquals(StatisticsPeriod.Year(java.time.Year.of(2026)), selected.last())
-        compose.onNodeWithTag("statistics-detail-period-custom").performClick()
-        compose.onNodeWithTag("statistics-detail-custom-start").performTextInput("2026-08-03")
-        compose.onNodeWithTag("statistics-detail-custom-end").performTextInput("2026-08-10")
-        compose.onNodeWithTag("statistics-detail-custom-apply").performClick()
+        compose.scrollToTag("statistics-detail-period-custom").performClick()
+        compose.scrollToTag("statistics-detail-custom-start").performTextInput("2026-08-03")
+        compose.scrollToTag("statistics-detail-custom-end").performTextInput("2026-08-10")
+        compose.scrollToTag("statistics-detail-custom-apply").performClick()
         assertEquals(
             StatisticsPeriod.Custom(LocalDate.parse("2026-08-03"), LocalDate.parse("2026-08-10")),
             selected.last(),
         )
-        compose.onNodeWithTag("statistics-detail-period-all_time").performClick()
+        compose.scrollToTag("statistics-detail-period-all_time").performClick()
         assertEquals(StatisticsPeriod.AllTime, selected.last())
     }
 
@@ -141,28 +145,24 @@ class StatisticsSeriesDetailScreenTest {
             }
         }
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
                     R.string.statistics_duration_total,
                     compose.activity.getString(R.string.statistics_no_duration_samples),
                 ),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_source_archived),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_executions, "1"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_first_performed, formatted(Instant.EPOCH)),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -180,28 +180,21 @@ class StatisticsSeriesDetailScreenTest {
                     ),
                 )
         }
+        val sampledZero = compose.activity.getString(R.string.statistics_duration_total, "0:00:00")
+        compose.scrollToText(sampledZero).assertIsDisplayed()
+        assertEquals(1, compose.onAllNodesWithText(sampledZero).fetchSemanticsNodes().size)
         compose
-            .onAllNodesWithText(
-                compose.activity.getString(R.string.statistics_duration_total, "0:00:00"),
-            ).fetchSemanticsNodes()
-            .also {
-                assertEquals(1, it.size)
-            }
-        compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_source_missing),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_first_performed, formatted(Instant.EPOCH)),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_last_performed, formatted(Instant.EPOCH)),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -214,18 +207,16 @@ class StatisticsSeriesDetailScreenTest {
                 )
         }
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_executions, "0"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
                     R.string.statistics_first_performed,
                     compose.activity.getString(R.string.statistics_unavailable),
                 ),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
     }
 
     @Test
@@ -320,76 +311,63 @@ class StatisticsSeriesDetailScreenTest {
                 StatisticsSeriesDetailScreen(detailState.value, {}, {}, {})
             }
         }
-        compose.onNodeWithTag("statistics-field-activity-number-id").assertExists()
-        compose.onNodeWithTag("statistics-field-activity-empty-number").assertExists()
-        compose.onNodeWithTag("statistics-field-activity-category-id").assertExists()
-        compose.onNodeWithTag("statistics-field-activity-text-id").assertExists()
-        compose.onNodeWithTag("statistics-category-activity-category-id-activity-option-a").assertExists()
-        compose.onNodeWithTag("statistics-category-activity-category-id-activity-option-b").assertExists()
+        compose.scrollToTag("statistics-field-activity-number-id").assertExists()
+        compose.scrollToTag("statistics-field-activity-empty-number").assertExists()
+        compose.scrollToTag("statistics-field-activity-category-id").assertExists()
+        compose.scrollToTag("statistics-field-activity-text-id").assertExists()
+        compose.scrollToTag("statistics-category-activity-category-id-activity-option-a").assertExists()
+        compose.scrollToTag("statistics-category-activity-category-id-activity-option-b").assertExists()
         compose
-            .onNodeWithTag("statistics-field-activity-text-id")
-            .performScrollTo()
+            .scrollToTag("statistics-field-activity-text-id")
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_text))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_field_text))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_number_total, "0 kg"))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_number_total, "0 kg"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(
-                compose.activity.getString(R.string.statistics_number_average, "0 kg"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            .scrollToText(
+                compose.activity.getString(R.string.statistics_number_average, "0.00 kg"),
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
-                compose.activity.getString(R.string.statistics_number_median, "0 kg"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            .scrollToText(
+                compose.activity.getString(R.string.statistics_number_median, "0.00 kg"),
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_number_minimum, "0 kg"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_number_maximum, "0 kg"),
-            ).performScrollTo()
+            ).assertIsDisplayed()
+        compose
+            .scrollToText(compose.activity.getString(R.string.statistics_field_recorded, "1"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_recorded, "1"))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_field_missing, "1"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_missing, "1"))
-            .performScrollTo()
-            .assertIsDisplayed()
-        compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
                     R.string.statistics_field_coverage,
-                    NumberFormat.getPercentInstance(Locale.getDefault()).format(0.5),
+                    ratio("1", "2", 0.5),
                 ),
-            ).performScrollTo()
+            ).assertIsDisplayed()
+        compose
+            .scrollToText(compose.activity.getString(R.string.statistics_field_recorded, "0"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_recorded, "0"))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_field_missing, "2"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_missing, "2"))
-            .performScrollTo()
-            .assertIsDisplayed()
-        compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
                     R.string.statistics_field_coverage,
-                    NumberFormat.getPercentInstance(Locale.getDefault()).format(0.0),
+                    ratio("0", "2", 0.0),
                 ),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         val unavailable = compose.activity.getString(R.string.statistics_unavailable)
         listOf(
             R.string.statistics_number_total,
@@ -399,8 +377,7 @@ class StatisticsSeriesDetailScreenTest {
             R.string.statistics_number_maximum,
         ).forEach { resource ->
             compose
-                .onNodeWithText(compose.activity.getString(resource, unavailable))
-                .performScrollTo()
+                .scrollToText(compose.activity.getString(resource, unavailable))
                 .assertIsDisplayed()
         }
 
@@ -415,12 +392,10 @@ class StatisticsSeriesDetailScreenTest {
                 )
         }
         compose
-            .onNodeWithTag("statistics-field-activity-text-id")
-            .performScrollTo()
+            .scrollToTag("statistics-field-activity-text-id")
             .assertIsDisplayed()
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_field_text))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_field_text))
             .assertIsDisplayed()
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_field_recorded, "1")).assertDoesNotExist()
         compose.onNodeWithText(compose.activity.getString(R.string.statistics_number_total, "0")).assertDoesNotExist()
@@ -455,24 +430,20 @@ class StatisticsSeriesDetailScreenTest {
             LifeTracingTheme { StatisticsSeriesDetailScreen(detailState.value, {}, {}, {}) }
         }
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_source_missing))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_source_missing))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_total_pause_idle, "0:00:30"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(R.string.statistics_average_pause_idle, "0:00:15"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
-                compose.activity.getString(R.string.statistics_duration_total, "0:01:30"),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            .scrollToText(
+                compose.activity.getString(R.string.statistics_active_duration_total, "0:01:30"),
+            ).assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -489,8 +460,7 @@ class StatisticsSeriesDetailScreenTest {
                 )
         }
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_source_archived))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_source_archived))
             .assertIsDisplayed()
 
         compose.runOnIdle {
@@ -500,6 +470,10 @@ class StatisticsSeriesDetailScreenTest {
                         sequence.statistics.copy(
                             executionCount = 0,
                             activeDurations = DurationDistribution(0, Duration.ZERO, null, null, null, null),
+                            totalPauseIdleDuration = Duration.ZERO,
+                            averagePauseIdleMilliseconds = null,
+                            activeDayCount = 0,
+                            averageExecutionsPerActiveDay = null,
                             firstPerformedAt = null,
                             lastPerformedAt = null,
                         ),
@@ -508,26 +482,108 @@ class StatisticsSeriesDetailScreenTest {
                 )
         }
         compose
-            .onNodeWithText(compose.activity.getString(R.string.statistics_executions, "0"))
-            .performScrollTo()
+            .scrollToText(compose.activity.getString(R.string.statistics_executions, "0"))
             .assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
-                    R.string.statistics_duration_total,
+                    R.string.statistics_active_duration_total,
                     compose.activity.getString(R.string.statistics_no_duration_samples),
                 ),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
         compose
-            .onNodeWithText(
+            .scrollToText(
                 compose.activity.getString(
                     R.string.statistics_first_performed,
                     compose.activity.getString(R.string.statistics_unavailable),
                 ),
-            ).performScrollTo()
-            .assertIsDisplayed()
+            ).assertIsDisplayed()
     }
+
+    @Test
+    fun zeroPeriodCoveragePreservesHistoricalOptionsAndUnavailableNumberTotals() {
+        val field =
+            StatisticsFieldDescriptor(
+                StatisticsFieldId.Activity(ActivityTemplateFieldId("category")),
+                CustomFieldType.CATEGORY,
+                "Historical choices",
+                null,
+                null,
+            )
+        val value =
+            CategoryValueStatistics(
+                StatisticsCategoryOptionId.ActivitySource(CategoryOptionId("historical")),
+                "Historical option",
+                0,
+                CountRatio(0, 0),
+            )
+        val statistics = CategoryFieldStatistics(field, 0, 0, 0, CountRatio(0, 0), listOf(value))
+        val number =
+            field.copy(
+                id = StatisticsFieldId.Activity(ActivityTemplateFieldId("number")),
+                type = CustomFieldType.NUMBER,
+                displayName = "Historical measurement",
+            )
+        val numberStatistics =
+            NumberFieldStatistics(
+                number,
+                0,
+                0,
+                0,
+                CountRatio(0, 0),
+                NumberDistribution(0, BigInteger.ZERO, null, null, null, null),
+            )
+        val detail =
+            activity(
+                DurationDistribution(0, Duration.ZERO, null, null, null, null),
+                StatisticsSeriesSourceState.NO_CURRENT_SOURCE,
+                listOf(StatisticsFieldDetail.Category(statistics), StatisticsFieldDetail.Number(numberStatistics)),
+            )
+        compose.setContent {
+            LifeTracingTheme { StatisticsSeriesDetailScreen(state(detail), {}, {}, {}) }
+        }
+        val unavailable = compose.activity.getString(R.string.statistics_unavailable)
+        val ratio = compose.activity.getString(R.string.statistics_detail_ratio, "0", "0", unavailable)
+        val coverage = compose.activity.getString(R.string.statistics_field_coverage, ratio)
+        val categoryContext = fieldContext(field.displayName, R.string.statistics_detail_category_field)
+        val numberContext = fieldContext(number.displayName, R.string.statistics_detail_number_field)
+        listOf(categoryContext, numberContext).forEach { context ->
+            val metric =
+                hasText(coverage) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, context)
+            compose.onNodeWithTag("statistics-detail-list").performScrollToNode(metric)
+            compose.onNode(metric).assertIsDisplayed()
+        }
+        compose
+            .scrollToText(
+                compose.activity.getString(R.string.statistics_number_total, unavailable),
+            ).assertIsDisplayed()
+        compose
+            .scrollToText(
+                compose.activity.getString(R.string.statistics_category_recorded_share, value.displayLabel, "0", ratio),
+            ).assertIsDisplayed()
+    }
+
+    private fun fieldContext(
+        name: String,
+        type: Int,
+    ) = compose.activity.getString(R.string.statistics_detail_field_context, name, compose.activity.getString(type))
+
+    private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.scrollToTag(tag: String) =
+        onNodeWithTag("statistics-detail-list").performScrollToNode(hasTestTag(tag)).let { onNodeWithTag(tag) }
+
+    private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.scrollToText(text: String) =
+        onNodeWithTag("statistics-detail-list").performScrollToNode(hasText(text)).let { onNodeWithText(text) }
+
+    private fun ratio(
+        numerator: String,
+        denominator: String,
+        share: Double,
+    ) = compose.activity.getString(
+        R.string.statistics_detail_ratio,
+        numerator,
+        denominator,
+        NumberFormat.getPercentInstance(Locale.getDefault()).format(share),
+    )
 
     private fun state(detail: StatisticsSeriesDetail.Activity) =
         StatisticsSeriesDetailPresentationState(

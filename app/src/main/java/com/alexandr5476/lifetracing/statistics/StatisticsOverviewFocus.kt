@@ -34,8 +34,12 @@ internal enum class StatisticsOverviewFocusAnchor {
 
 /** Observes native focus and only attaches a requester to the target of a recovery. */
 internal class StatisticsOverviewFocus {
+    private class Request(
+        val target: Any,
+    )
+
     private val requester = FocusRequester()
-    private var requested by mutableStateOf<Any?>(null)
+    private var requested by mutableStateOf<Request?>(null)
     private var attached by mutableStateOf<Any?>(null)
     var last: Any? = null
         private set
@@ -55,7 +59,7 @@ internal class StatisticsOverviewFocus {
                     active = null
                 }
             }
-        return if (requested == id) {
+        return if (requested?.target == id) {
             Modifier
                 .focusRequester(requester)
                 .onFocusTargetAttachmentChanged { isAttached ->
@@ -75,16 +79,27 @@ internal class StatisticsOverviewFocus {
         index: Int,
         list: LazyListState,
         admission: StatisticsActionAdmission,
+        expectedKey: Any? = null,
     ) {
-        if (active == id || !admission.isCurrent()) return
-        requested = id
+        if (!admission.isCurrent()) return
+        val isVisible =
+            list.layoutInfo.visibleItemsInfo.any {
+                it.index == index && (expectedKey == null || it.key == expectedKey)
+            }
+        if (active == id && (expectedKey == null || isVisible)) return
+        val previousFocus = active
+        val request = Request(id)
+        requested = request
         try {
-            if (list.layoutInfo.visibleItemsInfo.none { it.index == index }) list.scrollToItem(index)
+            if (!isVisible) list.scrollToItem(index)
             snapshotFlow { attached }.first { it == id }
             withFrameNanos { }
-            if (attached == id && admission.isCurrent()) requester.requestFocus()
+            val stillRecovering = active == null || active == previousFocus || active == id
+            if (attached == id && admission.isCurrent() && stillRecovering) {
+                requester.requestFocus()
+            }
         } finally {
-            requested = null
+            if (requested === request) requested = null
         }
     }
 }
