@@ -11,6 +11,13 @@ internal class StatisticsControllerOwner : ViewModel() {
     fun get(create: (StatisticsPeriod) -> StatisticsController): StatisticsController =
         controller ?: create(StatisticsPeriod.Month(YearMonth.from(LocalDate.now()))).also { controller = it }
 
+    fun controllerForRoute(
+        isRouteVisible: Boolean,
+        create: (StatisticsPeriod) -> StatisticsController,
+    ): StatisticsController? = if (isRouteVisible) get(create) else controller
+
+    fun owns(expected: StatisticsController): Boolean = controller === expected
+
     fun onRouteExited() {
         controller?.close()
         controller = null

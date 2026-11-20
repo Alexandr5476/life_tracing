@@ -16,7 +16,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,7 +37,6 @@ import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import com.alexandr5476.lifetracing.domain.dateRangeOrNull
-import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.math.BigDecimal
 import java.math.BigInteger
@@ -67,11 +65,15 @@ private const val MAX_PERCENT_FRACTION_DIGITS = 1
 @Composable
 internal fun StatisticsSeriesDetailRoute(
     controller: StatisticsSeriesDetailController,
+    isRouteVisible: Boolean = true,
+    ownsRoute: () -> Boolean = { true },
     onBack: () -> Unit,
 ) {
     val state by controller.state.collectAsState()
-    BackHandler(onBack = onBack)
-    StatisticsSeriesDetailScreen(state, controller::selectPeriod, controller::refresh, onBack)
+    val admission = rememberStatisticsActionAdmission(state, { controller.state.value }, isRouteVisible, ownsRoute)
+    val back = admission.action(onClick = onBack)
+    BackHandler(enabled = admission.isCurrent()) { back() }
+    StatisticsSeriesDetailScreen(state, controller::selectPeriod, controller::refresh, onBack, admission)
 }
 
 @Composable
@@ -80,6 +82,7 @@ internal fun StatisticsSeriesDetailScreen(
     onSelectPeriod: (StatisticsPeriod) -> Unit,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
+    admission: StatisticsActionAdmission = rememberStatisticsActionAdmission(state, { state }),
 ) {
     var kind by remember(state.selectedPeriod) { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
     var day by remember(state.selectedPeriod) {
@@ -129,6 +132,9 @@ internal fun StatisticsSeriesDetailScreen(
         )
     }
     var invalid by remember { mutableStateOf(false) }
+    val appliedPeriod = state.selectedPeriod
+    val presentedKind = kind
+    val currentPeriodEditor = { kind == presentedKind }
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
@@ -137,10 +143,12 @@ internal fun StatisticsSeriesDetailScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.statistics_detail_title), style = MaterialTheme.typography.headlineSmall)
                 Row {
-                    TextButton(onClick = onRefresh, modifier = Modifier.testTag("statistics-detail-refresh")) {
+                    StatisticsTextButton(admission, onRefresh, Modifier.testTag("statistics-detail-refresh")) {
                         Text(stringResource(R.string.statistics_refresh))
                     }
-                    TextButton(onClick = onBack) { Text(stringResource(R.string.statistics_back)) }
+                    StatisticsTextButton(admission, onBack, Modifier.testTag("statistics-detail-back")) {
+                        Text(stringResource(R.string.statistics_back))
+                    }
                 }
             }
             Text(stringResource(R.string.statistics_period_title), style = MaterialTheme.typography.titleMedium)
@@ -149,21 +157,22 @@ internal fun StatisticsSeriesDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
             ) {
                 StatisticsPeriodKind.entries.forEach { item ->
-                    LifeTracingSecondaryButton(
+                    StatisticsSecondaryButton(
+                        admission,
                         onClick = {
                             kind = item
                             invalid = false
                             item.toPeriod(day, week, month, year)?.let(onSelectPeriod)
                         },
-                        enabled =
-                            item != kind,
+                        enabled = item != kind,
+                        applicable = { item != kind },
                         modifier = Modifier.testTag("statistics-detail-period-${item.name.lowercase()}"),
                     ) { Text(stringResource(item.label)) }
                 }
             }
             when (kind) {
                 StatisticsPeriodKind.DAY ->
-                    PeriodField(day, {
+                    PeriodField(admission, currentPeriodEditor, day, {
                         day = it
                     }, R.string.statistics_day_date) {
                         parseDate(
@@ -171,7 +180,7 @@ internal fun StatisticsSeriesDetailScreen(
                         )?.let { onSelectPeriod(StatisticsPeriod.Day(it)) }
                     }
                 StatisticsPeriodKind.WEEK ->
-                    PeriodField(week, {
+                    PeriodField(admission, currentPeriodEditor, week, {
                         week = it
                     }, R.string.statistics_week_date) {
                         parseDate(week)?.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))?.let {
@@ -179,7 +188,7 @@ internal fun StatisticsSeriesDetailScreen(
                         }
                     }
                 StatisticsPeriodKind.MONTH ->
-                    PeriodField(month, {
+                    PeriodField(admission, currentPeriodEditor, month, {
                         month = it
                     }, R.string.statistics_month_date) {
                         runCatching {
@@ -189,13 +198,15 @@ internal fun StatisticsSeriesDetailScreen(
                         }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Month(it)) }
                     }
                 StatisticsPeriodKind.YEAR ->
-                    PeriodField(year, {
+                    PeriodField(admission, currentPeriodEditor, year, {
                         year = it
                     }, R.string.statistics_year_date) {
                         runCatching { Year.parse(year) }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Year(it)) }
                     }
                 StatisticsPeriodKind.CUSTOM -> {
                     PeriodField(
+                        admission,
+                        currentPeriodEditor,
                         customStart,
                         {
                             customStart = it
@@ -210,6 +221,8 @@ internal fun StatisticsSeriesDetailScreen(
                     ) {
                     }
                     PeriodField(
+                        admission,
+                        currentPeriodEditor,
                         customEnd,
                         {
                             customEnd = it
@@ -222,19 +235,19 @@ internal fun StatisticsSeriesDetailScreen(
                             ),
                         showApply = false,
                     ) {}
-                    LifeTracingSecondaryButton(onClick = {
-                        val start = parseDate(customStart)
-                        val end = parseDate(customEnd)
-                        invalid =
-                            start == null ||
-                            end == null ||
-                            end < start
-                        if (!invalid) {
-                            onSelectPeriod(
-                                StatisticsPeriod.Custom(requireNotNull(start), requireNotNull(end)),
-                            )
-                        }
-                    }, modifier = Modifier.testTag("statistics-detail-custom-apply")) {
+                    StatisticsSecondaryButton(
+                        admission,
+                        onClick = {
+                            val start = parseDate(customStart)
+                            val end = parseDate(customEnd)
+                            invalid = start == null || end == null || end < start
+                            if (!invalid) {
+                                onSelectPeriod(StatisticsPeriod.Custom(requireNotNull(start), requireNotNull(end)))
+                            }
+                        },
+                        modifier = Modifier.testTag("statistics-detail-custom-apply"),
+                        applicable = currentPeriodEditor,
+                    ) {
                         Text(stringResource(R.string.statistics_apply_range))
                     }
                     if (invalid) {
@@ -250,18 +263,22 @@ internal fun StatisticsSeriesDetailScreen(
                 kind != StatisticsPeriodKind.ALL_TIME
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                    LifeTracingSecondaryButton(
+                    StatisticsSecondaryButton(
+                        admission,
+                        applicable = currentPeriodEditor,
                         onClick = {
-                            navigate(state.selectedPeriod, -1)?.let(onSelectPeriod)
+                            navigate(appliedPeriod, -1)?.let(onSelectPeriod)
                         },
                         modifier =
                             Modifier.testTag(
                                 "statistics-detail-previous",
                             ),
                     ) { Text(stringResource(R.string.statistics_previous)) }
-                    LifeTracingSecondaryButton(
+                    StatisticsSecondaryButton(
+                        admission,
+                        applicable = currentPeriodEditor,
                         onClick = {
-                            navigate(state.selectedPeriod, 1)?.let(onSelectPeriod)
+                            navigate(appliedPeriod, 1)?.let(onSelectPeriod)
                         },
                         modifier =
                             Modifier.testTag(
@@ -278,7 +295,8 @@ internal fun StatisticsSeriesDetailScreen(
                     )
                 StatisticsSeriesDetailLoadState.Failure -> {
                     Text(stringResource(R.string.statistics_failure), color = MaterialTheme.colorScheme.error)
-                    LifeTracingSecondaryButton(
+                    StatisticsSecondaryButton(
+                        admission,
                         onClick = onRefresh,
                         modifier = Modifier.testTag("statistics-detail-retry"),
                     ) {

@@ -27,6 +27,8 @@ sealed interface StatisticsLoadState {
 data class StatisticsPresentationState(
     val selectedPeriod: StatisticsPeriod,
     val load: StatisticsLoadState = StatisticsLoadState.Loading,
+    // StateFlow must deliver a fresh publication even when its rendered contents compare equal.
+    private val publicationIdentity: Any = Any(),
 )
 
 class StatisticsController internal constructor(
@@ -64,29 +66,24 @@ class StatisticsController internal constructor(
     private fun reload(period: StatisticsPeriod) {
         if (closed) return
         val request = generation.incrementAndGet()
-        mutableState.update { it.copy(selectedPeriod = period, load = StatisticsLoadState.Loading) }
+        mutableState.value = StatisticsPresentationState(period)
         scope.launch {
             try {
                 val overview = readOverview(period)
                 if (generation.get() == request) {
-                    mutableState.update {
-                        it.copy(
-                            load =
-                                if (overview.isEmpty) {
-                                    StatisticsLoadState.Empty(overview)
-                                } else {
-                                    StatisticsLoadState.Content(
-                                        overview,
-                                    )
-                                },
-                        )
-                    }
+                    val load =
+                        if (overview.isEmpty) {
+                            StatisticsLoadState.Empty(overview)
+                        } else {
+                            StatisticsLoadState.Content(overview)
+                        }
+                    mutableState.update { StatisticsPresentationState(it.selectedPeriod, load) }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 if (generation.get() == request) {
-                    mutableState.update { it.copy(load = StatisticsLoadState.Failure) }
+                    mutableState.update { StatisticsPresentationState(it.selectedPeriod, StatisticsLoadState.Failure) }
                 }
             }
         }

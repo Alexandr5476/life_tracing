@@ -19,14 +19,18 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.alexandr5476.lifetracing.daily.DailyRoute
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.PlanActionIdentity
 import com.alexandr5476.lifetracing.domain.PlanTarget
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRoute
 import com.alexandr5476.lifetracing.editor.ActivityTemplateEditorRouteSessionOwner
@@ -62,8 +66,11 @@ import com.alexandr5476.lifetracing.plan.PlanRoute
 import com.alexandr5476.lifetracing.settings.ArchivedTemplatesRoute
 import com.alexandr5476.lifetracing.settings.SettingsRoute
 import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
+import com.alexandr5476.lifetracing.statistics.StatisticsIdentityKey
 import com.alexandr5476.lifetracing.statistics.StatisticsRoute
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailController
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRoute
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSession
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSessionOwner
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
@@ -317,9 +324,18 @@ internal fun LifeTracingApp(
                     },
                 )
             }
+            val navigationLifecycle = LocalLifecycleOwner.current.lifecycle
+            val displayedRoute = backStack.lastOrNull()
+            val displayedStatisticsSession = statisticsDetailSessions.activeSession
             NavDisplay(
                 backStack = backStack,
-                onBack = {
+                onBack = back@{
+                    val currentRoute = backStack.lastOrNull()
+                    if (displayedRoute !== currentRoute &&
+                        (displayedRoute.isStatisticsRoute() || currentRoute.isStatisticsRoute())
+                    ) {
+                        return@back
+                    }
                     val expanded = backStack.lastOrNull() as? ExpandedLiveSequenceRoot
                     val planExecution = backStack.lastOrNull() as? PlanExecutionRoot
                     when {
@@ -373,12 +389,31 @@ internal fun LifeTracingApp(
                             backStack.removeHistory()
                         }
                         backStack.lastOrNull() is StatisticsRoot -> {
-                            statisticsOwner.onRouteExited()
-                            backStack.removeStatistics()
+                            if (displayedRoute === StatisticsRoot &&
+                                navigationLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                            ) {
+                                statisticsOwner.onRouteExited()
+                                backStack.removeStatistics()
+                            }
                         }
                         backStack.lastOrNull() is StatisticsSeriesDetailRoot -> {
-                            val route = backStack.last() as StatisticsSeriesDetailRoot
-                            backStack.handleStatisticsSeriesDetailBack(route.seriesId, statisticsDetailSessions)
+                            if (displayedRoute is StatisticsSeriesDetailRoot &&
+                                navigationLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                            ) {
+                                if (displayedStatisticsSession?.expectedSeriesId?.value == displayedRoute.seriesId) {
+                                    backStack.handleStatisticsSeriesDetailBack(
+                                        displayedRoute,
+                                        displayedStatisticsSession,
+                                        statisticsDetailSessions,
+                                    )
+                                } else {
+                                    backStack.normalizeRestoredStatisticsSeriesDetail(
+                                        displayedRoute,
+                                        statisticsDetailSessions,
+                                        displayedStatisticsSession,
+                                    )
+                                }
+                            }
                         }
                         backStack.lastOrNull() is ActivityHistoryDetailRoot -> {
                             backStack.handleActivityHistoryDetailBack(
@@ -572,37 +607,58 @@ internal fun LifeTracingApp(
                             )
                         }
                         entry<StatisticsRoot> {
-                            val statisticsController = statisticsOwner.get(runtimeGraph::createStatisticsController)
+                            val visible = backStack.lastOrNull() === StatisticsRoot
+                            val statisticsController =
+                                statisticsOwner.controllerForRoute(visible, runtimeGraph::createStatisticsController)
+                                    ?: return@entry
+                            val ownsRoute = {
+                                backStack.lastOrNull() === StatisticsRoot && statisticsOwner.owns(statisticsController)
+                            }
                             StatisticsRoute(
                                 controller = statisticsController,
+                                isRouteVisible = visible,
+                                ownsRoute = ownsRoute,
                                 onOpenSeries = { seriesId, initialPeriod ->
-                                    val session =
-                                        statisticsDetailSessions.acquire(
+                                    if (ownsRoute()) {
+                                        backStack.openStatisticsSeriesDetail(
                                             seriesId,
                                             initialPeriod,
+                                            statisticsDetailSessions,
                                             runtimeGraph::createStatisticsSeriesDetailController,
                                         )
-                                    backStack.openStatisticsSeriesDetail(session.expectedSeriesId.value)
+                                    }
                                 },
                                 onBack = {
-                                    statisticsOwner.onRouteExited()
-                                    backStack.removeStatistics()
+                                    if (ownsRoute()) {
+                                        statisticsOwner.onRouteExited()
+                                        backStack.removeStatistics()
+                                    }
                                 },
                             )
                         }
                         entry<StatisticsSeriesDetailRoot> { route ->
-                            val seriesId =
-                                com.alexandr5476.lifetracing.domain
-                                    .StatisticsSeriesId(route.seriesId)
-                            val session = statisticsDetailSessions.sessionFor(seriesId)
+                            val visible = backStack.lastOrNull() === route
+                            val retainedSession = statisticsDetailSessions.activeSession
+                            val session = retainedSession?.takeIf { it.expectedSeriesId.value == route.seriesId }
                             if (session == null) {
-                                LaunchedEffect(route.seriesId) {
-                                    statisticsDetailSessions.activeSession?.let(statisticsDetailSessions::release)
-                                    backStack.normalizeRestoredStatisticsSeriesDetail()
+                                if (visible) {
+                                    LaunchedEffect(StatisticsIdentityKey(route), retainedSession) {
+                                        backStack.normalizeRestoredStatisticsSeriesDetail(
+                                            route,
+                                            statisticsDetailSessions,
+                                            retainedSession,
+                                        )
+                                    }
                                 }
                             } else {
-                                StatisticsSeriesDetailRoute(session.controller) {
-                                    backStack.handleStatisticsSeriesDetailBack(route.seriesId, statisticsDetailSessions)
+                                StatisticsSeriesDetailRoute(
+                                    session.controller,
+                                    isRouteVisible = visible,
+                                    ownsRoute = {
+                                        backStack.ownsStatisticsSeriesDetail(route, session, statisticsDetailSessions)
+                                    },
+                                ) {
+                                    backStack.handleStatisticsSeriesDetailBack(route, session, statisticsDetailSessions)
                                 }
                             }
                         }
@@ -915,32 +971,51 @@ internal fun MutableList<NavKey>.openStatistics() {
     if (lastOrNull() !is StatisticsRoot) add(StatisticsRoot)
 }
 
+private fun NavKey?.isStatisticsRoute(): Boolean = this is StatisticsRoot || this is StatisticsSeriesDetailRoot
+
 internal fun MutableList<NavKey>.removeStatistics() {
     if (lastOrNull() is StatisticsRoot) removeAt(lastIndex)
 }
 
-internal fun MutableList<NavKey>.openStatisticsSeriesDetail(seriesId: String) {
-    val current = lastOrNull() as? StatisticsSeriesDetailRoot
-    if (current?.seriesId == seriesId) return
-    if (current != null) removeAt(lastIndex)
-    if (lastOrNull() is StatisticsRoot) add(StatisticsSeriesDetailRoot(seriesId))
+internal fun MutableList<NavKey>.openStatisticsSeriesDetail(
+    seriesId: StatisticsSeriesId,
+    initialPeriod: StatisticsPeriod,
+    sessions: StatisticsSeriesDetailRouteSessionOwner,
+    create: (StatisticsSeriesId, StatisticsPeriod) -> StatisticsSeriesDetailController,
+) {
+    if (lastOrNull() !== StatisticsRoot || seriesId == ActivityExecutionStatistics.ONE_OFF_BUCKET_ID) return
+    sessions.acquire(seriesId, initialPeriod, create)
+    add(StatisticsSeriesDetailRoot(seriesId.value))
 }
 
-internal fun MutableList<NavKey>.removeStatisticsSeriesDetail(expectedSeriesId: String) {
-    if ((lastOrNull() as? StatisticsSeriesDetailRoot)?.seriesId == expectedSeriesId) removeAt(lastIndex)
+internal fun MutableList<NavKey>.normalizeRestoredStatisticsSeriesDetail(
+    expectedRoute: StatisticsSeriesDetailRoot,
+    sessions: StatisticsSeriesDetailRouteSessionOwner,
+    observedSession: StatisticsSeriesDetailRouteSession?,
+) {
+    if (lastOrNull() !== expectedRoute || sessions.activeSession !== observedSession) return
+    if (observedSession?.expectedSeriesId?.value == expectedRoute.seriesId) return
+    observedSession?.let(sessions::release)
+    removeAt(lastIndex)
 }
 
-internal fun MutableList<NavKey>.normalizeRestoredStatisticsSeriesDetail() {
-    if (lastOrNull() is StatisticsSeriesDetailRoot) removeAt(lastIndex)
-}
+internal fun List<NavKey>.ownsStatisticsSeriesDetail(
+    expectedRoute: StatisticsSeriesDetailRoot,
+    expectedSession: StatisticsSeriesDetailRouteSession,
+    sessions: StatisticsSeriesDetailRouteSessionOwner,
+): Boolean =
+    lastOrNull() === expectedRoute &&
+        sessions.activeSession === expectedSession &&
+        expectedSession.expectedSeriesId.value == expectedRoute.seriesId
 
 internal fun MutableList<NavKey>.handleStatisticsSeriesDetailBack(
-    expectedSeriesId: String,
+    expectedRoute: StatisticsSeriesDetailRoot,
+    expectedSession: StatisticsSeriesDetailRouteSession,
     sessions: StatisticsSeriesDetailRouteSessionOwner,
 ) {
-    if ((lastOrNull() as? StatisticsSeriesDetailRoot)?.seriesId != expectedSeriesId) return
-    sessions.sessionFor(StatisticsSeriesId(expectedSeriesId))?.let(sessions::release)
-    removeStatisticsSeriesDetail(expectedSeriesId)
+    if (!ownsStatisticsSeriesDetail(expectedRoute, expectedSession, sessions)) return
+    sessions.release(expectedSession)
+    removeAt(lastIndex)
 }
 
 internal fun MutableList<NavKey>.openManualActivityEntry() {

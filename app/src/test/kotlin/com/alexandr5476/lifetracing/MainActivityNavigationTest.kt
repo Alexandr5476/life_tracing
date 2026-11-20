@@ -2,6 +2,7 @@ package com.alexandr5476.lifetracing
 
 import androidx.navigation3.runtime.NavKey
 import com.alexandr5476.lifetracing.daily.LocalDateBoundaryScheduler
+import com.alexandr5476.lifetracing.domain.ActivityExecutionStatistics
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.CalendarTemporalContext
 import com.alexandr5476.lifetracing.domain.CancelledPlanPage
@@ -17,6 +18,8 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceHistoryDetail
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
+import com.alexandr5476.lifetracing.domain.StatisticsPeriod
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.WeekPlanQuery
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.history.HistoryDetailLoad
@@ -28,6 +31,10 @@ import com.alexandr5476.lifetracing.plan.PlanController
 import com.alexandr5476.lifetracing.plan.PlanControllerOwner
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.plan.PlanLoad
+import com.alexandr5476.lifetracing.statistics.StatisticsController
+import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailController
+import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailRouteSessionOwner
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +48,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -203,7 +211,11 @@ class MainActivityNavigationTest {
         restored.normalizeRestoredPlanExecution()
         restored.normalizeRestoredActivityTemplateEditor()
         restored.normalizeRestoredManualActivityEntry()
-        restored.normalizeRestoredStatisticsSeriesDetail()
+        restored.normalizeRestoredStatisticsSeriesDetail(
+            StatisticsSeriesDetailRoot("unrelated"),
+            StatisticsSeriesDetailRouteSessionOwner(),
+            null,
+        )
         assertEquals(listOf(DailyRoot, SettingsRoot), restored)
         restored.removeSettings()
         assertEquals(dailyInitialBackStack, restored)
@@ -310,23 +322,103 @@ class MainActivityNavigationTest {
     }
 
     @Test
-    fun statisticsSeriesDetailAddsOneIdRouteAndBackKeepsOverview() {
-        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot)
-        stack.openStatisticsSeriesDetail("series-a")
-        stack.openStatisticsSeriesDetail("series-a")
-        assertEquals(listOf(DailyRoot, StatisticsRoot, StatisticsSeriesDetailRoot("series-a")), stack)
-        stack.removeStatisticsSeriesDetail("stale")
-        assertEquals(3, stack.size)
-        stack.removeStatisticsSeriesDetail("series-a")
+    fun statisticsDetailAcquiresOnlyFromOverviewAndBackRetainsItsControllerAndPeriod() =
+        runBlocking {
+            val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot)
+            val overview = StatisticsControllerOwner()
+            val overviewFactory = { period: StatisticsPeriod ->
+                StatisticsController(this, period) { error("Read failure") }
+            }
+            val controller = requireNotNull(overview.controllerForRoute(true, overviewFactory))
+            val selected = StatisticsPeriod.Day(LocalDate.parse("2026-08-20"))
+            controller.selectPeriod(selected)
+            val sessions = StatisticsSeriesDetailRouteSessionOwner()
+            val acquired = mutableListOf<Pair<StatisticsSeriesId, StatisticsPeriod>>()
+            val create = { id: StatisticsSeriesId, period: StatisticsPeriod ->
+                acquired += id to period
+                StatisticsSeriesDetailController(this, id, period) { _, _ -> error("Read failure") }
+            }
+
+            stack.openStatisticsSeriesDetail(ActivityExecutionStatistics.ONE_OFF_BUCKET_ID, selected, sessions, create)
+            assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
+            assertNull(sessions.activeSession)
+
+            val id = StatisticsSeriesId("series-a")
+            stack.openStatisticsSeriesDetail(id, controller.state.value.selectedPeriod, sessions, create)
+            val session = requireNotNull(sessions.activeSession)
+            val route = stack.last() as StatisticsSeriesDetailRoot
+            stack.openStatisticsSeriesDetail(id, StatisticsPeriod.AllTime, sessions, create)
+            stack.openStatisticsSeriesDetail(StatisticsSeriesId("other"), StatisticsPeriod.AllTime, sessions, create)
+            assertEquals(listOf(id to selected), acquired)
+            assertEquals(listOf(DailyRoot, StatisticsRoot, StatisticsSeriesDetailRoot(id.value)), stack)
+            assertSame(controller, overview.controllerForRoute(false) { error("Unexpected overview acquisition") })
+            assertSame(session, sessions.activeSession)
+
+            stack.handleStatisticsSeriesDetailBack(route, session, sessions)
+            assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
+            assertSame(controller, overview.controllerForRoute(true) { error("Unexpected overview acquisition") })
+            assertEquals(selected, controller.state.value.selectedPeriod)
+            assertNull(sessions.activeSession)
+            assertEquals(listOf(id to selected), acquired)
+
+            overview.onRouteExited()
+            stack.removeStatistics()
+            assertNull(overview.controllerForRoute(false) { error("Outgoing entry tried to create a controller") })
+            assertEquals(listOf(DailyRoot), stack)
+        }
+
+    @Test
+    fun restoredStatisticsSeriesDetailWithoutSessionReturnsToOverview() {
+        val route = StatisticsSeriesDetailRoot("series")
+        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot, route)
+        stack.normalizeRestoredStatisticsSeriesDetail(route, StatisticsSeriesDetailRouteSessionOwner(), null)
         assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
     }
 
     @Test
-    fun restoredStatisticsSeriesDetailWithoutSessionReturnsToOverview() {
-        val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot, StatisticsSeriesDetailRoot("series"))
-        stack.normalizeRestoredStatisticsSeriesDetail()
-        assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
-    }
+    fun staleStatisticsBackCannotCloseReplacementWithTheSameSeriesId() =
+        runBlocking {
+            val id = StatisticsSeriesId("series")
+            val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot)
+            val sessions = StatisticsSeriesDetailRouteSessionOwner()
+            val create = { seriesId: StatisticsSeriesId, period: StatisticsPeriod ->
+                StatisticsSeriesDetailController(this, seriesId, period) { _, _ -> error("Read failure") }
+            }
+            val first = sessions.acquire(id, StatisticsPeriod.AllTime, create)
+            val route = StatisticsSeriesDetailRoot(id.value)
+            stack.add(route)
+            val staleBack = { stack.handleStatisticsSeriesDetailBack(route, first, sessions) }
+            sessions.release(first)
+            val replacement = sessions.acquire(id, StatisticsPeriod.AllTime, create)
+            staleBack()
+            assertSame(replacement, sessions.activeSession)
+            assertSame(route, stack.last())
+            stack.handleStatisticsSeriesDetailBack(route, replacement, sessions)
+            assertNull(sessions.activeSession)
+            assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
+        }
+
+    @Test
+    fun restoredStatisticsNormalizationRejectsAnOutgoingRouteEvenWithIdenticalSeriesId() =
+        runBlocking {
+            val id = StatisticsSeriesId("series")
+            val outgoing = StatisticsSeriesDetailRoot(id.value)
+            val current = StatisticsSeriesDetailRoot(id.value)
+            val stack: MutableList<NavKey> = mutableListOf(DailyRoot, StatisticsRoot, current)
+            val sessions = StatisticsSeriesDetailRouteSessionOwner()
+            stack.normalizeRestoredStatisticsSeriesDetail(outgoing, sessions, null)
+            assertSame(current, stack.last())
+
+            val retained =
+                sessions.acquire(id, StatisticsPeriod.AllTime) { seriesId, period ->
+                    StatisticsSeriesDetailController(this, seriesId, period) { _, _ -> error("Read failure") }
+                }
+            stack.normalizeRestoredStatisticsSeriesDetail(current, sessions, null)
+            stack.normalizeRestoredStatisticsSeriesDetail(current, sessions, retained)
+            assertSame(current, stack.last())
+            assertSame(retained, sessions.activeSession)
+            assertTrue(stack.ownsStatisticsSeriesDetail(current, retained, sessions))
+        }
 
     @Test
     fun sequenceHistoryBackConsumesTransientThenReleasesIdleSessionAndReopensFresh() =

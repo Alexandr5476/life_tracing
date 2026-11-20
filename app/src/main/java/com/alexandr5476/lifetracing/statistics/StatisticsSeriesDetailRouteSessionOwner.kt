@@ -1,5 +1,9 @@
 package com.alexandr5476.lifetracing.statistics
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -11,7 +15,7 @@ internal data class StatisticsSeriesDetailRouteSession(
 )
 
 internal class StatisticsSeriesDetailRouteSessionOwner : ViewModel() {
-    var activeSession: StatisticsSeriesDetailRouteSession? = null
+    var activeSession by mutableStateOf<StatisticsSeriesDetailRouteSession?>(null, referentialEqualityPolicy())
         private set
 
     fun acquire(
