@@ -7,6 +7,7 @@ import java.time.YearMonth
 
 internal class StatisticsControllerOwner : ViewModel() {
     private var controller: StatisticsController? = null
+    val returnFocus = StatisticsOverviewReturnFocus()
 
     fun get(create: (StatisticsPeriod) -> StatisticsController): StatisticsController =
         controller ?: create(StatisticsPeriod.Month(YearMonth.from(LocalDate.now()))).also { controller = it }
@@ -19,6 +20,7 @@ internal class StatisticsControllerOwner : ViewModel() {
     fun owns(expected: StatisticsController): Boolean = controller === expected
 
     fun onRouteExited() {
+        returnFocus.series = null
         controller?.close()
         controller = null
     }

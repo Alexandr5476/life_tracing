@@ -172,6 +172,7 @@ class StatisticsControllerTest {
                     controller.awaitState { it.load is StatisticsLoadState.Content && it.selectedPeriod == period }
                 }
                 val refreshedPeriod = periods.last()
+                controller.selectPeriod(refreshedPeriod)
                 controller.refresh()
                 val refreshed =
                     controller.awaitState {
@@ -179,7 +180,11 @@ class StatisticsControllerTest {
                             (it.load as StatisticsLoadState.Content).overview.global.topLevelExecutionCount == 7L
                     }
                 assertEquals(refreshedPeriod, refreshed.selectedPeriod)
-                assertEquals(listOf(initial) + periods + refreshedPeriod, passed)
+                controller.retry()
+                controller.awaitState {
+                    (it.load as? StatisticsLoadState.Content)?.overview?.global?.topLevelExecutionCount == 8L
+                }
+                assertEquals(listOf(initial) + periods + listOf(refreshedPeriod, refreshedPeriod), passed)
             } finally {
                 fixture.scope.cancel()
             }

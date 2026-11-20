@@ -5,8 +5,6 @@ package com.alexandr5476.lifetracing.statistics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -20,9 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -36,22 +32,17 @@ import com.alexandr5476.lifetracing.domain.StatisticsFieldId
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
-import com.alexandr5476.lifetracing.domain.dateRangeOrNull
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
 import java.text.NumberFormat
-import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
-import java.time.Year
-import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import java.time.temporal.TemporalAdjusters
 import java.util.Locale
 
 private const val SECONDS_PER_HOUR = 3600L
@@ -84,226 +75,34 @@ internal fun StatisticsSeriesDetailScreen(
     onBack: () -> Unit,
     admission: StatisticsActionAdmission = rememberStatisticsActionAdmission(state, { state }),
 ) {
-    var kind by remember(state.selectedPeriod) { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
-    var day by remember(state.selectedPeriod) {
-        mutableStateOf(
-            state.selectedPeriod
-                .dateRangeOrNull()
-                ?.startDate
-                ?.toString() ?: LocalDate.now().toString(),
-        )
-    }
-    var week by remember(state.selectedPeriod) {
-        mutableStateOf(
-            state.selectedPeriod
-                .dateRangeOrNull()
-                ?.startDate
-                ?.toString()
-                ?: LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString(),
-        )
-    }
-    var month by remember(state.selectedPeriod) {
-        mutableStateOf(
-            YearMonth
-                .from(
-                    state.selectedPeriod.dateRangeOrNull()?.startDate ?: LocalDate.now(),
-                ).toString(),
-        )
-    }
-    var year by remember(state.selectedPeriod) {
-        mutableStateOf(
-            (
-                state.selectedPeriod
-                    .dateRangeOrNull()
-                    ?.startDate
-                    ?.year
-                    ?: LocalDate.now().year
-            ).toString(),
-        )
-    }
-    var customStart by remember(state.selectedPeriod) {
-        mutableStateOf(
-            (state.selectedPeriod as? StatisticsPeriod.Custom)?.startDate?.toString() ?: "",
-        )
-    }
-    var customEnd by remember(state.selectedPeriod) {
-        mutableStateOf(
-            (state.selectedPeriod as? StatisticsPeriod.Custom)?.endDateInclusive?.toString() ?: "",
-        )
-    }
-    var invalid by remember { mutableStateOf(false) }
-    val appliedPeriod = state.selectedPeriod
-    val presentedKind = kind
-    val currentPeriodEditor = { kind == presentedKind }
-    Surface(color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-        ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(stringResource(R.string.statistics_detail_title), style = MaterialTheme.typography.headlineSmall)
-                Row {
-                    StatisticsTextButton(admission, onRefresh, Modifier.testTag("statistics-detail-refresh")) {
-                        Text(stringResource(R.string.statistics_refresh))
-                    }
-                    StatisticsTextButton(admission, onBack, Modifier.testTag("statistics-detail-back")) {
-                        Text(stringResource(R.string.statistics_back))
-                    }
-                }
-            }
-            Text(stringResource(R.string.statistics_period_title), style = MaterialTheme.typography.titleMedium)
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    val editor = remember(state.selectedPeriod) { StatisticsPeriodEditor(state.selectedPeriod) }
+    val periodFocus = remember { StatisticsPeriodFocus() }
+    val periodDescription = statisticsPeriodDescription(state.selectedPeriod)
+    LifeTracingAccessibleTargets {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
             ) {
-                StatisticsPeriodKind.entries.forEach { item ->
-                    StatisticsSecondaryButton(
-                        admission,
-                        onClick = {
-                            kind = item
-                            invalid = false
-                            item.toPeriod(day, week, month, year)?.let(onSelectPeriod)
-                        },
-                        enabled = item != kind,
-                        applicable = { item != kind },
-                        modifier = Modifier.testTag("statistics-detail-period-${item.name.lowercase()}"),
-                    ) { Text(stringResource(item.label)) }
-                }
-            }
-            when (kind) {
-                StatisticsPeriodKind.DAY ->
-                    PeriodField(admission, currentPeriodEditor, day, {
-                        day = it
-                    }, R.string.statistics_day_date) {
-                        parseDate(
-                            day,
-                        )?.let { onSelectPeriod(StatisticsPeriod.Day(it)) }
+                StatisticsHeader(R.string.statistics_detail_title, "statistics-detail", admission, onRefresh, onBack)
+                val (message, tag) =
+                    when (state.load) {
+                        StatisticsSeriesDetailLoadState.Loading ->
+                            R.string.statistics_loading to "statistics-detail-loading"
+                        StatisticsSeriesDetailLoadState.Failure ->
+                            R.string.statistics_failure to "statistics-detail-failure"
+                        is StatisticsSeriesDetailLoadState.Content ->
+                            R.string.statistics_loaded to "statistics-detail-content"
                     }
-                StatisticsPeriodKind.WEEK ->
-                    PeriodField(admission, currentPeriodEditor, week, {
-                        week = it
-                    }, R.string.statistics_week_date) {
-                        parseDate(week)?.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))?.let {
-                            onSelectPeriod(StatisticsPeriod.Week(it))
-                        }
-                    }
-                StatisticsPeriodKind.MONTH ->
-                    PeriodField(admission, currentPeriodEditor, month, {
-                        month = it
-                    }, R.string.statistics_month_date) {
-                        runCatching {
-                            YearMonth.parse(
-                                month,
-                            )
-                        }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Month(it)) }
-                    }
-                StatisticsPeriodKind.YEAR ->
-                    PeriodField(admission, currentPeriodEditor, year, {
-                        year = it
-                    }, R.string.statistics_year_date) {
-                        runCatching { Year.parse(year) }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Year(it)) }
-                    }
-                StatisticsPeriodKind.CUSTOM -> {
-                    PeriodField(
-                        admission,
-                        currentPeriodEditor,
-                        customStart,
-                        {
-                            customStart = it
-                            invalid = false
-                        },
-                        R.string.statistics_custom_start,
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-detail-custom-start",
-                            ),
-                        showApply = false,
-                    ) {
-                    }
-                    PeriodField(
-                        admission,
-                        currentPeriodEditor,
-                        customEnd,
-                        {
-                            customEnd = it
-                            invalid = false
-                        },
-                        R.string.statistics_custom_end,
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-detail-custom-end",
-                            ),
-                        showApply = false,
-                    ) {}
-                    StatisticsSecondaryButton(
-                        admission,
-                        onClick = {
-                            val start = parseDate(customStart)
-                            val end = parseDate(customEnd)
-                            invalid = start == null || end == null || end < start
-                            if (!invalid) {
-                                onSelectPeriod(StatisticsPeriod.Custom(requireNotNull(start), requireNotNull(end)))
-                            }
-                        },
-                        modifier = Modifier.testTag("statistics-detail-custom-apply"),
-                        applicable = currentPeriodEditor,
-                    ) {
-                        Text(stringResource(R.string.statistics_apply_range))
-                    }
-                    if (invalid) {
-                        Text(
-                            stringResource(R.string.statistics_invalid_range),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-                StatisticsPeriodKind.ALL_TIME -> Unit
-            }
-            if (kind != StatisticsPeriodKind.CUSTOM &&
-                kind != StatisticsPeriodKind.ALL_TIME
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                    StatisticsSecondaryButton(
-                        admission,
-                        applicable = currentPeriodEditor,
-                        onClick = {
-                            navigate(appliedPeriod, -1)?.let(onSelectPeriod)
-                        },
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-detail-previous",
-                            ),
-                    ) { Text(stringResource(R.string.statistics_previous)) }
-                    StatisticsSecondaryButton(
-                        admission,
-                        applicable = currentPeriodEditor,
-                        onClick = {
-                            navigate(appliedPeriod, 1)?.let(onSelectPeriod)
-                        },
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-detail-next",
-                            ),
-                    ) { Text(stringResource(R.string.statistics_next)) }
-                }
-            }
-            when (val load = state.load) {
-                StatisticsSeriesDetailLoadState.Loading ->
-                    Text(
-                        stringResource(R.string.statistics_loading),
-                        modifier = Modifier.testTag("statistics-detail-loading"),
-                    )
-                StatisticsSeriesDetailLoadState.Failure -> {
-                    Text(stringResource(R.string.statistics_failure), color = MaterialTheme.colorScheme.error)
-                    StatisticsSecondaryButton(
-                        admission,
-                        onClick = onRefresh,
-                        modifier = Modifier.testTag("statistics-detail-retry"),
-                    ) {
+                StatisticsResultStatus(message, periodDescription, Modifier.testTag(tag))
+                if (state.load == StatisticsSeriesDetailLoadState.Failure) {
+                    StatisticsSecondaryButton(admission, onRefresh, Modifier.testTag("statistics-detail-retry")) {
                         Text(stringResource(R.string.statistics_retry))
                     }
                 }
-                is StatisticsSeriesDetailLoadState.Content -> DetailContent(load.detail)
+                StatisticsPeriodControls(editor, periodFocus, admission, "statistics-detail", onSelectPeriod)
+                val load = state.load
+                if (load is StatisticsSeriesDetailLoadState.Content) DetailContent(load.detail)
             }
         }
     }

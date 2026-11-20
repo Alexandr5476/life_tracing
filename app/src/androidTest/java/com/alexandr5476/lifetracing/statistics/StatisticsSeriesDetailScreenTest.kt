@@ -146,13 +146,23 @@ class StatisticsSeriesDetailScreenTest {
                     R.string.statistics_duration_total,
                     compose.activity.getString(R.string.statistics_no_duration_samples),
                 ),
-            ).assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_archived)).assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_executions, "1")).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                compose.activity.getString(R.string.statistics_source_archived),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                compose.activity.getString(R.string.statistics_executions, "1"),
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_first_performed, formatted(Instant.EPOCH)),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -177,15 +187,21 @@ class StatisticsSeriesDetailScreenTest {
             .also {
                 assertEquals(1, it.size)
             }
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_missing)).assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                compose.activity.getString(R.string.statistics_source_missing),
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_first_performed, formatted(Instant.EPOCH)),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_last_performed, formatted(Instant.EPOCH)),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -197,14 +213,19 @@ class StatisticsSeriesDetailScreenTest {
                     ),
                 )
         }
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_executions, "0")).assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                compose.activity.getString(R.string.statistics_executions, "0"),
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(
                     R.string.statistics_first_performed,
                     compose.activity.getString(R.string.statistics_unavailable),
                 ),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
     }
 
     @Test
@@ -433,19 +454,25 @@ class StatisticsSeriesDetailScreenTest {
         compose.setContent {
             LifeTracingTheme { StatisticsSeriesDetailScreen(detailState.value, {}, {}, {}) }
         }
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_missing)).assertIsDisplayed()
+        compose
+            .onNodeWithText(compose.activity.getString(R.string.statistics_source_missing))
+            .performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_total_pause_idle, "0:00:30"),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_average_pause_idle, "0:00:15"),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(R.string.statistics_duration_total, "0:01:30"),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -461,7 +488,10 @@ class StatisticsSeriesDetailScreenTest {
                     ),
                 )
         }
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_source_archived)).assertIsDisplayed()
+        compose
+            .onNodeWithText(compose.activity.getString(R.string.statistics_source_archived))
+            .performScrollTo()
+            .assertIsDisplayed()
 
         compose.runOnIdle {
             detailState.value =
@@ -477,21 +507,26 @@ class StatisticsSeriesDetailScreenTest {
                     ),
                 )
         }
-        compose.onNodeWithText(compose.activity.getString(R.string.statistics_executions, "0")).assertIsDisplayed()
+        compose
+            .onNodeWithText(compose.activity.getString(R.string.statistics_executions, "0"))
+            .performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(
                     R.string.statistics_duration_total,
                     compose.activity.getString(R.string.statistics_no_duration_samples),
                 ),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose
             .onNodeWithText(
                 compose.activity.getString(
                     R.string.statistics_first_performed,
                     compose.activity.getString(R.string.statistics_unavailable),
                 ),
-            ).assertIsDisplayed()
+            ).performScrollTo()
+            .assertIsDisplayed()
     }
 
     private fun state(detail: StatisticsSeriesDetail.Activity) =

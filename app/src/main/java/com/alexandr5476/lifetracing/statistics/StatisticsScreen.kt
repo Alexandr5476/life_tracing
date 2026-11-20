@@ -11,15 +11,18 @@
 package com.alexandr5476.lifetracing.statistics
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -27,45 +30,44 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ExactValue
-import com.alexandr5476.lifetracing.domain.StatisticsOverview
+import com.alexandr5476.lifetracing.domain.GlobalStatistics
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
-import com.alexandr5476.lifetracing.domain.dateRangeOrNull
-import com.alexandr5476.lifetracing.ui.components.LifeTracingOutlinedTextField
+import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.theme.spacing
+import java.io.Serializable
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.time.DayOfWeek
 import java.time.Duration
-import java.time.LocalDate
-import java.time.Year
-import java.time.YearMonth
-import java.time.format.DateTimeFormatter
-import java.time.temporal.TemporalAdjusters
 
 @Composable
-fun StatisticsRoute(
+internal fun StatisticsRoute(
     controller: StatisticsController,
     onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit = { _, _ -> },
     isRouteVisible: Boolean = true,
     ownsRoute: () -> Boolean = { true },
+    returnFocus: StatisticsOverviewReturnFocus = remember { StatisticsOverviewReturnFocus() },
     onBack: () -> Unit,
 ) {
     val state by controller.state.collectAsState()
     val admission = rememberStatisticsActionAdmission(state, { controller.state.value }, isRouteVisible, ownsRoute)
-    val exit: () -> Unit = {
+    val exit = {
         onBack()
         if (!ownsRoute()) admission.revoke()
     }
@@ -79,10 +81,31 @@ fun StatisticsRoute(
         controller::refresh,
         { id, period ->
             onOpenSeries(id, period)
-            if (!ownsRoute()) admission.revoke()
+            if (!ownsRoute()) {
+                returnFocus.series = id
+                admission.revoke()
+            }
         },
         admission,
+        returnFocus,
     )
+}
+
+/** Bundle-compatible lazy identity backed by the canonical typed Series ID. */
+internal data class StatisticsSeriesItemKey(
+    val id: StatisticsSeriesId,
+) : Serializable {
+    private companion object {
+        const val serialVersionUID = 1L
+    }
+}
+
+internal enum class StatisticsOverviewItem {
+    HEADER,
+    STATUS,
+    PERIOD,
+    GLOBAL,
+    SERIES_HEADING,
 }
 
 @Composable
@@ -94,316 +117,163 @@ internal fun StatisticsScreen(
     onRefresh: () -> Unit = onRetry,
     onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit = { _, _ -> },
     admission: StatisticsActionAdmission = rememberStatisticsActionAdmission(state, { state }),
+    returnFocus: StatisticsOverviewReturnFocus = remember { StatisticsOverviewReturnFocus() },
 ) {
-    var kind by remember(state.selectedPeriod) { mutableStateOf(StatisticsPeriodKind.from(state.selectedPeriod)) }
-    var day by remember(state.selectedPeriod) {
-        mutableStateOf(
-            state.selectedPeriod
-                .dateRangeOrNull()
-                ?.startDate
-                ?.toString() ?: LocalDate.now().toString(),
-        )
-    }
-    var week by remember(state.selectedPeriod) {
-        mutableStateOf(
-            state.selectedPeriod
-                .dateRangeOrNull()
-                ?.startDate
-                ?.toString()
-                ?: LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString(),
-        )
-    }
-    var month by remember(state.selectedPeriod) {
-        mutableStateOf(
-            YearMonth
-                .from(
-                    state.selectedPeriod.dateRangeOrNull()?.startDate ?: LocalDate.now(),
-                ).toString(),
-        )
-    }
-    var year by remember(state.selectedPeriod) {
-        mutableStateOf(
-            (
-                state.selectedPeriod
-                    .dateRangeOrNull()
-                    ?.startDate
-                    ?.year
-                    ?: LocalDate.now().year
-            ).toString(),
-        )
-    }
-    var customStart by remember(state.selectedPeriod) {
-        mutableStateOf((state.selectedPeriod as? StatisticsPeriod.Custom)?.startDate?.toString() ?: "")
-    }
-    var customEnd by remember(state.selectedPeriod) {
-        mutableStateOf((state.selectedPeriod as? StatisticsPeriod.Custom)?.endDateInclusive?.toString() ?: "")
-    }
-    var invalidCustom by remember { mutableStateOf(false) }
     val appliedPeriod = state.selectedPeriod
-    val presentedKind = kind
-    val currentPeriodEditor = { kind == presentedKind }
-    val select: (StatisticsPeriodKind) -> Unit = { selected ->
-        kind = selected
-        invalidCustom = false
-        runCatching { selected.toPeriod(day, week, month, year) }.getOrNull()?.let(onSelectPeriod)
-    }
-    Surface(color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(MaterialTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
-        ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(stringResource(R.string.statistics_title), style = MaterialTheme.typography.headlineSmall)
-                Row {
-                    StatisticsTextButton(admission, onRefresh, Modifier.testTag("statistics-refresh")) {
-                        Text(stringResource(R.string.statistics_refresh))
-                    }
-                    StatisticsTextButton(admission, onBack, Modifier.testTag("statistics-back")) {
-                        Text(stringResource(R.string.statistics_back))
-                    }
-                }
-            }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+    val editor = remember(appliedPeriod) { StatisticsPeriodEditor(appliedPeriod) }
+    val periodFocus = remember { StatisticsPeriodFocus() }
+    val listState = rememberLazyListState()
+    val focus = remember { StatisticsOverviewFocus() }
+    val overview =
+        when (val load = state.load) {
+            is StatisticsLoadState.Content -> load.overview
+            is StatisticsLoadState.Empty -> load.overview
+            else -> null
+        }
+    RestoreStatisticsOverviewFocus(state, overview, admission, listState, focus, returnFocus)
+    val periodDescription = statisticsPeriodDescription(appliedPeriod)
+    LifeTracingAccessibleTargets {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().testTag("statistics-list"),
+                contentPadding = PaddingValues(MaterialTheme.spacing.large),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
             ) {
-                StatisticsPeriodKind.entries.forEach { item ->
-                    StatisticsSecondaryButton(
+                item(StatisticsOverviewItem.HEADER) {
+                    StatisticsHeader(
+                        R.string.statistics_title,
+                        "statistics",
                         admission,
-                        onClick = { select(item) },
-                        enabled = item != kind,
-                        applicable = { item != kind },
-                        modifier = Modifier.testTag("statistics-period-${item.name.lowercase()}"),
-                    ) {
-                        Text(stringResource(item.label))
-                    }
+                        onRefresh,
+                        onBack,
+                        focus.otherTarget().focusGroup(),
+                    )
                 }
-            }
-            when (kind) {
-                StatisticsPeriodKind.DAY ->
-                    PeriodField(admission, currentPeriodEditor, day, {
-                        day = it
-                    }, R.string.statistics_day_date) {
-                        parseDate(
-                            day,
-                        )?.let { onSelectPeriod(StatisticsPeriod.Day(it)) }
-                    }
-                StatisticsPeriodKind.WEEK ->
-                    PeriodField(admission, currentPeriodEditor, week, { week = it }, R.string.statistics_week_date) {
-                        parseDate(week)?.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))?.let {
-                            onSelectPeriod(StatisticsPeriod.Week(it))
-                        }
-                    }
-                StatisticsPeriodKind.MONTH ->
-                    PeriodField(admission, currentPeriodEditor, month, {
-                        month = it
-                    }, R.string.statistics_month_date) {
-                        runCatching {
-                            YearMonth.parse(
-                                month,
-                            )
-                        }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Month(it)) }
-                    }
-                StatisticsPeriodKind.YEAR ->
-                    PeriodField(admission, currentPeriodEditor, year, {
-                        year = it
-                    }, R.string.statistics_year_date) {
-                        runCatching { Year.parse(year) }.getOrNull()?.let { onSelectPeriod(StatisticsPeriod.Year(it)) }
-                    }
-                StatisticsPeriodKind.CUSTOM -> {
-                    PeriodField(
+                item(StatisticsOverviewItem.STATUS) {
+                    OverviewStatus(state.load, periodDescription, admission, focus, onRetry)
+                }
+                item(StatisticsOverviewItem.PERIOD) {
+                    StatisticsPeriodControls(
+                        editor,
+                        periodFocus,
                         admission,
-                        currentPeriodEditor,
-                        customStart,
-                        {
-                            customStart = it
-                            invalidCustom = false
-                        },
-                        R.string.statistics_custom_start,
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-custom-start",
-                            ),
-                        showApply = false,
-                    ) {}
-                    PeriodField(
-                        admission,
-                        currentPeriodEditor,
-                        customEnd,
-                        {
-                            customEnd = it
-                            invalidCustom = false
-                        },
-                        R.string.statistics_custom_end,
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-custom-end",
-                            ),
-                        showApply = false,
-                    ) {}
-                    StatisticsSecondaryButton(
-                        admission,
-                        applicable = currentPeriodEditor,
-                        onClick = {
-                            val start = parseDate(customStart)
-                            val end = parseDate(customEnd)
-                            if (start == null || end == null || end < start) {
-                                invalidCustom = true
-                            } else {
-                                invalidCustom = false
-                                onSelectPeriod(StatisticsPeriod.Custom(start, end))
-                            }
-                        },
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-custom-apply",
-                            ),
-                    ) { Text(stringResource(R.string.statistics_apply_range)) }
-                    if (invalidCustom) {
+                        "statistics",
+                        onSelectPeriod,
+                        focus.otherTarget().focusGroup(),
+                    )
+                }
+                if (overview != null) {
+                    item(StatisticsOverviewItem.GLOBAL) { GlobalMetrics(overview.global) }
+                    item(StatisticsOverviewItem.SERIES_HEADING) {
                         Text(
-                            stringResource(R.string.statistics_invalid_range),
-                            color = MaterialTheme.colorScheme.error,
+                            stringResource(R.string.statistics_series_title),
+                            Modifier.semantics { heading() },
+                            style = MaterialTheme.typography.titleMedium,
                         )
                     }
-                }
-                StatisticsPeriodKind.ALL_TIME -> Unit
-            }
-            if (kind != StatisticsPeriodKind.CUSTOM && kind != StatisticsPeriodKind.ALL_TIME) {
-                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-                    StatisticsSecondaryButton(
-                        admission,
-                        applicable = currentPeriodEditor,
-                        onClick = {
-                            navigate(appliedPeriod, -1)?.let(onSelectPeriod)
-                        },
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-previous",
-                            ),
-                    ) { Text(stringResource(R.string.statistics_previous)) }
-                    StatisticsSecondaryButton(
-                        admission,
-                        applicable = currentPeriodEditor,
-                        onClick = {
-                            navigate(appliedPeriod, 1)?.let(onSelectPeriod)
-                        },
-                        modifier =
-                            Modifier.testTag(
-                                "statistics-next",
-                            ),
-                    ) { Text(stringResource(R.string.statistics_next)) }
-                }
-            }
-            when (val load = state.load) {
-                StatisticsLoadState.Loading ->
-                    Text(
-                        stringResource(R.string.statistics_loading),
-                        modifier = Modifier.testTag("statistics-loading"),
-                    )
-                StatisticsLoadState.Failure -> {
-                    Text(stringResource(R.string.statistics_failure), color = MaterialTheme.colorScheme.error)
-                    StatisticsSecondaryButton(admission, onRetry, Modifier.testTag("statistics-retry")) {
-                        Text(stringResource(R.string.statistics_retry))
+                    items(overview.series, key = { StatisticsSeriesItemKey(it.series.id) }) { row ->
+                        SeriesRow(row, appliedPeriod, periodDescription, admission, focus, onOpenSeries)
                     }
                 }
-                is StatisticsLoadState.Empty -> {
-                    Text(stringResource(R.string.statistics_empty), modifier = Modifier.testTag("statistics-empty"))
-                    OverviewContent(load.overview, appliedPeriod, admission, onOpenSeries)
-                }
-                is StatisticsLoadState.Content -> OverviewContent(load.overview, appliedPeriod, admission, onOpenSeries)
             }
         }
-    }
-}
-
-internal enum class StatisticsPeriodKind(
-    val label: Int,
-) {
-    DAY(R.string.statistics_period_day),
-    WEEK(R.string.statistics_period_week),
-    MONTH(R.string.statistics_period_month),
-    YEAR(R.string.statistics_period_year),
-    CUSTOM(R.string.statistics_period_custom),
-    ALL_TIME(R.string.statistics_period_all_time),
-    ;
-
-    fun toPeriod(
-        day: String,
-        week: String,
-        month: String,
-        year: String,
-    ): StatisticsPeriod? =
-        when (this) {
-            DAY -> parseDate(day)?.let { StatisticsPeriod.Day(it) }
-            WEEK ->
-                parseDate(
-                    week,
-                )?.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))?.let { StatisticsPeriod.Week(it) }
-            MONTH -> runCatching { YearMonth.parse(month) }.getOrNull()?.let { StatisticsPeriod.Month(it) }
-            YEAR -> runCatching { Year.parse(year) }.getOrNull()?.let { StatisticsPeriod.Year(it) }
-            CUSTOM -> null
-            ALL_TIME -> StatisticsPeriod.AllTime
-        }
-
-    companion object {
-        fun from(period: StatisticsPeriod) =
-            when (period) {
-                is StatisticsPeriod.Day -> DAY
-                is StatisticsPeriod.Week -> WEEK
-                is StatisticsPeriod.Month -> MONTH
-                is StatisticsPeriod.Year -> YEAR
-                is StatisticsPeriod.Custom -> CUSTOM
-                StatisticsPeriod.AllTime -> ALL_TIME
-            }
     }
 }
 
 @Composable
-@Suppress("LongParameterList")
-internal fun PeriodField(
+internal fun StatisticsHeader(
+    title: Int,
+    tag: String,
     admission: StatisticsActionAdmission,
-    applicable: () -> Boolean,
-    value: String,
-    onValue: (String) -> Unit,
-    label: Int,
+    onRefresh: () -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    showApply: Boolean = true,
-    onApply: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
-        LifeTracingOutlinedTextField(
-            value,
-            { admission.run(applicable()) { onValue(it) } },
-            Modifier.weight(1f).then(modifier),
-            label = { Text(stringResource(label)) },
-            enabled = admission.isCurrent(),
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        Text(
+            stringResource(title),
+            Modifier.semantics { heading() },
+            style = MaterialTheme.typography.headlineSmall,
         )
-        if (showApply) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+            StatisticsTextButton(admission, onRefresh, Modifier.testTag("$tag-refresh")) {
+                Text(stringResource(R.string.statistics_refresh))
+            }
+            StatisticsTextButton(admission, onBack, Modifier.testTag("$tag-back")) {
+                Text(stringResource(R.string.statistics_back))
+            }
+        }
+    }
+}
+
+@Composable
+internal fun StatisticsResultStatus(
+    message: Int,
+    periodDescription: String,
+    modifier: Modifier,
+) {
+    Text(
+        stringResource(message),
+        modifier.semantics {
+            liveRegion = LiveRegionMode.Polite
+            stateDescription = periodDescription
+        },
+        color =
+            if (message == R.string.statistics_failure) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onBackground
+            },
+    )
+}
+
+@Composable
+private fun OverviewStatus(
+    load: StatisticsLoadState,
+    periodDescription: String,
+    admission: StatisticsActionAdmission,
+    focus: StatisticsOverviewFocus,
+    onRetry: () -> Unit,
+) {
+    val (label, tag) =
+        when (load) {
+            StatisticsLoadState.Loading -> R.string.statistics_loading to "statistics-loading"
+            StatisticsLoadState.Failure -> R.string.statistics_failure to "statistics-failure"
+            is StatisticsLoadState.Empty -> R.string.statistics_empty to "statistics-empty"
+            is StatisticsLoadState.Content -> R.string.statistics_loaded to "statistics-content"
+        }
+    Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small)) {
+        StatisticsResultStatus(
+            label,
+            periodDescription,
+            focus
+                .target(StatisticsOverviewFocusAnchor.STATUS)
+                .focusable()
+                .testTag(tag),
+        )
+        if (load == StatisticsLoadState.Failure) {
             StatisticsSecondaryButton(
                 admission,
-                onClick = onApply,
-                modifier = Modifier.testTag("statistics-period-apply"),
-                applicable = applicable,
-            ) {
-                Text(stringResource(R.string.statistics_apply))
-            }
+                onRetry,
+                focus.target(StatisticsOverviewFocusAnchor.RETRY).testTag("statistics-retry"),
+            ) { Text(stringResource(R.string.statistics_retry)) }
         }
     }
 }
 
 @Composable
-private fun OverviewContent(
-    overview: StatisticsOverview,
-    period: StatisticsPeriod,
-    admission: StatisticsActionAdmission,
-    onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit,
-) {
-    val global = overview.global
-    Card(Modifier.fillMaxWidth()) {
+private fun GlobalMetrics(global: GlobalStatistics) {
+    Card(Modifier.fillMaxWidth().testTag("statistics-global")) {
         Column(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
+            Text(
+                stringResource(R.string.statistics_global_title),
+                Modifier.semantics { heading() },
+                style = MaterialTheme.typography.titleMedium,
+            )
             Metric(R.string.statistics_tracked_time, duration(global.totalTrackedDuration))
             Metric(R.string.statistics_top_level_executions, global.topLevelExecutionCount.toString())
             Metric(R.string.statistics_active_days, global.activeDayCount.toString())
@@ -413,10 +283,6 @@ private fun OverviewContent(
                     ?: stringResource(R.string.statistics_unavailable),
             )
             Metric(R.string.statistics_sequence_pause_idle, duration(global.totalSequencePauseIdleDuration))
-            Text(stringResource(R.string.statistics_series_title), style = MaterialTheme.typography.titleMedium)
-            overview.series.forEach { summary ->
-                key(summary.series.id) { SeriesRow(summary, period, admission, onOpenSeries) }
-            }
         }
     }
 }
@@ -425,46 +291,40 @@ private fun OverviewContent(
 private fun SeriesRow(
     summary: StatisticsSeriesPeriodSummary,
     period: StatisticsPeriod,
+    periodDescription: String,
     admission: StatisticsActionAdmission,
+    focus: StatisticsOverviewFocus,
     onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit,
 ) {
     val series = summary.series
-    val drillable = series.kind == StatisticsSeriesKind.ACTIVITY || series.kind == StatisticsSeriesKind.SEQUENCE
+    val kind =
+        when (series.kind) {
+            StatisticsSeriesKind.ACTIVITY -> R.string.statistics_kind_activity
+            StatisticsSeriesKind.SEQUENCE -> R.string.statistics_kind_sequence
+            StatisticsSeriesKind.ONE_OFF_BUCKET -> R.string.statistics_kind_one_off
+        }
+    val oneOff = series.kind == StatisticsSeriesKind.ONE_OFF_BUCKET
+    val modifier =
+        Modifier
+            .fillMaxWidth()
+            .testTag("statistics-series-${series.id.value}")
+            .then(focus.target(series.id))
+            .semantics(mergeDescendants = true) { stateDescription = periodDescription }
     val content: @Composable () -> Unit = {
         Column(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
             Text(
-                if (series.kind == StatisticsSeriesKind.ONE_OFF_BUCKET) {
-                    stringResource(R.string.statistics_kind_one_off)
-                } else {
-                    series.displayName
-                },
+                if (oneOff) stringResource(kind) else series.displayName,
                 style = MaterialTheme.typography.titleSmall,
             )
-            Text(
-                stringResource(
-                    if (series.kind ==
-                        StatisticsSeriesKind.ONE_OFF_BUCKET
-                    ) {
-                        R.string.statistics_kind_one_off
-                    } else if (series.kind ==
-                        StatisticsSeriesKind.SEQUENCE
-                    ) {
-                        R.string.statistics_kind_sequence
-                    } else {
-                        R.string.statistics_kind_activity
-                    },
-                ),
-            )
+            if (!oneOff) Text(stringResource(kind))
             Text(stringResource(sourceLabel(series.sourceState)))
             Metric(R.string.statistics_executions, summary.executionCount.toString())
             Metric(
                 R.string.statistics_duration_total,
-                if (summary.durationSampleCount ==
-                    0L
-                ) {
+                if (summary.durationSampleCount == 0L) {
                     stringResource(R.string.statistics_no_duration_samples)
                 } else {
                     duration(summary.totalDuration)
@@ -478,19 +338,18 @@ private fun SeriesRow(
             Metric(R.string.statistics_active_days, summary.activeDayCount.toString())
         }
     }
-    if (drillable) {
+    if (oneOff) {
+        Card(modifier.focusable()) { content() }
+    } else {
         val action = admission.action { onOpenSeries(series.id, period) }
         Card(
             onClick = { action() },
             modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag("statistics-series-${series.id.value}")
+                modifier
+                    .semantics { role = Role.Button }
                     .statisticsActionSemantics(action),
             enabled = admission.isCurrent(),
         ) { content() }
-    } else {
-        Card(Modifier.fillMaxWidth().testTag("statistics-series-${series.id.value}")) { content() }
     }
 }
 
@@ -502,33 +361,13 @@ private fun sourceLabel(state: StatisticsSeriesSourceState) =
         StatisticsSeriesSourceState.SYSTEM_ONE_OFF -> R.string.statistics_source_system
     }
 
-@Composable private fun Metric(
+@Composable
+private fun Metric(
     label: Int,
     value: String,
 ) {
     Text(stringResource(label, value))
 }
-
-internal fun navigate(
-    period: StatisticsPeriod,
-    amount: Long,
-): StatisticsPeriod? =
-    try {
-        when (period) {
-            is StatisticsPeriod.Day -> StatisticsPeriod.Day(period.date.plusDays(amount))
-            is StatisticsPeriod.Week -> StatisticsPeriod.Week(period.weekStart.plusWeeks(amount))
-            is StatisticsPeriod.Month -> StatisticsPeriod.Month(period.month.plusMonths(amount))
-            is StatisticsPeriod.Year -> StatisticsPeriod.Year(period.year.plusYears(amount))
-            is StatisticsPeriod.Custom, StatisticsPeriod.AllTime -> null
-        }
-    } catch (_: Exception) {
-        null
-    }
-
-internal fun parseDate(value: String): LocalDate? =
-    runCatching {
-        LocalDate.parse(value, DateTimeFormatter.ISO_LOCAL_DATE)
-    }.getOrNull()
 
 private fun duration(value: Duration): String =
     "%d:%02d:%02d".format(

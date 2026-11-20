@@ -345,6 +345,7 @@ class MainActivityNavigationTest {
 
             val id = StatisticsSeriesId("series-a")
             stack.openStatisticsSeriesDetail(id, controller.state.value.selectedPeriod, sessions, create)
+            overview.returnFocus.series = id
             val session = requireNotNull(sessions.activeSession)
             val route = stack.last() as StatisticsSeriesDetailRoot
             stack.openStatisticsSeriesDetail(id, StatisticsPeriod.AllTime, sessions, create)
@@ -358,10 +359,12 @@ class MainActivityNavigationTest {
             assertEquals(listOf(DailyRoot, StatisticsRoot), stack)
             assertSame(controller, overview.controllerForRoute(true) { error("Unexpected overview acquisition") })
             assertEquals(selected, controller.state.value.selectedPeriod)
+            assertEquals(id, overview.returnFocus.series)
             assertNull(sessions.activeSession)
             assertEquals(listOf(id to selected), acquired)
 
             overview.onRouteExited()
+            assertNull(overview.returnFocus.series)
             stack.removeStatistics()
             assertNull(overview.controllerForRoute(false) { error("Outgoing entry tried to create a controller") })
             assertEquals(listOf(DailyRoot), stack)

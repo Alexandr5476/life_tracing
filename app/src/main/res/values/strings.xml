@@ -113,8 +113,8 @@
     <string name="daily_statistics">Statistics</string>
     <string name="statistics_title">Statistics</string><string name="statistics_back">Back</string>
     <string name="statistics_period_day">Day</string><string name="statistics_period_week">Week</string><string name="statistics_period_month">Month</string><string name="statistics_period_year">Year</string><string name="statistics_period_custom">Custom</string><string name="statistics_period_all_time">All Time</string>
-    <string name="statistics_day_date">Date (YYYY-MM-DD)</string><string name="statistics_week_date">Week date (YYYY-MM-DD)</string><string name="statistics_month_date">Month (YYYY-MM)</string><string name="statistics_year_date">Year</string><string name="statistics_custom_start">Start date</string><string name="statistics_custom_end">End date</string>
-    <string name="statistics_apply">Apply</string><string name="statistics_apply_range">Apply range</string><string name="statistics_invalid_range">Enter valid dates with the end on or after the start.</string>
+    <string name="statistics_day_date">Date (YYYY-MM-DD)</string><string name="statistics_week_date">Week date (YYYY-MM-DD)</string><string name="statistics_month_date">Month (YYYY-MM)</string><string name="statistics_year_date">Year (YYYY)</string><string name="statistics_custom_start">Start date</string><string name="statistics_custom_end">End date</string>
+    <string name="statistics_apply">Apply</string><string name="statistics_apply_range">Apply range</string><string name="statistics_invalid_range">Enter dates in YYYY-MM-DD format with the end on or after the start.</string>
     <string name="statistics_previous">Previous</string><string name="statistics_next">Next</string><string name="statistics_loading">Loading statistics…</string><string name="statistics_failure">Statistics could not be loaded.</string><string name="statistics_retry">Retry</string><string name="statistics_empty">No executions in this period.</string>
     <string name="statistics_tracked_time">Tracked time: %1$s</string><string name="statistics_top_level_executions">Top-level executions: %1$s</string><string name="statistics_active_days">Active days: %1$s</string><string name="statistics_average_per_active_day">Average tracked time per active day: %1$s</string><string name="statistics_sequence_pause_idle">Sequence pause and idle: %1$s</string><string name="statistics_series_title">Series</string><string name="statistics_executions">Executions: %1$s</string><string name="statistics_duration_total">Duration total: %1$s</string><string name="statistics_duration_average">Average duration: %1$s</string>
     <string name="statistics_unavailable">Unavailable</string><string name="statistics_no_duration_samples">No duration samples</string><string name="statistics_kind_activity">Activity</string><string name="statistics_kind_sequence">Sequence</string><string name="statistics_kind_one_off">One-off activities</string><string name="statistics_source_active">Current source</string><string name="statistics_source_archived">Archived source</string><string name="statistics_source_missing">No current source</string><string name="statistics_source_system">System one-off summary</string>
@@ -1004,4 +1004,16 @@
     <string name="sequence_structural_summary_result">Result and overlap warning</string>
     <string name="sequence_structural_entry">Remove occurrence structurally: %1$s. Occurrence ID %2$s. Child execution ID %3$s.</string>
     <string name="sequence_structural_deleted_pause">Retained pause %2$s of deleted child %1$s uses the same Close gap shift. Its actual timestamps remain hidden.</string>
+    <string name="statistics_loaded">Statistics loaded.</string>
+    <string name="statistics_global_title">Global metrics</string>
+    <string name="statistics_period_applied">Applied period: %1$s</string>
+    <string name="statistics_period_editing">Editing period: %1$s</string>
+    <string name="statistics_period_unapplied">Draft ready to apply.</string>
+    <string name="statistics_period_unbounded">%1$s, without date limits</string>
+    <string name="statistics_period_single_date">%1$s, %2$s</string>
+    <string name="statistics_period_date_range">%1$s, %2$s to %3$s inclusive</string>
+    <string name="statistics_invalid_date">Enter a valid date in YYYY-MM-DD format.</string>
+    <string name="statistics_invalid_week">Enter a valid date in YYYY-MM-DD format within a complete week.</string>
+    <string name="statistics_invalid_month">Enter a valid month in YYYY-MM format.</string>
+    <string name="statistics_invalid_year">Enter a complete year in YYYY format.</string>
 </resources>

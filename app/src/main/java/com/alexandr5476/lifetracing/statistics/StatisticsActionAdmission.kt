@@ -19,6 +19,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
+import com.alexandr5476.lifetracing.ui.components.LifeTracingChoiceButton
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import java.lang.ref.WeakReference
 
@@ -140,6 +141,25 @@ internal fun StatisticsSecondaryButton(
         onClick = { action() },
         modifier = modifier.statisticsActionSemantics(action),
         enabled = enabled && admission.isCurrent(),
+        content = content,
+    )
+}
+
+@Composable
+internal fun StatisticsChoiceButton(
+    admission: StatisticsActionAdmission,
+    selected: Boolean,
+    onClick: () -> Unit,
+    applicable: () -> Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val action = admission.action(applicable = applicable, onClick = onClick)
+    LifeTracingChoiceButton(
+        selected = selected,
+        onClick = { action() },
+        modifier = modifier.statisticsActionSemantics(action),
+        enabled = admission.isCurrent(),
         content = content,
     )
 }

@@ -618,6 +618,7 @@ internal fun LifeTracingApp(
                                 controller = statisticsController,
                                 isRouteVisible = visible,
                                 ownsRoute = ownsRoute,
+                                returnFocus = statisticsOwner.returnFocus,
                                 onOpenSeries = { seriesId, initialPeriod ->
                                     if (ownsRoute()) {
                                         backStack.openStatisticsSeriesDetail(
