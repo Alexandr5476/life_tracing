@@ -957,7 +957,7 @@ def main():
                 # Setup alone need not install the tools used by the read-only probe.
                 packages += ["build-tools;35.0.0", "platforms;android-36"]
             subprocess.run(packages, check=True, timeout=180)
-        if args.profile_host_memory:
+        if args.profile_host_memory and not args.api26_disable_task_snapshots:
             evidence["emulator_toolchain"] = emulator_revision()
             print("emulator-toolchain " + json.dumps(evidence["emulator_toolchain"]), flush=True)
         blocked = None
@@ -971,6 +971,9 @@ def main():
                 evidence['profile_error'] = str(exc)
                 print(f'::error::API26 pre-test profile: {exc}', flush=True)
                 blocked, failed = 'task_snapshot_profile', True
+            if profile is not None and (toolchain := profile.record.get("emulator_toolchain")):
+                evidence["emulator_toolchain"] = toolchain
+                print("emulator-toolchain " + json.dumps(toolchain), flush=True)
         for module in ("data", "app", "startup"):
             target_module = "app" if module == "startup" else module
             command = ["./gradlew", f":{target_module}:pixel2Api{args.api}DebugAndroidTest",

@@ -15,11 +15,16 @@ import subprocess
 import tempfile
 import time
 import zipfile
+from xml.dom import minidom
+from xml.parsers.expat import ExpatError
 
 
 PACKAGE = 'org.lifetracing.ciprofile'
 PROBE = PACKAGE + '/org.lifetracing.ciprofile.ProfileProbe'
 GRAPHICS_FEATURES = 'GLDMA = off\n'
+EMULATOR_REVISION = '37.2.13'
+EMULATOR_BUILD = '16740729'
+EMULATOR_ARCHIVE_SHA256 = 'cbc7c3cfb83220b8a0f9c513fdab557712e74d339ec19ddffa43f23350ae9bdd'
 
 
 class CommandTimeout(ValueError):
@@ -357,13 +362,61 @@ class Api26Profile:
             time.sleep(.2)
         raise ValueError('Stopped profile emulator did not unregister from ADB')
 
+    def install_emulator(self):
+        installed = self.sdk / 'emulator'
+        # SDK Manager supplies the package manifest. Keep its schema and license
+        # metadata when installing the archived binary AGP must discover.
+        try:
+            package = minidom.parse(str(installed / 'package.xml'))
+        except ExpatError as exc:
+            raise ValueError('Invalid SDK emulator package metadata') from exc
+        local_packages = package.getElementsByTagName('localPackage')
+        if len(local_packages) != 1 or local_packages[0].getAttribute('path') != 'emulator':
+            raise ValueError('SDK metadata does not describe the emulator package')
+        local = local_packages[0]
+        revisions = [node for node in local.childNodes if node.nodeName == 'revision']
+        if len(revisions) != 1:
+            raise ValueError('SDK emulator package metadata must have one revision')
+        revision = package.createElement('revision')
+        for name, component in zip(('major', 'minor', 'micro'), EMULATOR_REVISION.split('.')):
+            part = package.createElement(name)
+            part.appendChild(package.createTextNode(component))
+            revision.appendChild(part)
+        local.replaceChild(revision, revisions[0])
+
+        # Stage on the SDK filesystem so the replacement uses directory renames.
+        with tempfile.TemporaryDirectory(prefix='.lifetracing-emulator-', dir=self.sdk) as temporary:
+            stage = Path(temporary)
+            archive = stage / 'emulator.zip'
+            url = f'https://dl.google.com/android/repository/emulator-linux_x64-{EMULATOR_BUILD}.zip'
+            self.command(['curl', '--fail', '--location', '--silent', '--show-error', '--retry', '2',
+                          '--output', archive, url], 'emulator-download', 180)
+            with archive.open('rb') as content:
+                if hashlib.file_digest(content, 'sha256').hexdigest() != EMULATOR_ARCHIVE_SHA256:
+                    raise ValueError('Pinned API26 emulator archive checksum mismatch')
+            # The archive contains executable tools. unzip preserves their Unix modes.
+            self.command(['unzip', '-q', archive, '-d', stage], 'emulator-extract', 60)
+            extracted = stage / 'emulator'
+            (extracted / 'package.xml').write_bytes(package.toxml(encoding='utf-8'))
+            previous = stage / 'previous-emulator'
+            installed.rename(previous)
+            try:
+                extracted.rename(installed)
+            except OSError:
+                previous.rename(installed)
+                raise
+
     def prepare(self):
         try:
-            if self.ci.emulator_revision()['revision'] != '37.2.13':
-                raise ValueError('API26 profile was validated only with Emulator37.2.13')
+            self.install_emulator()
+            toolchain = self.ci.emulator_revision()
+            if toolchain['revision'] != EMULATOR_REVISION:
+                raise ValueError(f'API26 profile was validated only with Emulator {EMULATOR_REVISION}')
             version = self.command([self.sdk/'emulator/emulator', '-no-window', '-no-audio', '-version'], 'emulator-version')
-            if '37.2.13.0 (build_id 16740729)' not in version:
-                raise ValueError('Actual emulator build does not match the measured16740729 binary')
+            if f'{EMULATOR_REVISION}.0 (build_id {EMULATOR_BUILD})' not in version:
+                raise ValueError(f'Actual emulator build does not match the measured {EMULATOR_BUILD} binary')
+            self.record['emulator_toolchain'] = dict(toolchain, build_id=EMULATOR_BUILD,
+                                                    archive_sha256=EMULATOR_ARCHIVE_SHA256)
             self.validate_graphics_environment()
             self.setup()
             apk = self.build_probe()

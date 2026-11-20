@@ -358,7 +358,11 @@ a local actual-UTP diagnostic passed with its existing legacy SwiftShader backen
 
 The Linux API26 row prepares a private GMD `default_boot` before any product
 instrumentation. This profile requires the guarded SwANGLE path and the measured
-Emulator37.2.13. The ordinary GMD setup creates the Pixel2/API26 AOSP image; the
+Emulator 37.2.13, build 16740729. After SDK Manager installs the SDK prerequisites,
+the profile installs the checksum-pinned Linux archive from Google's repository,
+updates the SDK package revision for AGP, and checks the installed binary version
+before Gradle starts. This keeps the measured build reproducible as the SDK Manager
+channel advances. The ordinary GMD setup creates the Pixel2/API26 AOSP image. The
 preparer sets `persist.enable_task_snapshots=false` in that disposable guest and
 restarts only its zygote services before tests. It verifies old framework absence,
 a new system_server lifetime, actual API and framework field, and actual ANGLE on
