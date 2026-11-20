@@ -6,9 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicLong
 
 sealed interface StatisticsLoadState {
     data object Loading : StatisticsLoadState
@@ -36,54 +34,51 @@ class StatisticsController internal constructor(
     initialPeriod: StatisticsPeriod,
     private val readOverview: suspend (StatisticsPeriod) -> StatisticsOverview,
 ) {
-    private val generation = AtomicLong()
-
-    @Volatile private var closed = false
+    private val lock = Any()
+    private var closed = false
     private val mutableState = MutableStateFlow(StatisticsPresentationState(initialPeriod))
     val state: StateFlow<StatisticsPresentationState> = mutableState
 
     init {
-        reload(initialPeriod)
+        refresh()
     }
 
-    fun selectPeriod(period: StatisticsPeriod) {
-        if (closed) return
-        if (period == mutableState.value.selectedPeriod) return
-        reload(period)
-    }
+    fun selectPeriod(period: StatisticsPeriod) = reload(period)
 
-    fun refresh() {
-        if (!closed) reload(mutableState.value.selectedPeriod)
-    }
+    fun refresh() = reload()
 
     fun retry() = refresh()
 
     fun close() {
-        closed = true
-        generation.incrementAndGet()
+        synchronized(lock) {
+            closed = true
+        }
     }
 
-    private fun reload(period: StatisticsPeriod) {
-        if (closed) return
-        val request = generation.incrementAndGet()
-        mutableState.value = StatisticsPresentationState(period)
+    private fun reload(newPeriod: StatisticsPeriod? = null) {
+        val request =
+            synchronized(lock) {
+                if (closed) return
+                val selectedPeriod = mutableState.value.selectedPeriod
+                if (newPeriod == selectedPeriod) return
+                // Each Loading publication identifies one request, including consecutive refreshes.
+                StatisticsPresentationState(newPeriod ?: selectedPeriod).also { mutableState.value = it }
+            }
         scope.launch {
-            try {
-                val overview = readOverview(period)
-                if (generation.get() == request) {
-                    val load =
-                        if (overview.isEmpty) {
-                            StatisticsLoadState.Empty(overview)
-                        } else {
-                            StatisticsLoadState.Content(overview)
-                        }
-                    mutableState.update { StatisticsPresentationState(it.selectedPeriod, load) }
+            // The scope can dispatch this coroutine after the controller has closed.
+            if (synchronized(lock) { closed }) return@launch
+            val load =
+                try {
+                    val overview = readOverview(request.selectedPeriod)
+                    if (overview.isEmpty) StatisticsLoadState.Empty(overview) else StatisticsLoadState.Content(overview)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    StatisticsLoadState.Failure
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                if (generation.get() == request) {
-                    mutableState.update { StatisticsPresentationState(it.selectedPeriod, StatisticsLoadState.Failure) }
+            synchronized(lock) {
+                if (!closed && mutableState.value === request) {
+                    mutableState.value = StatisticsPresentationState(request.selectedPeriod, load)
                 }
             }
         }
