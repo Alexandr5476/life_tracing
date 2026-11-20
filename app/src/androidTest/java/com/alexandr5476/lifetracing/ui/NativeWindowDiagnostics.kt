@@ -11,6 +11,8 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+private const val SURFACE_FLINGER_DUMP = "dumpsys SurfaceFlinger"
+
 /** Read the first obstructing SystemUI report, without dismissing it or retrying a testcase. */
 internal class SystemUiWindowDiagnostics(
     private val read: (String) -> String,
@@ -49,7 +51,7 @@ internal class NativeFocusDiagnostics(
                 "dumpsys input",
                 "dumpsys window displays",
                 "dumpsys window windows",
-                "dumpsys SurfaceFlinger",
+                SURFACE_FLINGER_DUMP,
                 "dumpsys activity service com.android.systemui/.SystemUIService WMShell",
                 "dumpsys power",
                 "logcat -d -t 240 -v threadtime -b main -b system -b events -b crash",
@@ -162,6 +164,10 @@ internal class NativeWindowFailureReport(
                 "FocusedApplications:",
                 "FocusedWindows:",
                 "FocusRequests:",
+                "Window Infos:",
+                "max send vsync id:",
+                "max send delay (ns):",
+                "unsent messages:",
                 "mWakefulness=",
                 "mInteractive=",
                 "mIsInteractive=",
@@ -269,16 +275,11 @@ internal class BoundedDiagnosticShell(
                         if (size < 0) break
                         count += size
                     }
-                    val status = if (count > maximumBytes) "TRUNCATED at $maximumBytes bytes" else "COMPLETE"
-                    if (count > maximumBytes) {
-                        // Android 8's UiAutomation pump treats a closed reader as fatal EPIPE.
-                        // Keep storage capped while draining the producer before closing its pipe.
-                        val drain = ByteArray(8_192)
-                        while (stream.read(drain) >= 0) {
-                            // Discard overflow; only the bounded prefix belongs in the report.
-                        }
+                    if (count <= maximumBytes) {
+                        "status=COMPLETE\n" + String(bytes, 0, count, Charsets.UTF_8)
+                    } else {
+                        truncatedReport(stream, bytes, preserveTail = command == SURFACE_FLINGER_DUMP)
                     }
-                    "status=$status\n" + String(bytes, 0, minOf(count, maximumBytes), Charsets.UTF_8)
                 }
             }
         return try {
@@ -293,6 +294,35 @@ internal class BoundedDiagnosticShell(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             "status=INTERRUPTED"
+        }
+    }
+
+    private fun truncatedReport(
+        stream: InputStream,
+        prefix: ByteArray,
+        preserveTail: Boolean,
+    ): String {
+        // SurfaceFlinger puts window update delivery counters after the layer dump.
+        val tailSize = if (preserveTail) minOf(512, maximumBytes / 2) else 0
+        val tail = prefix.copyOfRange(prefix.size - tailSize, prefix.size)
+        // Android 8's UiAutomation pump treats a closed reader as fatal EPIPE.
+        val drain = ByteArray(8_192)
+        while (true) {
+            val size = stream.read(drain)
+            if (size < 0) break
+            if (tail.isNotEmpty() && size > 0) {
+                val copied = minOf(tail.size, size)
+                tail.copyInto(tail, 0, copied, tail.size)
+                drain.copyInto(tail, tail.size - copied, size - copied, size)
+            }
+        }
+        return buildString {
+            appendLine("status=TRUNCATED at $maximumBytes bytes")
+            append(String(prefix, 0, maximumBytes - tail.size, Charsets.UTF_8))
+            if (tail.isNotEmpty()) {
+                append("\n[... middle of SurfaceFlinger dump omitted ...]\n")
+                append(tail.toString(Charsets.UTF_8))
+            }
         }
     }
 }

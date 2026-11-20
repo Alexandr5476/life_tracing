@@ -317,6 +317,45 @@ class NativeWindowDiagnosticsTest {
     }
 
     @Test
+    fun oversizedSurfaceFlingerDumpRetainsWindowUpdateCounters() {
+        val heading = "Build configuration: emulator"
+        val windowInfos =
+            """
+            Window Infos:
+              max send vsync id: 120
+              max send delay (ns): 19000000 ns
+              unsent messages: 2
+            """.trimIndent()
+        val dump = "$heading\n" + "Offscreen layer info\n".repeat(4_000) + "$windowInfos\n\ncommand_exit=0\n"
+        val shell =
+            BoundedDiagnosticShell(
+                open = {
+                    object : ByteArrayInputStream(dump.toByteArray(Charsets.UTF_8)) {
+                        override fun read(
+                            bytes: ByteArray,
+                            offset: Int,
+                            length: Int,
+                        ): Int = super.read(bytes, offset, minOf(length, 37))
+                    }
+                },
+            )
+        val command = "dumpsys SurfaceFlinger"
+        val report = shell.read(command)
+
+        assertTrue(report.startsWith("status=TRUNCATED at 65536 bytes\n$heading\n"))
+        assertTrue("Missing SurfaceFlinger window update counters", report.contains(windowInfos))
+        assertTrue(report.endsWith("command_exit=0\n"))
+        assertTrue(report.toByteArray(Charsets.UTF_8).size < 65_650)
+
+        val raw = "$command\n$report"
+        val frames = mutableListOf<String>()
+        val inline = NativeWindowFailureReport(log = frames::add).retain(raw)
+        assertEquals(raw, decodeFrames(frames))
+        assertTrue(inline.contains(windowInfos))
+        assertTrue(inline.contains("command_exit=0"))
+    }
+
+    @Test
     fun deadlineReturnsWhileLiveProducerDrainsBeforeItsPipeCloses() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
