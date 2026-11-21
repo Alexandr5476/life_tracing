@@ -38,6 +38,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ArchivedTemplatesRoute(
+    restores: ArchivedRestoreCoordinator,
     isRouteVisible: Boolean,
     ownsRoute: () -> Boolean,
     onBack: () -> Unit,
@@ -48,15 +49,17 @@ internal fun ArchivedTemplatesRoute(
     val scope = rememberCoroutineScope()
     val notifyRestored by rememberUpdatedState(onRestored)
     val controller =
-        remember(repository, scope) {
+        remember(repository, scope, restores) {
             ArchivedTemplatesController(
                 { withContext(Dispatchers.IO) { repository.getArchived() } },
                 { id -> withContext(Dispatchers.IO) { restoreArchivedTemplate(repository, id) } },
                 { notifyRestored() },
                 scope,
+                restores,
             )
         }
     val state by controller.state.collectAsState()
+    val restoreStatus by restores.status.collectAsState()
     ArchivedTemplatesScreen(
         state,
         controller::restore,
@@ -66,6 +69,8 @@ internal fun ArchivedTemplatesRoute(
         readCurrent = { controller.state.value },
         isRouteVisible = isRouteVisible,
         ownsRoute = ownsRoute,
+        restoreStatus = restoreStatus,
+        readRestoreStatus = { restores.status.value },
     )
 }
 
@@ -79,9 +84,16 @@ internal fun ArchivedTemplatesScreen(
     readCurrent: () -> ArchivedTemplatesState,
     isRouteVisible: Boolean = true,
     ownsRoute: () -> Boolean = { true },
+    restoreStatus: ArchivedRestoreStatus = ArchivedRestoreStatus(),
+    readRestoreStatus: () -> ArchivedRestoreStatus = { restoreStatus },
 ) {
     val presentation = rememberSettingsPresentation(isRouteVisible, ownsRoute)
     val admission = presentation.rememberAdmission(state, readCurrent)
+    val archiveCompletion = state.archiveCompletion
+    val restoreEnabled = state.canRestore && archiveCompletion == restoreStatus.completion
+    val ownsRestore: (LibraryTemplateId) -> Boolean = { id ->
+        admission.isCurrent() && readRestoreStatus().allowsRestore(id, archiveCompletion)
+    }
     Surface(color = MaterialTheme.colorScheme.background) {
         LazyColumn(
             modifier =
@@ -101,7 +113,15 @@ internal fun ArchivedTemplatesScreen(
                     SettingsActionButton(presentation::isCurrent, onBack, Modifier.testTag("archived-back")) {
                         Text(stringResource(R.string.archived_templates_back))
                     }
-                    ArchivedFeedback(state, admission, onReload, onRetryRestore)
+                    ArchivedFeedback(
+                        state,
+                        admission,
+                        restoreStatus,
+                        restoreEnabled,
+                        ownsRestore,
+                        onReload,
+                        onRetryRestore,
+                    )
                 }
             }
             val rows = state.items
@@ -110,7 +130,8 @@ internal fun ArchivedTemplatesScreen(
                     item { Text(stringResource(R.string.archived_templates_empty)) }
                 }
                 items(rows, key = { it.id.archivedRowKey() }) { row ->
-                    ArchivedRow(row, state.pending == row.id, state.canRestore, admission, onRestore)
+                    val restoring = state.pending == row.id || row.id in restoreStatus.pending
+                    ArchivedRow(row, restoring, restoreEnabled && !restoring, ownsRestore, onRestore)
                 }
             }
         }
@@ -121,6 +142,9 @@ internal fun ArchivedTemplatesScreen(
 private fun ArchivedFeedback(
     state: ArchivedTemplatesState,
     admission: SettingsActionAdmission,
+    restoreStatus: ArchivedRestoreStatus,
+    restoreEnabled: Boolean,
+    ownsRestore: (LibraryTemplateId) -> Boolean,
     onReload: () -> Unit,
     onRetryRestore: () -> Unit,
 ) {
@@ -138,22 +162,23 @@ private fun ArchivedFeedback(
             Text(stringResource(R.string.archived_templates_reload))
         }
     }
-    if (state.pending != null) {
+    if (state.pending != null || restoreStatus.pending.isNotEmpty()) {
         Text(
             stringResource(R.string.archived_templates_restoring),
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         )
     }
-    if (state.failedRestore != null) {
+    val failedRestore = state.failedRestore
+    if (failedRestore != null) {
         Text(
             stringResource(R.string.archived_templates_restore_failure),
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
         SettingsActionButton(
-            admission::isCurrent,
+            { ownsRestore(failedRestore) },
             onClick = onRetryRestore,
-            enabled = state.canRestore,
+            enabled = restoreEnabled && failedRestore !in restoreStatus.pending,
             modifier = Modifier.testTag("archived-retry"),
         ) {
             Text(stringResource(R.string.archived_templates_retry))
@@ -166,7 +191,7 @@ private fun ArchivedRow(
     row: LibraryTrackable,
     restoring: Boolean,
     enabled: Boolean,
-    admission: SettingsActionAdmission,
+    ownsRestore: (LibraryTemplateId) -> Boolean,
     onRestore: (LibraryTemplateId) -> Unit,
 ) {
     val id = row.id
@@ -194,7 +219,7 @@ private fun ArchivedRow(
             Text(row.name, style = MaterialTheme.typography.titleMedium)
             row.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             SettingsActionButton(
-                admission::isCurrent,
+                { ownsRestore(id) },
                 onClick = { onRestore(id) },
                 enabled = enabled,
                 modifier = Modifier.testTag("archived-restore-$rowKey"),

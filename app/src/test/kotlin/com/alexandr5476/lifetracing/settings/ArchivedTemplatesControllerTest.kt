@@ -28,7 +28,14 @@ class ArchivedTemplatesControllerTest {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
             val read = CompletableDeferred<List<LibraryTrackable>>()
             val requests = mutableListOf<LibraryTemplateId>()
-            val controller = ArchivedTemplatesController({ read.await() }, { requests += it }, {}, scope)
+            val controller =
+                ArchivedTemplatesController(
+                    { read.await() },
+                    { requests += it },
+                    {},
+                    scope,
+                    ArchivedRestoreCoordinator(),
+                )
             try {
                 assertTrue(controller.state.value.loading)
                 controller.restore(activityId)
@@ -108,6 +115,7 @@ class ArchivedTemplatesControllerTest {
                         { fixture.requests += it },
                         {},
                         fixture.scope,
+                        fixture.restores,
                     )
                 assertEquals(fixture.canonical, recreated.state.value.items)
                 assertEquals(listOf(activityId), fixture.requests)
@@ -174,18 +182,9 @@ class ArchivedTemplatesControllerTest {
 
     @Test
     fun accepted_restore_survives_disposal_before_the_dispatcher_can_run_it() {
-        val tasks = ArrayDeque<Runnable>()
-        val dispatcher =
-            object : CoroutineDispatcher() {
-                override fun dispatch(
-                    context: CoroutineContext,
-                    block: Runnable,
-                ) {
-                    tasks.addLast(block)
-                }
-            }
+        val dispatcher = QueuedDispatcher()
         val fixture = Fixture(dispatcher)
-        tasks.removeFirst().run()
+        dispatcher.runNext()
         val releaseWrite = CompletableDeferred<Unit>()
         fixture.write = { id ->
             releaseWrite.await()
@@ -196,7 +195,7 @@ class ArchivedTemplatesControllerTest {
         assertEquals(activityId, fixture.controller.state.value.pending)
         fixture.scope.cancel()
         releaseWrite.complete(Unit)
-        while (tasks.isNotEmpty()) tasks.removeFirst().run()
+        dispatcher.drain()
 
         assertEquals(listOf(activityId), fixture.requests)
         assertEquals(1, fixture.refreshes)
@@ -204,37 +203,289 @@ class ArchivedTemplatesControllerTest {
         assertNull(fixture.controller.state.value.pending)
     }
 
+    @Test
+    fun reentry_blocks_the_pending_typed_identity_but_admits_the_other_kind_with_the_same_raw_id() {
+        val fixture = Fixture()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val activityWrite = CompletableDeferred<Unit>()
+        val sequenceWrite = CompletableDeferred<Unit>()
+        val sequenceReconciliation = CompletableDeferred<Unit>()
+        var nextReads = 0
+        fixture.write = { id ->
+            (if (id == activityId) activityWrite else sequenceWrite).await()
+            fixture.canonical = fixture.canonical.filterNot { it.id == id }
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next =
+                fixture.createController(nextScope) {
+                    val snapshot = fixture.canonical
+                    if (++nextReads == 2) sequenceReconciliation.await()
+                    snapshot
+                }
+            assertEquals(fixture.initial, next.state.value.items)
+            next.restore(activityId)
+            assertEquals(listOf(activityId), fixture.requests)
+            next.restore(sequenceId)
+            assertEquals(listOf(activityId, sequenceId), fixture.requests)
+
+            sequenceWrite.complete(Unit)
+            activityWrite.complete(Unit)
+            assertEquals(sequenceId, next.state.value.pending)
+            assertEquals(fixture.initial, next.state.value.items)
+            sequenceReconciliation.complete(Unit)
+            assertEquals(3, nextReads)
+            assertEquals(emptyList<LibraryTrackable>(), next.state.value.items)
+            assertEquals(2, fixture.refreshes)
+        } finally {
+            activityWrite.complete(Unit)
+            sequenceWrite.complete(Unit)
+            sequenceReconciliation.complete(Unit)
+            nextScope.cancel()
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun reentry_refreshes_after_completion_even_if_its_initial_read_took_a_precommit_snapshot() {
+        val fixture = Fixture()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val releaseWrite = CompletableDeferred<Unit>()
+        val staleRead = CompletableDeferred<Unit>()
+        val freshRead = CompletableDeferred<Unit>()
+        var reads = 0
+        fixture.write = { id ->
+            releaseWrite.await()
+            fixture.canonical = fixture.canonical.filterNot { it.id == id }
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next =
+                fixture.createController(nextScope) {
+                    val snapshot = fixture.canonical
+                    if (++reads == 1) staleRead.await() else freshRead.await()
+                    snapshot
+                }
+            assertTrue(next.state.value.loading)
+            releaseWrite.complete(Unit)
+            assertEquals(listOf(sequenceId), fixture.ids())
+            assertEquals(1, fixture.refreshes)
+            staleRead.complete(Unit)
+            assertEquals(2, reads)
+            next.restore(activityId)
+            assertEquals(listOf(activityId), fixture.requests)
+            freshRead.complete(Unit)
+            assertEquals(listOf(sequenceId), next.ids())
+            assertTrue(next.state.value.canRestore)
+        } finally {
+            releaseWrite.complete(Unit)
+            staleRead.complete(Unit)
+            freshRead.complete(Unit)
+            nextScope.cancel()
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun completed_reservation_blocks_restore_from_a_stale_controller_before_its_observer_runs() {
+        val fixture = Fixture()
+        val dispatcher = QueuedDispatcher()
+        val nextScope = CoroutineScope(SupervisorJob() + dispatcher)
+        val release = CompletableDeferred<Unit>()
+        fixture.write = { id ->
+            release.await()
+            fixture.canonical = fixture.canonical.filterNot { it.id == id }
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next = fixture.createController(nextScope)
+            dispatcher.drain()
+            val old = next.state.value
+            assertEquals(fixture.initial, old.items)
+            release.complete(Unit)
+            val status = fixture.restores.status.value
+            assertTrue(status.pending.isEmpty())
+            assertEquals(old, next.state.value)
+            next.restore(activityId)
+            next.restore(sequenceId)
+            assertEquals(listOf(activityId), fixture.requests)
+            dispatcher.drain()
+            assertEquals(listOf(sequenceId), next.ids())
+        } finally {
+            release.complete(Unit)
+            nextScope.cancel()
+            dispatcher.drain()
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun failed_original_restore_leaves_the_row_eligible_in_the_new_controller_after_canonical_refresh() {
+        val fixture = Fixture()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val releaseFailure = CompletableDeferred<Unit>()
+        val freshRead = CompletableDeferred<Unit>()
+        var reads = 0
+        fixture.write = {
+            releaseFailure.await()
+            throw IOException("Restore failed")
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next =
+                fixture.createController(nextScope) {
+                    if (++reads == 2) freshRead.await()
+                    fixture.canonical
+                }
+            releaseFailure.complete(Unit)
+            assertEquals(activityId, fixture.controller.state.value.failedRestore)
+            assertTrue(next.state.value.loading)
+            next.restore(activityId)
+            assertEquals(listOf(activityId), fixture.requests)
+            assertEquals(0, fixture.refreshes)
+
+            freshRead.complete(Unit)
+            assertEquals(fixture.initial, next.state.value.items)
+            fixture.write = { id -> fixture.canonical = fixture.canonical.filterNot { it.id == id } }
+            next.restore(activityId)
+            assertEquals(listOf(activityId, activityId), fixture.requests)
+            assertEquals(listOf(sequenceId), next.ids())
+            assertEquals(1, fixture.refreshes)
+        } finally {
+            releaseFailure.complete(Unit)
+            freshRead.complete(Unit)
+            nextScope.cancel()
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun competing_restore_removes_the_row_from_both_controllers_and_refreshes_library_once() {
+        val fixture = Fixture()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val release = CompletableDeferred<Unit>()
+        fixture.write = {
+            release.await()
+            throw IllegalArgumentException("Already active")
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next = fixture.createController(nextScope)
+            assertEquals(fixture.initial, next.state.value.items)
+            fixture.canonical = fixture.canonical.filterNot { it.id == activityId }
+            release.complete(Unit)
+            assertEquals(listOf(sequenceId), fixture.ids())
+            assertEquals(listOf(sequenceId), next.ids())
+            assertNull(fixture.controller.state.value.failedRestore)
+            assertNull(next.state.value.failedRestore)
+            assertEquals(1, fixture.refreshes)
+            assertEquals(listOf(activityId), fixture.requests)
+        } finally {
+            release.complete(Unit)
+            nextScope.cancel()
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun committed_restore_notifies_reentry_even_when_both_reads_fail_and_reload_is_read_only() {
+        val fixture = Fixture()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val release = CompletableDeferred<Unit>()
+        fixture.write = { id ->
+            release.await()
+            fixture.canonical = fixture.canonical.filterNot { it.id == id }
+        }
+        try {
+            fixture.controller.restore(activityId)
+            fixture.scope.cancel()
+            val next = fixture.createController(nextScope)
+            assertEquals(fixture.initial, next.state.value.items)
+            fixture.read = { throw IOException("Archive unavailable") }
+            release.complete(Unit)
+            assertTrue(fixture.controller.state.value.readFailed)
+            assertTrue(next.state.value.readFailed)
+            assertEquals(fixture.initial, next.state.value.items)
+            assertFalse(next.state.value.canRestore)
+            next.restore(activityId)
+            next.retryRestore()
+            assertEquals(listOf(activityId), fixture.requests)
+
+            fixture.read = { fixture.canonical }
+            next.reload()
+            assertEquals(listOf(sequenceId), next.ids())
+            assertNull(next.state.value.failedRestore)
+            assertEquals(listOf(activityId), fixture.requests)
+            assertEquals(1, fixture.refreshes)
+        } finally {
+            release.complete(Unit)
+            nextScope.cancel()
+            fixture.scope.cancel()
+        }
+    }
+
     private class Fixture(
         dispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
     ) {
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         val initial = listOf(row(activityId), row(sequenceId))
+        val restores = ArchivedRestoreCoordinator()
         var canonical = initial
         var read: suspend () -> List<LibraryTrackable> = { canonical }
         var write: suspend (LibraryTemplateId) -> Unit = {}
         val requests = mutableListOf<LibraryTemplateId>()
         var refreshes = 0
 
-        fun ids(): List<LibraryTemplateId> {
-            val items = requireNotNull(controller.state.value.items)
-            return items.map { it.id }
-        }
+        fun ids(): List<LibraryTemplateId> = controller.ids()
 
-        val controller =
+        val controller = createController(scope)
+
+        fun createController(
+            scope: CoroutineScope,
+            readArchived: suspend () -> List<LibraryTrackable> = { read() },
+        ): ArchivedTemplatesController =
             ArchivedTemplatesController(
-                { read() },
+                readArchived,
                 {
                     requests += it
                     write(it)
                 },
                 { refreshes++ },
                 scope,
+                restores,
             )
+    }
+
+    private class QueuedDispatcher : CoroutineDispatcher() {
+        private val tasks = ArrayDeque<Runnable>()
+
+        override fun dispatch(
+            context: CoroutineContext,
+            block: Runnable,
+        ) {
+            tasks.addLast(block)
+        }
+
+        fun runNext() = tasks.removeFirst().run()
+
+        fun drain() {
+            while (tasks.isNotEmpty()) runNext()
+        }
     }
 
     companion object {
         private val activityId = LibraryTemplateId.Activity(ActivityTemplateId("same-value"))
         private val sequenceId = LibraryTemplateId.Sequence(SequenceTemplateId("same-value"))
+
+        private fun ArchivedTemplatesController.ids(): List<LibraryTemplateId> {
+            val items = requireNotNull(state.value.items)
+            return items.map { it.id }
+        }
 
         private fun row(id: LibraryTemplateId) =
             LibraryTrackable(id, "Same name", "Comment", null, emptySet(), null, null, Instant.EPOCH)

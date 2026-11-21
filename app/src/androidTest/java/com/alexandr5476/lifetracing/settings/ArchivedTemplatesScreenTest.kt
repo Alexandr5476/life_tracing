@@ -3,12 +3,15 @@ package com.alexandr5476.lifetracing.settings
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
@@ -38,6 +41,56 @@ import java.util.Locale
 class ArchivedTemplatesScreenTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun shared_pending_state_disables_only_the_typed_target_until_completion_requires_a_fresh_publication() {
+        val activity = LibraryTemplateId.Activity(ActivityTemplateId("same-id"))
+        val sequence = LibraryTemplateId.Sequence(SequenceTemplateId("same-id"))
+        val restores = ArchivedRestoreCoordinator()
+        val state = mutableStateOf(ArchivedTemplatesState(listOf(row(activity), row(sequence)), loading = false))
+        val requests = mutableListOf<LibraryTemplateId>()
+        compose.setContent {
+            val status by restores.status.collectAsState()
+            LifeTracingAppearance(AppearancePreferences()) {
+                ArchivedTemplatesScreen(
+                    state.value,
+                    { requests += it },
+                    {},
+                    {},
+                    {},
+                    { state.value },
+                    restoreStatus = status,
+                    readRestoreStatus = { restores.status.value },
+                )
+            }
+        }
+        val activityTag = "archived-restore-${activity.archivedRowKey()}"
+        val sequenceTag = "archived-restore-${sequence.archivedRowKey()}"
+        val oldActivity = nativeClick(activityTag)
+        compose.runOnIdle {
+            assertTrue(restores.reserve(activity, archiveCompletion = 0))
+            assertFalse(oldActivity())
+        }
+        compose.onNodeWithTag(activityTag).assertIsNotEnabled()
+        val oldSequence = nativeClick(sequenceTag)
+        compose.onNodeWithTag(sequenceTag).assertIsEnabled()
+        val completion =
+            compose.runOnIdle {
+                assertTrue(oldSequence())
+                restores.complete(activity).also { assertFalse(oldSequence()) }
+            }
+        compose.onNodeWithTag(sequenceTag).assertIsNotEnabled()
+        compose.runOnIdle {
+            state.value = ArchivedTemplatesState(listOf(row(sequence)), loading = false, archiveCompletion = completion)
+        }
+        val currentSequence = nativeClick(sequenceTag)
+        compose.runOnIdle {
+            assertFalse(oldActivity())
+            assertFalse(oldSequence())
+            assertTrue(currentSequence())
+            assertEquals(listOf(sequence, sequence), requests)
+        }
+    }
 
     @Test
     @Suppress("LongMethod")

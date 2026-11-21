@@ -517,6 +517,7 @@ internal fun LifeTracingApp(
                             // Re-entry may reuse the outgoing Navigation3 content for this singleton key.
                             key(archiveVisit) {
                                 ArchivedTemplatesRoute(
+                                    restores = runtimeGraph.archivedRestores,
                                     isRouteVisible = displayedRoute === ArchivedTemplatesRoot,
                                     ownsRoute = settingsPresentation::isCurrent,
                                     onBack = settingsBack,
