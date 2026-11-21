@@ -14,6 +14,7 @@ import com.alexandr5476.lifetracing.domain.ActivitySnapshotFactory
 import com.alexandr5476.lifetracing.domain.ActivitySnapshotId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateFieldId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
+import com.alexandr5476.lifetracing.domain.CountRatio
 import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.NumberExecutionValue
 import com.alexandr5476.lifetracing.domain.PlanEntryId
@@ -3793,7 +3794,7 @@ class StatisticsRepositoryTest {
             val unaffected = repository.seriesDetail(StatisticsSeriesId("sequence-series"), StatisticsPeriod.AllTime)
             val other = repository.activitySeries(StatisticsSeriesId("s4-other-series"), StatisticsPeriod.AllTime)
             mutateStatisticsHistory(database, "correct")
-            assertEquals(Duration.ofMinutes(142), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
+            assertEquals(Duration.ofMinutes(145), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
             assertEquals(
                 Duration.ofMinutes(75),
                 repository.global(StatisticsPeriod.Day(LocalDate.parse(AUG_20))).totalTrackedDuration,
@@ -3864,7 +3865,7 @@ class StatisticsRepositoryTest {
                     }.statistics
             assertEquals(2L, remainingDense.recordedCount)
             assertEquals(BigInteger.valueOf(5), remainingDense.values.totalScaled)
-            assertEquals(Duration.ofMinutes(142), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
+            assertEquals(Duration.ofMinutes(145), repository.global(StatisticsPeriod.AllTime).totalTrackedDuration)
             assertEquals(
                 Duration.ofMinutes(5),
                 repository
@@ -4161,12 +4162,13 @@ class StatisticsRepositoryTest {
         val activityId = StatisticsSeriesId("activity-series")
         val sequenceId = StatisticsSeriesId("sequence-series")
         val global = repository.global(all)
-        // Independent ledger: standalone 30 + Plan 5 + other 7; roots 60 + 20 + tombstone 10 + removed 0.
-        assertEquals(Duration.ofMinutes(132), global.totalTrackedDuration)
-        assertEquals(8L, global.topLevelExecutionCount)
+        // Standalone 30 + Plan 5 + other 7 + One-off 3; roots 60 + 20 + tombstone 10 + removed 0.
+        assertEquals(Duration.ofMinutes(135), global.totalTrackedDuration)
+        assertEquals(9L, global.topLevelExecutionCount)
         assertEquals(3L, global.activeDayCount)
         assertEquals(Duration.ofMinutes(25), global.totalSequencePauseIdleDuration)
-        assertEquals(0L, global.oneOffActivityExecutionCount)
+        assertEquals(1L, global.oneOffActivityExecutionCount)
+        assertEquals(Duration.ofMinutes(3), global.oneOffActivityTrackedDuration)
         val activity = repository.activitySeries(activityId, all)
         assertEquals(4L, activity.executionCount)
         assertEquals(3L, activity.durations.sampleCount)
@@ -4175,6 +4177,10 @@ class StatisticsRepositoryTest {
         assertEquals(ExactValue.of(30 * MINUTE, 1), activity.durations.medianMilliseconds)
         assertEquals(Duration.ofMinutes(5), activity.durations.minimum)
         assertEquals(Duration.ofMinutes(60), activity.durations.maximum)
+        assertEquals(2L, activity.activeDayCount)
+        assertEquals(ExactValue.of(2, 1), activity.averageExecutionsPerActiveDay)
+        assertEquals(instant("2026-08-20T11:05:00Z"), activity.firstPerformedAt)
+        assertEquals(instant("2026-08-21T12:00:00Z"), activity.lastPerformedAt)
         assertEquals(StatisticsSeriesSourceState.ARCHIVED_SOURCE, activity.series.sourceState)
         val sequence = repository.sequenceSeries(sequenceId, all)
         assertEquals(4L, sequence.executionCount)
@@ -4212,6 +4218,12 @@ class StatisticsRepositoryTest {
         assertEquals(repository.seriesSummaries(all), overview.series)
         assertEquals(4L, overview.series.single { it.series.id == activityId }.executionCount)
         assertEquals(Duration.ofMinutes(95), overview.series.single { it.series.id == activityId }.totalDuration)
+        val oneOff = overview.series.single { it.series.id.value == ONE_OFF }
+        assertEquals(StatisticsSeriesKind.ONE_OFF_BUCKET, oneOff.series.kind)
+        assertEquals(StatisticsSeriesSourceState.SYSTEM_ONE_OFF, oneOff.series.sourceState)
+        assertEquals(1L, oneOff.executionCount)
+        assertEquals(1L, oneOff.durationSampleCount)
+        assertEquals(Duration.ofMinutes(3), oneOff.totalDuration)
         val detail = repository.seriesDetail(activityId, all) as StatisticsSeriesDetail.Activity
         assertEquals(activity, detail.statistics)
         assertEquals(repository.fieldCatalog(activityId), detail.fields.map { it.field })
@@ -4266,12 +4278,12 @@ class StatisticsRepositoryTest {
                     it.count
             },
         )
-        assertTrue(
-            category.values
-                .single {
-                    it.id.value == "s4-no-live-tempo"
-                }.id is StatisticsCategoryOptionId.SnapshotFallback,
-        )
+        val linkedOption = category.values.single { it.id is StatisticsCategoryOptionId.ActivitySource }
+        val historicalOption = category.values.single { it.id is StatisticsCategoryOptionId.SnapshotFallback }
+        assertEquals("Tempoo", linkedOption.displayLabel)
+        assertEquals(linkedOption.displayLabel, historicalOption.displayLabel)
+        assertEquals(CountRatio(2, 3), linkedOption.recordedShare)
+        assertEquals(CountRatio(1, 3), historicalOption.recordedShare)
         for (id in listOf(activityId, sequenceId)) {
             for (field in repository.seriesDetail(id, all).fields) {
                 when (field) {
@@ -4526,6 +4538,15 @@ class StatisticsRepositoryTest {
         database.openHelper.writableDatabase.execSQL(
             "UPDATE activity_executions SET original_zone_id = 'America/New_York', " +
                 "original_utc_offset_minutes = -300 WHERE id = 's4-other'",
+        )
+        activitySnapshot("s4-one-off", null, sourceLinked = false)
+        completedActivity(
+            "s4-one-off-execution",
+            "s4-one-off",
+            ONE_OFF,
+            3 * MINUTE,
+            "2026-11-01",
+            startedAtMs = millis("2026-11-01T12:00:00Z"),
         )
         activitySnapshot("plan-snapshot", "activity-series", sourceTemplate = "activity", sourceRevision = 1)
         denseStatisticsSnapshotField("plan-snapshot", 4)

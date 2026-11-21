@@ -10,11 +10,14 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotSame
@@ -28,7 +31,7 @@ import java.time.YearMonth
 class StatisticsControllerTest {
     @Test
     fun routeOwnerStartsAtCurrentLocalMonthAndCreatesFreshControllerAfterExit() {
-        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val owner = StatisticsControllerOwner()
         val createdPeriods = mutableListOf<StatisticsPeriod>()
         var reads = 0
@@ -172,6 +175,7 @@ class StatisticsControllerTest {
                     controller.awaitState { it.load is StatisticsLoadState.Content && it.selectedPeriod == period }
                 }
                 val refreshedPeriod = periods.last()
+                controller.selectPeriod(refreshedPeriod)
                 controller.refresh()
                 val refreshed =
                     controller.awaitState {
@@ -179,71 +183,194 @@ class StatisticsControllerTest {
                             (it.load as StatisticsLoadState.Content).overview.global.topLevelExecutionCount == 7L
                     }
                 assertEquals(refreshedPeriod, refreshed.selectedPeriod)
-                assertEquals(listOf(initial) + periods + refreshedPeriod, passed)
+                controller.retry()
+                controller.awaitState {
+                    (it.load as? StatisticsLoadState.Content)?.overview?.global?.topLevelExecutionCount == 8L
+                }
+                assertEquals(listOf(initial) + periods + listOf(refreshedPeriod, refreshedPeriod), passed)
             } finally {
                 fixture.scope.cancel()
             }
         }
 
     @Test
-    fun staleSuccessAndFailureCannotReplaceNewerPeriodResult() =
-        runBlocking {
-            val oldSuccess = CompletableDeferred<StatisticsOverview>()
-            val oldFailure = CompletableDeferred<StatisticsOverview>()
-            val current = CompletableDeferred<StatisticsOverview>()
-            var calls = 0
-            val fixture =
-                controller(StatisticsPeriod.AllTime) {
-                    when (calls++) {
-                        0 -> oldSuccess.await()
-                        1 -> oldFailure.await()
-                        else -> current.await()
-                    }
-                }
-            val controller = fixture.controller
-            try {
-                controller.selectPeriod(StatisticsPeriod.Day(LocalDate.parse("2026-08-20")))
-                controller.refresh()
-                val newest = overview(8)
-                current.complete(newest)
-                controller.awaitState { it.load is StatisticsLoadState.Content }
-                oldSuccess.complete(overview(2))
-                oldFailure.completeExceptionally(IllegalStateException("stale"))
-                withTimeout(2_000) {
-                    controller.awaitState {
-                        it.load is StatisticsLoadState.Content &&
-                            (it.load as StatisticsLoadState.Content).overview === newest
-                    }
-                }
-                assertEquals(StatisticsPeriod.Day(LocalDate.parse("2026-08-20")), controller.state.value.selectedPeriod)
-            } finally {
-                fixture.scope.cancel()
-            }
-        }
+    fun oldSuccessCannotPublishWhenPeriodChangesDuringResultClassification() {
+        val pending = CompletableDeferred<StatisticsOverview>()
+        val current = CompletableDeferred<StatisticsOverview>()
+        val initial = StatisticsPeriod.AllTime
+        val replacement = StatisticsPeriod.Day(LocalDate.parse("2026-08-20"))
+        val fixture = controller(initial) { if (it == initial) pending.await() else current.await() }
+        val controller = fixture.controller
+        try {
+            val initialLoading = controller.state.value
+            var replacementLoading: StatisticsPresentationState? = null
+            pending.complete(
+                overviewDuringClassification {
+                    controller.selectPeriod(replacement)
+                    replacementLoading = controller.state.value
+                },
+            )
 
-    private fun controller(
-        initial: StatisticsPeriod,
-        reader: suspend (StatisticsPeriod) -> StatisticsOverview,
-    ): ControllerFixture {
-        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
-        return ControllerFixture(scope, StatisticsController(scope, initial, reader))
+            assertEquals(replacement, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(replacementLoading, controller.state.value)
+            assertNotSame(initialLoading, controller.state.value)
+
+            val expected = overview(8)
+            current.complete(expected)
+            assertContent(controller.state.value, replacement, expected)
+        } finally {
+            fixture.scope.cancel()
+        }
     }
 
     @Test
-    fun closingControllerInvalidatesAnInFlightRead() =
+    fun closeDuringResultClassificationRetainsTheExactLoadingPublication() {
+        val pending = CompletableDeferred<StatisticsOverview>()
+        val period = StatisticsPeriod.AllTime
+        val fixture = controller(period) { pending.await() }
+        val controller = fixture.controller
+        try {
+            val loading = controller.state.value
+            pending.complete(overviewDuringClassification(controller::close))
+
+            assertEquals(period, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(loading, controller.state.value)
+        } finally {
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun closureRejectsQueuedReadAndSubsequentCommands() =
         runBlocking {
-            val pending = CompletableDeferred<StatisticsOverview>()
-            val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
-            val controller = StatisticsController(scope, StatisticsPeriod.AllTime) { pending.await() }
+            val periods = mutableListOf<StatisticsPeriod>()
+            val initial = StatisticsPeriod.AllTime
+            val replacement = StatisticsPeriod.Day(LocalDate.parse("2026-08-20"))
+            val controller =
+                StatisticsController(this, initial) { period ->
+                    periods += period
+                    overview(1)
+                }
+            yield()
+            assertEquals(listOf(initial), periods)
+
+            controller.selectPeriod(replacement)
+            val loading = controller.state.value
             controller.close()
-            pending.complete(overview(9))
-            assertEquals(StatisticsLoadState.Loading, controller.state.value.load)
-            scope.cancel()
+            controller.selectPeriod(initial)
+            controller.refresh()
+            controller.retry()
+            yield()
+
+            assertEquals(listOf(initial), periods)
+            assertEquals(replacement, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(loading, controller.state.value)
         }
 
     @Test
+    fun staleFailureCannotPublishForTheNewPeriod() {
+        val old = CompletableDeferred<StatisticsOverview>()
+        val current = CompletableDeferred<StatisticsOverview>()
+        val initial = StatisticsPeriod.AllTime
+        val replacement = StatisticsPeriod.Day(LocalDate.parse("2026-08-20"))
+        val periods = mutableListOf<StatisticsPeriod>()
+        val fixture =
+            controller(initial) { period ->
+                periods += period
+                if (period == initial) old.await() else current.await()
+            }
+        val controller = fixture.controller
+        val emissions = fixture.recordPublications()
+        try {
+            val initialLoading = controller.state.value
+            controller.selectPeriod(replacement)
+            val replacementLoading = controller.state.value
+
+            old.completeExceptionally(IllegalStateException("obsolete"))
+            assertEquals(replacement, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(replacementLoading, controller.state.value)
+            assertEquals(listOf(initialLoading, replacementLoading), emissions)
+
+            val expected = overview(8)
+            current.complete(expected)
+            val result = controller.state.value
+            assertContent(result, replacement, expected)
+            assertEquals(listOf(initialLoading, replacementLoading, result), emissions)
+            assertEquals(listOf(initial, replacement), periods)
+        } finally {
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun identicalRefreshesKeepTheNewerLoadingAndRevokeThePriorPublication() {
+        val period = StatisticsPeriod.AllTime
+        val expected = overview(2)
+        val older = CompletableDeferred<StatisticsOverview>()
+        val newer = CompletableDeferred<StatisticsOverview>()
+        val reads = listOf(CompletableDeferred(expected), older, newer).iterator()
+        val periods = mutableListOf<StatisticsPeriod>()
+        val fixture =
+            controller(period) {
+                periods += it
+                reads.next().await()
+            }
+        val controller = fixture.controller
+        val emissions = fixture.recordPublications()
+        try {
+            val initial = controller.state.value
+            assertContent(initial, period, expected)
+            controller.refresh()
+            val olderLoading = controller.state.value
+            controller.refresh()
+            val newerLoading = controller.state.value
+            assertNotSame(olderLoading, newerLoading)
+
+            older.complete(overview(5))
+            assertEquals(period, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(newerLoading, controller.state.value)
+            assertEquals(listOf(initial, olderLoading, newerLoading), emissions)
+
+            newer.complete(expected)
+            val result = controller.state.value
+            assertContent(result, period, expected)
+            assertNotSame(initial, result)
+            assertEquals(listOf(initial, olderLoading, newerLoading, result), emissions)
+            assertEquals(listOf(period, period, period), periods)
+        } finally {
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
+    fun failureFromAnInFlightReadCannotPublishAfterClose() {
+        val pending = CompletableDeferred<StatisticsOverview>()
+        val period = StatisticsPeriod.AllTime
+        val fixture = controller(period) { pending.await() }
+        val controller = fixture.controller
+        val emissions = fixture.recordPublications()
+        try {
+            val loading = controller.state.value
+            controller.close()
+            pending.completeExceptionally(IllegalStateException("obsolete"))
+
+            assertEquals(period, controller.state.value.selectedPeriod)
+            assertSame(StatisticsLoadState.Loading, controller.state.value.load)
+            assertSame(loading, controller.state.value)
+            assertEquals(listOf(loading), emissions)
+        } finally {
+            fixture.scope.cancel()
+        }
+    }
+
+    @Test
     fun cancelledReadDoesNotPublishFailure() {
-        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val pending = CompletableDeferred<StatisticsOverview>()
         val controller = StatisticsController(scope, StatisticsPeriod.AllTime) { pending.await() }
         try {
@@ -258,14 +385,23 @@ class StatisticsControllerTest {
     @Test
     fun routeExitSuppressesPendingSuccessAndFailureAfterReentry() {
         for (fails in listOf(false, true)) {
-            val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
             val owner = StatisticsControllerOwner()
+            val oldPeriods = mutableListOf<StatisticsPeriod>()
             val pending = CompletableDeferred<StatisticsOverview>()
             try {
-                val old = owner.get { StatisticsController(scope, it) { pending.await() } }
+                val old =
+                    owner.get {
+                        StatisticsController(scope, it) { period ->
+                            oldPeriods += period
+                            pending.await()
+                        }
+                    }
+                val oldLoading = old.state.value
                 owner.onRouteExited()
                 val expected = overview(2)
                 val current = owner.get { StatisticsController(scope, it) { expected } }
+                val currentPublication = current.state.value
                 if (fails) {
                     pending.completeExceptionally(
                         IllegalStateException("obsolete failure"),
@@ -273,12 +409,15 @@ class StatisticsControllerTest {
                 } else {
                     pending.complete(overview(9))
                 }
-                assertNotSame(old, current)
-                assertEquals(StatisticsLoadState.Loading, old.state.value.load)
-                assertSame(expected, (current.state.value.load as StatisticsLoadState.Content).overview)
+                old.selectPeriod(StatisticsPeriod.AllTime)
                 old.refresh()
                 old.retry()
-                assertEquals(StatisticsLoadState.Loading, old.state.value.load)
+                assertNotSame(old, current)
+                assertSame(StatisticsLoadState.Loading, old.state.value.load)
+                assertSame(oldLoading, old.state.value)
+                assertEquals(listOf(oldLoading.selectedPeriod), oldPeriods)
+                assertContent(current.state.value, oldLoading.selectedPeriod, expected)
+                assertSame(currentPublication, current.state.value)
             } finally {
                 owner.onRouteExited()
                 scope.cancel()
@@ -290,10 +429,51 @@ class StatisticsControllerTest {
         predicate: (StatisticsPresentationState) -> Boolean,
     ): StatisticsPresentationState = withTimeout(3_000) { state.first(predicate) }
 
+    private fun controller(
+        initial: StatisticsPeriod,
+        reader: suspend (StatisticsPeriod) -> StatisticsOverview,
+    ): ControllerFixture {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        return ControllerFixture(scope, StatisticsController(scope, initial, reader))
+    }
+
     private data class ControllerFixture(
         val scope: CoroutineScope,
         val controller: StatisticsController,
-    )
+    ) {
+        fun recordPublications(): List<StatisticsPresentationState> {
+            val publications = mutableListOf<StatisticsPresentationState>()
+            scope.launch { controller.state.collect { publications += it } }
+            return publications
+        }
+    }
+
+    private fun assertContent(
+        state: StatisticsPresentationState,
+        period: StatisticsPeriod,
+        expected: StatisticsOverview,
+    ) {
+        assertEquals(period, state.selectedPeriod)
+        assertSame(expected, assertInstanceOf(StatisticsLoadState.Content::class.java, state.load).overview)
+    }
+
+    private fun overviewDuringClassification(action: () -> Unit): StatisticsOverview {
+        val empty = overview(0)
+        val series =
+            empty.series.map {
+                if (it.series.kind == StatisticsSeriesKind.ACTIVITY) it.copy(executionCount = 1) else it
+            }
+        return empty.copy(
+            series =
+                object : List<StatisticsSeriesPeriodSummary> by series {
+                    // With zero top-level executions, determining emptiness checks the Series catalog.
+                    override fun iterator(): Iterator<StatisticsSeriesPeriodSummary> {
+                        action()
+                        return series.iterator()
+                    }
+                },
+        )
+    }
 
     private fun overview(count: Long): StatisticsOverview {
         val oneOffSeries =

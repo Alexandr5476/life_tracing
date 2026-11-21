@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -7,6 +8,7 @@ import io
 import json
 import os
 from unittest.mock import patch, Mock
+from xml.dom import minidom
 
 
 spec = importlib.util.spec_from_file_location('profile', Path(__file__).with_name('api26_profile.py'))
@@ -18,6 +20,101 @@ runner_spec.loader.exec_module(runner)
 
 
 class ProfileAdmissionTests(unittest.TestCase):
+    def test_profile_installs_measured_emulator_before_version_admission(self):
+        value = profile.Api26Profile.__new__(profile.Api26Profile)
+        value.sdk = Path('sdk')
+        value.ci = Mock()
+        value.record = {}
+        value.save = Mock()
+        value.install_emulator = Mock()
+        value.ci.emulator_revision.side_effect = lambda: {
+            'revision': '37.2.13' if value.install_emulator.called else '37.3.10',
+        }
+        value.command = Mock(return_value='Android emulator version 37.2.13.0 (build_id 16740729)')
+        value.validate_graphics_environment = Mock(side_effect=ValueError('stop before device setup'))
+        value.setup = Mock()
+
+        with self.assertRaisesRegex(ValueError, 'stop before device setup'):
+            value.prepare()
+
+        value.install_emulator.assert_called_once()
+        self.assertEqual(value.record['emulator_toolchain']['revision'], '37.2.13')
+        value.setup.assert_not_called()
+
+    def test_pinned_sdk_metadata_does_not_admit_a_different_binary(self):
+        value = profile.Api26Profile.__new__(profile.Api26Profile)
+        value.sdk = Path('sdk')
+        value.ci = Mock()
+        value.ci.emulator_revision.return_value = {'revision': '37.2.13'}
+        value.record = {}
+        value.save = Mock()
+        value.install_emulator = Mock()
+        value.command = Mock(return_value='Android emulator version 37.2.13.0 (build_id 12345678)')
+        value.setup = Mock()
+
+        with self.assertRaisesRegex(ValueError, '16740729'):
+            value.prepare()
+
+        self.assertEqual(value.record['status'], 'FAILED')
+        self.assertNotIn('emulator_toolchain', value.record)
+        value.setup.assert_not_called()
+
+    def test_archive_install_replaces_sdk_binary_and_preserves_package_metadata(self):
+        for checksum_matches in (True, False):
+            with self.subTest(checksum_matches=checksum_matches), tempfile.TemporaryDirectory() as temp:
+                sdk = Path(temp)
+                installed = sdk / 'emulator'
+                installed.mkdir()
+                metadata = ('<repo:repository xmlns:repo="urn:repository" xmlns:details="urn:details" '
+                            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+                            '<localPackage path="emulator"><type-details xsi:type="details:generic"/>'
+                            '<revision><major>37</major><minor>3</minor><micro>10</micro></revision>'
+                            '<display-name>Android Emulator</display-name></localPackage></repo:repository>')
+                (installed / 'package.xml').write_text(metadata, encoding='utf-8')
+                (installed / 'emulator').write_bytes(b'newer SDK binary')
+                (installed / 'newer-only-library').touch()
+                archive = b'fixture archive'
+                commands = []
+
+                def command(args, label, timeout):
+                    commands.append(label)
+                    if label == 'emulator-download':
+                        self.assertEqual(args[-1], 'https://dl.google.com/android/repository/emulator-linux_x64-16740729.zip')
+                        args[args.index('--output') + 1].write_bytes(archive)
+                    elif label == 'emulator-extract':
+                        stage = args[-1] / 'emulator'
+                        stage.mkdir()
+                        (stage / 'emulator').write_bytes(b'measured binary')
+                        (stage / 'source.properties').write_text('Pkg.Revision=37.2.13\n', encoding='utf-8')
+                    else:
+                        self.fail(f'unexpected command: {args}')
+
+                value = profile.Api26Profile.__new__(profile.Api26Profile)
+                value.sdk = sdk
+                value.command = command
+                digest = hashlib.sha256(archive).hexdigest() if checksum_matches else '0' * 64
+                with patch.object(profile, 'EMULATOR_ARCHIVE_SHA256', digest, create=True):
+                    if checksum_matches:
+                        value.install_emulator()
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'checksum'):
+                            value.install_emulator()
+
+                if checksum_matches:
+                    self.assertEqual(commands, ['emulator-download', 'emulator-extract'])
+                    self.assertEqual((installed / 'emulator').read_bytes(), b'measured binary')
+                    self.assertFalse((installed / 'newer-only-library').exists())
+                    resulting = minidom.parse(str(installed / 'package.xml'))
+                    self.assertEqual(resulting.documentElement.getAttribute('xmlns:details'), 'urn:details')
+                    self.assertEqual(resulting.getElementsByTagName('type-details')[0].getAttribute('xsi:type'),
+                                     'details:generic')
+                    self.assertEqual(resulting.getElementsByTagName('minor')[0].firstChild.data, '2')
+                    self.assertEqual(resulting.getElementsByTagName('micro')[0].firstChild.data, '13')
+                else:
+                    self.assertEqual(commands, ['emulator-download'])
+                    self.assertEqual((installed / 'emulator').read_bytes(), b'newer SDK binary')
+                    self.assertEqual((installed / 'package.xml').read_text(encoding='utf-8'), metadata)
+
     def test_prepared_and_restored_guests_reject_actual_dma_advertisement(self):
         field = ('INSTRUMENTATION_RESULT: actual_api=26\n'
                  'INSTRUMENTATION_RESULT: snapshot_actual=false\n'
@@ -255,7 +352,10 @@ class ProfileAdmissionTests(unittest.TestCase):
                         contextlib.redirect_stdout(io.StringIO()):
                     sensor.return_value.start.return_value = {'calibrated':True}
                     sensor.return_value.close.return_value = True
-                    factory.return_value.record = {'status':'FAILED' if defect=='prepare' else 'PREPARED'}
+                    toolchain = {'revision': '37.2.13', 'build_id': '16740729'}
+                    factory.return_value.record = {'status':'FAILED'} if defect == 'prepare' else {
+                        'status': 'PREPARED', 'emulator_toolchain': toolchain,
+                    }
                     factory.return_value.close.return_value = defect != 'cleanup'
                     if defect == 'prepare': factory.return_value.prepare.side_effect = ValueError('field true')
                     if defect == 'graphics_environment':
@@ -267,9 +367,11 @@ class ProfileAdmissionTests(unittest.TestCase):
                     self.assertEqual(reports.call_count, 0 if defect=='prepare' else 1 if defect=='graphics_environment' else 3)
                 evidence = json.loads((root/'ci-evidence/api26/evidence.json').read_text())
                 if defect == 'prepare':
+                    self.assertNotIn('emulator_toolchain', evidence)
                     self.assertEqual(commands, [])
                     self.assertTrue(all(v['status']=='NOT_RUN' for v in evidence['modules'].values()))
                 else:
+                    self.assertEqual(evidence['emulator_toolchain'], toolchain)
                     self.assertEqual([v[0] for v in commands], [] if defect=='graphics_environment' else ['data','app','startup'])
                     self.assertEqual(factory.return_value.validate_graphics_environment.call_count,
                                      1 if defect=='graphics_environment' else 3)

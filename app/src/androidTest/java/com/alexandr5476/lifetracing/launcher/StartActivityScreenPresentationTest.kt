@@ -18,6 +18,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
@@ -365,7 +366,17 @@ class StartActivityScreenPresentationTest {
         var hostGeneration by mutableIntStateOf(0)
         composeTestRule.setContent {
             key(hostGeneration) {
-                LifeTracingTheme { StartActivityScreen(state, actions::add, interaction) }
+                LifeTracingTheme {
+                    StartActivityScreen(
+                        state,
+                        onAction = { action ->
+                            actions.add(action)
+                            // Mirror the controller's immediate feedback to the controlled search field.
+                            if (action is StartActivityAction.Search) state = state.copy(searchQuery = action.query)
+                        },
+                        interaction = interaction,
+                    )
+                }
             }
         }
 
@@ -393,17 +404,29 @@ class StartActivityScreenPresentationTest {
             assertFalse(actions.any { it is StartActivityAction.Launch })
         }
 
-        val mainValueInput = composeTestRule.onNodeWithText("2")
-        mainValueInput.performTextClearance()
-        composeTestRule.onAllNodes(hasSetTextAction())[0].performTextInput("-1.25")
+        val mainValueInput = composeTestRule.onNode(hasText("Glasses cups") and hasSetTextAction())
+        mainValueInput.assertTextContains("2").performTextClearance()
+        mainValueInput.performTextInput("-1.25")
         hostGeneration++
         composeTestRule.onNodeWithText("-1.25").assertIsDisplayed()
         composeTestRule.onNodeWithText("Cancel").performClick()
         hostGeneration++
         composeTestRule.onNodeWithText("Complete").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Search library").performTextInput("water")
+        val searchLabel = text(R.string.launcher_search_hint)
+        val searchInput = composeTestRule.onLazyNode(hasText(searchLabel) and hasSetTextAction())
+        searchInput.assertIsEnabled()
         composeTestRule.runOnIdle {
-            assertEquals(StartActivityAction.Search("water"), actions.last())
+            assertFalse(actions.any { it is StartActivityAction.Search })
+        }
+        searchInput.performTextInput("wa")
+        searchInput.assertTextContains("wa")
+        searchInput.performTextInput("ter")
+        searchInput.assertTextContains("water")
+        composeTestRule.runOnIdle {
+            assertEquals(
+                listOf(StartActivityAction.Search("wa"), StartActivityAction.Search("water")),
+                actions.filterIsInstance<StartActivityAction.Search>(),
+            )
         }
     }
 

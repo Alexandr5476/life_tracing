@@ -820,6 +820,10 @@
       "sequenceChildDeletionSessionAndCommittedRefreshGateSurviveActivityRecreation",
       "sequenceStructuralSessionAndCommittedRefreshGateSurviveActivityRecreation"
     ],
+    "com.alexandr5476.lifetracing.MainActivityStatisticsJourneyTest": [
+      "reopenedHistoryDrivesKeyboardNavigationAndCommittedRefresh",
+      "retryAndSupersededReadsHonorTheCurrentProductionEntry"
+    ],
     "com.alexandr5476.lifetracing.PlanExecutionAccessibilityPersistenceTest": [
       "dailyOriginSemanticTimedStartPreservesExactFrozenIdentityAfterReopen",
       "explicitIndependentDstOffsetsAndCurrentOverlapConfirmationPersistExactHistoricalFacts",
@@ -1435,22 +1439,43 @@
       "failed_write_keeps_canonical_selections_and_localized_retry_recovers",
       "loading_and_read_failure_use_resources_and_offer_reload"
     ],
+    "com.alexandr5476.lifetracing.statistics.StatisticsPeriodAccessibilityTest": [
+      "detailRejectsInvalidDraftsAndUsesTheAppliedPeriodAtIncreasedRussianScaling",
+      "overviewRejectsInvalidDraftsAndUsesTheAppliedPeriodAtIncreasedEnglishScaling"
+    ],
     "com.alexandr5476.lifetracing.statistics.StatisticsScreenPresentationTest": [
       "activityAndSequenceRowsPassStableIdsAndSelectedPeriodButOneOffHasNoAction",
       "all_period_kinds_dispatch_values_and_week_is_monday_anchored",
       "canonical_series_metadata_and_duration_sample_states_are_shown",
+      "englishDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh",
       "existingCustomRangeIsVisibleAndCanBeReapplied",
       "loading_failure_retry_empty_and_zero_count_series_are_presented",
       "malformed_custom_dates_do_not_dispatch",
+      "nativeActionsRetireAfterEqualPublicationAndLifecyclePause",
+      "offscreenDuplicateSeriesAreLazyAndKeyboardActivatesTheExactNextId",
+      "publicationStatusAndGlobalMetricsExposeCanonicalContextWithNoRecompositionRead",
+      "refreshRestoresSurvivingRowAndFallsBackForRemovedRow",
+      "retainedNativeActionsRespectNavigationAndSameSeriesSessionReplacement",
+      "retryFocusMovesToStableStatusWhenLoadingReplacesRetry",
+      "returnFromDetailRestoresKeyboardFocusToTheExactDuplicateNameRow",
       "reversed_custom_dates_do_not_dispatch",
+      "russianDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh",
       "systemOneOffHeadingUsesRussianResourceInsteadOfPersistedEnglishName"
+    ],
+    "com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailAccessibilityTest": [
+      "categoryTraversalIsLazyAndFocusSurvivesRefreshReorderAndRemoval",
+      "englishActivityFactsAndFieldsReflowAtIncreasedScaling",
+      "publicationWhilePausedRestoresTheFocusedMetricAfterResume",
+      "retryContinuesThePreviouslyFocusedFieldWithoutDispatchingAnExtraRead",
+      "russianSequenceFactsAndFieldsReflowAtIncreasedScaling"
     ],
     "com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailScreenTest": [
       "detailPeriodSelectionSupportsMondayWeeksInclusiveCustomAndAllTime",
       "loading_failure_retry_and_refresh_useTheExpectedControllerCallbacks",
       "noDurationSamplesAndSampledZeroRemainDistinctAndLifecycleMetadataIsVisible",
       "numberCategoryAndTextFieldsUseStableIdentityAndCanonicalSamples",
-      "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent"
+      "sequenceMetricsAndNoCurrentSourceAreRenderedIncludingZeroExecutionContent",
+      "zeroPeriodCoveragePreservesHistoricalOptionsAndUnavailableNumberTotals"
     ],
     "com.alexandr5476.lifetracing.PrimaryExecutionJourneyTest": [
       "accessibleLastRootDeletionReturnsCanonicalEmptyHistoryAfterPhysicalReopen",
@@ -1517,6 +1542,7 @@
       "capturesOnlySystemUiObstructionsOnceAndKeepsEveryReadOnlyCommand",
       "captureFailureKeepsRemainingEvidenceAndCannotTriggerAnotherAttempt",
       "boundedReadReportsTruncationAndErrorsAndClosesItsStream",
+      "oversizedSurfaceFlingerDumpRetainsWindowUpdateCounters",
       "deadlineReturnsWithoutWaitingForOpenAndClosesALateStream",
       "deadlineReturnsWhileLiveProducerDrainsBeforeItsPipeCloses",
       "oversizedDiagnosticsRetainOriginalCauseAndLateFocusEvidenceInTheExportedFailure",

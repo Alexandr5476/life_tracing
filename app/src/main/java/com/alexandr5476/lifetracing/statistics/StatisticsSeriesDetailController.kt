@@ -22,6 +22,8 @@ sealed interface StatisticsSeriesDetailLoadState {
 data class StatisticsSeriesDetailPresentationState(
     val selectedPeriod: StatisticsPeriod,
     val load: StatisticsSeriesDetailLoadState = StatisticsSeriesDetailLoadState.Loading,
+    // StateFlow must deliver a fresh publication even when its rendered contents compare equal.
+    private val publicationIdentity: Any = Any(),
 )
 
 class StatisticsSeriesDetailController internal constructor(
