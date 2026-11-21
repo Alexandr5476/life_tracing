@@ -1,17 +1,25 @@
+@file:OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+
 package com.alexandr5476.lifetracing
 
 import android.content.Context
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import androidx.core.os.LocaleListCompat
 import androidx.datastore.preferences.core.Preferences
@@ -29,6 +37,7 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppLanguage
 import com.alexandr5476.lifetracing.ui.appearance.AppLanguageController
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
@@ -46,6 +55,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
@@ -53,8 +63,11 @@ import java.util.concurrent.atomic.AtomicReference
 
 @Suppress("TooManyFunctions")
 class SettingsProductionRouteTest {
-    @get:Rule
     val compose = createEmptyComposeRule()
+    private val keyboard = KeyboardInputFixture(compose)
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(keyboard).around(compose)
 
     @Test
     @Suppress("LongMethod")
@@ -113,14 +126,18 @@ class SettingsProductionRouteTest {
                             appearanceStorage.keys.map { it.name }.toSet(),
                         )
                         listOf(AppLanguage.ENGLISH, AppLanguage.RUSSIAN, AppLanguage.SYSTEM).forEach { language ->
+                            val languageTag = "settings-language-$language"
                             changeLocalesAndAwaitRecreation(scenario, language.languageTag) {
-                                click("settings-language-$language")
+                                pressEnter(languageTag)
                             }
                             compose.waitUntil(5_000) { readLanguage(scenario) == language }
-                            awaitSelected("settings-language-$language")
+                            awaitSelected(languageTag)
+                            keyboard.awaitFocus(compose.onNodeWithTag(languageTag))
                             assertPlatformLocales(scenario, language)
                             scenario.recreate()
-                            awaitSelected("settings-language-$language")
+                            awaitSelected(languageTag)
+                            keyboard.awaitFocus(compose.onNodeWithTag(languageTag))
+                            verifyLanguageTraversal(languageTag, language)
                             assertSelections()
                             val title = AtomicReference<String>()
                             scenario.onActivity { title.set(it.getString(R.string.settings_title)) }
@@ -171,7 +188,11 @@ class SettingsProductionRouteTest {
                         assertEquals(selectedDate, daily.state.value.selectedDate)
                         click("daily-settings")
                         awaitDestination("settings-back")
-                        click("settings-back")
+                        pressEnter("settings-archived-templates")
+                        awaitDestination("archived-back")
+                        pressEnter("archived-back")
+                        awaitDestination("settings-back")
+                        pressEnter("settings-back")
                         awaitDestination("daily-settings")
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
@@ -190,6 +211,33 @@ class SettingsProductionRouteTest {
                 clearLiveSession(live)
             }
         }
+
+    private fun pressEnter(tag: String) {
+        val node = compose.onNodeWithTag(tag).performScrollTo()
+        keyboard.enter(node)
+        node.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
+        node.performKeyInput { pressKey(Key.Enter) }
+    }
+
+    private fun verifyLanguageTraversal(
+        tag: String,
+        language: AppLanguage,
+    ) {
+        val followingTag =
+            when (language) {
+                AppLanguage.SYSTEM -> "settings-language-ENGLISH"
+                AppLanguage.ENGLISH -> "settings-language-RUSSIAN"
+                AppLanguage.RUSSIAN -> "settings-interface-90"
+            }
+        val selected = compose.onNodeWithTag(tag)
+        selected.performKeyInput { pressKey(Key.Tab) }
+        compose.onNodeWithTag(followingTag).assertIsFocused().performKeyInput {
+            keyDown(Key.ShiftLeft)
+            pressKey(Key.Tab)
+            keyUp(Key.ShiftLeft)
+        }
+        selected.assertIsFocused().assertIsSelected()
+    }
 
     private suspend fun selectAppearance(
         repository: AppearancePreferencesRepository,

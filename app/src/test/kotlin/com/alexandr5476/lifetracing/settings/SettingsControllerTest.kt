@@ -65,6 +65,9 @@ class SettingsControllerTest {
                 assertNull(failed.pending)
                 assertEquals(initial, failed.appearance)
                 assertEquals(change, failed.failure)
+                fixture.controller.retryRead()
+                assertEquals(change, fixture.controller.awaitState { it.ready }.failure)
+                assertEquals(listOf(change), fixture.requests)
                 fixture.write = { fixture.values.value = initial.copy(accentPaletteId = AccentPaletteId.SLATE) }
                 fixture.controller.retryMutation()
                 val settled = fixture.controller.awaitState { it.pending == null && it.failure == null }
@@ -103,6 +106,48 @@ class SettingsControllerTest {
                 failRead = false
                 controller.retryRead()
                 assertEquals(130, controller.awaitState { it.ready }.appearance?.textScalePercent)
+                assertTrue(writes.isEmpty())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun read_retry_keeps_the_last_observation_and_blocks_writes_until_a_fresh_read() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val initial = AppearancePreferences()
+            val updated = initial.copy(textScalePercent = 130)
+            val failObservation = CompletableDeferred<Unit>()
+            val releaseRetry = CompletableDeferred<Unit>()
+            var reads = 0
+            val writes = mutableListOf<SettingsChange.Appearance>()
+            val controller =
+                SettingsController(
+                    flow {
+                        if (++reads == 1) {
+                            emit(initial)
+                            failObservation.await()
+                            throw IOException("read failed")
+                        }
+                        releaseRetry.await()
+                        emit(updated)
+                    },
+                    { writes += it },
+                    { AppLanguage.SYSTEM },
+                    {},
+                    scope,
+                )
+            try {
+                failObservation.complete(Unit)
+                controller.awaitState { it.appearanceReadFailed }
+                controller.retryRead()
+                assertFalse(controller.state.value.appearanceReadFailed)
+                assertFalse(controller.state.value.ready)
+                assertEquals(initial, controller.state.value.appearance)
+                controller.change(SettingsChange.TextScale(120))
+                releaseRetry.complete(Unit)
+                assertEquals(updated, controller.awaitState { it.ready }.appearance)
                 assertTrue(writes.isEmpty())
             } finally {
                 scope.cancel()

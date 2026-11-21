@@ -91,14 +91,19 @@ internal data class SettingsState(
     val language: AppLanguage? = null,
     val appearanceReadFailed: Boolean = false,
     val languageReadFailed: Boolean = false,
+    val readingAppearance: Boolean = false,
     val pending: SettingsChange? = null,
     val writeCompleted: Boolean = false,
+    val retryingMutation: Boolean = false,
     val failure: SettingsChange? = null,
     // Preserve distinct publications even if a fast retry ends in the same visible state.
     val actionGeneration: Long = 0,
 ) {
+    val readFailed: Boolean
+        get() = appearanceReadFailed || languageReadFailed
+
     val ready: Boolean
-        get() = appearance != null && language != null && !appearanceReadFailed && !languageReadFailed
+        get() = appearance != null && language != null && !readingAppearance && !readFailed
 }
 
 /** Transient requests never supply selected values; only repository emissions and platform reads do. */
@@ -120,20 +125,22 @@ internal class SettingsController(
 
     fun retryRead() {
         observation?.cancel()
-        mutableState.update { it.copy(actionGeneration = it.actionGeneration + 1) }
+        mutableState.update {
+            it.copy(appearanceReadFailed = false, readingAppearance = true, actionGeneration = it.actionGeneration + 1)
+        }
         refreshLanguage()
         observation =
             scope.launch {
                 try {
                     preferences.collect { appearance ->
                         mutableState.update {
-                            settle(it.copy(appearance = appearance, appearanceReadFailed = false))
+                            settle(it.copy(appearance = appearance, readingAppearance = false))
                         }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
-                    mutableState.update { it.copy(appearanceReadFailed = true) }
+                    mutableState.update { it.copy(appearanceReadFailed = true, readingAppearance = false) }
                 }
             }
     }
@@ -149,21 +156,31 @@ internal class SettingsController(
         }
     }
 
-    fun change(change: SettingsChange) {
+    fun change(change: SettingsChange) = submit(change, retrying = false)
+
+    private fun submit(
+        change: SettingsChange,
+        retrying: Boolean,
+    ) {
         if (change is SettingsChange.Appearance) {
-            appearanceMutations.launchIfAccepted({ accept(change) }) { executeChange(change) }
-        } else if (accept(change)) {
+            appearanceMutations.launchIfAccepted({ accept(change, retrying) }) { executeChange(change) }
+        } else if (accept(change, retrying)) {
             scope.launch { executeChange(change) }
         }
     }
 
-    private fun accept(change: SettingsChange): Boolean {
+    private fun accept(
+        change: SettingsChange,
+        retrying: Boolean,
+    ): Boolean {
         val current = mutableState.value
-        if (!current.ready || current.pending != null) return false
+        val retryReplaced = retrying && change != current.failure
+        if (!current.ready || current.pending != null || retryReplaced) return false
         val requested =
             current.copy(
                 pending = change,
                 writeCompleted = false,
+                retryingMutation = retrying,
                 failure = null,
                 actionGeneration = current.actionGeneration + 1,
             )
@@ -183,17 +200,19 @@ internal class SettingsController(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            mutableState.update { it.copy(pending = null, writeCompleted = false, failure = change) }
+            mutableState.update {
+                it.copy(pending = null, writeCompleted = false, retryingMutation = false, failure = change)
+            }
         }
     }
 
     fun retryMutation() {
-        mutableState.value.failure?.let(::change)
+        mutableState.value.failure?.let { submit(it, retrying = true) }
     }
 
     private fun settle(state: SettingsState): SettingsState =
         if (state.writeCompleted && state.pending?.matches(state) == true) {
-            state.copy(pending = null, writeCompleted = false)
+            state.copy(pending = null, writeCompleted = false, retryingMutation = false)
         } else {
             state
         }
