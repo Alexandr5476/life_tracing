@@ -4,12 +4,21 @@ package com.alexandr5476.lifetracing
 
 import android.content.Context
 import android.os.Looper
+import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -18,6 +27,10 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
+import androidx.navigationevent.NavigationEventTransitionState
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
@@ -43,10 +56,18 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryLoad
+import com.alexandr5476.lifetracing.settings.ArchivedRestoreCoordinator
 import com.alexandr5476.lifetracing.settings.ArchivedTemplatesController
+import com.alexandr5476.lifetracing.settings.ArchivedTemplatesScreen
 import com.alexandr5476.lifetracing.settings.archivedRowKey
+import com.alexandr5476.lifetracing.settings.restoreArchivedTemplate
+import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
+import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -54,6 +75,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
@@ -63,6 +85,7 @@ import org.junit.Test
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @OptIn(ExperimentalTestApi::class)
@@ -71,6 +94,91 @@ class ArchivedTemplatesProductionTest {
     // Queue composition continuations for the test clock to drain on the UI thread instead.
     @get:Rule
     val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
+
+    @Test
+    fun route_back_actions_expire_across_transitions_reentry_pause_and_recreation() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.onNodeWithTag("daily-settings").performScrollTo().performClick()
+            val settingsBack = nativeClick("settings-back")
+            val openArchive = nativeClick("settings-archived-templates")
+            compose.mainClock.autoAdvance = false
+            try {
+                compose.runOnIdle { assertTrue(openArchive()) }
+                compose.mainClock.advanceTimeByFrame()
+                compose.mainClock.advanceTimeByFrame()
+                compose.onNodeWithTag("settings-page").assertExists()
+                compose.onNodeWithTag("archived-page").assertExists()
+                compose.runOnIdle {
+                    assertFalse(openArchive())
+                    assertFalse(settingsBack())
+                }
+            } finally {
+                compose.mainClock.autoAdvance = true
+            }
+            awaitLoaded()
+            val archiveBack = nativeClick("archived-back")
+            scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("settings-page").assertIsDisplayed()
+            compose.onNodeWithTag("archived-page").assertDoesNotExist()
+            compose.runOnIdle {
+                assertFalse(settingsBack())
+                assertFalse(openArchive())
+            }
+            compose.onNodeWithTag("settings-archived-templates").performClick()
+            awaitLoaded()
+            val pausedBack = nativeClick("archived-back")
+            scenario.moveToState(Lifecycle.State.STARTED)
+            scenario.onActivity { assertFalse(pausedBack()) }
+            scenario.moveToState(Lifecycle.State.RESUMED)
+            compose.runOnIdle {
+                assertFalse(pausedBack())
+                assertFalse(archiveBack())
+            }
+            val preRecreationBack = nativeClick("archived-back")
+            scenario.recreate()
+            awaitLoaded()
+            compose.runOnIdle { assertFalse(preRecreationBack()) }
+            compose.onNodeWithTag("archived-back").performClick()
+            compose.onNodeWithTag("settings-page").assertIsDisplayed()
+            scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("daily-settings").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("settings-page").assertDoesNotExist()
+            compose.onNodeWithTag("daily-settings").performClick()
+            compose.runOnIdle { assertFalse(settingsBack()) }
+            compose.onNodeWithTag("settings-back").performClick()
+            compose.onNodeWithTag("daily-settings").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("settings-page").assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun predictive_back_started_on_settings_cannot_pop_the_archive_opened_during_the_gesture() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            compose.onNodeWithTag("daily-settings").performScrollTo().performClick()
+            val openArchive = nativeClick("settings-archived-templates")
+            scenario.onActivity { activity ->
+                val start = BackEventCompat(0f, 0f, 0f, BackEventCompat.EDGE_LEFT)
+                activity.onBackPressedDispatcher.dispatchOnBackStarted(start)
+                assertTrue(openArchive())
+            }
+            // Apply the new stack to NavDisplay. The gesture can still be showing its Back preview.
+            compose.waitForIdle()
+            scenario.onActivity { activity ->
+                val transition = activity.navigationEventDispatcher.transitionState.value
+                assertTrue(transition is NavigationEventTransitionState.InProgress)
+                assertEquals(
+                    NavigationEventTransitionState.TRANSITIONING_BACK,
+                    (transition as NavigationEventTransitionState.InProgress).direction,
+                )
+                activity.onBackPressedDispatcher.onBackPressed()
+            }
+            awaitLoaded()
+            compose.onNodeWithTag("archived-page").assertIsDisplayed()
+            scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("settings-page").assertIsDisplayed()
+            compose.onNodeWithTag("archived-page").assertDoesNotExist()
+        }
+    }
 
     @Test
     fun archive_read_resumes_on_ui_thread_after_worker_completion() {
@@ -95,6 +203,7 @@ class ArchivedTemplatesProductionTest {
                                 restoreTemplate = {},
                                 onRestored = {},
                                 scope = scope,
+                                restores = ArchivedRestoreCoordinator(),
                             )
                         }
                     }
@@ -107,6 +216,200 @@ class ArchivedTemplatesProductionTest {
             }
         } finally {
             release.complete(Unit)
+        }
+    }
+
+    @Test
+    fun accepted_restore_finishes_repository_refresh_and_reconciliation_after_screen_disposal() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository.create(context)
+        val at = Instant.ofEpochMilli(System.currentTimeMillis())
+        val template =
+            TemplateAuthoringRepository.create(context).createActivityTemplate(
+                ActivityTemplateDraft("Disposed Restore $at", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = at,
+            )
+        val id = LibraryTemplateId.Activity(template.id)
+        repository.archiveActivityTemplate(template.id, at.plusSeconds(1))
+        val release = CompletableDeferred<Unit>()
+        val mounted = mutableStateOf(true)
+        val requests = AtomicInteger()
+        val reads = AtomicInteger()
+        val activeController = AtomicReference<ArchivedTemplatesController>()
+        val retainedLibrary = AtomicReference<LibraryController>()
+        try {
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                val graph = LifeTracingRuntimeGraph.from(context)
+                scenario.onActivity { activity ->
+                    val owner = ViewModelProvider(activity)[LibraryControllerOwner::class.java]
+                    retainedLibrary.set(owner.get(graph::createLibraryController))
+                    activity.setContent {
+                        if (mounted.value) {
+                            val scope = rememberCoroutineScope()
+                            val controller =
+                                remember(scope) {
+                                    ArchivedTemplatesController(
+                                        readArchived = {
+                                            reads.incrementAndGet()
+                                            withContext(Dispatchers.IO) { repository.getArchived() }
+                                        },
+                                        restoreTemplate = { target ->
+                                            requests.incrementAndGet()
+                                            release.await()
+                                            withContext(Dispatchers.IO) { restoreArchivedTemplate(repository, target) }
+                                        },
+                                        onRestored = owner::refreshIfInitialized,
+                                        scope = scope,
+                                        restores = graph.archivedRestores,
+                                    )
+                                }
+                            SideEffect { activeController.set(controller) }
+                            val state by controller.state.collectAsState()
+                            val restoreStatus by graph.archivedRestores.status.collectAsState()
+                            LifeTracingAppearance(AppearancePreferences()) {
+                                ArchivedTemplatesScreen(
+                                    state,
+                                    controller::restore,
+                                    controller::reload,
+                                    controller::retryRestore,
+                                    {},
+                                    readCurrent = { controller.state.value },
+                                    restoreStatus = restoreStatus,
+                                    readRestoreStatus = { graph.archivedRestores.status.value },
+                                )
+                            }
+                        }
+                    }
+                }
+                val library = retainedLibrary.get()
+                val loaded =
+                    runBlocking {
+                        withTimeout(5_000) { library.state.first { it.browse is LibraryLoad.Content } }
+                    }
+                val initialContents = (loaded.browse as LibraryLoad.Content).value.contents
+                assertFalse(initialContents.activities.any { it.id == id })
+                awaitLoaded()
+                scrollToRow(id)
+                val original = activeController.get()
+                val restore = nativeClick("archived-restore-${id.archivedRowKey()}")
+                compose.runOnIdle {
+                    assertTrue(restore())
+                    assertEquals(id, original.state.value.pending)
+                    assertFalse(restore())
+                    mounted.value = false
+                }
+                compose.onNodeWithTag("archived-page").assertDoesNotExist()
+                assertTrue(repository.getArchived().any { it.id == id })
+                compose.runOnIdle { mounted.value = true }
+                awaitLoaded()
+                assertEquals(2, reads.get())
+                val replacement = activeController.get()
+                assertNotSame(original, replacement)
+                val blocked = attemptPendingRestore(id)
+                compose.runOnIdle { assertFalse(restore()) }
+                assertEquals(1, requests.get())
+
+                release.complete(Unit)
+                compose.waitUntil(5_000) {
+                    val state = original.state.value
+                    val next = replacement.state.value
+                    state.canRestore &&
+                        state.items?.none { it.id == id } == true &&
+                        next.canRestore &&
+                        next.items?.none { it.id == id } == true
+                }
+                assertEquals(4, reads.get())
+                assertEquals(template, TemplateAuthoringRepository.create(context).getActivityTemplate(template.id))
+                runBlocking { awaitLibraryContains(library, id) }
+                compose.runOnIdle { mounted.value = false }
+                compose.onNodeWithTag("archived-page").assertDoesNotExist()
+                compose.runOnIdle { mounted.value = true }
+                awaitLoaded()
+                assertEquals(5, reads.get())
+                val reopened = activeController.get().state.value
+                assertTrue(reopened.items?.none { it.id == id } == true)
+                compose.runOnIdle {
+                    assertFalse(restore())
+                    assertFalse(blocked())
+                }
+                assertEquals(1, requests.get())
+            }
+        } finally {
+            release.complete(Unit)
+        }
+    }
+
+    @Test
+    fun production_archive_keeps_restore_reserved_across_activity_recreation_and_rereads_on_completion() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository.create(context)
+        val at = Instant.ofEpochMilli(System.currentTimeMillis())
+        val template =
+            TemplateAuthoringRepository.create(context).createActivityTemplate(
+                ActivityTemplateDraft("Recreated Archive $at", null, TimeTrackingMode.NO_LIVE_TRACKING, null),
+                createdAt = at,
+            )
+        val id = LibraryTemplateId.Activity(template.id)
+        repository.archiveActivityTemplate(template.id, at.plusSeconds(1))
+        val releaseWrite = CompletableDeferred<Unit>()
+        val reconciling = CompletableDeferred<Unit>()
+        val releaseRead = CompletableDeferred<Unit>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val requests = AtomicInteger()
+        val reads = AtomicInteger()
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val owner = AtomicReference<LibraryControllerOwner>()
+                scenario.onActivity { owner.set(it.libraryControllerOwner) }
+                val original =
+                    ArchivedTemplatesController(
+                        readArchived = {
+                            if (reads.incrementAndGet() == 2) {
+                                reconciling.complete(Unit)
+                                releaseRead.await()
+                            }
+                            withContext(Dispatchers.IO) { repository.getArchived() }
+                        },
+                        restoreTemplate = { target ->
+                            requests.incrementAndGet()
+                            releaseWrite.await()
+                            withContext(Dispatchers.IO) { restoreArchivedTemplate(repository, target) }
+                        },
+                        onRestored = owner.get()::refreshIfInitialized,
+                        scope = scope,
+                        restores = LifeTracingRuntimeGraph.from(context).archivedRestores,
+                    )
+                compose.waitUntil(5_000) { original.state.value.canRestore }
+                scenario.onActivity {
+                    original.restore(id)
+                    assertEquals(id, original.state.value.pending)
+                    scope.cancel()
+                }
+                openArchives()
+                val beforeRecreation = attemptPendingRestore(id)
+                scenario.recreate()
+                awaitLoaded()
+                attemptPendingRestore(id)
+                compose.runOnIdle { assertFalse(beforeRecreation()) }
+
+                releaseWrite.complete(Unit)
+                compose.waitUntil(5_000) { reconciling.isCompleted }
+                assertTrue(repository.getArchived().none { it.id == id })
+                attemptPendingRestore(id)
+                releaseRead.complete(Unit)
+                val rowTag = "archived-row-${id.archivedRowKey()}"
+                compose.waitUntil(5_000) { compose.onAllNodesWithTag(rowTag).fetchSemanticsNodes().isEmpty() }
+                awaitLoaded()
+                assertEquals(listOf(1, 2), listOf(requests.get(), reads.get()))
+                scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+                compose.onNodeWithTag("settings-page").assertIsDisplayed()
+                scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+                compose.onNodeWithTag("daily-settings").performScrollTo().assertIsDisplayed()
+            }
+        } finally {
+            releaseWrite.complete(Unit)
+            releaseRead.complete(Unit)
+            scope.cancel()
         }
     }
 
@@ -314,6 +617,11 @@ class ArchivedTemplatesProductionTest {
         awaitLoaded()
     }
 
+    private fun nativeClick(tag: String): () -> Boolean {
+        val node = compose.onNodeWithTag(tag).fetchSemanticsNode()
+        return requireNotNull(node.config[SemanticsActions.OnClick].action)
+    }
+
     private fun awaitLoaded() {
         compose.waitUntil(5_000) {
             val pages = compose.onAllNodesWithTag("archived-page").fetchSemanticsNodes()
@@ -324,6 +632,17 @@ class ArchivedTemplatesProductionTest {
 
     private fun scrollToRow(id: LibraryTemplateId) {
         compose.onNodeWithTag("archived-page").performScrollToNode(hasTestTag("archived-row-${id.archivedRowKey()}"))
+    }
+
+    private fun attemptPendingRestore(id: LibraryTemplateId): () -> Boolean {
+        val tag = "archived-restore-${id.archivedRowKey()}"
+        compose.onNodeWithTag("archived-page").performScrollToNode(hasTestTag(tag))
+        val control = compose.onNodeWithTag(tag).assertIsNotEnabled()
+        assertTrue(control.fetchSemanticsNode().config.contains(SemanticsProperties.StateDescription))
+        control.performTouchInput { click() }
+        val action = nativeClick(tag)
+        compose.runOnIdle { assertFalse(action()) }
+        return action
     }
 
     private fun restoreRow(id: LibraryTemplateId) {

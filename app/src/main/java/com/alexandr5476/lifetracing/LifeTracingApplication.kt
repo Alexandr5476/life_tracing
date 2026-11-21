@@ -62,6 +62,7 @@ import com.alexandr5476.lifetracing.runtime.AndroidRuntimeVibrator
 import com.alexandr5476.lifetracing.runtime.AndroidWallClock
 import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
 import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
+import com.alexandr5476.lifetracing.settings.ArchivedRestoreCoordinator
 import com.alexandr5476.lifetracing.settings.SettingsAppearanceMutations
 import com.alexandr5476.lifetracing.statistics.StatisticsController
 import com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailController
@@ -153,6 +154,7 @@ class LifeTracingRuntimeGraph internal constructor(
     ) -> StatisticsSeriesDetailController = { _, _ -> error("Statistics detail is unavailable") },
 ) {
     internal val appearanceMutations by lazy { SettingsAppearanceMutations(scope) }
+    internal val archivedRestores = ArchivedRestoreCoordinator()
 
     val dailyController: DailyController
         get() = dailyControllerOwner.get()

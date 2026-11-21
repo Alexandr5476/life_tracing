@@ -92,6 +92,7 @@ fun DailyRoute(
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
     isRouteVisible: Boolean = true,
+    settingsModifier: Modifier = Modifier,
 ) {
     var entered by remember(controller) { mutableStateOf(false) }
     DisposableEffect(controller) {
@@ -112,6 +113,7 @@ fun DailyRoute(
         onExpandSequence = onExpandSequence,
         onExecutePlan = onExecutePlan,
         isRouteVisible = isRouteVisible,
+        settingsModifier = settingsModifier,
     )
 }
 
@@ -129,6 +131,7 @@ internal fun DailyScreen(
     onExpandSequence: (SequenceExecutionId) -> Unit = {},
     onExecutePlan: (PlanActionIdentity) -> Unit = {},
     isRouteVisible: Boolean = true,
+    settingsModifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
     val canonical =
@@ -164,6 +167,7 @@ internal fun DailyScreen(
                         onStatistics,
                         onSettings,
                         focusRecovery.landing,
+                        settingsModifier,
                     )
                 }
                 CommandFailure(state.commandFailure)
@@ -210,6 +214,7 @@ private fun DateHeader(
     onStatistics: () -> Unit,
     onSettings: () -> Unit,
     landingFocus: FocusRequester,
+    settingsModifier: Modifier,
 ) {
     val previous = stringResource(R.string.daily_previous_day)
     val next = stringResource(R.string.daily_next_day)
@@ -288,7 +293,7 @@ private fun DateHeader(
         LifeTracingSecondaryButton(onClick = onStatistics) {
             Text(stringResource(R.string.daily_statistics))
         }
-        LifeTracingSecondaryButton(onClick = onSettings, modifier = Modifier.testTag("daily-settings")) {
+        LifeTracingSecondaryButton(onClick = onSettings, modifier = settingsModifier.testTag("daily-settings")) {
             Text(stringResource(R.string.settings_title))
         }
     }
