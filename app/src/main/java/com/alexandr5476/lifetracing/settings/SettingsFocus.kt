@@ -105,7 +105,7 @@ internal class SettingsFocus(
     }
 
     fun restore(state: SettingsState) {
-        val previous = preferred.value ?: return
+        val previous = preferred.value ?: SETTINGS_HEADING
         val target = state.focusAfterPublication(previous).takeIf(attached::containsKey) ?: SETTINGS_HEADING
         restoringSavedFocus = false
         if (active == target) return
@@ -116,12 +116,16 @@ internal class SettingsFocus(
             restoring = null
         }
     }
+
+    fun preferArchive() {
+        preferred.value = SETTINGS_ARCHIVE
+    }
 }
 
 private fun SettingsState.focusAfterPublication(previous: String): String {
     val retry = failure?.retryFocusKey()
     return when {
-        previous == SETTINGS_BACK || previous == SETTINGS_ARCHIVE -> previous
+        previous == SETTINGS_BACK || previous == SETTINGS_ARCHIVE || previous == SETTINGS_HEADING -> previous
         readFailed -> SETTINGS_RELOAD
         !ready || pending != null -> SETTINGS_HEADING
         previous == SETTINGS_RELOAD || previous.startsWith("$SETTINGS_RETRY:") ->

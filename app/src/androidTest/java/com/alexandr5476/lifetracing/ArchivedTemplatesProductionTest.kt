@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -636,7 +637,9 @@ class ArchivedTemplatesProductionTest {
     private fun attemptPendingRestore(id: LibraryTemplateId): () -> Boolean {
         val tag = "archived-restore-${id.archivedRowKey()}"
         compose.onNodeWithTag("archived-page").performScrollToNode(hasTestTag(tag))
-        compose.onNodeWithTag(tag).assertIsNotEnabled().performTouchInput { click() }
+        val control = compose.onNodeWithTag(tag).assertIsNotEnabled()
+        assertTrue(control.fetchSemanticsNode().config.contains(SemanticsProperties.StateDescription))
+        control.performTouchInput { click() }
         val action = nativeClick(tag)
         compose.runOnIdle { assertFalse(action()) }
         return action

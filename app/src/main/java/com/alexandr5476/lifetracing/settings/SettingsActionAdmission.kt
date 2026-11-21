@@ -14,6 +14,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateObserver
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.Lifecycle
@@ -218,6 +223,19 @@ internal fun rememberSettingsAction(
 
 // Capture this control's action directly. Material's native action forwards to its latest handler.
 internal fun Modifier.settingsActionSemantics(action: () -> Boolean): Modifier = semantics { onClick(action = action) }
+
+internal fun Modifier.settingsKeyboardBack(
+    presentation: SettingsPresentation,
+    onBack: () -> Unit,
+): Modifier =
+    onPreviewKeyEvent {
+        if (it.key != Key.Escape || it.type != KeyEventType.KeyUp || !presentation.isCurrent()) {
+            false
+        } else {
+            onBack()
+            true
+        }
+    }
 
 @Composable
 internal fun SettingsActionButton(

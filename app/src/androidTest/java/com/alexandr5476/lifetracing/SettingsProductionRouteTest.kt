@@ -51,6 +51,7 @@ import okio.FileSystem
 import okio.Path.Companion.toOkioPath
 import okio.buffer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Rule
@@ -186,14 +187,7 @@ class SettingsProductionRouteTest {
                         assertDailyDensity(scenario)
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
-                        click("daily-settings")
-                        awaitDestination("settings-back")
-                        pressEnter("settings-archived-templates")
-                        awaitDestination("archived-back")
-                        pressEnter("archived-back")
-                        awaitDestination("settings-back")
-                        pressEnter("settings-back")
-                        awaitDestination("daily-settings")
+                        verifyArchiveKeyboardJourney(scenario)
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
                     } finally {
@@ -217,6 +211,54 @@ class SettingsProductionRouteTest {
         keyboard.enter(node)
         node.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
         node.performKeyInput { pressKey(Key.Enter) }
+    }
+
+    private fun verifyArchiveKeyboardJourney(scenario: ActivityScenario<MainActivity>) {
+        pressEnter("daily-settings")
+        awaitDestination("settings-heading")
+        focusedKey("settings-heading", Key.Tab)
+        focusedKey("settings-back", Key.Tab)
+        val openArchive = nativeClick("settings-archived-templates")
+        focusedKey("settings-archived-templates", Key.Enter)
+        awaitDestination("archived-back")
+        keyboard.awaitFocus(compose.onNodeWithTag("archived-back"))
+        val preRecreation = nativeClick("archived-back")
+        scenario.recreate()
+        awaitDestination("archived-back")
+        focusedKey("archived-back", Key.Escape)
+        awaitDestination("settings-archived-templates")
+        compose.runOnIdle {
+            assertFalse(openArchive())
+            assertFalse(preRecreation())
+        }
+        focusedKey("settings-archived-templates", Key.Enter)
+        awaitDestination("archived-back")
+        val toolbarBack = nativeClick("archived-back")
+        focusedKey("archived-back", Key.Enter)
+        awaitDestination("settings-archived-templates")
+        compose.runOnIdle { assertFalse(toolbarBack()) }
+        focusedKey("settings-archived-templates", Key.Enter)
+        awaitDestination("archived-back")
+        keyboard.awaitFocus(compose.onNodeWithTag("archived-back"))
+        scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        awaitDestination("settings-archived-templates")
+        focusedKey("settings-archived-templates", Key.Escape)
+        awaitDestination("daily-settings")
+        keyboard.awaitFocus(compose.onNodeWithTag("daily-settings"))
+    }
+
+    private fun focusedKey(
+        tag: String,
+        key: Key,
+    ) {
+        val node = compose.onNodeWithTag(tag)
+        keyboard.awaitFocus(node)
+        node.performKeyInput { pressKey(key) }
+    }
+
+    private fun nativeClick(tag: String): () -> Boolean {
+        val semantics = compose.onNodeWithTag(tag).fetchSemanticsNode().config
+        return requireNotNull(semantics[SemanticsActions.OnClick].action)
     }
 
     private fun verifyLanguageTraversal(

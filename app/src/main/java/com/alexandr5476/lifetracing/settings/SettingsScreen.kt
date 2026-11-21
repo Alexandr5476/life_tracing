@@ -112,6 +112,7 @@ internal fun SettingsScreen(
                     Modifier
                         .testTag("settings-page")
                         .then(pageSemantics)
+                        .settingsKeyboardBack(presentation, onBack)
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
                         .padding(MaterialTheme.spacing.xLarge),
@@ -127,7 +128,10 @@ internal fun SettingsScreen(
                 }
                 SettingsActionButton(
                     presentation::isCurrent,
-                    onClick = onArchivedTemplates,
+                    onClick = {
+                        focus.preferArchive()
+                        onArchivedTemplates()
+                    },
                     modifier = focus.target(SETTINGS_ARCHIVE).testTag(SETTINGS_ARCHIVE),
                 ) {
                     Text(stringResource(R.string.archived_templates_title))

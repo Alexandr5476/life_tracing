@@ -1,33 +1,46 @@
+@file:OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+
 package com.alexandr5476.lifetracing.settings
 
+import android.content.Context
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.domain.ActivityTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
+import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
 import org.junit.Assert.assertEquals
@@ -35,12 +48,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import java.time.Instant
 import java.util.Locale
 
 class ArchivedTemplatesScreenTest {
-    @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+    private val keyboard = KeyboardInputFixture(compose)
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(keyboard).around(compose)
 
     @Test
     fun shared_pending_state_disables_only_the_typed_target_until_completion_requires_a_fresh_publication() {
@@ -72,6 +89,8 @@ class ArchivedTemplatesScreenTest {
             assertFalse(oldActivity())
         }
         compose.onNodeWithTag(activityTag).assertIsNotEnabled()
+        val pending = compose.onNodeWithTag(activityTag).fetchSemanticsNode().config
+        assertTrue(pending.contains(SemanticsProperties.StateDescription))
         val oldSequence = nativeClick(sequenceTag)
         compose.onNodeWithTag(sequenceTag).assertIsEnabled()
         val completion =
@@ -200,7 +219,7 @@ class ArchivedTemplatesScreenTest {
         val restoreButton = compose.onNodeWithTag(sequenceTag)
         restoreButton.performTouchInput { down(center) }
         compose.runOnIdle { visible.value = false }
-        restoreButton.performTouchInput { up() }
+        compose.onRoot().performTouchInput { up() }
         compose.runOnIdle {
             assertEquals(listOf(activity, sequence), restores)
             visible.value = true
@@ -210,22 +229,25 @@ class ArchivedTemplatesScreenTest {
     }
 
     @Test
+    @Suppress("LongMethod")
     fun english_and_russian_states_reflow_and_restore_is_the_only_row_action() {
         val locale = mutableStateOf(Locale.ENGLISH)
         val state = mutableStateOf(ArchivedTemplatesState())
         val activity = LibraryTemplateId.Activity(ActivityTemplateId("same-id"))
         val sequence = LibraryTemplateId.Sequence(SequenceTemplateId("same-id"))
-        val rows = listOf(row(activity), row(sequence))
+        val otherActivity = LibraryTemplateId.Activity(ActivityTemplateId("same-id-with-a-long-common-prefix"))
+        val rows = listOf(row(activity), row(otherActivity), row(sequence).copy(shortComment = null))
         val requests = mutableListOf<LibraryTemplateId>()
         var retries = 0
         val appearance = AppearancePreferences(interfaceScalePercent = 120, textScalePercent = 130)
         compose.setContent {
             val base = LocalContext.current
-            val configuration = Configuration(LocalConfiguration.current).apply { setLocale(locale.value) }
+            val configuration = scaledArchiveConfiguration(LocalConfiguration.current, locale.value)
+            val localized = base.createConfigurationContext(configuration)
             CompositionLocalProvider(
-                LocalContext provides base.createConfigurationContext(configuration),
+                LocalContext provides localized,
                 LocalConfiguration provides configuration,
-                LocalDensity provides Density(density = 2f, fontScale = 1.4f),
+                LocalDensity provides Density(localized.resources.displayMetrics.density, configuration.fontScale),
             ) {
                 LifeTracingAppearance(appearance) {
                     ArchivedTemplatesScreen(
@@ -234,7 +256,7 @@ class ArchivedTemplatesScreenTest {
                             requests += it
                             state.value = state.value.copy(pending = it)
                         },
-                        { state.value = ArchivedTemplatesState(rows, loading = false) },
+                        { state.value = state.value.copy(loading = true, readFailed = false) },
                         {
                             retries++
                             state.value = ArchivedTemplatesState(listOf(rows.last()), loading = false)
@@ -250,28 +272,40 @@ class ArchivedTemplatesScreenTest {
                 locale.value = language
                 state.value = ArchivedTemplatesState()
             }
-            val configuration = Configuration(compose.activity.resources.configuration).apply { setLocale(language) }
+            val configuration = scaledArchiveConfiguration(compose.activity.resources.configuration, language)
             val context = compose.activity.createConfigurationContext(configuration)
             showText(context.getString(R.string.archived_templates_loading))
             compose.runOnIdle { state.value = ArchivedTemplatesState(emptyList(), loading = false) }
             showText(context.getString(R.string.archived_templates_empty))
-            compose.runOnIdle { state.value = ArchivedTemplatesState(loading = false, readFailed = true) }
+            compose.runOnIdle {
+                state.value = ArchivedTemplatesState(rows, loading = false, readFailed = true, readGeneration = 1)
+            }
             showText(context.getString(R.string.archived_templates_read_failure))
+            compose.onNodeWithTag(ARCHIVE_RETRY).assertDoesNotExist()
+            scrollTo("archived-restore-${activity.archivedRowKey()}")
+            compose.onNodeWithTag("archived-restore-${activity.archivedRowKey()}").assertIsNotEnabled()
             scrollTo("archived-reload")
             compose.onNodeWithTag("archived-reload").performClick()
-            showText(context.getString(R.string.library_activity))
-            showText(context.getString(R.string.library_sequence))
+            showText(context.getString(R.string.archived_templates_reloading))
+            compose.runOnIdle { state.value = ArchivedTemplatesState(rows, loading = false, readGeneration = 2) }
+            showText(context.resources.getQuantityString(R.plurals.archived_templates_count, rows.size, rows.size))
+            val descriptions = rows.map { verifyRow(context, it, includeId = it.id != sequence) }
+            assertEquals(rows.size, descriptions.toSet().size)
             val restoreTag = "archived-restore-${activity.archivedRowKey()}"
             scrollTo(restoreTag)
             compose.onNodeWithTag(restoreTag).performClick().assertIsNotEnabled()
             assertEquals(activity, requests.last())
             compose.onNodeWithTag("archived-row-${activity.archivedRowKey()}").assertExists()
-            showText(context.getString(R.string.archived_templates_restoring))
+            val label = targetLabel(context, rows.first(), includeId = true)
+            showText(context.getString(R.string.archived_templates_restoring_target, label))
+            compose.runOnIdle { state.value = state.value.copy(reconcilingRestore = true) }
+            showText(context.getString(R.string.archived_templates_reconciling))
             compose.runOnIdle {
-                state.value = state.value.copy(pending = null, failedRestore = activity)
+                state.value = state.value.copy(pending = null, reconcilingRestore = false, failedRestore = activity)
             }
-            showText(context.getString(R.string.archived_templates_restore_failure))
+            showText(context.getString(R.string.archived_templates_restore_failure, label))
             scrollTo("archived-retry")
+            assertDescription("archived-retry", context.getString(R.string.archived_templates_retry_target, label))
             compose.onNodeWithTag("archived-retry").performClick()
             scrollTo("archived-row-${sequence.archivedRowKey()}")
             compose.onNodeWithTag("archived-row-${sequence.archivedRowKey()}").assertIsDisplayed()
@@ -284,8 +318,218 @@ class ArchivedTemplatesScreenTest {
         assertEquals(listOf(activity, activity), requests)
     }
 
+    @Test
+    fun keyboard_focus_follows_the_typed_row_through_reordering_failure_reload_and_removal() {
+        val activity = row(LibraryTemplateId.Activity(ActivityTemplateId("same-id")))
+        val sequence = row(LibraryTemplateId.Sequence(SequenceTemplateId("same-id")))
+        val state = mutableStateOf(ArchivedTemplatesState(listOf(activity, sequence), loading = false))
+        val writes = mutableListOf<LibraryTemplateId>()
+        var reads = 0
+
+        fun restore(id: LibraryTemplateId) {
+            writes += id
+            state.value = state.value.copy(pending = id, failedRestore = null)
+        }
+        compose.setContent {
+            LifeTracingAppearance(AppearancePreferences()) {
+                ArchivedTemplatesScreen(
+                    state.value,
+                    ::restore,
+                    {
+                        reads++
+                        state.value = state.value.copy(loading = true, readFailed = false)
+                    },
+                    { restore(requireNotNull(state.value.failedRestore)) },
+                    {},
+                    { state.value },
+                )
+            }
+        }
+        keyboard.enter()
+        keyboard.awaitFocus(compose.onNodeWithTag(ARCHIVE_BACK))
+        val restoreTag = "archived-restore-${activity.id.archivedRowKey()}"
+        compose.onRoot().performKeyInput { pressKey(Key.Tab) }
+        keyboard.awaitFocus(compose.onNodeWithTag(restoreTag))
+        val obsolete = nativeClick(restoreTag)
+        compose.runOnIdle {
+            state.value = state.value.copy(items = listOf(sequence, activity), readGeneration = 1)
+            assertFalse(obsolete())
+        }
+        enterFocused(restoreTag)
+        keyboard.awaitFocus(compose.onNodeWithTag(ARCHIVE_HEADING))
+        compose.runOnIdle {
+            state.value = state.value.copy(pending = null, failedRestore = activity.id, readGeneration = 2)
+        }
+        val staleRetry = nativeClick(ARCHIVE_RETRY)
+        enterFocused(ARCHIVE_RETRY)
+        compose.runOnIdle {
+            state.value = state.value.copy(pending = null, readFailed = true, readGeneration = 3)
+            assertFalse(staleRetry())
+        }
+        enterFocused(ARCHIVE_RELOAD)
+        compose.runOnIdle {
+            state.value =
+                ArchivedTemplatesState(
+                    listOf(sequence),
+                    loading = false,
+                    readGeneration = 4,
+                    restoreReconciled = true,
+                )
+        }
+        keyboard.awaitFocus(compose.onNodeWithTag(ARCHIVE_HEADING))
+        compose.onNodeWithTag(restoreTag).assertDoesNotExist()
+        val sequenceTag = "archived-restore-${sequence.id.archivedRowKey()}"
+        compose.onRoot().performKeyInput { repeat(2) { pressKey(Key.Tab) } }
+        enterFocused(sequenceTag)
+        compose.runOnIdle {
+            state.value =
+                ArchivedTemplatesState(
+                    emptyList(),
+                    loading = false,
+                    readGeneration = 5,
+                    restoreReconciled = true,
+                )
+        }
+        keyboard.awaitFocus(compose.onNodeWithTag(ARCHIVE_HEADING))
+        compose.onNodeWithTag(sequenceTag).assertDoesNotExist()
+        val context = compose.activity
+        showText(
+            context.getString(
+                R.string.archived_templates_restore_confirmed,
+                context.getString(R.string.archived_templates_empty),
+            ),
+        )
+        compose.runOnIdle {
+            assertEquals(listOf(activity.id, activity.id, sequence.id), writes)
+            assertEquals(1, reads)
+        }
+    }
+
+    @Test
+    fun lazy_archive_scroll_and_keyboard_tab_reach_offscreen_typed_actions() {
+        val rows =
+            List(56) { index ->
+                val id =
+                    if (index % 2 == 0) {
+                        LibraryTemplateId.Activity(ActivityTemplateId("row-$index"))
+                    } else {
+                        LibraryTemplateId.Sequence(SequenceTemplateId("row-$index"))
+                    }
+                row(id).copy(name = "Archive item $index", shortComment = null)
+            }
+        val state = ArchivedTemplatesState(rows, loading = false)
+        val writes = mutableListOf<LibraryTemplateId>()
+        compose.setContent {
+            LifeTracingAppearance(AppearancePreferences()) {
+                ArchivedTemplatesScreen(state, { writes += it }, {}, {}, {}, { state })
+            }
+        }
+        keyboard.enter()
+        keyboard.awaitFocus(compose.onNodeWithTag(ARCHIVE_BACK))
+        val rowMatcher =
+            SemanticsMatcher("archive row") {
+                it.config.getOrElse(SemanticsProperties.TestTag) { "" }.startsWith("archived-row-")
+            }
+        assertTrue(compose.onAllNodes(rowMatcher).fetchSemanticsNodes().size < rows.size)
+        val start = 32
+        compose.onNodeWithTag("archived-page").performSemanticsAction(SemanticsActions.ScrollToIndex) { it(start) }
+
+        fun tag(index: Int) = "archived-restore-${rows[index].id.archivedRowKey()}"
+
+        compose.onNodeWithTag(tag(start)).performSemanticsAction(SemanticsActions.RequestFocus)
+        enterFocused(tag(start))
+        compose.onRoot().performKeyInput { repeat(9) { pressKey(Key.Tab) } }
+        enterFocused(tag(start + 9))
+        for (index in start + 8 downTo start) {
+            compose.onRoot().performKeyInput {
+                keyDown(Key.ShiftLeft)
+                pressKey(Key.Tab)
+                keyUp(Key.ShiftLeft)
+            }
+            val expected = compose.onNodeWithTag(tag(index))
+            expected.assertExists("Reverse Tab from row ${index + 1} should reach row $index")
+            keyboard.awaitFocus(expected)
+        }
+        compose.runOnIdle { assertEquals(listOf(rows[start].id, rows[start + 9].id), writes) }
+    }
+
+    private fun enterFocused(tag: String) {
+        val node = compose.onNodeWithTag(tag)
+        keyboard.awaitFocus(node)
+        node.performKeyInput { pressKey(Key.Enter) }
+    }
+
+    private fun scaledArchiveConfiguration(
+        base: Configuration,
+        locale: Locale,
+    ): Configuration =
+        Configuration(base).apply {
+            setLocale(locale)
+            densityDpi = (densityDpi * 1.2f).toInt()
+            fontScale = 1.4f
+        }
+
+    private fun verifyRow(
+        context: Context,
+        row: LibraryTrackable,
+        includeId: Boolean,
+    ): String {
+        val key = row.id.archivedRowKey()
+        val label = targetLabel(context, row, includeId)
+        val description =
+            row.shortComment?.let { context.getString(R.string.archived_templates_row_with_comment, label, it) }
+                ?: context.getString(R.string.archived_templates_row, label)
+        val detailsTag = "archived-details-$key"
+        scrollTo(detailsTag)
+        assertDescription(detailsTag, description)
+        compose.onNodeWithTag("archived-row-$key").assert(!hasClickAction())
+        val restoreTag = "archived-restore-$key"
+        scrollTo(restoreTag)
+        val action = context.getString(R.string.archived_templates_restore_target, label)
+        assertDescription(restoreTag, action)
+        val restore =
+            compose
+                .onNodeWithTag(restoreTag)
+                .assertIsDisplayed()
+                .assert(hasClickAction())
+                .assertIsEnabled()
+        val bounds = restore.fetchSemanticsNode().touchBoundsInRoot
+        val minimum = 48 * context.resources.displayMetrics.density - 1
+        val locale = context.resources.configuration.locales[0]
+        val diagnostic = "$locale $restoreTag touch bounds=$bounds, minimum=$minimum"
+        assertTrue("$diagnostic height", bounds.height >= minimum)
+        assertTrue("$diagnostic width", bounds.width >= minimum)
+        return action
+    }
+
+    private fun targetLabel(
+        context: Context,
+        row: LibraryTrackable,
+        includeId: Boolean = false,
+    ): String {
+        val kind =
+            context.getString(
+                if (row.id is LibraryTemplateId.Activity) R.string.library_activity else R.string.library_sequence,
+            )
+        return if (includeId) {
+            context.getString(R.string.archived_templates_target_with_id, kind, row.name, row.id.value)
+        } else {
+            context.getString(R.string.archived_templates_target, kind, row.name)
+        }
+    }
+
+    private fun assertDescription(
+        tag: String,
+        description: String,
+    ) {
+        val semantics = compose.onNodeWithTag(tag).fetchSemanticsNode().config
+        assertEquals(listOf(description), semantics[SemanticsProperties.ContentDescription])
+    }
+
     private fun scrollTo(tag: String) {
-        compose.onNodeWithTag("archived-page").performScrollToNode(hasTestTag(tag))
+        if (tag != ARCHIVE_BACK && tag != ARCHIVE_RELOAD && tag != ARCHIVE_RETRY) {
+            compose.onNodeWithTag("archived-page").performScrollToNode(hasTestTag(tag))
+        }
     }
 
     private fun nativeClick(tag: String): () -> Boolean {
@@ -295,8 +539,8 @@ class ArchivedTemplatesScreenTest {
     }
 
     private fun showText(text: String) {
-        compose.onNodeWithTag("archived-page").performScrollToNode(hasText(text))
-        compose.onNodeWithText(text).assertIsDisplayed()
+        val polite = SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite)
+        compose.onNodeWithText(text).assertIsDisplayed().assert(polite)
     }
 
     private fun row(id: LibraryTemplateId) =

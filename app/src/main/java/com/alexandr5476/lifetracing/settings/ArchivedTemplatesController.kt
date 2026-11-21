@@ -20,6 +20,8 @@ internal data class ArchivedTemplatesState(
     val loading: Boolean = true,
     val readFailed: Boolean = false,
     val pending: LibraryTemplateId? = null,
+    val reconcilingRestore: Boolean = false,
+    val restoreReconciled: Boolean = false,
     val failedRestore: LibraryTemplateId? = null,
     val reconcileTarget: LibraryTemplateId? = null,
     val refreshWhenAbsent: Boolean = false,
@@ -61,7 +63,8 @@ internal class ArchivedTemplatesController(
         val current = mutableState.value
         if (!scope.isActive || current.loading || current.pending != null) return
         if (onlyIfStale && current.archiveCompletion == restores.status.value.completion) return
-        if (mutableState.compareAndSet(current, current.copy(loading = true, readFailed = false))) {
+        val reading = current.copy(loading = true, readFailed = false, restoreReconciled = false)
+        if (mutableState.compareAndSet(current, reading)) {
             scope.launch { publish(readCanonical(current)) }
         }
     }
@@ -70,7 +73,13 @@ internal class ArchivedTemplatesController(
         val current = mutableState.value
         if (!scope.isActive || !current.canRestore) return
         if (current.items?.none { it.id == id } != false || !restores.reserve(id, current.archiveCompletion)) return
-        val requested = current.copy(pending = id, failedRestore = null, reconcileTarget = id)
+        val requested =
+            current.copy(
+                pending = id,
+                failedRestore = null,
+                reconcileTarget = id,
+                restoreReconciled = false,
+            )
         if (mutableState.compareAndSet(current, requested)) {
             scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 // Enter the non-cancellable region before disposal can cancel a queued launch.
@@ -93,8 +102,10 @@ internal class ArchivedTemplatesController(
         val completion: Long
         try {
             val committed = attemptRestore(id)
+            val reconciling = requested.copy(reconcilingRestore = true, refreshWhenAbsent = !committed)
+            mutableState.value = reconciling
             if (committed) onRestored()
-            publication = readCanonical(requested.copy(refreshWhenAbsent = !committed))
+            publication = readCanonical(reconciling)
         } finally {
             completion = restores.complete(id)
         }
@@ -124,6 +135,8 @@ internal class ArchivedTemplatesController(
             current.copy(
                 loading = false,
                 pending = null,
+                reconcilingRestore = false,
+                restoreReconciled = false,
                 readGeneration = current.readGeneration + 1,
                 archiveCompletion = restores.status.value.completion,
             )
@@ -137,6 +150,7 @@ internal class ArchivedTemplatesController(
                 items = items,
                 readFailed = false,
                 failedRestore = failed?.takeIf { remainsArchived },
+                restoreReconciled = current.reconcileTarget != null && !remainsArchived,
                 reconcileTarget = null,
                 refreshWhenAbsent = false,
             )

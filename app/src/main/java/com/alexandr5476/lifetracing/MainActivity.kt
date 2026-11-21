@@ -20,11 +20,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
@@ -335,7 +345,9 @@ internal fun LifeTracingApp(
             val ownsSettingsRoute = remember(displayedRoute) { { backStack.lastOrNull() === displayedRoute } }
             val settingsPresentation = rememberSettingsPresentation(displayingSettings, ownsSettingsRoute)
             val settingsBackGesture = rememberSettingsBackGesture(settingsPresentation, displayingSettings)
-            var archiveVisit by remember { mutableStateOf(Any()) }
+            var settingsVisit by rememberSaveable { mutableStateOf(0) }
+            var archiveVisit by rememberSaveable { mutableStateOf(0) }
+            var returnToDailySettings by rememberSaveable { mutableStateOf(false) }
             val settingsBack: () -> Unit = {
                 settingsPresentation.leave {
                     when (displayedRoute) {
@@ -460,9 +472,28 @@ internal fun LifeTracingApp(
                 entryProvider =
                     entryProvider {
                         entry<DailyRoot> {
+                            val settingsFocus = remember { FocusRequester() }
+                            val foreground = LocalWindowInfo.current.isWindowFocused
+                            val keyboard = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+                            val lifecycleState by navigationLifecycle.currentStateAsState()
+                            val resumed = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+                            val visible = backStack.lastOrNull() === DailyRoot
+                            val canReturnFocus = visible && foreground && resumed
+                            LaunchedEffect(canReturnFocus, returnToDailySettings, keyboard) {
+                                if (canReturnFocus && returnToDailySettings) {
+                                    withFrameNanos { }
+                                    if (backStack.lastOrNull() === DailyRoot) {
+                                        if (!keyboard || settingsFocus.requestFocus()) returnToDailySettings = false
+                                    }
+                                }
+                            }
                             DailyRoute(
                                 controller = controller,
-                                isRouteVisible = backStack.lastOrNull() == DailyRoot,
+                                isRouteVisible = visible,
+                                settingsModifier =
+                                    Modifier
+                                        .focusProperties { canFocus = backStack.lastOrNull() === DailyRoot }
+                                        .focusRequester(settingsFocus),
                                 onStartActivity = {
                                     launcherSessions.acquire {
                                         runtimeGraph.createStartActivityController(libraryOwner::refreshIfInitialized)
@@ -477,6 +508,8 @@ internal fun LifeTracingApp(
                                     if (backStack.lastOrNull() === DailyRoot &&
                                         navigationLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
                                     ) {
+                                        returnToDailySettings = true
+                                        settingsVisit += 1
                                         backStack.openSettings()
                                     }
                                 },
@@ -499,19 +532,21 @@ internal fun LifeTracingApp(
                                 appearanceRepository ?: remember(context.applicationContext) {
                                     AppearancePreferencesRepository(context.applicationContext)
                                 }
-                            SettingsRoute(
-                                repository,
-                                appearanceMutations = runtimeGraph.appearanceMutations,
-                                isRouteVisible = displayedRoute === SettingsRoot,
-                                ownsRoute = settingsPresentation::isCurrent,
-                                onBack = settingsBack,
-                                onArchivedTemplates = {
-                                    settingsPresentation.leave {
-                                        archiveVisit = Any()
-                                        backStack.openArchivedTemplates()
-                                    }
-                                },
-                            )
+                            key(settingsVisit) {
+                                SettingsRoute(
+                                    repository,
+                                    appearanceMutations = runtimeGraph.appearanceMutations,
+                                    isRouteVisible = displayedRoute === SettingsRoot,
+                                    ownsRoute = settingsPresentation::isCurrent,
+                                    onBack = settingsBack,
+                                    onArchivedTemplates = {
+                                        settingsPresentation.leave {
+                                            archiveVisit += 1
+                                            backStack.openArchivedTemplates()
+                                        }
+                                    },
+                                )
+                            }
                         }
                         entry<ArchivedTemplatesRoot> {
                             // Re-entry may reuse the outgoing Navigation3 content for this singleton key.
