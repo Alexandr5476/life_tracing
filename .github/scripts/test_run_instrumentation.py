@@ -2,6 +2,7 @@ import importlib.util
 import contextlib
 import hashlib
 import io
+from itertools import product
 import json
 import os
 from pathlib import Path
@@ -793,9 +794,12 @@ class InstrumentationEvidenceTests(unittest.TestCase):
             self.assertTrue(any("system_app_anr" in c.args[0] for c in captured.call_args_list))
             self.assertTrue(any("system" in c.args[0] and "events" in c.args[0] for c in captured.call_args_list))
 
-    def test_dead_system_capture_precedes_cleanup_runs_once_and_cannot_certify_green_reports(self):
-        for capture_fails in (False, True):
-            with self.subTest(capture_fails=capture_fails), tempfile.TemporaryDirectory() as temporary:
+    def test_native_system_crash_capture_precedes_cleanup_runs_once_and_cannot_certify_green_reports(self):
+        dead_system = "java.lang.RuntimeException: android.os.DeadSystemException"
+        utp_abort = ("Test run failed to complete. Expected 805 tests, received 249. "
+                     "onError: commandError=false message=INSTRUMENTATION_ABORTED: System has crashed.")
+        for signal, capture_fails in product((dead_system, utp_abort), (False, True)):
+            with self.subTest(signal=signal, capture_fails=capture_fails), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 directory = root / "ci-evidence/api26"
                 fixture, invocations, captures = self, [], []
@@ -806,7 +810,7 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                                   else "data" if command[1].startswith(":data:") else "app")
                         invocations.append(module)
                         fixture.write_inventory(root, module, 26)
-                        self.stdout = io.StringIO("java.lang.RuntimeException: android.os.DeadSystemException\n" * 2
+                        self.stdout = io.StringIO((signal + "\n") * 2
                                                   + "original output after crash\n" if module == "app" else "")
                         self.returncode = 0  # Contradictory green reports must not erase the observed system death.
 

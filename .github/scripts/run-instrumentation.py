@@ -654,7 +654,9 @@ def run_gradle(command, directory, module, api, record, timeout=3300, profile_me
                 print(line, end="", flush=True)
                 log.write(line)
                 log.flush()
-                if "DeadSystemException" in line and not record.get("native_system_crash_observed"):
+                # UTP can report system death without a Java exception in the command log.
+                if (not record.get("native_system_crash_observed")
+                        and ("DeadSystemException" in line or "INSTRUMENTATION_ABORTED: System has crashed." in line)):
                     record["native_system_crash_observed"] = True
                     # The guest can reboot while Gradle is still exporting its failed JUnit.
                     # Retain native evidence before owned cleanup; keep draining the original output.
