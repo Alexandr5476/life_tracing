@@ -35,7 +35,6 @@ import com.alexandr5476.lifetracing.ui.appearance.AppLanguageController
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.appearance.AppearanceScalePolicy
 import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
-import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import com.alexandr5476.lifetracing.ui.theme.spacing
 
@@ -43,8 +42,10 @@ import com.alexandr5476.lifetracing.ui.theme.spacing
 internal fun SettingsRoute(
     repository: AppearancePreferencesRepository,
     appearanceMutations: SettingsAppearanceMutations,
+    isRouteVisible: Boolean,
+    ownsRoute: () -> Boolean,
     onBack: () -> Unit,
-    onArchivedTemplates: () -> Unit = {},
+    onArchivedTemplates: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val controller =
@@ -68,6 +69,9 @@ internal fun SettingsRoute(
         controller::retryRead,
         onBack,
         onArchivedTemplates,
+        isRouteVisible,
+        ownsRoute,
+        readCurrent = { controller.state.value },
     )
 }
 
@@ -80,7 +84,12 @@ internal fun SettingsScreen(
     onRetryRead: () -> Unit,
     onBack: () -> Unit,
     onArchivedTemplates: () -> Unit = {},
+    isRouteVisible: Boolean = true,
+    ownsRoute: () -> Boolean = { true },
+    readCurrent: () -> SettingsState,
 ) {
+    val presentation = rememberSettingsPresentation(isRouteVisible, ownsRoute)
+    val admission = presentation.rememberAdmission(state, readCurrent)
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             modifier =
@@ -96,21 +105,23 @@ internal fun SettingsScreen(
                 modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.headlineSmall,
             )
-            LifeTracingSecondaryButton(onClick = onBack, modifier = Modifier.testTag("settings-back")) {
+            SettingsActionButton(presentation::isCurrent, onBack, Modifier.testTag("settings-back")) {
                 Text(stringResource(R.string.settings_back))
             }
-            LifeTracingSecondaryButton(
+            SettingsActionButton(
+                presentation::isCurrent,
                 onClick = onArchivedTemplates,
                 modifier = Modifier.testTag("settings-archived-templates"),
             ) {
                 Text(stringResource(R.string.archived_templates_title))
             }
-            SettingsFeedback(state, onRetryMutation, onRetryRead)
+            SettingsFeedback(state, admission, onRetryMutation, onRetryRead)
             val appearance = state.appearance
             val language = state.language
             if (appearance != null && language != null) {
                 val enabled = state.ready && state.pending == null
                 SettingsOptions(
+                    admission,
                     R.string.settings_theme,
                     ThemeMode.entries,
                     appearance.themeMode,
@@ -119,6 +130,7 @@ internal fun SettingsScreen(
                     { stringResource(it.labelResource()) },
                 ) { onChange(SettingsChange.Theme(it)) }
                 SettingsOptions(
+                    admission,
                     R.string.settings_accent,
                     AccentPaletteId.entries,
                     appearance.accentPaletteId,
@@ -127,6 +139,7 @@ internal fun SettingsScreen(
                     { stringResource(it.labelResource()) },
                 ) { onChange(SettingsChange.Accent(it)) }
                 SettingsOptions(
+                    admission,
                     R.string.settings_language,
                     AppLanguage.entries,
                     language,
@@ -135,6 +148,7 @@ internal fun SettingsScreen(
                     { stringResource(it.labelResource()) },
                 ) { onChange(SettingsChange.Language(it)) }
                 SettingsOptions(
+                    admission,
                     R.string.settings_interface_scale,
                     AppearanceScalePolicy.interfacePercentages,
                     appearance.interfaceScalePercent,
@@ -143,6 +157,7 @@ internal fun SettingsScreen(
                     { stringResource(R.string.settings_percent, it) },
                 ) { onChange(SettingsChange.InterfaceScale(it)) }
                 SettingsOptions(
+                    admission,
                     R.string.settings_text_scale,
                     AppearanceScalePolicy.textPercentages,
                     appearance.textScalePercent,
@@ -158,12 +173,13 @@ internal fun SettingsScreen(
 @Composable
 private fun SettingsFeedback(
     state: SettingsState,
+    admission: SettingsActionAdmission,
     onRetryMutation: () -> Unit,
     onRetryRead: () -> Unit,
 ) {
     if (state.appearanceReadFailed || state.languageReadFailed) {
         Text(stringResource(R.string.settings_read_failure))
-        LifeTracingSecondaryButton(onClick = onRetryRead, modifier = Modifier.testTag("settings-reload")) {
+        SettingsActionButton(admission::isCurrent, onRetryRead, Modifier.testTag("settings-reload")) {
             Text(stringResource(R.string.settings_reload))
         }
     } else if (state.appearance == null || state.language == null) {
@@ -181,7 +197,12 @@ private fun SettingsFeedback(
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
-        LifeTracingSecondaryButton(onClick = onRetryMutation, modifier = Modifier.testTag("settings-retry")) {
+        SettingsActionButton(
+            admission::isCurrent,
+            onRetryMutation,
+            Modifier.testTag("settings-retry"),
+            enabled = state.ready && state.pending == null,
+        ) {
             Text(stringResource(R.string.settings_retry))
         }
     }
@@ -189,6 +210,7 @@ private fun SettingsFeedback(
 
 @Composable
 private fun <T> SettingsOptions(
+    admission: SettingsActionAdmission,
     titleResource: Int,
     values: List<T>,
     selected: T,
@@ -204,13 +226,15 @@ private fun <T> SettingsOptions(
             values.forEach { value ->
                 val text = label(value)
                 val description = stringResource(R.string.settings_option_description, title, text)
+                val action = rememberSettingsAction(admission::isCurrent, enabled) { onSelect(value) }
                 FilterChip(
                     selected = value == selected,
-                    onClick = { onSelect(value) },
+                    onClick = { action() },
                     enabled = enabled,
                     modifier =
                         Modifier
                             .testTag("$tagPrefix-$value")
+                            .settingsActionSemantics(action)
                             .semantics { contentDescription = description },
                     label = { Text(text) },
                 )

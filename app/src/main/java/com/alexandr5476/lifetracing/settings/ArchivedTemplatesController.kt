@@ -5,6 +5,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +20,8 @@ internal data class ArchivedTemplatesState(
     val failedRestore: LibraryTemplateId? = null,
     val reconcileTarget: LibraryTemplateId? = null,
     val refreshWhenAbsent: Boolean = false,
+    // A completed reread replaces action authority even when its rows compare equal.
+    val readGeneration: Long = 0,
 ) {
     val canRestore: Boolean
         get() = items != null && !loading && !readFailed && pending == null
@@ -50,9 +53,9 @@ internal class ArchivedTemplatesController(
         if (!current.canRestore || current.items?.none { it.id == id } != false) return
         val requested = current.copy(pending = id, failedRestore = null, reconcileTarget = id)
         if (!mutableState.compareAndSet(current, requested)) return
-        scope.launch {
-            // Once dispatched, finish the transaction, retained Library refresh and canonical reconciliation even
-            // when navigation or recreation disposes this screen. New screens only read, without replaying commands.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // Enter the non-cancellable region at acceptance, before disposal can cancel a queued launch.
+            // The transaction, retained Library refresh and reconciliation all belong to the accepted work.
             withContext(NonCancellable) {
                 var committed = false
                 try {
@@ -89,12 +92,20 @@ internal class ArchivedTemplatesController(
                     failedRestore = target?.takeIf { remainsArchived },
                     reconcileTarget = null,
                     refreshWhenAbsent = false,
+                    readGeneration = current.readGeneration + 1,
                 )
             if (target != null && !remainsArchived && current.refreshWhenAbsent) onRestored()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            mutableState.value = mutableState.value.copy(loading = false, pending = null, readFailed = true)
+            val current = mutableState.value
+            mutableState.value =
+                current.copy(
+                    loading = false,
+                    pending = null,
+                    readFailed = true,
+                    readGeneration = current.readGeneration + 1,
+                )
         }
     }
 }

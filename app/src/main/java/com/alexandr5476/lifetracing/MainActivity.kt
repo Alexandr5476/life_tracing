@@ -17,7 +17,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
@@ -65,6 +68,8 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionRouteSessionOwner
 import com.alexandr5476.lifetracing.plan.PlanRoute
 import com.alexandr5476.lifetracing.settings.ArchivedTemplatesRoute
 import com.alexandr5476.lifetracing.settings.SettingsRoute
+import com.alexandr5476.lifetracing.settings.rememberSettingsBackGesture
+import com.alexandr5476.lifetracing.settings.rememberSettingsPresentation
 import com.alexandr5476.lifetracing.statistics.StatisticsControllerOwner
 import com.alexandr5476.lifetracing.statistics.StatisticsIdentityKey
 import com.alexandr5476.lifetracing.statistics.StatisticsRoute
@@ -326,11 +331,30 @@ internal fun LifeTracingApp(
             }
             val navigationLifecycle = LocalLifecycleOwner.current.lifecycle
             val displayedRoute = backStack.lastOrNull()
+            val displayingSettings = displayedRoute.isSettingsRoute()
+            val ownsSettingsRoute = remember(displayedRoute) { { backStack.lastOrNull() === displayedRoute } }
+            val settingsPresentation = rememberSettingsPresentation(displayingSettings, ownsSettingsRoute)
+            val settingsBackGesture = rememberSettingsBackGesture(settingsPresentation, displayingSettings)
+            var archiveVisit by remember { mutableStateOf(Any()) }
+            val settingsBack: () -> Unit = {
+                settingsPresentation.leave {
+                    when (displayedRoute) {
+                        SettingsRoot -> backStack.removeSettings()
+                        ArchivedTemplatesRoot -> backStack.removeArchivedTemplates()
+                        else -> Unit
+                    }
+                }
+            }
             val displayedStatisticsSession = statisticsDetailSessions.activeSession
             NavDisplay(
                 backStack = backStack,
                 onBack = back@{
                     val currentRoute = backStack.lastOrNull()
+                    if (displayingSettings || currentRoute.isSettingsRoute()) {
+                        if (settingsBackGesture.allows(settingsPresentation)) settingsBack()
+                        return@back
+                    }
+                    if (settingsBackGesture.startedOnSettings) return@back
                     if (displayedRoute !== currentRoute &&
                         (displayedRoute.isStatisticsRoute() || currentRoute.isStatisticsRoute())
                     ) {
@@ -430,8 +454,6 @@ internal fun LifeTracingApp(
                                 refreshActivityHistory,
                             )
                         }
-                        backStack.lastOrNull() is ArchivedTemplatesRoot -> backStack.removeArchivedTemplates()
-                        backStack.lastOrNull() is SettingsRoot -> backStack.removeSettings()
                         else -> backStack.removeLastOrNull()
                     }
                 },
@@ -451,7 +473,13 @@ internal fun LifeTracingApp(
                                 onPlan = { backStack.openPlan() },
                                 onHistory = { backStack.openHistory() },
                                 onStatistics = { backStack.openStatistics() },
-                                onSettings = { backStack.openSettings() },
+                                onSettings = {
+                                    if (backStack.lastOrNull() === DailyRoot &&
+                                        navigationLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                                    ) {
+                                        backStack.openSettings()
+                                    }
+                                },
                                 onExpandSequence = { executionId ->
                                     expandedSequenceSessions.acquire(executionId) {
                                         runtimeGraph.createExpandedLiveSequenceController(executionId)
@@ -474,15 +502,27 @@ internal fun LifeTracingApp(
                             SettingsRoute(
                                 repository,
                                 appearanceMutations = runtimeGraph.appearanceMutations,
-                                onBack = backStack::removeSettings,
-                                onArchivedTemplates = backStack::openArchivedTemplates,
+                                isRouteVisible = displayedRoute === SettingsRoot,
+                                ownsRoute = settingsPresentation::isCurrent,
+                                onBack = settingsBack,
+                                onArchivedTemplates = {
+                                    settingsPresentation.leave {
+                                        archiveVisit = Any()
+                                        backStack.openArchivedTemplates()
+                                    }
+                                },
                             )
                         }
                         entry<ArchivedTemplatesRoot> {
-                            ArchivedTemplatesRoute(
-                                onBack = backStack::removeArchivedTemplates,
-                                onRestored = libraryOwner::refreshIfInitialized,
-                            )
+                            // Re-entry may reuse the outgoing Navigation3 content for this singleton key.
+                            key(archiveVisit) {
+                                ArchivedTemplatesRoute(
+                                    isRouteVisible = displayedRoute === ArchivedTemplatesRoot,
+                                    ownsRoute = settingsPresentation::isCurrent,
+                                    onBack = settingsBack,
+                                    onRestored = libraryOwner::refreshIfInitialized,
+                                )
+                            }
                         }
                         entry<StartActivityRoot> {
                             val session = launcherSessions.activeSession
@@ -973,6 +1013,8 @@ internal fun MutableList<NavKey>.openStatistics() {
 }
 
 private fun NavKey?.isStatisticsRoute(): Boolean = this is StatisticsRoot || this is StatisticsSeriesDetailRoot
+
+private fun NavKey?.isSettingsRoute(): Boolean = this === SettingsRoot || this === ArchivedTemplatesRoot
 
 internal fun MutableList<NavKey>.removeStatistics() {
     if (lastOrNull() is StatisticsRoot) removeAt(lastIndex)

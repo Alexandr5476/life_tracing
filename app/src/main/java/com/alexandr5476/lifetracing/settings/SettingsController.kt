@@ -94,6 +94,8 @@ internal data class SettingsState(
     val pending: SettingsChange? = null,
     val writeCompleted: Boolean = false,
     val failure: SettingsChange? = null,
+    // Preserve distinct publications even if a fast retry ends in the same visible state.
+    val actionGeneration: Long = 0,
 ) {
     val ready: Boolean
         get() = appearance != null && language != null && !appearanceReadFailed && !languageReadFailed
@@ -118,6 +120,7 @@ internal class SettingsController(
 
     fun retryRead() {
         observation?.cancel()
+        mutableState.update { it.copy(actionGeneration = it.actionGeneration + 1) }
         refreshLanguage()
         observation =
             scope.launch {
@@ -157,7 +160,13 @@ internal class SettingsController(
     private fun accept(change: SettingsChange): Boolean {
         val current = mutableState.value
         if (!current.ready || current.pending != null) return false
-        val requested = current.copy(pending = change, writeCompleted = false, failure = null)
+        val requested =
+            current.copy(
+                pending = change,
+                writeCompleted = false,
+                failure = null,
+                actionGeneration = current.actionGeneration + 1,
+            )
         return mutableState.compareAndSet(current, requested)
     }
 

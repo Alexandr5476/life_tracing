@@ -5,6 +5,7 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.IOException
 import java.time.Instant
+import kotlin.coroutines.CoroutineContext
 
 class ArchivedTemplatesControllerTest {
     @Test
@@ -170,8 +172,42 @@ class ArchivedTemplatesControllerTest {
             }
         }
 
-    private class Fixture {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+    @Test
+    fun accepted_restore_survives_disposal_before_the_dispatcher_can_run_it() {
+        val tasks = ArrayDeque<Runnable>()
+        val dispatcher =
+            object : CoroutineDispatcher() {
+                override fun dispatch(
+                    context: CoroutineContext,
+                    block: Runnable,
+                ) {
+                    tasks.addLast(block)
+                }
+            }
+        val fixture = Fixture(dispatcher)
+        tasks.removeFirst().run()
+        val releaseWrite = CompletableDeferred<Unit>()
+        fixture.write = { id ->
+            releaseWrite.await()
+            fixture.canonical = fixture.canonical.filterNot { it.id == id }
+        }
+
+        fixture.controller.restore(activityId)
+        assertEquals(activityId, fixture.controller.state.value.pending)
+        fixture.scope.cancel()
+        releaseWrite.complete(Unit)
+        while (tasks.isNotEmpty()) tasks.removeFirst().run()
+
+        assertEquals(listOf(activityId), fixture.requests)
+        assertEquals(1, fixture.refreshes)
+        assertEquals(listOf(sequenceId), fixture.ids())
+        assertNull(fixture.controller.state.value.pending)
+    }
+
+    private class Fixture(
+        dispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
+    ) {
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
         val initial = listOf(row(activityId), row(sequenceId))
         var canonical = initial
         var read: suspend () -> List<LibraryTrackable> = { canonical }
