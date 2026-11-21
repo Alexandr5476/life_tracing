@@ -219,6 +219,88 @@ class StatisticsScreenPresentationTest {
     }
 
     @Test
+    fun englishDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh() {
+        assertDuplicateArchivedSeriesAfterRefresh(Locale.ENGLISH, "ID")
+    }
+
+    @Test
+    fun russianDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh() {
+        assertDuplicateArchivedSeriesAfterRefresh(Locale.forLanguageTag("ru"), "идентификатор")
+    }
+
+    private fun assertDuplicateArchivedSeriesAfterRefresh(
+        locale: Locale,
+        idLabel: String,
+    ) {
+        val duplicateName = "Shared name"
+        val ids = listOf("9eea7c3a-9617-4a2e-80f6-000000000001", "9eea7c3a-9617-4a2e-80f6-000000000002")
+        val archivedRows =
+            ids.map { id ->
+                val row = summary(id, StatisticsSeriesKind.ACTIVITY, StatisticsSeriesSourceState.ARCHIVED_SOURCE, 0, 0)
+                row.copy(series = row.series.copy(displayName = duplicateName))
+            }
+        val otherRows =
+            listOf(
+                summary("sequence", StatisticsSeriesKind.SEQUENCE, StatisticsSeriesSourceState.NO_CURRENT_SOURCE, 0, 0),
+                summary(
+                    "system",
+                    StatisticsSeriesKind.ONE_OFF_BUCKET,
+                    StatisticsSeriesSourceState.SYSTEM_ONE_OFF,
+                    0,
+                    0,
+                ),
+            )
+        val rows = archivedRows + otherRows
+        val configuration = Configuration(compose.activity.resources.configuration).apply { setLocale(locale) }
+        val context = compose.activity.createConfigurationContext(configuration)
+        val period = StatisticsPeriod.AllTime
+        val opened = mutableListOf<Pair<StatisticsSeriesId, StatisticsPeriod>>()
+        val reads = mutableListOf<StatisticsPeriod>()
+        val refresh = CompletableDeferred<StatisticsOverview>()
+        val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+        val controller =
+            StatisticsController(scope, period) {
+                reads += it
+                if (reads.size == 1) overview(rows) else refresh.await()
+            }
+        try {
+            compose.setContent {
+                CompositionLocalProvider(LocalContext provides context, LocalConfiguration provides configuration) {
+                    LifeTracingTheme {
+                        StatisticsRoute(controller, onOpenSeries = { id, selected -> opened += id to selected }) {}
+                    }
+                }
+            }
+
+            fun activateArchivedSeries(id: String) {
+                val label = "$duplicateName ($idLabel $id)"
+                series(id)
+                    .assertTextContains(label)
+                    .assertTextContains(context.getString(R.string.statistics_kind_activity))
+                    .assertTextContains(context.getString(R.string.statistics_source_archived))
+                    .assertTextContains(context.getString(R.string.statistics_executions, "0"))
+                compose.onNodeWithText(label).performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            }
+            ids.forEach(::activateArchivedSeries)
+            overviewNode("statistics-refresh").performClick()
+            overviewNode("statistics-loading").assertIsDisplayed()
+            compose.runOnIdle { refresh.complete(overview(rows.reversed())) }
+            ids.reversed().forEach(::activateArchivedSeries)
+            series("sequence")
+                .assertTextContains("Display sequence")
+                .assertTextContains(context.getString(R.string.statistics_kind_sequence))
+                .performClick()
+            series("system")
+                .assertTextContains(context.getString(R.string.statistics_kind_one_off))
+                .assertHasNoClickAction()
+            assertEquals((ids + ids.reversed() + "sequence").map { StatisticsSeriesId(it) to period }, opened)
+            assertEquals(listOf(period, period), reads)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun nativeActionsRetireAfterEqualPublicationAndLifecyclePause() {
         val period = StatisticsPeriod.AllTime
         val state =
@@ -587,6 +669,9 @@ class StatisticsScreenPresentationTest {
 
     @Test
     fun offscreenDuplicateSeriesAreLazyAndKeyboardActivatesTheExactNextId() {
+        fun label(id: String) =
+            compose.activity.getString(R.string.statistics_detail_duplicate_name, "Duplicate name", id)
+
         val rows = largeCatalog()
         val period = StatisticsPeriod.AllTime
         val reads = mutableListOf<StatisticsPeriod>()
@@ -611,9 +696,9 @@ class StatisticsScreenPresentationTest {
             compose.onNodeWithTag("statistics-series-catalog-200").assertDoesNotExist()
             keyboard.enter()
             val scrolledAwayAction = nativeAction("statistics-series-catalog-20")
-            series(
-                "catalog-200",
-            ).assertTextContains("Duplicate name").performSemanticsAction(SemanticsActions.RequestFocus)
+            series("catalog-200")
+                .assertTextContains(label("catalog-200"))
+                .performSemanticsAction(SemanticsActions.RequestFocus)
             compose.runOnIdle { assertFalse(scrolledAwayAction()) }
             compose.onNodeWithTag("statistics-series-catalog-212").assertDoesNotExist()
             repeat(12) { press(Key.Tab) }
@@ -621,7 +706,7 @@ class StatisticsScreenPresentationTest {
                 .onNodeWithTag("statistics-series-catalog-212")
                 .assertIsFocused()
                 .assertIsDisplayed()
-                .assertTextContains("Duplicate name")
+                .assertTextContains(label("catalog-212"))
             press(Key.Enter)
             assertEquals(listOf(StatisticsSeriesId("catalog-212") to period), opens)
             assertEquals(listOf(period), reads)

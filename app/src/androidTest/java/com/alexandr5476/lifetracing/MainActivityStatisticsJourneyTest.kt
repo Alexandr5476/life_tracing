@@ -144,7 +144,7 @@ class MainActivityStatisticsJourneyTest {
             val otherSeries = action(series(history.sequenceId))
             val row = series(history.activityId)
             row
-                .assertTextContains(StatisticsJourneyHistory.SERIES_NAME)
+                .assertTextContains(duplicateSeriesLabel(history.activityId))
                 .assertTextContains(label(R.string.statistics_source_archived))
                 .assertTextContains(label(R.string.statistics_executions, "3"))
                 .assertTextContains(label(R.string.statistics_duration_total, "0:30:00"))
@@ -277,7 +277,7 @@ class MainActivityStatisticsJourneyTest {
             val retainedOverview = overview.state.value
             val sequence = series(history.sequenceId)
             sequence
-                .assertTextContains(StatisticsJourneyHistory.SERIES_NAME)
+                .assertTextContains(duplicateSeriesLabel(history.sequenceId))
                 .assertTextContains(label(R.string.statistics_kind_sequence))
             activate(sequence)
             val session = requireNotNull(sessionOrNull())
@@ -496,6 +496,9 @@ class MainActivityStatisticsJourneyTest {
         private fun series(id: StatisticsSeriesId) = overviewNode(seriesTag(id))
 
         private fun seriesTag(id: StatisticsSeriesId) = "statistics-series-${id.value}"
+
+        private fun duplicateSeriesLabel(id: StatisticsSeriesId) =
+            label(R.string.statistics_detail_duplicate_name, StatisticsJourneyHistory.SERIES_NAME, id.value)
     }
 
     private class HeldRead {

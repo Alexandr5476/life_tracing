@@ -1447,6 +1447,7 @@
       "activityAndSequenceRowsPassStableIdsAndSelectedPeriodButOneOffHasNoAction",
       "all_period_kinds_dispatch_values_and_week_is_monday_anchored",
       "canonical_series_metadata_and_duration_sample_states_are_shown",
+      "englishDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh",
       "existingCustomRangeIsVisibleAndCanBeReapplied",
       "loading_failure_retry_empty_and_zero_count_series_are_presented",
       "malformed_custom_dates_do_not_dispatch",
@@ -1458,6 +1459,7 @@
       "retryFocusMovesToStableStatusWhenLoadingReplacesRetry",
       "returnFromDetailRestoresKeyboardFocusToTheExactDuplicateNameRow",
       "reversed_custom_dates_do_not_dispatch",
+      "russianDuplicateArchivedSeriesHaveStableAccessibleLabelsAfterRefresh",
       "systemOneOffHeadingUsesRussianResourceInsteadOfPersistedEnglishName"
     ],
     "com.alexandr5476.lifetracing.statistics.StatisticsSeriesDetailAccessibilityTest": [

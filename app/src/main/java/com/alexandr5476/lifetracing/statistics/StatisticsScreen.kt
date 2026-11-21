@@ -49,6 +49,7 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesPeriodSummary
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
+import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.io.Serializable
@@ -132,6 +133,15 @@ internal fun StatisticsScreen(
         }
     RestoreStatisticsOverviewFocus(state, overview, admission, listState, focus, returnFocus)
     val periodDescription = statisticsPeriodDescription(appliedPeriod)
+    val oneOffName = stringResource(R.string.statistics_kind_one_off)
+    val seriesNameCounts =
+        remember(StatisticsIdentityKey(state), oneOffName) {
+            overview
+                ?.series
+                .orEmpty()
+                .groupingBy { it.series.overviewDisplayName(oneOffName) }
+                .eachCount()
+        }
     LifeTracingAccessibleTargets {
         Surface(color = MaterialTheme.colorScheme.background) {
             LazyColumn(
@@ -173,7 +183,14 @@ internal fun StatisticsScreen(
                         )
                     }
                     items(overview.series, key = { StatisticsSeriesItemKey(it.series.id) }) { row ->
-                        SeriesRow(row, appliedPeriod, periodDescription, admission, focus, onOpenSeries)
+                        val name = row.series.overviewDisplayName(oneOffName)
+                        val title =
+                            if (seriesNameCounts.getValue(name) > 1) {
+                                stringResource(R.string.statistics_detail_duplicate_name, name, row.series.id.value)
+                            } else {
+                                name
+                            }
+                        SeriesRow(row, title, appliedPeriod, periodDescription, admission, focus, onOpenSeries)
                     }
                 }
             }
@@ -290,6 +307,7 @@ private fun GlobalMetrics(global: GlobalStatistics) {
 @Composable
 private fun SeriesRow(
     summary: StatisticsSeriesPeriodSummary,
+    title: String,
     period: StatisticsPeriod,
     periodDescription: String,
     admission: StatisticsActionAdmission,
@@ -315,10 +333,7 @@ private fun SeriesRow(
             Modifier.padding(MaterialTheme.spacing.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
         ) {
-            Text(
-                if (oneOff) stringResource(kind) else series.displayName,
-                style = MaterialTheme.typography.titleSmall,
-            )
+            Text(title, style = MaterialTheme.typography.titleSmall)
             if (!oneOff) Text(stringResource(kind))
             Text(stringResource(sourceLabel(series.sourceState)))
             Metric(R.string.statistics_executions, summary.executionCount.toString())
@@ -352,6 +367,9 @@ private fun SeriesRow(
         ) { content() }
     }
 }
+
+private fun StatisticsSeriesSummary.overviewDisplayName(oneOffName: String): String =
+    if (kind == StatisticsSeriesKind.ONE_OFF_BUCKET) oneOffName else displayName
 
 private fun sourceLabel(state: StatisticsSeriesSourceState) =
     when (state) {
