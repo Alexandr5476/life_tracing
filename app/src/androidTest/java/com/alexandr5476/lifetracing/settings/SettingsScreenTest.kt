@@ -609,7 +609,7 @@ class SettingsScreenTest {
 
     @Test
     @Suppress("LongMethod")
-    fun loading_and_read_failures_are_announced_and_keyboard_reload_only_reads() {
+    fun loading_and_read_failure_use_resources_and_offer_reload() {
         val finishInitialRead = CompletableDeferred<Unit>()
         val finishRetry = CompletableDeferred<Unit>()
         val writes = mutableListOf<SettingsChange>()
