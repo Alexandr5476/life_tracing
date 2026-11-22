@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
@@ -48,6 +49,8 @@ import com.alexandr5476.lifetracing.domain.ReusableActivityCatalogItem
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -244,6 +247,55 @@ class ManualActivityEntryScreenTest {
         compose.onNodeWithText("Second occurrence (UTC+01:00)").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("manual-history-started-offset-0").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("manual-history-started-offset-1").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun combinedAppearanceKeepsManualTimeErrorAndBothOffsetActionsReachable() {
+        val zone = ZoneId.of("America/New_York")
+        val offset = ZoneOffset.ofHours(-5)
+        val state =
+            ManualActivityEntryState(
+                selected = ManualEntryLoad.Content(template(TimeTrackingMode.STOPWATCH)),
+                startedText = "2024-11-03 01:30",
+                completedText = "2024-11-03 02:30",
+                entryZoneId = zone,
+                startedAmbiguity =
+                    ManualTimeAmbiguity(
+                        LocalDateTime.parse("2024-11-03T01:30"),
+                        zone,
+                        listOf(ZoneOffset.ofHours(-4), offset),
+                    ),
+                startedIssue = ManualEntryIssue.AMBIGUOUS_LOCAL_TIME,
+                command = ManualEntryCommand.Invalid(ManualEntryIssue.AMBIGUOUS_LOCAL_TIME),
+            )
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val actions = mutableListOf<ManualActivityEntryAction>()
+        var backs = 0
+        compose.setContent {
+            appearance.value.Content { ManualActivityEntryScreen(state, actions::add, { backs++ }) }
+        }
+        for (mode in PrimaryWorkflowAppearance.entries) {
+            compose.runOnIdle { appearance.value = mode }
+            val resources = mode.resourcesContext(ApplicationProvider.getApplicationContext<Context>())
+            compose.onNodeWithTag("manual-history-zone").assertTextFullyVisible()
+            val labels =
+                listOf(
+                    resources.getString(R.string.manual_history_ambiguous_time),
+                    resources.getString(R.string.manual_history_first_occurrence, "UTC-04:00"),
+                    resources.getString(R.string.manual_history_second_occurrence, "UTC-05:00"),
+                )
+            labels.forEach { compose.onNodeWithText(it, useUnmergedTree = true).assertTextFullyVisible() }
+            compose.onNodeWithTag("manual-history-save").performScrollTo().assertIsEnabled()
+            compose.onNodeWithTag("manual-history-back").performScrollTo().assertIsEnabled()
+        }
+        compose.runOnIdle {
+            assertTrue(actions.isEmpty())
+            assertEquals(0, backs)
+        }
+        compose.onNodeWithTag("manual-history-started-offset-1").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(listOf(ManualActivityEntryAction.SelectStartedOffset(offset)), actions) }
+        compose.onNodeWithTag("manual-history-back").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, backs) }
     }
 
     @Test

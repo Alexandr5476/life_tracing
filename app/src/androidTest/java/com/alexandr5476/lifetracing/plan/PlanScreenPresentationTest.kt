@@ -18,14 +18,17 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -51,6 +54,8 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.WeekPlanRead
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -61,6 +66,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
@@ -78,6 +84,104 @@ class PlanScreenPresentationTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val monday = LocalDate.parse("2026-09-14")
     private val selected = monday.plusDays(1)
+
+    @Test
+    @Suppress("LongMethod")
+    fun exactAndWeekCardsKeepStatusOffsetAndControlsVisibleAtCombinedAppearanceBounds() {
+        val zone = ZoneId.of("America/New_York")
+        val date = LocalDate.parse("2027-11-07")
+        val start = date.minusDays(6)
+
+        fun exact(
+            id: String,
+            instant: String,
+            engaged: Boolean,
+        ): PlanReadRow {
+            val at = Instant.parse(instant)
+            val local = at.atZone(zone)
+            return row(
+                id,
+                PlanTarget.ExactDay(at, zone),
+                source = PlanSourceState.CHANGED,
+                engaged = engaged,
+                overdue = true,
+            ).copy(
+                title = "A long source name shared by the two repeated appointments",
+                effectiveLocalDate = date,
+                exactLocalTime = local.toLocalTime(),
+                exactUtcOffset = local.offset,
+            )
+        }
+        val first = exact("early", "2027-11-07T05:30:00Z", engaged = true)
+        val second = exact("late", "2027-11-07T06:30:00Z", engaged = false)
+        val weekly =
+            row("broad", PlanTarget.Week(start), fulfilled = true)
+                .copy(title = "A completed activity scheduled for the whole week")
+        val read =
+            WeekPlanRead(
+                start,
+                date,
+                listOf(first, second),
+                listOf(weekly),
+                List(7) { PlanDayPresence(start.plusDays(it.toLong()), if (it == 6) 2 else 0) },
+            )
+        val canonical = PlanPresentationState(start, date, PlanLoad.Content(read))
+        val publication = mutableStateOf(canonical)
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val actions = mutableListOf<PlanAction>()
+        val opened = mutableListOf<PlanReadRow>()
+        compose.setContent {
+            appearance.value.Content { PlanScreen(publication.value, actions::add, {}, onExecute = opened::add) }
+        }
+        for (mode in PrimaryWorkflowAppearance.entries) {
+            compose.runOnIdle { appearance.value = mode }
+            val resources = mode.resourcesContext(context)
+            val dateFormat =
+                DateTimeFormatter
+                    .ofLocalizedDate(
+                        FormatStyle.FULL,
+                    ).withLocale(resources.resources.configuration.locales[0])
+            compose
+                .onNodeWithText(resources.getString(R.string.plan_selected_day, dateFormat.format(date)))
+                .assertTextFullyVisible()
+            compose.onNodeWithTag("plan-week-heading").assertTextFullyVisible()
+            compose.onNodeWithTag("plan-day-$date").performScrollTo().assertIsSelected()
+
+            fun rowText(
+                row: PlanReadRow,
+                value: String,
+            ) {
+                compose
+                    .onNode(
+                        hasText(value) and hasAnyAncestor(hasTestTag("plan-row-${row.plan.id.value}")),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+            }
+            listOf(first to "-04:00", second to "-05:00").forEach { (plan, offset) ->
+                val clock = resources.getString(R.string.calendar_time_with_offset, "01:30", offset)
+                rowText(plan, resources.getString(R.string.plan_exact_at, clock))
+                rowText(plan, plan.title)
+            }
+            rowText(first, resources.getString(R.string.plan_engaged))
+            rowText(second, resources.getString(R.string.plan_overdue))
+            rowText(second, resources.getString(R.string.plan_source_changed))
+            rowText(weekly, resources.getString(R.string.plan_fulfilled))
+            compose.onNodeWithTag("plan-update-late").performScrollTo().assertIsEnabled()
+            compose.onNodeWithTag("plan-plan-action-early").assertDoesNotExist()
+        }
+        compose.runOnIdle { publication.value = canonical.copy(isMutating = true) }
+        val english = PrimaryWorkflowAppearance.EnglishMinimum.resourcesContext(context)
+        compose.onNodeWithText(english.getString(R.string.plan_lifecycle_pending)).assertTextFullyVisible()
+        compose.onNodeWithTag("plan-plan-action-late").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("plan-add").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle {
+            assertTrue(opened.isEmpty())
+            assertTrue(actions.isEmpty())
+            publication.value = canonical
+        }
+        compose.onNodeWithTag("plan-plan-action-late").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(listOf(second), opened) }
+    }
 
     @Test
     fun repeatedHourLabelsUseCanonicalOccurrenceOffsets() {

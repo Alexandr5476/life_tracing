@@ -27,8 +27,10 @@ internal fun seriesMetric(
     val noSamples = stringResource(R.string.statistics_no_duration_samples)
     val value =
         when (metric) {
-            DetailSeriesMetric.EXECUTIONS -> detail.fact({ executionCount }, { executionCount }).toString()
-            DetailSeriesMetric.ACTIVE_DAYS -> detail.fact({ activeDayCount }, { activeDayCount }).toString()
+            DetailSeriesMetric.EXECUTIONS ->
+                statisticsCount(detail.fact({ executionCount }, { executionCount }), locale)
+            DetailSeriesMetric.ACTIVE_DAYS ->
+                statisticsCount(detail.fact({ activeDayCount }, { activeDayCount }), locale)
             DetailSeriesMetric.FREQUENCY ->
                 detail
                     .fact({ averageExecutionsPerActiveDay }, { averageExecutionsPerActiveDay })
@@ -67,7 +69,7 @@ private fun durationMetric(
     noSamples: String,
 ): String? =
     when (metric) {
-        DetailSeriesMetric.DURATION_SAMPLES -> distribution.sampleCount.toString()
+        DetailSeriesMetric.DURATION_SAMPLES -> statisticsCount(distribution.sampleCount, locale)
         DetailSeriesMetric.DURATION_TOTAL ->
             if (distribution.sampleCount == 0L) noSamples else statisticsDuration(distribution.total, locale)
         DetailSeriesMetric.DURATION_AVERAGE -> averageDuration(distribution.averageMilliseconds, locale)

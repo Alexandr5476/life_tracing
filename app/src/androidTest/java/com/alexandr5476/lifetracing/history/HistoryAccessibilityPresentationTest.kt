@@ -29,6 +29,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
@@ -56,8 +57,10 @@ import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotId
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +74,8 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
 
 @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
@@ -247,6 +252,116 @@ class HistoryAccessibilityPresentationTest {
         compose.onNodeWithText(dates.format(DATE)).assert(
             SemanticsMatcher.expectValue(SemanticsProperties.Heading, Unit),
         )
+    }
+
+    @Test
+    fun originalZoneRootTextAndExactActionsSurviveCombinedAppearance() {
+        val zone = ZoneId.of("America/New_York")
+        val first = Instant.parse("2024-11-03T05:30:00Z")
+        val second = Instant.parse("2024-11-03T06:30:00Z")
+        val beforeMidnight = Instant.parse("2024-11-03T03:50:00Z")
+        val originalDate = LocalDate.of(2024, 11, 3)
+        val overlap =
+            activity("overlap").copy(
+                title = "A long standalone activity title from the original snapshot",
+                primaryLocalDate = originalDate,
+                startedAt = first,
+                completedAt = second,
+                originalZoneId = zone,
+                originalUtcOffsetMinutes = -240,
+            )
+        val crossing =
+            sequence("midnight").copy(
+                title = "A long sequence title spanning two original calendar dates",
+                primaryLocalDate = originalDate.minusDays(1),
+                startedAt = beforeMidnight,
+                completedAt = second,
+                activeDuration = Duration.ofHours(2).plusMinutes(30),
+                wallDuration = Duration.ofHours(2).plusMinutes(40),
+                originalZoneId = zone,
+                originalUtcOffsetMinutes = -240,
+            )
+        val noLive =
+            overlap.copy(
+                executionId = ActivityExecutionId("missing"),
+                snapshotId = ActivitySnapshotId("snapshot-missing"),
+                title = "One-off note",
+                startedAt = null,
+                activeDuration = null,
+                timeTrackingMode = TimeTrackingMode.NO_LIVE_TRACKING,
+                originalUtcOffsetMinutes = -300,
+            )
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val window = HistoryBrowseWindow(originalDate.minusDays(1), originalDate)
+        val empty = HistoryPresentationState(window, HistoryRootsLoad.Empty)
+        val populated = HistoryPresentationState(window, HistoryRootsLoad.Content(listOf(noLive, overlap, crossing)))
+        val publication = mutableStateOf(empty)
+        val actions = mutableListOf<HistoryAction>()
+        val opened = mutableListOf<CompletedHistoryRoot>()
+        compose.setContent {
+            appearance.value.Content {
+                HistoryScreen(
+                    publication.value,
+                    actions::add,
+                    onOpenActivity = { opened += it },
+                    onOpenSequence = { opened += it },
+                    readCurrent = { publication.value },
+                )
+            }
+        }
+        for (mode in PrimaryWorkflowAppearance.entries) {
+            compose.runOnIdle {
+                appearance.value = mode
+                publication.value = empty
+            }
+            val resources = mode.resourcesContext(compose.activity)
+            val clock =
+                DateTimeFormatter
+                    .ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+                    .withLocale(resources.resources.configuration.locales[0])
+                    .withZone(zone)
+
+            fun at(
+                instant: Instant,
+                offset: String,
+            ) = resources.getString(R.string.history_timestamp_context, clock.format(instant), offset, zone.id)
+
+            fun visible(text: String) {
+                compose.onNodeWithText(text, useUnmergedTree = true).assertTextFullyVisible()
+            }
+
+            visible(resources.getString(R.string.history_empty))
+            compose.runOnIdle { publication.value = populated }
+            visible(overlap.title)
+            visible(resources.getString(R.string.history_timed_range, at(first, "-04:00"), at(second, "-05:00")))
+            visible(crossing.title)
+            visible(
+                resources.getString(R.string.history_timed_range, at(beforeMidnight, "-04:00"), at(second, "-05:00")),
+            )
+            visible(resources.getString(R.string.history_completion_time, at(second, "-05:00")))
+            visible(
+                resources.getString(
+                    R.string.history_active_duration,
+                    resources.getString(R.string.history_missing_value),
+                ),
+            )
+            compose.onNodeWithTag("history-back").performScrollTo().assertIsEnabled()
+            compose.onNodeWithTag("history-add-completed-activity").performScrollTo().assertIsEnabled()
+        }
+        compose.runOnIdle {
+            assertTrue(actions.isEmpty())
+            assertTrue(opened.isEmpty())
+        }
+        compose.onNodeWithTag("history-activity-overlap").performScrollTo().performClick()
+        compose.onNodeWithTag("history-sequence-midnight").performScrollTo().performClick()
+        compose.runOnIdle { publication.value = publication.value.copy(load = HistoryRootsLoad.Failure("offline")) }
+        val english = PrimaryWorkflowAppearance.EnglishMinimum.resourcesContext(compose.activity)
+        compose.onNodeWithText(english.getString(R.string.history_read_failure)).assertTextFullyVisible()
+        compose.onNodeWithTag("history-retry").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(overlap, crossing), opened)
+            assertEquals(listOf(HistoryAction.Retry), actions)
+        }
     }
 
     @Test
@@ -625,9 +740,10 @@ class HistoryAccessibilityPresentationTest {
                 { _, _, _ -> error("Read-only focus must never delete history") },
             )
         val session = ActivityHistoryMutationRouteSession(root.executionId, controller)
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
         var backs = 0
         try {
-            compose.setContent { LifeTracingTheme { ActivityHistoryDetailRoute(session, { backs++ }, {}, {}) } }
+            compose.setContent { appearance.value.Content { ActivityHistoryDetailRoute(session, { backs++ }, {}, {}) } }
             keyboard.enter()
             keyboard.awaitFocus(compose.onNodeWithText(text(R.string.history_back)))
             compose.onNodeWithText(text(R.string.history_detail_loading)).assert(
@@ -659,6 +775,20 @@ class HistoryAccessibilityPresentationTest {
             back.performScrollTo().performSemanticsAction(SemanticsActions.RequestFocus)
             keyboard.awaitFocus(back)
             back.performKeyInput { pressKey(Key.Enter) }
+            compose.runOnIdle { assertEquals(1, backs) }
+            for (mode in PrimaryWorkflowAppearance.entries) {
+                compose.runOnIdle { appearance.value = mode }
+                val resources = mode.resourcesContext(compose.activity)
+                val missingValue = resources.getString(R.string.history_missing_value)
+                val labels =
+                    listOf(
+                        resources.getString(R.string.history_field_value, "Amount", "0 kg"),
+                        resources.getString(R.string.history_configured_value, "12.5 kg"),
+                        resources.getString(R.string.history_field_value, "Notes", missingValue),
+                        resources.getString(R.string.history_configured_value, "Frozen default"),
+                    )
+                labels.forEach { compose.onNodeWithText(it, useUnmergedTree = true).assertTextFullyVisible() }
+            }
             compose.runOnIdle { assertEquals(1, backs) }
         } finally {
             controller.close()

@@ -176,9 +176,9 @@ private fun sampleMetrics(
     locale: Locale,
 ): List<Pair<Int, String>> =
     listOf(
-        R.string.statistics_detail_relevant to relevant.toString(),
-        R.string.statistics_field_recorded to recorded.toString(),
-        R.string.statistics_field_missing to missing.toString(),
+        R.string.statistics_detail_relevant to statisticsCount(relevant, locale),
+        R.string.statistics_field_recorded to statisticsCount(recorded, locale),
+        R.string.statistics_field_missing to statisticsCount(missing, locale),
         R.string.statistics_field_coverage to ratioText(coverage, locale),
     )
 
@@ -208,7 +208,7 @@ internal fun CategoryContent(
         stringResource(
             R.string.statistics_category_recorded_share,
             label,
-            option.count.toString(),
+            statisticsCount(option.count, locale),
             ratioText(option.recordedShare, locale),
         ),
         detailReadTarget(focus, row.key, admission, context)
@@ -228,8 +228,8 @@ private fun ratioText(
     val percent = statisticsPercent(value, locale) ?: stringResource(R.string.statistics_unavailable)
     return stringResource(
         R.string.statistics_detail_ratio,
-        value.numerator.toString(),
-        value.denominator.toString(),
+        statisticsCount(value.numerator, locale),
+        statisticsCount(value.denominator, locale),
         percent,
     )
 }

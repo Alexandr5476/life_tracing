@@ -7,9 +7,28 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.time.LocalDate
 import java.util.Locale
 
 class StatisticsDetailPresentationTest {
+    @Test
+    fun overviewPreservesFractionalDurationInThePresentationLocale() {
+        val duration = Duration.ofHours(12_345).plusMillis(125)
+        assertEquals("12345:00:00.125", statisticsDuration(duration, Locale.US))
+        assertEquals("12345:00:00,125", statisticsDuration(duration, Locale.forLanguageTag("ru")))
+    }
+
+    @Test
+    fun overviewGroupsLargeCountsWithoutRounding() {
+        assertEquals("9,223,372,036,854,775,807", statisticsCount(Long.MAX_VALUE, Locale.US))
+    }
+
+    @Test
+    fun appliedPeriodDateUsesPresentationLocale() {
+        assertEquals("Nov 7, 2027", statisticsPeriodDate(LocalDate.of(2027, 11, 7), Locale.US))
+        assertEquals("0000-01-02", statisticsPeriodDate(LocalDate.of(0, 1, 2), Locale.US))
+    }
+
     @Test
     fun exactTotalsCrossBothLongBoundariesAndPreserveCancellation() {
         val positive = StatisticsDistributionCalculator.numbers(listOf(Long.MAX_VALUE, Long.MAX_VALUE))

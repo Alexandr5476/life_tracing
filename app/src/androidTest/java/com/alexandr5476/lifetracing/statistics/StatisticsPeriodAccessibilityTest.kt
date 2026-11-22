@@ -42,6 +42,8 @@ import org.junit.Test
 import java.time.LocalDate
 import java.time.Year
 import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
 
 class StatisticsPeriodAccessibilityTest {
@@ -269,7 +271,11 @@ class StatisticsPeriodAccessibilityTest {
         ) {
             val applied = periodNode("$prefix-applied-period")
             applied.assertTextContains(context.getString(kind), substring = true)
-            dates.forEach { applied.assertTextContains(it, substring = true) }
+            val date =
+                DateTimeFormatter
+                    .ofLocalizedDate(FormatStyle.MEDIUM)
+                    .withLocale(context.resources.configuration.locales[0])
+            dates.forEach { applied.assertTextContains(date.format(LocalDate.parse(it)), substring = true) }
             assertEquals(period, reads.last())
         }
 
