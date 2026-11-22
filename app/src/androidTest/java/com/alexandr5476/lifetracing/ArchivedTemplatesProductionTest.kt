@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
@@ -32,12 +33,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigationevent.NavigationEventTransitionState
 import androidx.test.core.app.ActivityScenario
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.data.persistence.HistoryReadRepository
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.data.persistence.LiveSessionRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanReadRepository
 import com.alexandr5476.lifetracing.data.persistence.PlanRepository
+import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.data.persistence.StatisticsRepository
 import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
@@ -56,6 +59,7 @@ import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryControllerOwner
 import com.alexandr5476.lifetracing.library.LibraryLoad
+import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.settings.ArchivedRestoreCoordinator
 import com.alexandr5476.lifetracing.settings.ArchivedTemplatesController
 import com.alexandr5476.lifetracing.settings.ArchivedTemplatesScreen
@@ -75,6 +79,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -85,6 +90,7 @@ import org.junit.Test
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -582,6 +588,112 @@ class ArchivedTemplatesProductionTest {
                     it.onBackPressedDispatcher.onBackPressed()
                 }
                 compose.onNodeWithTag("settings-archived-templates").performScrollTo().assertIsDisplayed()
+            }
+        }
+
+    @Test
+    fun production_restore_routes_equal_raw_ids_by_kind_and_preserves_both_templates(): Unit =
+        runBlocking {
+            val app = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
+            app.withDisposableRuntime {
+                val rawId = UUID.randomUUID().toString()
+                val at = Instant.ofEpochMilli(System.currentTimeMillis()).minusSeconds(60)
+                val name = "Shared archive name"
+                val archivedAt = at.plusSeconds(5)
+                RuntimeRecoveryStore(app, "lifetracing.db").use { seed ->
+                    val authoring = seed.authoringWithSharedTemplateId(rawId)
+                    val activityDraft = ActivityTemplateDraft(name, null, TimeTrackingMode.NO_LIVE_TRACKING, null)
+                    val initial = authoring.createActivityTemplate(activityDraft, createdAt = at)
+                    val activity =
+                        authoring.saveActivityTemplate(
+                            initial.id,
+                            initial.revision,
+                            activityDraft.copy(shortComment = "Revised activity"),
+                            at.plusSeconds(1),
+                        )
+                    val sequence =
+                        authoring.createSequenceTemplate(
+                            SequenceTemplateDraft(
+                                name,
+                                null,
+                                nodes =
+                                    listOf(
+                                        SequenceNodeDraft.Step(
+                                            ActivityStepDraft(
+                                                DraftIdentity.New("shared-id-step"),
+                                                0,
+                                                StepActivityDraft.FromTemplate(activity.id),
+                                            ),
+                                        ),
+                                    ),
+                            ),
+                            createdAt = at.plusSeconds(2),
+                        )
+                    val activityId = LibraryTemplateId.Activity(activity.id)
+                    val sequenceId = LibraryTemplateId.Sequence(sequence.id)
+                    val ids = setOf(activityId, sequenceId)
+                    assertEquals(listOf(rawId, rawId), listOf(activityId.value, sequenceId.value))
+                    assertEquals(2, ids.size)
+                    assertNotEquals(activity.statisticsSeriesId, sequence.statisticsSeriesId)
+                    val schedule = PlanSchedule.FloatingDay(LocalDate.now().plusDays(1))
+                    val plans =
+                        listOf(
+                            seed.plans.createActivityPlanFromTemplate(activity.id, schedule, at.plusSeconds(3)),
+                            seed.plans.createSequencePlanFromTemplate(sequence.id, schedule, at.plusSeconds(3)),
+                        )
+                    val planActions = plans.map { seed.planReads.getFocusedAction(it.id) }
+                    val completedAt = at.plusSeconds(4)
+                    val execution =
+                        seed.library.completeNoLiveActivityFromTemplate(
+                            activity.id,
+                            completedAt,
+                            completedAt,
+                            ZoneOffset.UTC,
+                        )
+                    val history = requireNotNull(seed.history.getActivityDetail(execution.id))
+                    val frozenSequence = requireNotNull(authoring.getSequenceTemplateAuthoringState(sequence.id))
+
+                    seed.library.archiveActivityTemplate(activity.id, archivedAt)
+                    seed.library.archiveSequenceTemplate(sequence.id, archivedAt)
+                    val archive = LibraryRepository.create(app).getArchived()
+                    assertEquals(ids, archive.map { it.id }.toSet())
+                    val archivedActivity = archive.single { it.id == activityId }
+                    val archivedSequence = archive.single { it.id == sequenceId }
+
+                    ActivityScenario.launch(MainActivity::class.java).use {
+                        openArchives()
+                        scrollToRow(activityId)
+                        compose.onNodeWithTag("archived-restore-${activityId.archivedRowKey()}").assertIsEnabled()
+                        restoreRow(sequenceId)
+
+                        val afterFirst = LibraryRepository.create(app)
+                        assertEquals(listOf(archivedActivity), afterFirst.getArchived())
+                        assertEquals(listOf(archivedSequence.copy(archivedAt = null)), afterFirst.getAll())
+                        scrollToRow(activityId)
+                        compose.onNodeWithTag("archived-restore-${activityId.archivedRowKey()}").assertIsEnabled()
+                        restoreRow(activityId)
+                        awaitLoaded()
+                    }
+
+                    RuntimeRecoveryStore(app, "lifetracing.db").use { reopened ->
+                        assertTrue(reopened.library.getArchived().isEmpty())
+                        val restoredRows = archive.map { it.copy(archivedAt = null) }.toSet()
+                        assertEquals(restoredRows, reopened.library.getAll().toSet())
+                        assertEquals(activity, reopened.authoring.getActivityTemplate(activity.id))
+                        assertEquals(sequence, reopened.authoring.getSequenceTemplate(sequence.id))
+                        assertEquals(frozenSequence, reopened.authoring.getSequenceTemplateAuthoringState(sequence.id))
+                        plans.zip(planActions).forEach { (plan, original) ->
+                            assertEquals(plan, reopened.plans.getPlan(plan.id))
+                            val current = reopened.planReads.getFocusedAction(plan.id)
+                            assertEquals(PlanSourceState.CURRENT, current.sourceState)
+                            assertEquals(original.identity, current.identity)
+                            assertEquals(original.snapshot, current.snapshot)
+                        }
+                        assertEquals(history, reopened.history.getActivityDetail(execution.id))
+                        assertSource(app, activity.statisticsSeriesId, StatisticsSeriesSourceState.ACTIVE_SOURCE)
+                        assertSource(app, sequence.statisticsSeriesId, StatisticsSeriesSourceState.ACTIVE_SOURCE)
+                    }
+                }
             }
         }
 

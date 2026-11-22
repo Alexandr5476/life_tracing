@@ -229,6 +229,56 @@ class ArchivedTemplatesScreenTest {
     }
 
     @Test
+    fun english_restore_actions_include_ids_for_names_differing_only_by_case() {
+        verifyCaseDistinctActions(Locale.ENGLISH)
+    }
+
+    @Test
+    fun russian_restore_actions_include_ids_for_names_differing_only_by_case() {
+        verifyCaseDistinctActions(Locale.forLanguageTag("ru"))
+    }
+
+    private fun verifyCaseDistinctActions(locale: Locale) {
+        val upperId = LibraryTemplateId.Activity(ActivityTemplateId("first-run"))
+        val lowerId = LibraryTemplateId.Activity(ActivityTemplateId("second-run"))
+        val upper = row(upperId).copy(name = "Run", shortComment = null)
+        val lower = row(lowerId).copy(name = "run", shortComment = null)
+        val state = mutableStateOf(ArchivedTemplatesState(listOf(upper, lower), loading = false))
+        val requests = mutableListOf<LibraryTemplateId>()
+        val configuration = Configuration(compose.activity.resources.configuration).apply { setLocale(locale) }
+        val localized = compose.activity.createConfigurationContext(configuration)
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localized, LocalConfiguration provides configuration) {
+                LifeTracingAppearance(AppearancePreferences()) {
+                    ArchivedTemplatesScreen(state.value, { requests += it }, {}, {}, {}, { state.value })
+                }
+            }
+        }
+
+        val upperTag = "archived-restore-${upperId.archivedRowKey()}"
+        val lowerTag = "archived-restore-${lowerId.archivedRowKey()}"
+        listOf(upper to upperTag, lower to lowerTag).forEach { (row, tag) ->
+            scrollTo(tag)
+            val target = targetLabel(localized, row, includeId = true)
+            assertDescription(tag, localized.getString(R.string.archived_templates_restore_target, target))
+        }
+
+        val restoreUpper = nativeClick(upperTag)
+        val obsoleteLower = nativeClick(lowerTag)
+        compose.runOnIdle {
+            assertTrue(restoreUpper())
+            state.value = ArchivedTemplatesState(listOf(lower), loading = false, readGeneration = 1)
+            assertFalse(restoreUpper())
+            assertFalse(obsoleteLower())
+        }
+        val restoreLower = nativeClick(lowerTag)
+        compose.runOnIdle {
+            assertTrue(restoreLower())
+            assertEquals(listOf(upperId, lowerId), requests)
+        }
+    }
+
+    @Test
     @Suppress("LongMethod")
     fun english_and_russian_states_reflow_and_restore_is_the_only_row_action() {
         val locale = mutableStateOf(Locale.ENGLISH)

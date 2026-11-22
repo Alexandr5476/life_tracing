@@ -110,7 +110,7 @@ internal fun ArchivedTemplatesScreen(
         admission.isCurrent() && readRestoreStatus().allowsRestore(id, archiveCompletion)
     }
     val rows = state.items.orEmpty()
-    val duplicateNames = remember(rows) { rows.groupingBy { it.kind to it.name }.eachCount() }
+    val duplicateNames = remember(rows) { rows.groupingBy { it.archiveNameKey }.eachCount() }
     val failed = rows.findArchiveTarget(state.failedRestore, duplicateNames)
     val pending = rows.findArchiveTarget(state.pending ?: restoreStatus.pending.singleOrNull(), duplicateNames)
     val list = rememberLazyListState()
@@ -182,7 +182,7 @@ private fun ArchivedList(
             val restoring = pending == row.id || row.id in restoreStatus.pending
             ArchivedRow(
                 row,
-                includeIdentity = duplicateNames.getValue(row.kind to row.name) > 1,
+                includeIdentity = duplicateNames.getValue(row.archiveNameKey) > 1,
                 restoring = restoring,
                 enabled = restoreEnabled && !restoring,
                 focus = focus,
@@ -324,13 +324,16 @@ private data class ArchiveTarget(
     val label: String,
 )
 
+private val LibraryTrackable.archiveNameKey: Pair<LibraryTrackableKind, String>
+    get() = kind to name.lowercase()
+
 @Composable
 private fun List<LibraryTrackable>.findArchiveTarget(
     id: LibraryTemplateId?,
     duplicateNames: Map<Pair<LibraryTrackableKind, String>, Int>,
 ): ArchiveTarget? =
     id?.let { firstOrNull { row -> row.id == id } }?.let { row ->
-        ArchiveTarget(row.id, row.archiveTarget(duplicateNames.getValue(row.kind to row.name) > 1))
+        ArchiveTarget(row.id, row.archiveTarget(duplicateNames.getValue(row.archiveNameKey) > 1))
     }
 
 @Composable
